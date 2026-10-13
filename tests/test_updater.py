@@ -1,11 +1,9 @@
-"""The updater's decisions: versions, GitHub's release format, signing, the token, once a day."""
-
-from datetime import date
+"""The updater's decisions: versions, GitHub's release format, signing, the token, when it checks."""
 
 import pytest
 
 from launch import in_applications_folder
-from updater import (UpdateError, check_is_due, curl_config, is_newer, parse_release, signing_requirement,
+from updater import (UpdateError, curl_config, is_newer, parse_release, signing_requirement,
                      team_identifier, valid_token)
 
 
@@ -53,14 +51,44 @@ def test_only_token_shaped_strings_are_accepted():
     assert not valid_token('abc" ; rm -rf ~ "' + "a" * 30)
 
 
-def test_checks_once_a_day():
-    today = date(2026, 10, 12)
-    assert check_is_due(None, today)
-    assert check_is_due("2026-10-11", today)
-    assert not check_is_due("2026-10-12", today)
+def test_checks_only_at_launch_and_when_asked(monkeypatch):
+    """One check shortly after launch (if switched on) that then returns: no timer while open."""
+    import updater
+
+    class Settings:
+        def __init__(self, on):
+            self.on = on
+
+        def get(self):
+            return {"update_automatically": self.on}
+
+    monkeypatch.setattr(updater, "LAUNCH_CHECK_DELAY", 0)
+    checks = []
+    for on in (True, False):
+        u = updater.Updater.__new__(updater.Updater)
+        u._settings, u.status = Settings(on), updater.IDLE
+        u._check = lambda on=on: checks.append(on)
+        u._check_at_launch()  # returns: nothing keeps checking afterwards
+    assert checks == [True]
 
 
 def test_applications_folder(tmp_path):
     assert in_applications_folder("/Applications/I Need A Budget.app")
     assert not in_applications_folder("/Applications Old/I Need A Budget.app")
     assert not in_applications_folder(tmp_path / "I Need A Budget.app")
+
+
+def test_no_releases_is_up_to_date_but_no_access_is_an_error(tmp_path, monkeypatch):
+    """GitHub answers 404 both when there's no release yet and when the token can't see the
+    private repository; only the first may be reported as up to date."""
+    import updater
+
+    answers = {}
+    monkeypatch.setattr(updater, "_curl", lambda url, *a, **k: (answers[url], "{}"))
+    u = updater.Updater.__new__(updater.Updater)
+    u._feed = updater.FEED_URL
+    answers[updater.FEED_URL], answers[updater.REPOSITORY_URL] = 404, 200
+    assert u._latest_release("token") is None
+    answers[updater.REPOSITORY_URL] = 404
+    with pytest.raises(UpdateError, match="can't see the app's repository"):
+        u._latest_release("token")

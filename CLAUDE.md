@@ -39,7 +39,8 @@ that are local businesses, category names that reveal finances, and real amounts
 Application logs: `~/Library/Logs/I Need A Budget/app.log` (rotating, 3 × 1 MB). Page
 (JavaScript) errors are forwarded there too. When the user reports a bug, **read the log
 first**. The updater logs `Automatic updates off: <reason>`, `Up to date at`,
-`Downloading`, `ready to install`, `Installed …` or `Update check failed: …`.
+`Downloading`, `ready to install`, `Installed …` or `Update check failed: …`. "Up to date"
+also when no release has been published yet: merging isn't releasing.
 `Page connected` means the window loaded and reached Python.
 
 To reproduce without touching the user's data: `INAB_DATA_DIR=<tmp folder>` (logs go to
@@ -162,7 +163,8 @@ page is the average of what a category actually spent in the last 3/6/12 whole m
 - **Every PR raises `VERSION` itself** (in `Application Files/main.py`), so merging is
   all the maintainer does: 1.0.1 → 1.0.2 by default, 1.0.x → 1.1.0 only for a change big
   enough to deserve it. Never leave the bump for a separate PR after the merge.
-- Merging to `main` is not a release. Installed copies only update when a release is
+- Merging to `main` is not a release, but it's the go-ahead for one: Claude then runs
+  `scripts/release.sh NOTES.md` (notes outside the repo). The maintainer never builds. Installed copies only update when a release is
   published on GitHub.
 - The repository is **private**. The updater authenticates with a token saved in the
   Keychain from Settings, or the GitHub CLI's login (`gh auth token`).
@@ -248,6 +250,8 @@ Don't undo these without asking:
 - **Window only, no menu bar item.** The close button asks, then quits the app entirely;
   ⌘Q quits without asking. A downloaded update installs on quit.
 - "Eating Out" was renamed **Food** (Actual's old name still matches through `old_names`).
+- **Update checks only at launch and on Check now**, never on a timer while the app is
+  open (the maintainer's choice).
 - **Private repo, auto-updates via GitHub releases with a token.** The user may later
   give a separate copy to their spouse (separate data, same updates). That copy needs a
   read-only token in Settings.
@@ -273,8 +277,8 @@ Don't undo these without asking:
   RBC's CSV, other banks' OFX and the payee wording for RBC/TD/BMO e-transfers, payroll
   and bill payments are built from public descriptions and made-up files: check them
   against a real file when one turns up.
-- Installing an update can only be tested once a second release exists (1.0.0 is the
-  first). Follow "Testing the updater" in DEVELOPMENT.md before relying on it.
+- Updating works: 1.0.0 → 1.0.1 installed through the updater on 2026-10-13. The 404
+  handling changed in 1.0.2 (no release vs no access); it's unit-tested, not yet live.
 
 ## Interface rules
 

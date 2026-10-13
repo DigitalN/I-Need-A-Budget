@@ -61,10 +61,34 @@ Go through all of it for every release. Installed copies update themselves from 
 latest release, so a mistake reaches every copy. Merging a pull request doesn't release
 anything.
 
-**The first release (1.0.0)** skips raising `VERSION` (it's already 1.0.0), testing
-updates (there's nothing to update from yet) and drafting a previous release. The
-maintainer's own copy is already 1.0.0, so it won't "update" to it: 1.0.0 is the
-baseline that 1.0.1 and later update from.
+**Who does what.** The maintainer only merges PRs (each PR already raises `VERSION`).
+A merged PR is the go-ahead: Claude releases it from this Mac, where the signing
+certificate is, with **`scripts/release.sh NOTES.md`** (notes written outside the repo).
+It does every step below that a script can: main matches GitHub, version newer than the
+latest release, tests, certificate valid 30+ days, build, `hdiutil verify`,
+`scripts/check-update.py` (the installed copy's own updater code, from its tag, accepts
+the image), publish from the exact commit, check what installed copies see, draft the
+previous release. `scripts/release.sh --dry-run` runs all of it except publishing, on any
+branch. The maintainer never builds anything.
+
+**History.** 1.0.0 was installed from a local build and never published. 1.0.1
+(2026-10-13) was the first release, and 1.0.0 → 1.0.1 the first update installed through
+the updater: `Downloading`, `ready to install`, `Installed 1.0.1; relaunching`, then the
+schema upgrade with its backup. Until a release is published, Check now just says the app
+is up to date (1.0.0 and 1.0.1 also said that when the token couldn't see the repository;
+1.0.2 reports that as an error).
+
+**Lessons from 1.0.1:**
+- Merging isn't releasing. No release on GitHub means nothing to update to.
+- Several Apple Development certificates can be in the keychain; an expired one is
+  harmless. What matters is the one `security find-identity -v -p codesigning` lists
+  (team `XT4LT7MS6Y`, valid until 2027-10-05 as of 1.0.1). Renew it before then.
+- To launch a built copy for a test: it must be in an Applications folder (elsewhere it
+  offers to move itself), so ditto it into `~/Applications/<test folder>/`, start its
+  binary directly with `INAB_DATA_DIR=<throwaway>` (not `open`: the same bundle identifier
+  can hand off to the maintainer's running copy), kill only that PID, delete the folder.
+- The installed copy runs its own version's updater, which is why `check-update.py`
+  checks with the code at the installed version's tag.
 
 ### Before building
 
@@ -139,8 +163,9 @@ repository and a windowed app:
   GitHub CLI's (`gh auth token`). A fine-grained token with read-only *Contents* access to
   this one repository is enough; that's what a second Mac or a second person uses. The token
   reaches curl on stdin (`--config -`), never the command line.
-- **When:** 30 seconds after launch, then hourly while open, at most once a day (a day
-  counts once GitHub has answered). Settings → Check now checks right away.
+- **When:** once, a few seconds after each launch (Settings → "Check for updates at
+  launch" turns that off), and when you press Check now. Never on a timer while the app
+  is open: the maintainer's choice.
 - **What:** the latest release (not drafts or pre-releases) via the GitHub API; its `.dmg`
   is downloaded through the asset's API URL (curl drops the token when GitHub redirects
   to storage).
