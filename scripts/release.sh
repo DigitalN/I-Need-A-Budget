@@ -36,12 +36,12 @@ elif [[ $DRY == 0 ]]; then
     fail "Give the release notes file: scripts/release.sh NOTES.md"
 fi
 
-step "What's going out: main, the same as GitHub, nothing uncommitted"
+step "What's going out: exactly GitHub's main, nothing uncommitted"
 git fetch -q origin
 if [[ $DRY == 0 ]]; then
-    [[ "$(git rev-parse --abbrev-ref HEAD)" == "main" ]] || fail "Not on main."
+    # The commit is what matters, not the branch name: a worktree at origin/main works too.
+    [[ "$(git rev-parse HEAD)" == "$(git rev-parse origin/main)" ]] || fail "This isn't GitHub's main: git pull (or check out origin/main)."
     [[ -z "$(git status --porcelain)" ]] || fail "There are uncommitted changes."
-    [[ "$(git rev-parse HEAD)" == "$(git rev-parse origin/main)" ]] || fail "Local main isn't GitHub's main: git pull."
 fi
 COMMIT=$(git rev-parse HEAD)
 
