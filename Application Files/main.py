@@ -21,7 +21,7 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 APP_NAME = "I Need A Budget"
-VERSION = "1.0.0"  # the build reads it from here; see the release checklist in DEVELOPMENT.md
+VERSION = "1.0.1"  # the build reads it from here; see the release checklist in DEVELOPMENT.md
 if os.environ.get("INAB_DATA_DIR"):  # for development/testing against a throwaway folder
     DATA_DIR = Path(os.environ["INAB_DATA_DIR"]).expanduser()
     LOG_DIR = DATA_DIR / "Logs"

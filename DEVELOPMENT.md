@@ -70,9 +70,9 @@ baseline that 1.0.1 and later update from.
 
 - [ ] Everything going out is merged into `main`, and the local `main` matches GitHub
   (`git pull`).
-- [ ] `VERSION` in `Application Files/main.py` is raised. The build copies it into the
-  app's `Info.plist`. It must be higher than the latest release, or installed copies
-  won't update.
+- [ ] `VERSION` in `Application Files/main.py` is higher than the latest release (every
+  PR raises it: by 0.0.1, or 0.1 for a big change). The build copies it into the app's
+  `Info.plist`; installed copies only update to a higher version.
 - [ ] `python3 -m pytest` passes (including `test_privacy.py`).
 - [ ] The signing certificate is valid and not about to expire:
   `security find-identity -v -p codesigning` lists an *Apple Development* identity from
