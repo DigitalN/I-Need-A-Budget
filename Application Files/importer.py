@@ -7,9 +7,17 @@ Formats (detected from the content, not the file name):
 - Tangerine bank account CSV: `Date,Transaction,Name,Memo,Amount`. Named after the
   account's nickname ("Chequing.CSV"). Name is cut at 32 characters; Memo has it in full.
 - OFX / QFX (Tangerine's "Microsoft Money" and "Quicken" downloads): every transaction
-  has the bank's own ID (FITID), and the file includes the account balance.
+  has the bank's own ID (FITID), and the file includes the account balance. The account
+  is found by its bank and number. Tangerine calls every bank account SAVINGS in these
+  files, chequing included, so for Tangerine the file name (the account's nickname, as
+  with its CSVs) decides which account it is, not ACCTTYPE.
 - Actual Budget's transaction export: not imported as transactions, only learnt from
   (its categories and which payees went where). See `learn_from_actual()`.
+
+Which account: from what the file says (see each format), else the one existing account
+that already has most of the file's rows, else a new account. A file never lands in an
+account just because it's the only one of its kind: with more than one bank that would
+put one bank's file in another bank's account.
 
 Duplicates: each row gets a fingerprint from its date, amount and description, plus
 how many identical rows came before it in the same file. Exports overlap freely, so a
@@ -63,6 +71,7 @@ class AccountHint:
     kind: str
     name: str
     last4: str = None
+    legacy_keys: list = field(default_factory=list)  # looked up after `keys`, never saved
 
 
 @dataclass
@@ -162,10 +171,24 @@ def _parse_tangerine(text, filename, card):
         keys = [f"tangerine-card:{last4}"] if last4 else []
         hint = AccountHint(keys + ["tangerine-card"], "credit_card", "Mastercard", last4)
     else:
-        lower = stem.lower()
-        kind = "savings" if "saving" in lower else "line_of_credit" if "credit" in lower else "chequing"
-        hint = AccountHint([f"tangerine-bank:{lower}"], kind, stem.title() if stem.islower() or stem.isupper() else stem)
+        key, kind, name = _tangerine_bank_account(filename)
+        hint = AccountHint([key], kind, name)
     return Parsed("tangerine_card" if card else "tangerine_bank", rows, hint)
+
+
+def account_number_key(bank, last4):
+    """The account_sources key for an account number, the same whichever kind of file
+    from that bank it came in."""
+    return f"number:{re.sub(r'[^a-z0-9]', '', str(bank or '').lower()) or 'unknown'}:{last4}"
+
+
+def _tangerine_bank_account(filename):
+    """Tangerine names bank account downloads after the account's nickname ("Chequing.CSV",
+    "Chequing.QFX"): (account_sources key, kind, name)."""
+    stem = base_name(filename)
+    lower = stem.lower()
+    kind = "savings" if "saving" in lower else "line_of_credit" if "credit" in lower else "chequing"
+    return f"tangerine-bank:{lower}", kind, stem.title() if stem.islower() or stem.isupper() else stem
 
 
 def _ofx_value(block, tag):
@@ -197,14 +220,23 @@ def _parse_ofx(text, filename):
     acct_type = (_ofx_value(acct_block.group(1), "ACCTTYPE") if acct_block else None) or ""
     digits = re.sub(r"\D", "", acct_id)
     last4 = digits[-4:] if len(digits) >= 4 else None
+    bank = _ofx_bank(text)
+    tangerine = bank == "Tangerine"
+    number_keys = [account_number_key(bank, last4)] if last4 else []
     if is_card:
-        keys = ([f"tangerine-card:{last4}"] if last4 else []) + ["tangerine-card"]
-        hint = AccountHint(keys, "credit_card", "Mastercard", last4)
+        keys = number_keys + (([f"tangerine-card:{last4}"] if last4 else []) + ["tangerine-card"] if tangerine else [])
+        hint = AccountHint(keys, "credit_card", "Mastercard" if tangerine else f"{bank} card" if bank else "Credit card",
+                           last4)
     else:
-        kind = "savings" if acct_type.upper() == "SAVINGS" else \
+        kind = "savings" if acct_type.upper() in ("SAVINGS", "MONEYMRKT") else \
             "line_of_credit" if acct_type.upper() == "CREDITLINE" else "chequing"
-        keys = [f"ofx:{kind}:{last4}"] if last4 else []
-        hint = AccountHint(keys, kind, kind.replace("_", " ").title(), last4)
+        legacy = [f"ofx:{kind}:{last4}"] if last4 else []  # how version 1.0 keyed OFX accounts
+        if tangerine:
+            key, kind, name = _tangerine_bank_account(filename)
+            hint = AccountHint(number_keys + [key], kind, name, last4, legacy)
+        else:
+            label = kind.replace("_", " ").title()
+            hint = AccountHint(number_keys, kind, f"{bank} {label}" if bank else label, last4, legacy)
     balance = None
     ledger_block = re.search(r"<LEDGERBAL>(.*?)(?:</LEDGERBAL>|<AVAILBAL>|$)", text, re.IGNORECASE | re.DOTALL)
     if ledger_block:
@@ -215,6 +247,14 @@ def _parse_ofx(text, filename):
         except ValueError:
             balance = None
     return Parsed("ofx", rows, hint, balance)
+
+
+def _ofx_bank(text):
+    """The bank an OFX file comes from (its <ORG>), or None if it doesn't say."""
+    org = (_ofx_value(text, "ORG") or "").strip()
+    if "tangerine" in org.lower() or (_ofx_value(text, "BANKID") or "").lstrip("0") == "614":
+        return "Tangerine"  # 614 is Tangerine's institution number
+    return _unescape(org) or None
 
 
 def _unescape(text):
@@ -278,17 +318,16 @@ class Result:
         return dict(self.__dict__)
 
 
-def find_or_create_account(conn, hint):
-    account_id = ledger.account_by_key(conn, hint.keys)
+def find_or_create_account(conn, hint, rows=(), fps=()):
+    """The account a file's rows belong to: by what the file says (`hint.keys`), else the
+    existing account that already has the file's rows, else a new one. A found account
+    learns the file's keys, so the next file from it is recognised straight away."""
+    account_id = ledger.account_by_key(conn, hint.keys) or ledger.account_by_key(conn, hint.legacy_keys) \
+        or account_with_rows(conn, hint.kind, rows, fps)
     if account_id:
+        for key in hint.keys:
+            conn.execute("INSERT OR IGNORE INTO account_sources (key, account_id) VALUES (?, ?)", (key, account_id))
         return account_id, False
-    if hint.keys and hint.keys[0].startswith("ofx:"):
-        # An OFX file for an account first imported from CSV: adopt the only one of its kind.
-        same = conn.execute("SELECT id FROM accounts WHERE kind = ? AND closed = 0", (hint.kind,)).fetchall()
-        if len(same) == 1:
-            conn.execute("INSERT OR IGNORE INTO account_sources (key, account_id) VALUES (?, ?)",
-                         (hint.keys[0], same[0]["id"]))
-            return same[0]["id"], False
     name = hint.name
     if conn.execute("SELECT 1 FROM accounts WHERE name = ? COLLATE NOCASE", (name,)).fetchone():
         name = f"{name} {hint.last4}" if hint.last4 else f"{name} 2"
@@ -298,13 +337,40 @@ def find_or_create_account(conn, hint):
     return account_id, True
 
 
+def account_with_rows(conn, kind, rows, fps):
+    """The one existing account that already has nearly all of these rows (by fingerprint),
+    or None. Rows in another account with the same date, amount and description are the
+    same transactions, so it's the same account, whatever the file calls it."""
+    if not fps:
+        return None
+    found = {}
+    for i in range(0, len(fps), 500):
+        chunk = list(fps[i:i + 500])
+        for r in conn.execute(
+                f"SELECT account_id, fingerprint FROM transactions WHERE fingerprint IN ({','.join('?' * len(chunk))})",
+                chunk):
+            found.setdefault(r["account_id"], set()).add(r["fingerprint"])
+    matches = []
+    for account_id, shared in found.items():
+        acct = conn.execute("SELECT a.kind, MIN(t.date) AS first, MAX(t.date) AS last FROM accounts a "
+                            "JOIN transactions t ON t.account_id = a.id WHERE a.id = ?", (account_id,)).fetchone()
+        if ledger.is_debt(acct["kind"]) != ledger.is_debt(kind):
+            continue
+        overlapping = [fp for row, fp in zip(rows, fps) if acct["first"] <= row.date <= acct["last"]]
+        hits = sum(1 for fp in overlapping if fp in shared)
+        if hits >= min(3, len(rows)) and hits >= 0.8 * len(overlapping):
+            matches.append(account_id)
+    return matches[0] if len(matches) == 1 else None
+
+
 def import_parsed(conn, parsed, filename, sha, archived_path=None):
     """Adds the new rows of a parsed bank file and files what it can. Call inside db.write()."""
     if parsed.format == "actual":
         raise ImportError_("Actual Budget exports are learnt from, not imported.")
     result = Result(filename, parsed.format, total=len(parsed.rows),
                     first_date=parsed.first_date, last_date=parsed.last_date)
-    account_id, created = find_or_create_account(conn, parsed.account)
+    fps = fingerprints(parsed.rows)
+    account_id, created = find_or_create_account(conn, parsed.account, parsed.rows, fps)
     acct = conn.execute("SELECT * FROM accounts WHERE id = ?", (account_id,)).fetchone()
     result.account_id, result.account_name, result.new_account = account_id, acct["name"], created
     import_id = conn.execute(
@@ -315,7 +381,7 @@ def import_parsed(conn, parsed, filename, sha, archived_path=None):
     result.import_id = import_id
 
     new_ids = []
-    for row, fp in zip(parsed.rows, fingerprints(parsed.rows)):
+    for row, fp in zip(parsed.rows, fps):
         exists = conn.execute("SELECT 1 FROM transactions WHERE account_id = ? AND fingerprint = ?",
                               (account_id, fp)).fetchone()
         if not exists and row.fitid:
@@ -338,15 +404,23 @@ def import_parsed(conn, parsed, filename, sha, archived_path=None):
     filed, review = file_transactions(conn, new_ids)
     result.filed, result.to_review = filed, review
 
-    if parsed.balance and acct["anchor_date"] is None:
-        conn.execute("UPDATE accounts SET anchor_date = ?, anchor_balance = ? WHERE id = ?",
-                     (parsed.balance[0], parsed.balance[1], account_id))
-        result.balance_note = "Balance taken from the file"
-    elif parsed.balance:
-        ours = ledger.account_balance(conn, account_id, parsed.balance[0])
-        if ours is not None and ours != parsed.balance[1]:
-            result.balance_note = (f"The file says the balance was {parsed.balance[1] / 100:,.2f} on "
-                                   f"{parsed.balance[0]}, but the app has {ours / 100:,.2f}")
+    if parsed.balance:
+        # The bank's own balance beats one typed in by hand: a balance typed during the day
+        # misses what the bank adds later that day, and every balance is worked out from
+        # this one. So a file's balance replaces any as old as it, or older.
+        as_of, balance = parsed.balance
+        ours = ledger.account_balance(conn, account_id, as_of)
+        if acct["anchor_date"] is None or as_of >= acct["anchor_date"]:
+            conn.execute("UPDATE accounts SET anchor_date = ?, anchor_balance = ? WHERE id = ?",
+                         (as_of, balance, account_id))
+            if ours != balance:
+                result.balance_note = "Balance taken from the file"
+                if ours is not None:
+                    log.info("%s: balance on %s corrected from the file by %+d cents", acct["name"], as_of,
+                             balance - ours)
+        elif ours is not None and ours != balance:
+            result.balance_note = (f"The file says the balance was {balance / 100:,.2f} on {as_of}, "
+                                   f"but the app has {ours / 100:,.2f}")
     return result
 
 

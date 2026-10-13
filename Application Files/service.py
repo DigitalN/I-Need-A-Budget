@@ -795,8 +795,11 @@ class BudgetService:
             filed = self._transactions(
                 c, {"status": "done", "import_ids": recent_imports}, limit=300, order="t.date DESC, t.id DESC") \
                 if recent_imports else []
-            alerts = []
+            alerts = [{"type": "duplicate", **d} for d in ledger.duplicate_accounts(c)]
+            copies = {a["account_id"] for a in alerts}
             for a in c.execute("SELECT id, name FROM accounts WHERE anchor_date IS NULL AND closed = 0"):
+                if a["id"] in copies:
+                    continue  # merge it rather than give it a balance
                 alerts.append({"type": "balance", "account_id": a["id"],
                                "text": f"What's the balance of {a['name']}? The app needs it once to show balances."})
         return {"items": items, "filed": filed, "alerts": alerts, "counts": self.counts()}
@@ -1140,13 +1143,15 @@ class BudgetService:
 
     def _accounts(self, c):
         out = []
+        duplicates = {d["account_id"]: d for d in ledger.duplicate_accounts(c)}
         for a in c.execute("SELECT * FROM accounts ORDER BY closed, sort, id").fetchall():
             stats = c.execute("SELECT MIN(date) AS first, MAX(date) AS last, COUNT(*) AS n FROM transactions "
                               "WHERE account_id = ?", (a["id"],)).fetchone()
             last_import = c.execute("SELECT MAX(imported_at) FROM imports WHERE account_id = ?", (a["id"],)).fetchone()[0]
             out.append({**dict(a), "balance": ledger.account_balance(c, a["id"]), "is_debt": ledger.is_debt(a["kind"]),
                         "kind_label": ledger.KIND_LABELS.get(a["kind"], a["kind"]), "first_date": stats["first"],
-                        "last_date": stats["last"], "transactions": stats["n"], "last_import": last_import})
+                        "last_date": stats["last"], "transactions": stats["n"], "last_import": last_import,
+                        "duplicate_of": duplicates.get(a["id"])})
         return out
 
     @exposed
@@ -1220,6 +1225,15 @@ class BudgetService:
                       "VALUES (?, ?, ?, ?, NULL, 'review', 'To match the balance the bank shows')",
                       (account_id, self.today(), diff, payee))
         return {"adjusted": diff}
+
+    @exposed
+    def merge_accounts(self, from_id, into_id):
+        """`from_id` is the same account as `into_id`: see ledger.merge_accounts()."""
+        with self.db.write("Merge accounts") as c:
+            name = c.execute("SELECT name FROM accounts WHERE id = ?", (into_id,)).fetchone()
+            moved, dropped = ledger.merge_accounts(c, int(from_id), int(into_id))
+        log.info("Merged account %s into %s: %d moved, %d duplicates dropped", from_id, into_id, moved, dropped)
+        return {"into": name["name"] if name else "", "moved": moved, "dropped": dropped, "counts": self.counts()}
 
     @exposed
     def delete_account(self, account_id):

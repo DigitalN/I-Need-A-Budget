@@ -399,7 +399,9 @@ function dialog({ title, body, actions, wide = false, onOpen }) {
       if (a.left) { b.style.marginRight = 'auto'; }
       bar.appendChild(b);
     });
-    d.onclose = () => finish(null);
+    // Only a close of this dialog: closing the previous one fires its close event after
+    // this one has opened, and that mustn't close this one.
+    d.onclose = () => { if (!d.open) finish(null); };
     d.querySelector('.dlg-x').onclick = () => finish(null);  // close without doing anything, like Esc
     d.oncancel = e => { e.preventDefault(); finish(null); };
     d.querySelector('form').onsubmit = e => {
@@ -885,7 +887,8 @@ function drawInbox() {
   state.blocks = blocks.flatMap(b => (b.items.length > 1 && !state.expanded.has(b.group)) ? [b] : b.items.map(i => ({ group: null, items: [i] })));
   state.inboxSel = Math.min(state.inboxSel, Math.max(0, state.blocks.length - 1));
   const alerts = data.alerts.map(a => a.type === 'balance' ? `<div class="notice">${esc(a.text)}<span class="spacer"></span>
-      <input style="width:130px;text-align:right" placeholder="Balance" data-balance-for="${a.account_id}"><button class="btn small" data-act="save-balance" data-account="${a.account_id}">Save</button></div>` : '').join('');
+      <input style="width:130px;text-align:right" placeholder="Balance" data-balance-for="${a.account_id}"><button class="btn small" data-act="save-balance" data-account="${a.account_id}">Save</button></div>`
+    : a.type === 'duplicate' ? duplicateNotice(a) : '').join('');
   const cards = state.blocks.map((b, i) => b.items.length > 1 ? groupCard(b, i) : itemCard(b.items[0], i)).join('');
   const filedRows = data.filed.map(t => `<tr><td class="muted nowrap">${day(t.date)}</td><td>${esc(t.payee_name || t.raw_name)}${t.subscription_name ? ` <span class="tag info">${esc(t.subscription_name)}</span>` : ''}</td>
       <td>${t.transfer_account_name ? `<span class="tag">Transfer</span>` : `<button class="link" data-act="recat" data-id="${t.id}">${esc(t.category_name || (t.is_split ? 'Split' : 'No category'))}</button>`}</td>
@@ -1191,12 +1194,30 @@ async function inboxAction(btn, e) {
     await renderInbox();
   } else if (act === 'accept-all') await acceptAll();
   else if (act === 'save-balance') await saveBalanceFrom(btn);
-  else if (act === 'recat') {
+  else if (act === 'merge-account') {
+    const a = state.inbox.alerts.find(x => x.type === 'duplicate' && x.account_id === Number(btn.dataset.account));
+    if (a) await mergeAccount(a.account_id, a.into_id, a.name, a.into_name);
+  } else if (act === 'recat') {
     const cid = await pickCategory(btn);
     if (!cid) return;
     await call('update_transaction', [id, { category_id: cid }]);
     toast(`Changed to ${catName(cid)}`, { action: undoAction }); await renderInbox();
   }
+}
+
+function duplicateNotice(d) {
+  return `<div class="notice">${esc(d.name)} looks like a copy of ${esc(d.into_name)}: ${d.shared} of its ${plural(d.total, 'transaction')} are in both.<span class="spacer"></span>
+    <button class="btn small" data-act="merge-account" data-account="${d.account_id}" data-into="${d.into_id}">Merge into ${esc(d.into_name)}</button></div>`;
+}
+
+// One account into another (the same account imported twice). Undoable.
+const mergeText = (from, into) => `Transactions already in ${into} are dropped, the rest move over, and ${from} is removed. You can undo it right after.`;
+async function mergeAccount(fromId, intoId, fromName, intoName, ask = true) {
+  if (ask && !await confirmBox(`Merge ${fromName} into ${intoName}?`, mergeText(fromName, intoName), 'Merge')) return;
+  const r = await call('merge_accounts', [fromId, intoId]);
+  await loadCategories();
+  toast(`Merged into ${r.into}: ${plural(r.moved, 'transaction')} moved, ${plural(r.dropped, 'copy', 'copies')} removed`, { action: undoAction });
+  await refresh();
 }
 
 async function saveBalanceFrom(btn) {
@@ -1342,9 +1363,11 @@ async function renderAccounts() {
         : `<div class="bal num ${owe && a.balance < 0 ? 'neg' : ''}">${owe ? money(-a.balance) : money(a.balance)}</div>
            <div class="small muted">${owe ? 'owing' : 'balance'}${a.last_date ? ` · up to ${dayYear(a.last_date)}` : ''}</div>`}
       <div class="small muted" style="margin-top:8px">${plural(a.transactions, 'transaction')}${a.first_date ? ` since ${dayYear(a.first_date)}` : ''}${a.last_import ? ` · last import ${esc(a.last_import.slice(0, 10))}` : ''}</div>
+      ${a.duplicate_of ? `<div style="margin-top:10px">${duplicateNotice(a.duplicate_of)}</div>` : ''}
       <div class="row" style="margin-top:10px">
         ${a.balance !== null ? `<button class="btn small" data-act="check-balance" data-account="${a.id}">Check balance…</button>` : ''}
         <button class="btn small" data-act="rename-account" data-account="${a.id}">Rename…</button>
+        ${mergeTargets(accounts, a).length ? `<button class="btn small" data-act="merge-pick" data-account="${a.id}">Merge into…</button>` : ''}
         <span class="spacer"></span>
         <button class="icon-btn danger" data-act="delete-account" data-account="${a.id}" title="Delete account">✕</button>
       </div></div>`;
@@ -1384,10 +1407,28 @@ async function renderAccounts() {
     </div>`);
 }
 
+const mergeTargets = (accounts, a) => accounts.filter(x => x.id !== a.id && !x.closed && x.is_debt === a.is_debt);
+
 async function accountAction(btn) {
   const act = btn.dataset.act, id = Number(btn.dataset.account);
   const a = state.accounts.find(x => x.id === id);
   if (act === 'save-balance') return saveBalanceFrom(btn);
+  if (act === 'merge-account') {
+    const into = state.accounts.find(x => x.id === Number(btn.dataset.into));
+    return mergeAccount(a.id, into.id, a.name, into.name);
+  }
+  if (act === 'merge-pick') {
+    const targets = mergeTargets(state.accounts, a);
+    const v = await dialog({
+      title: `Merge ${a.name} into…`,
+      body: `<div class="field"><label>The same account as</label><select id="merge-into">${targets.map(x => `<option value="${x.id}" ${a.duplicate_of && a.duplicate_of.into_id === x.id ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select></div>
+        <p class="small muted">${esc(mergeText(a.name, 'that account'))}</p>`,
+      actions: [{ label: 'Cancel', value: null }, { label: 'Merge', value: 'ok', primary: true }],
+    });
+    if (v !== 'ok') return;
+    const into = targets.find(x => x.id === Number($('#merge-into').value));
+    return mergeAccount(a.id, into.id, a.name, into.name, false);
+  }
   if (act === 'check-balance') {
     const v = await dialog({
       title: `Check ${a.name}`,
