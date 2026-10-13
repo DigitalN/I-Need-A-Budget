@@ -63,14 +63,15 @@ Click one (or press 1–4, Return for the first) and it's filed. ⌘Z undoes any
   Refunds and e-transfers that pay you back go back to the envelope the money left from.
 - "SAFEWAY #6432" and "SAVEWAY 1532" both become Safeway.
 
-**Budget.** Each month: what each category has, spent and got. A category's **Each
-month** amount is the plan; money is only in it once it's assigned. **Assign money…**
-shares out a paycheque, topping each category up to its monthly amount in order (what's
+**Budget.** Each month: what each category has, spent and got. A category's
+**Budgeted** amount is the plan; money is only in it once it's assigned. The **→** next
+to its Assigned box assigns the budgeted amount in one click, and **Assign money…**
+shares out a paycheque, topping each category up to its budgeted amount in order (what's
 already in it counts). Click a category, or what it spent, to see every transaction that
-adds up to it this month (click one to change it), what it needed in past months, move
-money, keep notes, and set its monthly amount (or use **Last month** or **Last 3 months
-avg** of what it actually spent). It all saves as you type. A group's Spent lists the
-whole group.
+adds up to it this month (click one to change it), its **Monthly Budgeted Amount** (what
+it actually spent in past months, last month and the 3/6/12-month averages, each with
+**Use**, and the amount itself), move money and keep notes. It all saves as you type. A
+group's Spent lists the whole group.
 
 **Ready to assign** is money you really have: overspending a category comes out of it
 straight away, since that money has already left the bank. Under it, a line ties it to

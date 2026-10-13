@@ -740,8 +740,8 @@ class BudgetService:
     def set_monthly_budget(self, category_id, cents):
         value = None if cents in (None, "") else int(cents)
         if value is not None and value < 0:
-            raise UserError("A monthly amount can't be negative.")
-        with self.db.write("Change monthly amount") as c:
+            raise UserError("A budgeted amount can't be negative.")
+        with self.db.write("Change budgeted amount") as c:
             c.execute("UPDATE categories SET monthly_budget = ? WHERE id = ?", (value, category_id))
         return True
 
