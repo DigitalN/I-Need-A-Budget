@@ -250,6 +250,8 @@ Don't undo these without asking:
 - **Window only, no menu bar item.** The close button asks, then quits the app entirely;
   ⌘Q quits without asking. A downloaded update installs on quit.
 - "Eating Out" was renamed **Food** (Actual's old name still matches through `old_names`).
+- **Update checks only at launch and on Check now**, never on a timer while the app is
+  open (the maintainer's choice).
 - **Private repo, auto-updates via GitHub releases with a token.** The user may later
   give a separate copy to their spouse (separate data, same updates). That copy needs a
   read-only token in Settings.

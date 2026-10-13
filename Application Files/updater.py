@@ -8,8 +8,8 @@ The repository is private, so asking GitHub needs a token. The updater uses, in 
 The token goes to curl on stdin (`--config -`), never on the command line, where other
 processes could see it.
 
-When: shortly after launch, then every hour while the app is open, at most once a day
-(a day counts once GitHub has answered). Settings → Check for Updates checks now.
+When: once, a few seconds after each launch (unless "Check for updates at launch" is off
+in Settings), and when you press Check now. Never in between: the maintainer's choice.
 
 What: the repository's latest release (not drafts or pre-releases), tagged `v<version>`,
 with the .dmg from scripts/package.sh attached. It's downloaded, the app is copied out,
@@ -40,8 +40,7 @@ log = logging.getLogger("inab")
 IDLE, CHECKING, DOWNLOADING, READY = "idle", "checking", "downloading", "ready"
 FEED_URL = f"https://api.github.com/repos/{REPOSITORY}/releases/latest"
 REPOSITORY_URL = f"https://api.github.com/repos/{REPOSITORY}"
-FIRST_CHECK_DELAY = 30   # seconds after launch
-CHECK_EVERY = 3600       # seconds between "is a check due?" looks while open
+LAUNCH_CHECK_DELAY = 5   # seconds after launch, so the window comes up first
 KEYCHAIN_SERVICE = APP_NAME
 KEYCHAIN_ACCOUNT = "GitHub"
 GH_PATHS = ("/opt/homebrew/bin/gh", "/usr/local/bin/gh", "/usr/bin/gh")
@@ -90,11 +89,6 @@ def team_identifier(codesign_details):
 def signing_requirement(bundle_id, team):
     return (f'=identifier "{bundle_id}" and anchor apple generic'
             f' and certificate leaf[subject.OU] = "{team}"')
-
-
-def check_is_due(last_check, today):
-    """One automatic check a day: due unless one already succeeded today."""
-    return last_check != today.isoformat()
 
 
 def curl_config(token):
@@ -290,26 +284,16 @@ class Updater:
         if self.unavailable_reason:
             log.info("Automatic updates off: %s", self.unavailable_reason)
             return
-        threading.Thread(target=self._loop, name="update-loop", daemon=True).start()
+        threading.Thread(target=self._check_at_launch, name="update-at-launch", daemon=True).start()
 
-    def _loop(self):
-        time.sleep(FIRST_CHECK_DELAY)
-        while True:
-            try:
-                self._check_if_due()
-            except Exception:
-                log.exception("Update loop failed")
-            time.sleep(CHECK_EVERY)
-
-    def _check_if_due(self):
-        if not self._settings.get()["update_automatically"] or self.status != IDLE:
-            return
+    def _check_at_launch(self):
+        """The one automatic check: shortly after launch, if it's switched on."""
+        time.sleep(LAUNCH_CHECK_DELAY)
         try:
-            last = self._last_check_file.read_text(encoding="utf-8").strip()
-        except OSError:
-            last = None
-        if check_is_due(last, date.today()):
-            self._check()
+            if self._settings.get()["update_automatically"] and self.status == IDLE:
+                self._check()
+        except Exception:
+            log.exception("Update check at launch failed")
 
     def check_now(self):
         """Settings → Check for Updates. Runs in the background; status comes via on_status."""

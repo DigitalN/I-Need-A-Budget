@@ -1810,7 +1810,7 @@ async function renderSettings() {
           <button class="btn" data-act="learn-actual">Choose file…</button></div>
       </div>
       <div class="card">
-        <div class="settings-row"><div class="what"><b>Update automatically</b><span id="update-text">${esc(updText)}</span></div>
+        <div class="settings-row"><div class="what"><b>Check for updates at launch</b><span id="update-text">${esc(updText)}</span></div>
           <label class="switch"><input type="checkbox" data-setting="update_automatically" ${settings.update_automatically ? 'checked' : ''}><span></span></label></div>
         <div class="settings-row"><div class="what"><b>GitHub access</b><span>${upd && upd.access ? `Using ${esc(upd.access)}.` : 'The code is private, so checking for updates needs a GitHub token (read access to the repository) or the GitHub CLI signed in.'}</span></div>
           <input type="password" id="gh-token" placeholder="Token" style="width:180px"><button class="btn" data-act="save-token">Save</button></div>

@@ -163,8 +163,9 @@ repository and a windowed app:
   GitHub CLI's (`gh auth token`). A fine-grained token with read-only *Contents* access to
   this one repository is enough; that's what a second Mac or a second person uses. The token
   reaches curl on stdin (`--config -`), never the command line.
-- **When:** 30 seconds after launch, then hourly while open, at most once a day (a day
-  counts once GitHub has answered). Settings → Check now checks right away.
+- **When:** once, a few seconds after each launch (Settings → "Check for updates at
+  launch" turns that off), and when you press Check now. Never on a timer while the app
+  is open: the maintainer's choice.
 - **What:** the latest release (not drafts or pre-releases) via the GitHub API; its `.dmg`
   is downloaded through the asset's API URL (curl drops the token when GitHub redirects
   to storage).
