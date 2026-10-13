@@ -159,6 +159,9 @@ page is the average of what a category actually spent in the last 3/6/12 whole m
 ## Releasing
 
 - A release means the whole **Release checklist** in DEVELOPMENT.md, every time.
+- **Every PR raises `VERSION` itself** (in `Application Files/main.py`), so merging is
+  all the maintainer does: 1.0.1 → 1.0.2 by default, 1.0.x → 1.1.0 only for a change big
+  enough to deserve it. Never leave the bump for a separate PR after the merge.
 - Merging to `main` is not a release. Installed copies only update when a release is
   published on GitHub.
 - The repository is **private**. The updater authenticates with a token saved in the
