@@ -43,4 +43,12 @@ def test_a_categorys_monthly_amount_is_called_budgeted():
     """The maintainer's word for it is Budgeted, never "Each month"."""
     assert "Each month" not in PAGE
     assert '<th class="r">Budgeted</th><th class="r">Assigned</th>' in PAGE
-    assert "Monthly Budgeted Amount" in PAGE and "data-copy-budget" in PAGE
+    assert "Monthly Budgeted Amount" in PAGE and "data-copy-budget" in PAGE and "data-copy-spent" in PAGE
+
+
+def test_amount_boxes_start_empty_and_redraws_keep_your_place():
+    """An Assigned box with nothing in it is empty (0.00 is only its placeholder), clicking
+    into an amount selects it, and redrawing the Budget page doesn't scroll it back up."""
+    assert 'value="${moneyOrBlank(c.assigned)}" placeholder="0.00"' in PAGE
+    assert "scrollIntoView({ inline: 'center'" not in PAGE  # it scrolled the page to the top
+    assert "main.scrollTop = scrolled" in PAGE and "keepSelected" in PAGE

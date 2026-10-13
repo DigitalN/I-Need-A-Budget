@@ -172,13 +172,14 @@ th.r, td.r { text-align: right; }
 .btable .cat.hidden-cat { opacity: .5; }
 .btable col.c-num { width: 132px; }
 .btable td.assign-cell { white-space: nowrap; }
-.copy-budget { border: 0; background: transparent; color: var(--faint); border-radius: 5px; padding: 1px 5px; margin-right: 2px; cursor: default; }
-.btable tr:hover .copy-budget { color: var(--muted); }
-.copy-budget:hover { background: var(--hover); color: var(--accent) !important; }
+.btable col.c-assign { width: 170px; }
+.copy-arrow { border: 0; background: transparent; color: var(--faint); border-radius: 5px; width: 22px; padding: 1px 0; cursor: default; }
+.copy-gap { display: inline-block; width: 22px; }  /* where ← goes, so the boxes line up */
+.btable tr:hover .copy-arrow { color: var(--muted); }
+.copy-arrow:hover { background: var(--hover); color: var(--accent) !important; }
 .money-input { width: 108px; text-align: right; background: transparent !important; box-shadow: none !important; border-radius: 5px; padding: 3px 6px; font-variant-numeric: tabular-nums; }
 .money-input:hover { box-shadow: inset 0 0 0 1px var(--line-strong) !important; }
 .money-input:focus { background: var(--input) !important; box-shadow: inset 0 0 0 1px var(--accent), 0 0 0 3px var(--accent-soft) !important; }
-.money-input.zero { color: var(--faint); }
 .monthly { color: var(--muted); font-size: 12px; cursor: pointer; }
 .monthly:hover { color: var(--accent); }
 .needs { color: var(--warn); font-size: 11px; }
@@ -324,6 +325,9 @@ const money = (c, opts = {}) => {
   return sign + (opts.bare ? '' : '$') + s;
 };
 const moneyPlain = c => c ? (c / 100).toLocaleString('en-CA', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '0.00';
+// For a box you type an amount into: nothing yet is an empty box (its placeholder shows
+// 0.00), so there's no 0.00 to type into the middle of.
+const moneyOrBlank = c => c ? moneyPlain(c) : '';
 function parseMoney(text) {
   const t = String(text ?? '').replace(/[$,\s]/g, '').replace(/−/g, '-');
   if (t === '') return null;
@@ -585,7 +589,6 @@ async function renderBudget() {
   const rows = [];
   for (const g of view.groups) {
     const collapsed = !!g.collapsed;
-    const isDebt = g.role === 'debt';
     rows.push(`<tr class="group ${collapsed ? 'collapsed' : ''}" data-group="${g.id}">
       <td><span class="caret">▾</span> ${esc(g.name)}</td><td></td>
       <td class="r num">${view.before_start ? '' : money(g.assigned)}</td><td class="r num">${g.activity ? `<span class="spent-link" data-spent-group="${g.id}" title="What makes up this">${money(g.activity)}</span>` : money(g.activity)}</td>
@@ -597,7 +600,7 @@ async function renderBudget() {
       const pillClass = avail === null ? 'zero' : (avail < 0 ? 'neg' : (avail > 0 ? 'pos' : 'zero'));
       let monthly;
       if (c.debt_account_id) {
-        monthly = c.owing ? `<span class="sub-note">owe ${money(c.owing)}${c.not_covered ? ` · <span class="warn">${money(c.not_covered)} not covered</span>` : ''}</span>` : '';
+        monthly = c.owing ? `<span class="sub-note">owe ${money(c.owing)}${c.not_covered ? ` · <span class="warn">${money(c.not_covered)} not set aside</span>` : ''}</span>` : '';
       } else if (c.monthly_budget !== null) {
         monthly = `<span class="monthly num" data-cat="${c.id}">${money(c.monthly_budget)}</span>`;
       } else if (c.needed) {
@@ -610,13 +613,20 @@ async function renderBudget() {
       rows.push(`<tr class="cat ${c.hidden ? 'hidden-cat' : ''}">
         <td><span class="name" data-cat="${c.id}">${esc(c.name)}</span></td>
         <td class="r">${monthly}</td>
-        <td class="r assign-cell">${view.before_start ? '' : `${c.monthly_budget !== null && c.monthly_budget !== c.assigned ? `<button class="copy-budget" data-copy-budget="${c.id}" tabindex="-1" title="Assign the budgeted ${esc(money(c.monthly_budget))}">→</button>` : ''}<input class="money-input ${c.assigned ? '' : 'zero'}" data-assign="${c.id}" value="${moneyPlain(c.assigned)}" inputmode="decimal" ${isDebt && false ? 'disabled' : ''}>`}</td>
-        <td class="r num ${c.activity < 0 ? '' : (c.activity > 0 ? 'pos' : 'faint')}">${c.activity ? `<span class="spent-link" data-spent="${c.id}" title="What makes up this">${money(c.activity)}</span>` : money(c.activity)}</td>
+        <td class="r assign-cell">${view.before_start ? '' : assignBox(c)}</td>
+        <td class="r num ${c.activity < 0 ? '' : (c.activity > 0 ? 'pos' : 'faint')}"${c.debt_account_id ? ' title="Set aside for card spending this month, less what was paid to the card"' : ''}>${c.activity ? `<span class="spent-link" data-spent="${c.id}" title="What makes up this">${money(c.activity)}</span>` : money(c.activity)}</td>
         <td class="r">${view.before_start ? '' : `<span class="pill ${pillClass}"${overNote}>${money(avail ?? 0)}</span>`}</td></tr>`);
     }
   }
 
-  frame(`
+  // Redrawing (after every save) keeps your place: how far down you are, and the Assigned
+  // box you'd moved to, with anything already typed in it.
+  const main = $('#main'), scrolled = main.scrollTop;
+  const active = document.activeElement;
+  const keep = active && active.matches('[data-assign]') ? { id: active.dataset.assign, value: active.value,
+    typed: active.value !== active.defaultValue, start: active.selectionStart, end: active.selectionEnd } : null;
+  redrawing = true;  // replacing the box you're in isn't leaving it: don't save it yet
+  try { frame(`
     <div class="page-head"><h1>${monthLong(view.month)}</h1><span class="spacer"></span>
       <button class="btn small" data-month="${addMonths(view.month, -1)}">‹</button>
       <button class="btn small" data-month="${view.current_month}">Today</button>
@@ -626,14 +636,22 @@ async function renderBudget() {
       ${notices.join('')}
       ${hero}
       <div class="card" style="padding:6px 8px">
-        <table class="btable"><colgroup><col><col class="c-num"><col class="c-num"><col class="c-num"><col class="c-num"></colgroup>
+        <table class="btable"><colgroup><col><col class="c-num"><col class="c-assign"><col class="c-num"><col class="c-num"></colgroup>
           <thead><tr><th>Category</th><th class="r">Budgeted</th><th class="r">Assigned</th><th class="r">Spent</th><th class="r">Available</th></tr></thead>
           <tbody>${rows.join('')}</tbody></table>
       </div>
       ${view.groups.length ? `<p class="kbd-help">Click a category or what it spent to see this month's transactions and what it needed in past months. Type in Assigned and press Return; Tab moves to the next one.</p>` : ''}
-    </div>`);
-  const cur = $('#months button[aria-current="true"]');
-  if (cur) cur.scrollIntoView({ inline: 'center', block: 'nearest' });
+    </div>`); } finally { redrawing = false; }
+  main.scrollTop = scrolled;
+  if (keep) {
+    const el = $(`[data-assign="${keep.id}"]`);
+    if (el) { if (keep.typed) el.value = keep.value; el.focus({ preventScroll: true }); el.setSelectionRange(keep.start, keep.end); }
+  }
+  // Centre the month in its strip, scrolling only the strip (scrollIntoView would also
+  // scroll the page back up to it).
+  const strip = $('#months'), cur = $('#months button[aria-current="true"]');
+  if (cur) strip.scrollLeft += cur.getBoundingClientRect().left - strip.getBoundingClientRect().left
+    - (strip.clientWidth - cur.offsetWidth) / 2;
 }
 
 // The Overspending setting (budget.py): what happens to a category's overspending.
@@ -660,29 +678,49 @@ function cashCheck(s, view) {
   return `<div class="check small ${off ? 'warn' : 'muted'}">${parts.join(' ')}${off ? ` · ${money(Math.abs(off))} off: a transfer's other half or a balance may be missing` : ''}</div>`;
 }
 
+// An Assigned box saves when you leave it (Return, Tab, or clicking elsewhere), not when
+// a redraw replaces it while you're typing in it.
+let redrawing = false;
+document.addEventListener('focusout', e => {
+  const el = e.target;
+  if (el.matches && el.matches('[data-assign]') && !redrawing && el.isConnected) saveAssigned(el).catch(() => {});
+});
+
 async function saveAssigned(input) {
   const cents = parseMoney(input.value);
   if (Number.isNaN(cents)) { toast('That isn\'t an amount', { error: true }); return; }
   const id = Number(input.dataset.assign);
   const current = findCat(id);
-  if (current && (cents ?? 0) === current.assigned) { input.value = moneyPlain(current.assigned); return; }
+  if (current && (cents ?? 0) === current.assigned) { input.value = moneyOrBlank(current.assigned); return; }
   await call('set_assigned', [state.month, id, cents ?? 0]);
   await renderBudget();
   toast(`Assigned ${money(cents ?? 0)} to ${catName(id) || 'category'}`, { action: undoAction });
 }
-// The → in the Assigned column: assign what's budgeted for the month, without typing it.
-async function assignBudgeted(id) {
+// A category's Assigned box with an arrow from each side, so it can be filled without
+// typing: → assigns what's budgeted (the column to its left), ← what it spent this month
+// (the column to its right). Each shows only when it would change something.
+function assignBox(c) {
+  const spent = -c.activity;
+  const fromBudget = c.monthly_budget && c.monthly_budget !== c.assigned
+    ? `<button class="copy-arrow" data-copy-budget="${c.id}" tabindex="-1" title="Assign the budgeted ${esc(money(c.monthly_budget))}">→</button>` : '';
+  const fromSpent = spent > 0 && spent !== c.assigned
+    ? `<button class="copy-arrow" data-copy-spent="${c.id}" tabindex="-1" title="Assign what it spent, ${esc(money(spent))}">←</button>` : '<span class="copy-gap"></span>';
+  return `${fromBudget}<input class="money-input" data-assign="${c.id}" value="${moneyOrBlank(c.assigned)}" placeholder="0.00" inputmode="decimal">${fromSpent}`;
+}
+async function assignFromArrow(id, which) {
   const c = findCat(id);
-  if (!c || c.monthly_budget === null) return;
-  await call('set_assigned', [state.month, id, c.monthly_budget]);
+  if (!c) return;
+  const cents = which === 'spent' ? -c.activity : c.monthly_budget;
+  if (!cents || cents < 0) return;
+  await call('set_assigned', [state.month, id, cents]);
   await renderBudget();
-  toast(`Assigned ${money(c.monthly_budget)} to ${c.name}`, { action: undoAction });
+  toast(`Assigned ${money(cents)} to ${c.name}`, { action: undoAction });
 }
 const findCat = id => { for (const g of (state.view || {}).groups || []) for (const c of g.categories) if (c.id === id) return c; return null; };
 
 // What makes up a Spent figure: every transaction (a split counts only its line here) and,
 // for a card's payment envelope, the payments and the card spending moved in. Adds up to it.
-function spentCard(sp, month, { group = false } = {}) {
+function spentCard(sp, month, { group = false, total = 'Spent' } = {}) {
   state.spentTx = sp.transactions;
   const rows = sp.lines.map(l => `<tr ${l.id ? `data-line-tx="${l.id}"` : ''}>
       <td class="muted nowrap">${l.date ? day(l.date) : ''}</td>
@@ -693,7 +731,7 @@ function spentCard(sp, month, { group = false } = {}) {
   return `<div class="card" style="margin-top:12px;padding:8px 10px">
       <h2 style="padding:6px 0 0 4px">${monthLong(month)}</h2>
       ${rows ? `<table class="spent-lines"><tbody>${rows}</tbody>
-          <tfoot><tr><td></td><td>Spent</td>${group ? '<td></td>' : ''}<td></td><td class="r num">${money(sp.total)}</td></tr></tfoot></table>`
+          <tfoot><tr><td></td><td>${total}</td>${group ? '<td></td>' : ''}<td></td><td class="r num">${money(sp.total)}</td></tr></tfoot></table>`
         : '<p class="faint small" style="padding:0 4px">Nothing this month.</p>'}
     </div>`;
 }
@@ -704,6 +742,14 @@ async function editFromDrawer(txId, close, reopen) {
   await editTransaction(txId);
   await close();
   await reopen();
+}
+
+// What you owe on a card next to what's set aside for it: setting money aside doesn't pay
+// the card, so what you owe stays the same until a payment.
+function envelopeSummary(c) {
+  if (!c || c.owing === undefined) return '';
+  const line = (label, amount, cls = '') => `<div class="row" style="padding:3px 0"><span class="muted">${label}</span><span class="spacer"></span><b class="num ${cls}">${money(amount)}</b></div>`;
+  return `<div class="card" style="margin-top:12px">${line('You owe on the card', c.owing)}${line('Set aside here to pay it', Math.max(c.available || 0, 0))}${line('Not set aside yet', c.not_covered, c.not_covered ? 'warn' : '')}</div>`;
 }
 
 async function openCategory(id) {
@@ -722,8 +768,9 @@ async function openCategory(id) {
   const dr = document.createElement('div'); dr.className = 'drawer';
   dr.innerHTML = `
     <div class="row"><h3 style="margin:0">${esc(d.name)}</h3><span class="spacer"></span><button class="icon-btn" data-close>✕</button></div>
-    ${d.debt_account_id ? `<p class="muted small">This envelope holds the money for paying the card. Card spending from a category that has the money moves it here automatically. To pay down what you already owe, assign extra here.</p>` : ''}
-    ${spentCard(d.spent, d.month)}
+    ${d.debt_account_id ? `<p class="muted small">Money set aside to pay the card. It stays in your bank account until you pay the card. Card spending from a category with money is set aside here automatically; assign more here to cover the rest.</p>
+      ${envelopeSummary(findCat(d.id))}` : ''}
+    ${spentCard(d.spent, d.month, { total: d.debt_account_id ? 'This month' : 'Spent' })}
     ${d.debt_account_id ? '' : `<div class="card" style="margin-top:12px">
       <div class="row"><h2 style="margin:0">Monthly Budgeted Amount</h2><span class="spacer"></span><span id="monthly-status" class="small muted"></span></div>
       <p class="small muted" style="margin:4px 0 0">What it actually spent (refunds count).</p>
@@ -838,7 +885,7 @@ async function openAssign(amount) {
   const rows = plan.plan.map((p, i) => `<tr><td>${esc(p.name)} <span class="faint small">${esc(p.group)}</span>${p.covered ? ` <span class="tag warn" title="Already spent, so it came out of Ready to assign: assigning up to this costs nothing">overspent ${money(p.covered)}</span>` : ''}</td>
       <td class="r num muted">${money(p.monthly_budget)}</td>
       <td class="r num ${p.has < 0 ? 'neg' : 'muted'}">${money(p.has)}</td>
-      <td class="r"><input class="money-input" style="box-shadow: inset 0 0 0 1px var(--line-strong) !important" data-i="${i}" value="${moneyPlain(p.amount)}"></td></tr>`).join('');
+      <td class="r"><input class="money-input" style="box-shadow: inset 0 0 0 1px var(--line-strong) !important" data-i="${i}" value="${moneyOrBlank(p.amount)}" placeholder="0.00"></td></tr>`).join('');
   const body = `
     <div class="field"><label>Amount to share out</label>
       <div class="row"><input id="assign-amount" style="width:140px;text-align:right" value="${moneyPlain(plan.amount)}"><button type="button" class="btn small" id="assign-recalc">Recalculate</button>
@@ -1176,7 +1223,7 @@ async function splitDialog(txId) {
     body.innerHTML = `<p class="muted">${esc(t.payee_name || t.raw_name)} · ${dayYear(t.date)} · <b>${money(t.amount)}</b></p>
       ${lines.map((l, i) => `<div class="row" style="margin-bottom:6px">
         <button type="button" class="btn" style="flex:1;text-align:left" data-split-cat="${i}">${esc(catName(l.category_id) || 'Pick a category…')}</button>
-        <input style="width:120px;text-align:right" data-split-amt="${i}" value="${moneyPlain(Math.abs(l.amount))}">
+        <input style="width:120px;text-align:right" data-split-amt="${i}" value="${moneyOrBlank(Math.abs(l.amount))}" placeholder="0.00">
         <button type="button" class="icon-btn danger" data-split-del="${i}">✕</button></div>`).join('')}
       <div class="row"><button type="button" class="btn small" data-split-add>Add a line</button><span class="spacer"></span>
         <span class="small">Left to split: <b class="${used !== t.amount ? 'warn' : 'pos'}">${money(Math.abs(t.amount - used))}</b></span></div>`;
@@ -1676,7 +1723,7 @@ async function renderAccounts() {
     const payoff = d.payoff ? (d.payoff.months === 0 ? 'Paid off.' : `At ${money(d.estimate_payment)} a month it's paid off in about ${plural(d.payoff.months, 'month')}${d.apr ? `, costing ${money(d.payoff.interest)} in interest` : ' (enter the interest rate to include interest)'}.`)
       : (d.estimate_payment ? 'At this payment the interest grows faster than you pay it down.' : 'Enter a monthly payment to see when it\'s paid off.');
     return `<div class="card">
-      <div class="row"><b>${esc(d.name)}</b><span class="spacer"></span><span class="tag ${d.not_covered ? 'warn' : 'good'}">${d.not_covered ? money(d.not_covered) + ' not covered' : 'Covered'}</span></div>
+      <div class="row"><b>${esc(d.name)}</b><span class="spacer"></span><span class="tag ${d.not_covered ? 'warn' : 'good'}">${d.not_covered ? money(d.not_covered) + ' not set aside' : 'All set aside'}</span></div>
       <div class="grid2" style="margin-top:10px">
         <div><div class="muted small">You owe</div><div class="bal num">${money(d.owing)}</div>
           <div class="small muted">Set aside to pay it: <b>${money(d.set_aside)}</b></div></div>
@@ -2150,7 +2197,9 @@ document.addEventListener('click', async e => {
   const spent = e.target.closest('.btable [data-spent]');
   if (spent) return openCategory(Number(spent.dataset.spent));
   const copy = e.target.closest('.btable [data-copy-budget]');
-  if (copy) return assignBudgeted(Number(copy.dataset.copyBudget));
+  if (copy) return assignFromArrow(Number(copy.dataset.copyBudget), 'budget');
+  const copySpent = e.target.closest('.btable [data-copy-spent]');
+  if (copySpent) return assignFromArrow(Number(copySpent.dataset.copySpent), 'spent');
   const g = e.target.closest('.btable .group');
   if (g) { await call('set_group_collapsed', [Number(g.dataset.group), !g.classList.contains('collapsed')]); return renderBudget(); }
   const cat = e.target.closest('.btable [data-cat]');
@@ -2186,7 +2235,6 @@ document.addEventListener('click', async e => {
 });
 document.addEventListener('change', async e => {
   const el = e.target;
-  if (el.dataset.assign) return saveAssigned(el).catch(() => {});
   if (el.dataset.setting) {
     await call('save_settings', [{ [el.dataset.setting]: el.checked }]);
     toast('Saved');
@@ -2212,7 +2260,20 @@ document.addEventListener('keydown', e => {
   }
   inboxKeys(e);
 });
-document.addEventListener('focusin', e => { if (e.target.dataset && e.target.dataset.assign !== undefined) setTimeout(() => e.target.select(), 0); });
+const AMOUNT_BOXES = 'input[data-assign], input.money-input, #monthly-input, #move-amount, #assign-amount, ' +
+  'input[data-split-amt], input[data-payment], #ed-amount, #sf-amount, input[data-ob-balance]';
+let mouseDown = false, keepSelected = null;
+document.addEventListener('mousedown', () => { mouseDown = true; }, true);
+document.addEventListener('mouseup', e => {
+  mouseDown = false;
+  if (keepSelected && e.target === keepSelected) e.preventDefault();
+  keepSelected = null;
+}, true);
+document.addEventListener('focusin', e => {
+  if (!e.target.matches || !e.target.matches(AMOUNT_BOXES)) return;
+  e.target.select();
+  if (mouseDown) keepSelected = e.target;
+});
 let dragDepth = 0;
 document.addEventListener('dragenter', e => { if (e.dataTransfer && [...e.dataTransfer.types].includes('Files')) { dragDepth++; document.body.classList.add('dragging'); } });
 document.addEventListener('dragleave', () => { dragDepth = Math.max(0, dragDepth - 1); if (!dragDepth) document.body.classList.remove('dragging'); });
