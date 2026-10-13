@@ -985,7 +985,7 @@ class BudgetService:
                 ms = budget_math.complete_months_before(current, coverage, n)
                 if ms and (n == 3 or len(ms) == n):
                     averages[n] = {"months": len(ms), "amount": budget_math.average_spending(history, ms)}
-            txns = self._transactions(c, {"category_id": category_id, "month": month}, limit=200)
+            spent = self._spent(c, [category_id], month)
             subs = _rows(c.execute(
                 "SELECT DISTINCT s.id, s.name, s.amount, s.cadence FROM subscriptions s JOIN transactions t "
                 "ON t.subscription_id = s.id WHERE t.category_id = ? AND s.status = 'active'", (category_id,)))
@@ -995,7 +995,85 @@ class BudgetService:
                 "history": [{"month": m, "spent": -history.get(m, 0), "complete": m >= coverage and m < current}
                             for m in months],
                 "last_month": {"month": last, "amount": max(0, -history.get(last, 0))},
-                "averages": averages, "transactions": txns, "subscriptions": subs, "month": month}
+                "averages": averages, "spent": spent, "subscriptions": subs, "month": month}
+
+    @exposed
+    def spent_detail(self, month, category_id=None, group_id=None):
+        """What makes up a category's (or a group's) Spent on the Budget page in a month:
+        every transaction and split line, adding up to that figure."""
+        with self.db.read() as c:
+            if group_id:
+                group = c.execute("SELECT name FROM category_groups WHERE id = ?", (group_id,)).fetchone()
+                if group is None:
+                    raise UserError("That group no longer exists.")
+                name = group["name"]
+                ids = [r["id"] for r in c.execute("SELECT id FROM categories WHERE group_id = ?", (group_id,))]
+            else:
+                cat = c.execute("SELECT name FROM categories WHERE id = ?", (category_id,)).fetchone()
+                if cat is None:
+                    raise UserError("That category no longer exists.")
+                name, ids = cat["name"], [category_id]
+            spent = self._spent(c, ids, month)
+        return {"name": name, "month": month, "group": bool(group_id), **spent}
+
+    def _spent(self, c, category_ids, month):
+        """The lines behind these categories' Spent in `month`, the same ones the budget
+        counts: a split transaction counts only its line in the category. A card's payment
+        envelope also gets the payments to the card and the card spending moved in from
+        other categories (from the budget's own figures, so it adds up the same)."""
+        if not category_ids:
+            return {"lines": [], "total": 0, "transactions": []}
+        marks = ",".join("?" * len(category_ids))
+        span = (first_day(month), last_day(month))
+        names = ledger.category_names(c)
+        lines = [dict(r) for r in c.execute(
+            f"""
+            SELECT t.id, t.date, t.amount, 0 AS split, t.category_id FROM transactions t
+             WHERE t.transfer_account_id IS NULL AND t.is_split = 0 AND t.category_id IN ({marks})
+               AND t.date BETWEEN ? AND ?
+            UNION ALL
+            SELECT t.id, t.date, s.amount, 1, s.category_id FROM splits s JOIN transactions t ON t.id = s.transaction_id
+             WHERE t.transfer_account_id IS NULL AND t.is_split = 1 AND s.category_id IN ({marks})
+               AND t.date BETWEEN ? AND ?
+            """, (*category_ids, *span, *category_ids, *span))]
+        debt = {r["id"]: r["debt_account_id"] for r in c.execute(
+            f"SELECT id, debt_account_id FROM categories WHERE id IN ({marks}) AND debt_account_id IS NOT NULL",
+            category_ids)}
+        figures = {}
+        if debt and self.budget_start() and month >= self.budget_start():
+            figures = (self._figures(c, month)[0].get(month) or {}).get("categories", {})
+        for cid, account_id in debt.items():
+            if cid not in figures:
+                continue  # before the budget starts, only what was filed in it
+            for r in c.execute(
+                    """
+                    SELECT t.id, t.date, t.amount FROM transactions t
+                      JOIN accounts a ON a.id = t.account_id JOIN accounts b ON b.id = t.transfer_account_id
+                     WHERE t.transfer_account_id = ? AND a.kind IN ('chequing', 'savings', 'cash')
+                       AND b.kind IN ('credit_card', 'line_of_credit') AND t.date BETWEEN ? AND ?
+                    """, (account_id, *span)):
+                lines.append({"id": r["id"], "date": r["date"], "amount": r["amount"], "split": 0,
+                              "category_id": cid, "payment": True})
+            income = ledger.income_category_ids(c)
+            for source, amount in figures[cid].get("moved_from", {}).items():
+                label = ("Card spending not in a category yet" if source is None else
+                         f"{names.get(source, 'A deleted category')} on the card" if source in income else
+                         f"Card spending from {names.get(source, 'a deleted category')}")
+                lines.append({"id": None, "date": None, "amount": amount, "split": 0, "category_id": cid,
+                              "label": label})
+        txns = {t["id"]: t for t in self._transactions(c, {"ids": sorted({l["id"] for l in lines if l["id"]})},
+                                                       limit=100000)} if lines else {}
+        for line in lines:
+            t = txns.get(line["id"])
+            line["category_name"] = names.get(line["category_id"])
+            if t:
+                line.update(payee_name=t["payee_name"] or t["raw_name"], account_name=t["account_name"],
+                            full_amount=t["amount"], status=t["status"], note=t["note"],
+                            subscription_name=t["subscription_name"])
+                if line.get("payment"):
+                    line["label"] = f"Payment from {t['account_name']}"
+        lines.sort(key=lambda l: (l["date"] or "", l["id"] or 0), reverse=True)  # money moved in goes last
+        return {"lines": lines, "total": sum(l["amount"] for l in lines), "transactions": list(txns.values())}
 
     @exposed
     def set_category_note(self, category_id, note):
@@ -1216,6 +1294,8 @@ class BudgetService:
             where.append("t.date BETWEEN ? AND ?"); params += [first_day(f["month"]), last_day(f["month"])]
         if f.get("status"):
             where.append("t.status = ?"); params.append(f["status"])
+        if f.get("ids"):
+            where.append(f"t.id IN ({','.join('?' * len(f['ids']))})"); params += [int(i) for i in f["ids"]]
         if f.get("import_ids"):
             where.append(f"t.import_id IN ({','.join('?' * len(f['import_ids']))})"); params += list(f["import_ids"])
         if f.get("uncategorized"):

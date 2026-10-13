@@ -71,17 +71,18 @@ def compute(start, end, categories, lines, payments, assigned, opening_cash, car
         card_spend = {}         # category → {debt account → net spent on it (positive = spent)}
         income = uncategorized = 0
         moved = {cid: 0 for cid in carry}
+        moved_from = {cid: {} for cid in carry}  # payment envelope → {category it came from (None: none): amount}
 
         for _, account_id, is_debt, category_id, amount in by_month.get(month, ()):
             role = roles.get(category_id)
             if role is None:  # uncategorized (or a category that was deleted)
                 uncategorized += amount
                 if is_debt and account_id in payment_for:
-                    moved[payment_for[account_id]] -= amount
+                    _move(moved, moved_from, payment_for[account_id], None, -amount)
             elif role == "income":
                 income += amount
                 if is_debt and account_id in payment_for:
-                    moved[payment_for[account_id]] -= amount
+                    _move(moved, moved_from, payment_for[account_id], category_id, -amount)
             else:
                 activity[category_id] += amount
                 if is_debt and role == "normal" and account_id in payment_for:
@@ -102,7 +103,7 @@ def compute(start, end, categories, lines, payments, assigned, opening_cash, car
             spends = card_spend.get(cid, {})
             credit_spent = sum(spends.values())
             credit_over = min(overspent, max(credit_spent, 0))
-            _move_to_payment(spends, credit_over, moved, payment_for)
+            _move_to_payment(spends, credit_over, moved, payment_for, moved_from, cid)
             cash_over = overspent - credit_over
             cash_over_total += cash_over
             credit_over_total += credit_over
@@ -117,6 +118,7 @@ def compute(start, end, categories, lines, payments, assigned, opening_cash, car
             cash_over_total += cash_over
             cats[cid] = {"carried": carry[cid], "assigned": month_assigned[cid],
                          "activity": activity[cid] + moved[cid], "payments": activity[cid], "moved": moved[cid],
+                         "moved_from": {k: v for k, v in moved_from[cid].items() if v},
                          "available": available, "overspent_cash": cash_over, "overspent_credit": 0}
 
         assigned_total = sum(month_assigned.values())
@@ -136,9 +138,15 @@ def compute(start, end, categories, lines, payments, assigned, opening_cash, car
     return results
 
 
-def _move_to_payment(spends, credit_over, moved, payment_for):
+def _move(moved, moved_from, payment_cid, source, amount):
+    moved[payment_cid] += amount
+    moved_from[payment_cid][source] = moved_from[payment_cid].get(source, 0) + amount
+
+
+def _move_to_payment(spends, credit_over, moved, payment_for, moved_from, source):
     """Moves card spending into each card's payment envelope, minus the part that wasn't
-    covered (`credit_over`), which is shared between the cards that spent."""
+    covered (`credit_over`), which is shared between the cards that spent. `source` is the
+    category it's moved from."""
     positive = {a: s for a, s in spends.items() if s > 0}
     total_positive = sum(positive.values())
     remaining = credit_over
@@ -149,7 +157,7 @@ def _move_to_payment(spends, credit_over, moved, payment_for):
         shares[account_id] = share
         remaining -= share
     for account_id, spent in spends.items():
-        moved[payment_for[account_id]] += spent - shares.get(account_id, 0)
+        _move(moved, moved_from, payment_for[account_id], source, spent - shares.get(account_id, 0))
 
 
 def average_spending(month_totals, months):

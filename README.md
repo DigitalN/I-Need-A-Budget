@@ -66,9 +66,11 @@ Click one (or press 1–4, Return for the first) and it's filed. ⌘Z undoes any
 **Budget.** Each month: what each category has, spent and got. A category's **Each
 month** amount is the plan; money is only in it once it's assigned. **Assign money…**
 shares out a paycheque, topping each category up to its monthly amount in order (what's
-already in it counts). Click a category to set its monthly amount (or use **Last month**
-or **Last 3 months avg** of what it actually spent), see what it needed in past months,
-move money, and keep notes. It all saves as you type.
+already in it counts). Click a category, or what it spent, to see every transaction that
+adds up to it this month (click one to change it), what it needed in past months, move
+money, keep notes, and set its monthly amount (or use **Last month** or **Last 3 months
+avg** of what it actually spent). It all saves as you type. A group's Spent lists the
+whole group.
 
 Overspending a category comes out of next month's Ready to assign, like YNAB. Or turn on
 **Overspending carries over** in Settings: the category starts next month below zero,

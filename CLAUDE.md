@@ -257,6 +257,12 @@ Don't undo these without asking:
   to assign twice; the window now shows Each month / Already in / Assign. The category panel offers
   "Last month" and "Last 3 months avg" (both actual spending), saves the amount as it's
   typed (no Save button), and has a per-category Notes box that also saves as typed.
+- **The category pop-over** (click a category's name or its Spent figure) is wide and in
+  the maintainer's order: this month's transactions (adding up to Spent: a split counts
+  only its line; a card's payment envelope lists payments and the card spending moved in,
+  from `budget.compute`'s `moved_from`), what it actually needed, Move money, Notes, Each
+  month. A group's Spent opens the same list for the whole group. Clicking a transaction
+  opens it (it has a Category field) and the pop-over reopens with the change.
 - Budgeting is **as each paycheque lands** (Assign money… fills categories up to their
   monthly amount, in order), not a lump at the start of the month.
 - **Credit cards YNAB-style** (payment envelopes, paying down a balance), with room for a
