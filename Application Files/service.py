@@ -1079,9 +1079,9 @@ class BudgetService:
                               "category_id": cid, "payment": True})
             income = ledger.income_category_ids(c)
             for source, amount in figures[cid].get("moved_from", {}).items():
-                label = ("Card spending not in a category yet" if source is None else
-                         f"{names.get(source, 'A deleted category')} on the card" if source in income else
-                         f"Card spending from {names.get(source, 'a deleted category')}")
+                label = ("Set aside for card spending not in a category yet" if source is None else
+                         f"{names.get(source, 'A deleted category')} on the card (you owe less)" if source in income else
+                         f"Set aside for card spending in {names.get(source, 'a deleted category')}")
                 lines.append({"id": None, "date": None, "amount": amount, "split": 0, "category_id": cid,
                               "label": label})
         txns = {t["id"]: t for t in self._transactions(c, {"ids": sorted({l["id"] for l in lines if l["id"]})},
@@ -1094,7 +1094,7 @@ class BudgetService:
                             full_amount=t["amount"], status=t["status"], note=t["note"],
                             subscription_name=t["subscription_name"])
                 if line.get("payment"):
-                    line["label"] = f"Payment from {t['account_name']}"
+                    line["label"] = f"Paid to the card from {t['account_name']}"
         lines.sort(key=lambda l: (l["date"] or "", l["id"] or 0), reverse=True)  # money moved in goes last
         return {"lines": lines, "total": sum(l["amount"] for l in lines), "transactions": list(txns.values())}
 

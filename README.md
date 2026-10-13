@@ -64,8 +64,8 @@ Click one (or press 1–4, Return for the first) and it's filed. ⌘Z undoes any
 - "SAFEWAY #6432" and "SAVEWAY 1532" both become Safeway.
 
 **Budget.** Each month: what each category has, spent and got. A category's
-**Budgeted** amount is the plan; money is only in it once it's assigned. The **→** next
-to its Assigned box assigns the budgeted amount in one click, and **Assign money…**
+**Budgeted** amount is the plan; money is only in it once it's assigned. Next to its
+Assigned box, **→** assigns the budgeted amount and **←** what it spent, in one click, and **Assign money…**
 shares out a paycheque, topping each category up to its budgeted amount in order (what's
 already in it counts). Click a category, or what it spent, to see every transaction that
 adds up to it this month (click one to change it), its **Monthly Budgeted Amount** (what

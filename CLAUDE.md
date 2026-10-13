@@ -264,8 +264,21 @@ Don't undo these without asking:
   budget a month. Budgeted is a plan, not money: Assign money… tops a category up to it,
   counting what's already in it (carried in plus assigned this month). The maintainer
   once read "Still needs" as being asked to assign twice; the window shows Budgeted /
-  Already in / Assign. The **→** beside a category's Assigned box (only when Assigned
-  isn't already the budgeted amount) assigns exactly the budgeted amount, undoably.
+  Already in / Assign. Beside each Assigned box, **→** assigns exactly the budgeted
+  amount and **←** exactly what it spent this month, undoably; each shows only when it
+  would change something (→ not for a $0 budget).
+- **Assigned boxes:** empty when nothing's assigned (0.00 is only the placeholder: the
+  maintainer kept typing into the middle of "0.00"); clicking into any amount box selects
+  it so typing replaces it (the mouse-up is cancelled, or it drops the selection). A box
+  saves when you leave it (Return, Tab, a click elsewhere), never when a redraw replaces
+  it mid-typing. Redrawing the Budget page keeps the scroll position and the box you're
+  in (it used to jump to the top after every save: `scrollIntoView` on the month strip
+  scrolled the page too).
+- **A card's payment envelope is money set aside, not paid**: it stays in the bank until
+  a payment, so what you owe doesn't change. Its pop-over shows You owe / Set aside / Not
+  set aside yet, its lines say "Set aside for card spending in Food" and "Paid to the card
+  from Chequing", and its total says "This month", never "Spent" (the maintainer read
+  "Spent" as money already paid to the card).
 - **The category pop-over** (click a category's name or its Spent figure) is wide and in
   the maintainer's order: this month's transactions (adding up to Spent: a split counts
   only its line; a card's payment envelope lists payments and the card spending moved in,

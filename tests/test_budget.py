@@ -296,7 +296,8 @@ def test_what_makes_up_spent_adds_up_to_it(app):
     assert [(l["amount"], l["split"], l["full_amount"]) for l in food["lines"]] == [(-8000, 1, -12000)]
     card = call(app, "category_detail", category_id=ids["Tangerine Mastercard payment"], month="2026-10")["spent"]
     assert {l.get("label"): l["amount"] for l in card["lines"]} == {
-        "Payment from Chequing": -5000, "Card spending from Food": 8000, "Card spending from Fun": 7000}
+        "Paid to the card from Chequing": -5000, "Set aside for card spending in Food": 8000,
+        "Set aside for card spending in Fun": 7000}
     assert card["total"] == 10000
 
 
