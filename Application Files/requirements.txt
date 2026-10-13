@@ -1,0 +1,11 @@
+# Pinned so setup never silently pulls in newer (unreviewed) versions.
+pywebview==6.1
+pyobjc-core==12.1
+pyobjc-framework-Cocoa==12.1
+pyobjc-framework-Quartz==12.1
+pyobjc-framework-WebKit==12.1
+pyobjc-framework-Security==12.1
+pyobjc-framework-UniformTypeIdentifiers==12.1
+rapidfuzz==3.14.3
+pyinstaller==6.19.0
+pytest==9.0.2

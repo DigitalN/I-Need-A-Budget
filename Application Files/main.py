@@ -1,0 +1,336 @@
+"""I Need A Budget: envelope budgeting for Tangerine accounts, as a Mac app.
+
+Launcher: logging, the single-instance lock, the database, the Downloads watcher, the
+updater, and the pywebview window. The page talks to Python through pywebview's
+in-process bridge (`window.pywebview.api.call(name, args)` → service.BudgetService), so
+the app opens no network ports. Its only network access is the update check
+(updater.py). All data stays in ~/Library/Application Support/I Need A Budget.
+
+Closing the window asks, then quits the app entirely (it isn't meant to keep running
+in the background). ⌘Q quits without asking. A downloaded update is installed on quit.
+"""
+
+import fcntl
+import json
+import logging
+import os
+import sys
+import threading
+import time
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
+
+APP_NAME = "I Need A Budget"
+VERSION = "1.0.0"  # the build reads it from here; see the release checklist in DEVELOPMENT.md
+if os.environ.get("INAB_DATA_DIR"):  # for development/testing against a throwaway folder
+    DATA_DIR = Path(os.environ["INAB_DATA_DIR"]).expanduser()
+    LOG_DIR = DATA_DIR / "Logs"
+else:
+    DATA_DIR = Path.home() / "Library" / "Application Support" / APP_NAME
+    LOG_DIR = Path.home() / "Library" / "Logs" / APP_NAME
+LOG_PATH = LOG_DIR / "app.log"
+WATCH_EVERY = 4  # seconds between looks in Downloads
+WINDOW_SIZE = (1240, 860)
+MIN_SIZE = (1000, 660)
+
+log = logging.getLogger("inab")
+
+
+def _app_files_dir():
+    """Directory holding index.html: the PyInstaller bundle when frozen, else this folder."""
+    if getattr(sys, "frozen", False):
+        return Path(sys._MEIPASS)
+    return Path(__file__).resolve().parent
+
+
+def _setup_logging():
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    fmt = logging.Formatter("%(asctime)s  %(levelname)-8s  %(message)s")
+    file_handler = RotatingFileHandler(LOG_PATH, maxBytes=1_000_000, backupCount=3, encoding="utf-8")
+    file_handler.setFormatter(fmt)
+    console = logging.StreamHandler()
+    console.setFormatter(fmt)
+    logging.basicConfig(level=logging.INFO, handlers=[file_handler, console])
+    logging.getLogger("pywebview").setLevel(logging.WARNING)
+
+
+def _acquire_single_instance_lock():
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    handle = open(DATA_DIR / ".lock", "w")
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        handle.close()
+        return None
+    return handle  # held open (and locked) for the life of the process
+
+
+class Api:
+    """Callable from the page as window.pywebview.api.<name>().
+
+    pywebview exposes every public attribute recursively, so everything that is not
+    meant for JavaScript lives behind a leading underscore.
+    """
+
+    def __init__(self, app):
+        self._app = app
+
+    def call(self, name, args=None):
+        if name == "bootstrap":
+            log.info("Page connected")
+        return self._app._service.dispatch(str(name), args)
+
+    def log_error(self, message):
+        """Page errors land in app.log next to the Python ones."""
+        log.warning("Page error: %s", str(message)[:2000])
+
+
+class BudgetApp:
+    def __init__(self):
+        import launch
+        from db import Database
+        from service import BudgetService
+        from settings import Settings
+        from updater import Updater
+
+        self._settings = Settings(DATA_DIR / "settings.json")
+        self._db = Database(DATA_DIR / "budget.db")
+        try:
+            self._db.backup_daily(DATA_DIR / "Backups")
+        except Exception:
+            log.exception("Daily backup failed")
+        self._app_path = launch.bundle_path()
+        self._updater = Updater(self._app_path, VERSION, settings=self._settings, data_dir=DATA_DIR,
+                                on_status=self._on_update_status)
+        self._service = BudgetService(self._db, self._settings, DATA_DIR, hooks={
+            "app_info": self._app_info,
+            "choose_files": self._choose_files,
+            "reveal_data": lambda: self._reveal(DATA_DIR),
+            "reveal_imports": lambda: self._reveal(DATA_DIR / "Imported Files"),
+            "reveal_log": lambda: self._reveal(LOG_PATH),
+            "update_state": self._updater.state,
+            "check_updates": self._check_updates,
+            "install_update": self._restart_into_update,
+            "set_github_token": self._set_github_token,
+        })
+        self._window = None
+        self._quitting = False
+        self._settings.on_change(self._on_settings_changed)
+
+    # ── hooks for the page ──
+
+    def _app_info(self):
+        return {"version": VERSION, "data_dir": str(DATA_DIR), "log_path": str(LOG_PATH),
+                "updates": self._updater.state()}
+
+    def _choose_files(self):
+        import webview
+
+        result = self._window.create_file_dialog(
+            webview.FileDialog.OPEN, allow_multiple=True,
+            directory=str(self._settings.downloads_dir()),
+            file_types=("Bank exports (*.csv;*.CSV;*.qfx;*.QFX;*.ofx;*.OFX)", "All files (*.*)"))
+        return list(result or [])
+
+    def _reveal(self, path):
+        from AppKit import NSURL, NSWorkspace
+        from PyObjCTools import AppHelper
+
+        path = Path(path)
+        if not path.exists() and not path.suffix:  # a folder that hasn't been needed yet
+            path.mkdir(parents=True, exist_ok=True)
+        url = NSURL.fileURLWithPath_(str(path))
+        AppHelper.callAfter(NSWorkspace.sharedWorkspace().activateFileViewerSelectingURLs_, [url])
+        return True
+
+    def _check_updates(self):
+        from updater import UpdateError
+
+        try:
+            return self._updater.check_now()
+        except UpdateError as e:
+            from service import UserError
+            raise UserError(str(e)) from None
+
+    def _restart_into_update(self):
+        from PyObjCTools import AppHelper
+
+        def go():
+            if self._updater.install(relaunch_after=True):
+                self._quit_now()
+        AppHelper.callAfter(go)
+        return True
+
+    def _set_github_token(self, token):
+        from service import UserError
+        from updater import UpdateError, save_keychain_token
+
+        try:
+            save_keychain_token(str(token or "").strip())
+        except UpdateError as e:
+            raise UserError(str(e)) from None
+        return self._updater.state()
+
+    # ── events to the page ──
+
+    def _send(self, event, payload):
+        if self._window is None:
+            return
+        try:
+            self._window.evaluate_js(f"window.appEvent && window.appEvent({json.dumps(event)}, {json.dumps(payload)})")
+        except Exception:
+            log.debug("Couldn't reach the page", exc_info=True)
+
+    def _on_update_status(self, state):
+        self._send("update", state)
+
+    def _on_settings_changed(self, values):
+        from PyObjCTools import AppHelper
+
+        AppHelper.callAfter(self._apply_theme, values["theme"])
+
+    # ── Downloads watcher ──
+
+    def _watch(self):
+        while not self._quitting:
+            try:
+                results = self._service.watch_downloads()
+                if results:
+                    self._send("imported", {"results": results, "counts": self._service.counts()})
+            except Exception:
+                log.exception("Watching Downloads failed")
+            time.sleep(WATCH_EVERY)
+
+    def _on_drop(self, event):
+        files = (event.get("dataTransfer") or {}).get("files") or []
+        paths = [f["pywebviewFullPath"] for f in files if f.get("pywebviewFullPath")]
+        if not paths:
+            return
+        outcome = self._service.dispatch("import_files", [paths])
+        self._send("imported", outcome.get("result") or {"error": outcome.get("error")})
+
+    # ── window (main thread) ──
+
+    def _apply_theme(self, theme):
+        import AppKit
+
+        if self._window is None or self._window.native is None:
+            return
+        name = {"light": AppKit.NSAppearanceNameAqua, "dark": AppKit.NSAppearanceNameDarkAqua}.get(theme)
+        self._window.native.setAppearance_(AppKit.NSAppearance.appearanceNamed_(name) if name else None)
+
+    def _background_color(self):
+        import AppKit
+
+        theme = self._settings.get()["theme"]
+        if theme == "system":
+            best = AppKit.NSApp.effectiveAppearance().bestMatchFromAppearancesWithNames_(
+                [AppKit.NSAppearanceNameAqua, AppKit.NSAppearanceNameDarkAqua])
+            theme = "dark" if best == AppKit.NSAppearanceNameDarkAqua else "light"
+        return "#1c1c1e" if theme == "dark" else "#f5f5f7"
+
+    def _on_loaded(self):
+        from PyObjCTools import AppHelper
+        from webview.dom import DOMEventHandler
+
+        AppHelper.callAfter(self._apply_theme, self._settings.get()["theme"])
+        try:
+            document = self._window.dom.document
+            document.events.dragover += DOMEventHandler(lambda e: None, prevent_default=True)
+            document.events.drop += DOMEventHandler(self._on_drop, prevent_default=True, stop_propagation=True)
+        except Exception:
+            log.exception("Couldn't set up dropping files on the window")
+
+    def _on_closing(self):
+        """The close button asks, then quits the whole app (and installs a waiting update)."""
+        import AppKit
+
+        if self._quitting:
+            return True
+        import launch
+
+        launch.activate_app()
+        alert = AppKit.NSAlert.alloc().init()
+        alert.setMessageText_(f"Quit {APP_NAME}?")
+        ready = self._updater.status == "ready"
+        alert.setInformativeText_(
+            f"Version {self._updater.version} will be installed as it quits." if ready else
+            "Everything is saved. New Tangerine downloads are imported the next time you open it.")
+        alert.addButtonWithTitle_("Quit")
+        alert.addButtonWithTitle_("Cancel")
+        if alert.runModal() != AppKit.NSAlertFirstButtonReturn:
+            return False
+        self._before_quit()
+        return True
+
+    def _before_quit(self):
+        self._quitting = True
+        try:
+            self._updater.install(relaunch_after=False)
+        except Exception:
+            log.exception("Installing the update on quit failed")
+        log.info("Quitting")
+
+    def _quit_now(self):
+        import AppKit
+
+        self._before_quit()
+        AppKit.NSApp.terminate_(None)
+
+    def _install_quit_handler(self):
+        """⌘Q quits straight away (pywebview's default would ask through the close handler)."""
+        import AppKit
+        import objc
+        from webview.platforms import cocoa
+
+        app = self
+
+        def applicationShouldTerminate_(self, sender):
+            if not app._quitting:
+                app._before_quit()
+            return AppKit.NSTerminateNow
+
+        objc.classAddMethods(cocoa.BrowserView.AppDelegate, [applicationShouldTerminate_])
+
+    def run(self):
+        import webview
+        import webview.platforms.cocoa  # noqa: F401 (sets up NSApp)
+
+        import launch
+
+        if self._app_path and not launch.in_applications_folder(self._app_path):
+            if launch.offer_to_move(self._app_path):
+                return
+        self._install_quit_handler()
+        html = (_app_files_dir() / "index.html").read_text(encoding="utf-8")
+        self._window = webview.create_window(
+            APP_NAME, html=html, js_api=Api(self), width=WINDOW_SIZE[0], height=WINDOW_SIZE[1],
+            min_size=MIN_SIZE, background_color=self._background_color(), text_select=True)
+        self._window.events.closing += self._on_closing
+        self._window.events.loaded += self._on_loaded
+        threading.Thread(target=self._watch, name="downloads-watcher", daemon=True).start()
+        # What's waiting in the inbox follows the current rules (they can change in an update).
+        threading.Thread(target=self._service.dispatch, args=("refile",), name="refile", daemon=True).start()
+        self._updater.start()
+        log.info("%s %s started (data in %s)", APP_NAME, VERSION, DATA_DIR)
+        webview.start(private_mode=True, debug=bool(os.environ.get("INAB_DEBUG")))
+        self._quitting = True
+        os._exit(0)
+
+
+def main():
+    _setup_logging()
+    lock = _acquire_single_instance_lock()
+    if lock is None:
+        log.info("Another copy is already running; exiting")
+        return
+    sys.path.insert(0, str(_app_files_dir()))
+    try:
+        BudgetApp().run()
+    except Exception:
+        log.exception("%s failed to start", APP_NAME)
+        raise
+
+
+if __name__ == "__main__":
+    main()

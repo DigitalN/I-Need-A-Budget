@@ -1,0 +1,51 @@
+#!/bin/bash
+# Refuses commits that could put private banking data on GitHub.
+#
+# Turned on by `git config core.hooksPath scripts/hooks` (First Time Setup does it).
+#
+#   1. Bank exports, databases and archives, even if forced past .gitignore.
+#   2. Masked card numbers in the shape Tangerine uses in file names (four digits, x's, then the last four digits).
+#   3. Anything listed in .git-denylist: a local, ignored file with one private word or
+#      name per line (account digits, people's names, employers). Matching ignores case.
+#
+# Only ever bypass with `git commit --no-verify` after checking the diff yourself.
+
+set -uo pipefail
+ROOT=$(git rev-parse --show-toplevel)
+fail=0
+
+blocked=$(git diff --cached --name-only --diff-filter=ACMR \
+    | grep -Ei '\.(csv|ofx|qfx|qbo|db|sqlite3?|zip)$|(^|/)(Backups|Imported Files|Personal|private|data)/' || true)
+if [[ -n "$blocked" ]]; then
+    echo "✗ These files look like bank data or a database and can't be committed:" >&2
+    echo "$blocked" | sed 's/^/    /' >&2
+    fail=1
+fi
+
+added=$(git diff --cached -U0 --diff-filter=ACMR | grep -E '^\+[^+]' || true)
+
+if echo "$added" | grep -Eiq '[0-9]{4}[ *x]+x{4}[ *x]+x{4}[ *x]+[0-9]{4}'; then
+    echo "✗ A masked card number is being added:" >&2
+    echo "$added" | grep -Ei '[0-9]{4}[ *x]+x{4}[ *x]+x{4}[ *x]+[0-9]{4}' | head -5 | sed 's/^/    /' >&2
+    fail=1
+fi
+
+if [[ -f "$ROOT/.git-denylist" ]]; then
+    while IFS= read -r term || [[ -n "$term" ]]; do
+        term="${term%%#*}"
+        term="$(echo "$term" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+        [[ -z "$term" ]] && continue
+        if echo "$added" | grep -Fiq -- "$term"; then
+            echo "✗ A private term from .git-denylist is being added: \"$term\"" >&2
+            echo "$added" | grep -Fi -- "$term" | head -3 | sed 's/^/    /' >&2
+            fail=1
+        fi
+    done < "$ROOT/.git-denylist"
+fi
+
+if [[ $fail -ne 0 ]]; then
+    echo "" >&2
+    echo "Commit refused to keep private data off GitHub. Remove it and try again." >&2
+    exit 1
+fi
+exit 0
