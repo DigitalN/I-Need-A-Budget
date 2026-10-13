@@ -10,6 +10,8 @@ import os
 import threading
 from pathlib import Path
 
+from budget import OVERSPENDING
+
 log = logging.getLogger("inab")
 
 THEMES = ("system", "light", "dark")
@@ -20,7 +22,7 @@ DEFAULTS = {
     "downloads_dir": "",          # '' means ~/Downloads
     "update_automatically": True,
     "average_months": 3,          # how many months "needed per month" looks back over
-    "carry_overspending": False,  # an overspent category starts next month below zero (see budget.py)
+    "overspending": "this_month",  # how overspending is paid for: one of OVERSPENDING (see budget.py)
 }
 
 
@@ -31,9 +33,13 @@ def validate(raw):
         return s
     if raw.get("theme") in THEMES:
         s["theme"] = raw["theme"]
-    for key in ("auto_import", "update_automatically", "carry_overspending"):
+    for key in ("auto_import", "update_automatically"):
         if isinstance(raw.get(key), bool):
             s[key] = raw[key]
+    if raw.get("overspending") in OVERSPENDING:
+        s["overspending"] = raw["overspending"]
+    elif raw.get("carry_overspending") is True:  # the on/off switch it replaced (1.0.3, 1.0.4)
+        s["overspending"] = "carry_over"
     if isinstance(raw.get("downloads_dir"), str):
         s["downloads_dir"] = raw["downloads_dir"].strip()
     if raw.get("average_months") in (3, 6, 12):

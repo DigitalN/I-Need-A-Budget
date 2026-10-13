@@ -781,7 +781,7 @@ class BudgetService:
             "SELECT month, category_id, assigned FROM budget WHERE month BETWEEN ? AND ?", (start, end))}
         opening, _ = ledger.opening_cash(c, start)
         return budget_math.compute(start, end, self._roles(c), lines, payments, assigned, opening,
-                                   carry_overspending=self.settings.get()["carry_overspending"]), start
+                                   overspending=self.settings.get()["overspending"]), start
 
     def _coverage_start(self, c):
         """The first month every account has data for (for averages)."""
@@ -827,6 +827,7 @@ class BudgetService:
             review = c.execute("SELECT COUNT(*) FROM transactions WHERE status = 'review' AND substr(date,1,7) = ?",
                                (month,)).fetchone()[0]
             data_first = c.execute("SELECT MIN(date) FROM transactions").fetchone()[0]
+            cash = self._cash(c, month) if month in figures else None
         month_figures = figures.get(month)
         groups = []
         for g in tree:
@@ -865,11 +866,27 @@ class BudgetService:
             "month": month, "current_month": current, "budget_start": start,
             "before_start": bool(start) and month < start, "is_past": month < current,
             "months": months_between(nav_from, max(nav_to, month)),
-            "summary": {k: v for k, v in (month_figures or {}).items() if k != "categories"} or None,
+            "summary": {**{k: v for k, v in month_figures.items() if k != "categories"}, "cash": cash}
+                       if month_figures else None,
             "groups": groups, "average_months": avg_months, "missing_balances": missing,
             "to_review": review, "future_short": future_short,
-            "carry_overspending": self.settings.get()["carry_overspending"],
+            "overspending": self.settings.get()["overspending"],
         }
+
+    def _cash(self, c, month):
+        """What's in the cash accounts at the end of `month`, from their own balances (so
+        the page can show Ready to assign + money in categories adding up to it), or None
+        while one of them has no balance."""
+        total, names = 0, []
+        for a in c.execute("SELECT id, name, closed FROM accounts WHERE kind IN (?, ?, ?) ORDER BY sort, id",
+                           ledger.CASH_KINDS).fetchall():
+            balance = ledger.account_balance(c, a["id"], last_day(month))
+            if balance is None:
+                return None
+            total += balance
+            if balance or not a["closed"]:
+                names.append(a["name"])
+        return {"total": total, "accounts": names}
 
     def _assigned(self, c, month, category_id):
         row = c.execute("SELECT assigned FROM budget WHERE month = ? AND category_id = ?", (month, category_id)).fetchone()
@@ -903,7 +920,11 @@ class BudgetService:
         """How to share out money (a paycheque, or everything ready to assign): fills each
         category up to its monthly amount, in budget order (bills first if they're first).
         What's already in a category counts: what it carried into the month (below zero
-        when overspending carries over) plus what's been assigned this month."""
+        when overspending carries over) plus what's been assigned this month.
+
+        When overspending comes out of Ready to assign the month it happens, covering what
+        a category overspent this month costs nothing: it already came out (`covered`).
+        Only the rest of an amount uses up the money being shared out."""
         view = self.month(month)
         available = view["summary"]["ready_to_assign"] if view["summary"] else 0
         amount = available if amount in (None, "") else int(amount)
@@ -918,10 +939,12 @@ class BudgetService:
                     continue
                 has = cat["carried"] + cat["assigned"]
                 need = max(0, target - has)
-                give = min(need, remaining)
-                remaining -= give
+                covered = cat["overspent_cash"] if view["overspending"] == "this_month" else 0
+                give = min(need, remaining + covered)
+                remaining -= max(0, give - covered)
                 plan.append({"category_id": cat["id"], "name": cat["name"], "group": g["name"], "need": need,
-                             "monthly_budget": target, "assigned": cat["assigned"], "has": has, "amount": give})
+                             "monthly_budget": target, "assigned": cat["assigned"], "has": has, "amount": give,
+                             "covered": covered})
         return {"month": month, "amount": amount, "ready_to_assign": available, "plan": plan, "left_over": remaining,
                 "without_monthly_amount": [cat["name"] for g in view["groups"] for cat in g["categories"]
                                            if cat["monthly_budget"] is None and not cat["hidden"]
@@ -1610,7 +1633,8 @@ class BudgetService:
                 balances = [{"month": m, "owing": -(ledger.account_balance(c, a["id"], last_day(m)) or 0)} for m in months]
                 paid = c.execute(
                     "SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE account_id = ? AND transfer_account_id "
-                    "IS NOT NULL AND amount > 0 AND date >= ?", (a["id"], first_day(add_months(current, -3)))).fetchone()[0]
+                    "IS NOT NULL AND amount > 0 AND date BETWEEN ? AND ?",
+                    (a["id"], first_day(add_months(current, -3)), last_day(add_months(current, -1)))).fetchone()[0]
                 payment = a["planned_payment"] or (round(paid / 3) if paid else None)
                 out.append({"account_id": a["id"], "name": a["name"], "kind": a["kind"], "owing": owing,
                             "set_aside": set_aside, "not_covered": max(0, owing - set_aside), "apr": a["apr"],
