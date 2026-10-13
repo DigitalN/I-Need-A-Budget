@@ -79,8 +79,6 @@ a:hover, .link:hover { text-decoration: underline; }
 .side nav button[aria-current="page"] svg { opacity: 1; }
 .badge { margin-left: auto; background: var(--accent); color: #fff; border-radius: 9px; padding: 0 7px; font-size: 11px; font-weight: 600; min-width: 18px; text-align: center; }
 .badge:empty { display: none; }
-.side-foot { margin-top: auto; display: flex; flex-direction: column; gap: 8px; padding: 0 4px; }
-.side-foot .hint { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.4; }
 main { overflow-y: auto; min-width: 0; position: relative; }
 .page { max-width: 1060px; margin: 0 auto; padding: 22px 26px 60px; }
 .page-head { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; flex-wrap: wrap; }
@@ -294,10 +292,6 @@ body.dragging .drop-hint { display: flex; }
       <button data-nav="subscriptions"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M15 7a6 6 0 00-10.5-1.5M5 13a6 6 0 0010.5 1.5"/><path d="M4 2.5v3.2h3.2M16 17.5v-3.2h-3.2"/></svg>Subscriptions</button>
       <button data-nav="settings"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="10" cy="10" r="2.6"/><path d="M10 2.5v2M10 15.5v2M17.5 10h-2M4.5 10h-2M15.3 4.7l-1.4 1.4M6.1 13.9l-1.4 1.4M15.3 15.3l-1.4-1.4M6.1 6.1L4.7 4.7" stroke-linecap="round"/></svg>Settings</button>
     </nav>
-    <div class="side-foot">
-      <button class="btn wide" data-act="import-files">Import files…</button>
-      <p class="hint">Bank downloads that land in your Downloads folder are imported on their own. You can also drop files on this window.</p>
-    </div>
   </aside>
   <main id="main"></main>
 </div>
@@ -419,6 +413,8 @@ function dialog({ title, body, actions, wide = false, onOpen }) {
     // this one has opened, and that mustn't close this one.
     d.onclose = () => { if (!d.open) finish(null); };
     d.querySelector('.dlg-x').onclick = () => finish(null);  // close without doing anything, like Esc
+    // A button in the body with data-dlg-value closes it with that value, like an action.
+    d.querySelector('.dlg-body').onclick = e => { const b = e.target.closest('[data-dlg-value]'); if (b) finish(b.dataset.dlgValue); };
     d.oncancel = e => { e.preventDefault(); finish(null); };
     d.querySelector('form').onsubmit = e => {
       e.preventDefault();
@@ -598,7 +594,7 @@ async function renderBudget() {
         monthly = `<span class="monthly faint" data-cat="${c.id}">—</span>`;
       }
       const overNote = c.overspent_credit ? ` title="${esc(money(c.overspent_credit))} of this was on a card without money in the category: it became debt"` :
-        (c.overspent_cash ? ` title="${esc(money(c.overspent_cash))} overspent: it comes out of next month's Ready to assign"` : '');
+        (c.overspent_cash ? ` title="${esc(money(c.overspent_cash))} overspent: ${view.carry_overspending ? 'the category starts next month that far below zero' : 'it comes out of next month\'s Ready to assign'}"` : '');
       rows.push(`<tr class="cat ${c.hidden ? 'hidden-cat' : ''}">
         <td><span class="name" data-cat="${c.id}">${esc(c.name)}</span></td>
         <td class="r">${monthly}</td>
@@ -760,14 +756,15 @@ async function openCategory(id) {
 async function openAssign(amount) {
   const plan = await call('assign_plan', { month: state.month, amount: amount ?? null });
   const rows = plan.plan.map((p, i) => `<tr><td>${esc(p.name)} <span class="faint small">${esc(p.group)}</span></td>
-      <td class="r num muted">${money(p.need)}</td>
+      <td class="r num muted">${money(p.monthly_budget)}</td>
+      <td class="r num ${p.has < 0 ? 'neg' : 'muted'}">${money(p.has)}</td>
       <td class="r"><input class="money-input" style="box-shadow: inset 0 0 0 1px var(--line-strong) !important" data-i="${i}" value="${moneyPlain(p.amount)}"></td></tr>`).join('');
   const body = `
     <div class="field"><label>Amount to share out</label>
       <div class="row"><input id="assign-amount" style="width:140px;text-align:right" value="${moneyPlain(plan.amount)}"><button type="button" class="btn small" id="assign-recalc">Recalculate</button>
       <span class="muted small">Ready to assign: ${money(plan.ready_to_assign)}</span></div></div>
-    ${plan.plan.length ? `<p class="small muted" style="margin-top:0">Fills each category up to its monthly amount, in budget order. Change any line before you assign.</p>
-      <table><thead><tr><th>Category</th><th class="r">Still needs</th><th class="r">Assign</th></tr></thead><tbody>${rows}</tbody></table>
+    ${plan.plan.length ? `<p class="small muted" style="margin-top:0">"Each month" is only the plan: money is in a category once it's assigned. This tops each one up to its monthly amount, in budget order.</p>
+      <table><thead><tr><th>Category</th><th class="r">Each month</th><th class="r">Already in</th><th class="r">Assign</th></tr></thead><tbody>${rows}</tbody></table>
       <p class="small" id="assign-left">Left over: <b>${money(plan.left_over)}</b></p>`
       : `<div class="notice info">No category has a monthly amount yet. Click a category on the Budget page to set one (it shows what it actually needed), or type amounts straight into the Assigned column.</div>`}
     ${plan.without_monthly_amount.length && plan.plan.length ? `<p class="small faint">No monthly amount: ${esc(plan.without_monthly_amount.join(', '))}</p>` : ''}`;
@@ -905,8 +902,8 @@ function drawInbox() {
   const alerts = data.alerts.map(a => a.type === 'balance' ? `<div class="notice">${esc(a.text)}<span class="spacer"></span>
       <input style="width:130px;text-align:right" placeholder="Balance" data-balance-for="${a.account_id}"><button class="btn small" data-act="save-balance" data-account="${a.account_id}">Save</button></div>`
     : a.type === 'duplicate' ? duplicateNotice(a) : '').join('') +
-    (data.files || []).map((f, i) => `<div class="notice info"><span><b>${esc(f.filename)}</b> ${f.needs === 'layout' ? 'needs setting up once.' : 'is from a bank the app knows: which account is it for?'}</span><span class="spacer"></span>
-      <button class="btn small" data-act="ignore-file" data-index="${i}">Not a bank file</button><button class="btn small primary" data-act="setup-file" data-index="${i}">${f.needs === 'layout' ? 'Set up…' : 'Choose…'}</button></div>`).join('');
+    (data.files || []).map((f, i) => `<div class="notice info"><span><b>${esc(f.filename)}</b> ${f.needs === 'layout' ? 'needs setting up once.' : f.needs === 'new_account' ? 'is for an account the app hasn\'t seen: a new one, or one you have?' : 'is from a bank the app knows: which account is it for?'}</span><span class="spacer"></span>
+      <button class="btn small" data-act="ignore-file" data-index="${i}">${f.needs === 'new_account' ? 'Don\'t import' : 'Not a bank file'}</button><button class="btn small primary" data-act="setup-file" data-index="${i}">${f.needs === 'layout' ? 'Set up…' : 'Choose…'}</button></div>`).join('');
   const cards = state.blocks.map((b, i) => b.items.length > 1 ? groupCard(b, i) : itemCard(b.items[0], i)).join('');
   const filedRows = data.filed.map(t => `<tr><td class="muted nowrap">${day(t.date)}</td><td>${esc(t.payee_name || t.raw_name)}${t.subscription_name ? ` <span class="tag info">${esc(t.subscription_name)}</span>` : ''}</td>
       <td>${t.transfer_account_name ? `<span class="tag">Transfer</span>` : `<button class="link" data-act="recat" data-id="${t.id}">${esc(t.category_name || (t.is_split ? 'Split' : 'No category'))}</button>`}</td>
@@ -1162,22 +1159,26 @@ async function renameDialog(txId) {
   return true;
 }
 
+// Tracks a charge as a subscription or bill from here on (the Inbox, or a transaction you opened).
 async function newSubscriptionDialog(txId) {
   const t = findTx(txId);
+  if (!t) return false;
+  const x = { amount: -t.amount, cadence: 'monthly', kind: 'subscription', category_id: t.category_id, pricing: 'fixed' };
   const v = await dialog({
-    title: 'Track as a new subscription',
-    body: `<p class="muted">${esc(t.payee_name)} at ${money(-t.amount)}. From now on, charges at this price show under this name and go to its category without asking.</p>
-      <div class="field"><label>Name</label><input id="sub-name" placeholder="e.g. Apple Music"></div>
-      <div class="grid2"><div class="field"><label>Charges</label><select id="sub-cadence"><option value="monthly">Monthly</option><option value="yearly">Yearly</option><option value="weekly">Weekly</option></select></div>
-      <div class="field"><label>Category</label><button type="button" class="btn" id="sub-cat" data-id="${t.category_id || ''}" style="text-align:left">${esc(catName(t.category_id) || 'Pick…')}</button></div></div>
-      <div class="grid2"><div class="field"><label>Price</label>${pricingSelect('sub-pricing', 'fixed')}</div>
-        <div class="field"><label>Ends on (optional)</label><input type="date" id="sub-ends"></div></div>`,
-    actions: [{ label: 'Cancel', value: null }, { label: 'Track it', value: 'ok', primary: true, check: d => $('#sub-name', d).value.trim() ? (($('#sub-cat', d).dataset.id) ? null : 'Pick a category.') : 'Give it a name.' }],
-    onOpen: d => { $('#sub-cat', d).onclick = async e => { const id = await pickCategory(e.currentTarget, { income: false }); if (id) { e.target.dataset.id = id; e.target.textContent = catName(id); } }; },
+    title: `Track ${t.payee_name || t.raw_name} at ${money(-t.amount)}`,
+    body: `<p class="small muted" style="margin-top:0">Its charges show under this name and go to its category without asking.</p>${subFormHtml(x, false)}`,
+    onOpen: bindSubForm,
+    actions: [{ label: 'Cancel', value: null }, { label: 'Track it', value: 'ok', primary: true, check: d => {
+      if (!$('#sf-name', d).value.trim()) return 'Give it a name, like what it\'s for.';
+      const a = parseMoney($('#sf-amount', d).value); return Number.isNaN(a) ? 'That price isn\'t an amount.' : null;
+    } }],
   });
   if (v !== 'ok') return false;
-  await call('subscription_from_transaction', { txn_id: txId, name: $('#sub-name').value, category_id: Number($('#sub-cat').dataset.id), cadence: $('#sub-cadence').value, pricing: $('#sub-pricing').value, ends_on: $('#sub-ends').value || null });
-  toast(`Tracking ${$('#sub-name').value}`, { action: undoAction });
+  const name = $('#sf-name').value.trim(), cat = $('#sf-cat').dataset.id, amount = parseMoney($('#sf-amount').value);
+  await call('subscription_from_transaction', { txn_id: txId, name, category_id: cat ? Number(cat) : null,
+    cadence: $('#sf-cadence').value, kind: $('#sf-kind').value, pricing: $('#sf-pricing').value,
+    ends_on: $('#sf-ends').value || null, amount: amount ? Math.abs(amount) : null, note: $('#sf-note').value });
+  toast(`Tracking ${name}`, { action: undoAction });
   return true;
 }
 
@@ -1361,10 +1362,50 @@ async function setupFile(path) {
   return v === 'import' ? outcome : null;
 }
 
+// A bank file for an account the app hasn't seen, when you have one it could be (a
+// replaced card gets a new number): a new account, or one you have? Then imports it.
+// Resolves with the import's outcome, or null if closed.
+async function chooseAccounts(path) {
+  const r = await tryCall('file_accounts', [path]);
+  if (!r.ok) { toast(r.error, { error: true }); return null; }
+  const info = r.result;
+  const unknown = info.parts.filter(p => !p.account_id);
+  if (!unknown.length) return call('set_file_accounts', [path, []]);  // answered with an earlier file
+  let outcome = null;
+  const v = await dialog({
+    title: unknown.length === 1 ? 'A new account?' : 'New accounts?',
+    body: `<p class="small muted" style="margin-top:0">${esc(info.filename)} is for ${unknown.length === 1 ? 'an account' : 'accounts'} the app hasn't seen. If it's one you have (a new card number, say), pick it.</p>
+      ${unknown.map(p => `<div class="field"><label>${esc(p.name)}${p.last4 && !p.name.includes(p.last4) ? ` ••${esc(p.last4)}` : ''} · ${plural(p.rows, 'transaction')}${p.first_date ? `, ${dayYear(p.first_date)} – ${dayYear(p.last_date)}` : ''}</label>
+        <div class="row"><select data-part="${p.index}" style="width:220px;flex:none"><option value="">New account</option>${p.choices.map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join('')}</select>
+          <input data-part-name="${p.index}" value="${esc(p.name)}" placeholder="Name" style="flex:1;min-width:0"></div></div>`).join('')}`,
+    actions: [
+      { label: 'Don\'t import', value: 'ignore', left: true },
+      { label: 'Cancel', value: null },
+      { label: 'Import', value: 'import', primary: true, check: async d => {
+        const choices = unknown.map(p => {
+          const picked = $(`[data-part="${p.index}"]`, d).value;
+          return picked ? { index: p.index, account_id: Number(picked) } : { index: p.index, name: $(`[data-part-name="${p.index}"]`, d).value };
+        });
+        const r = await tryCall('set_file_accounts', [path, choices]);
+        if (!r.ok) return r.error;
+        outcome = r.result;
+        return null;
+      } },
+    ],
+    onOpen: d => $$('[data-part]', d).forEach(sel => {
+      const sync = () => { $(`[data-part-name="${sel.dataset.part}"]`, d).hidden = !!sel.value; };
+      sel.addEventListener('change', sync);
+      sync();
+    }),
+  });
+  if (v === 'ignore') { await call('ignore_file', [path]); toast(`${info.filename} won't be imported`); return null; }
+  return v === 'import' ? outcome : null;
+}
+
 // One after another: each pop-up waits for the one before.
 async function setupFiles(files) {
   for (const f of files) {
-    const outcome = await setupFile(f.path);
+    const outcome = await (f.needs === 'new_account' ? chooseAccounts(f.path) : setupFile(f.path));
     if (outcome) window.appEvent('imported', outcome);
   }
   await refresh();
@@ -1443,15 +1484,28 @@ async function editTransaction(id) {
       <div class="field"><label>Account</label><div>${esc(t.account_name)}</div></div>
       ${t.raw_name ? `<div class="field"><label>The bank wrote</label><div class="small" style="font-family:ui-monospace,Menlo,monospace">${esc(t.raw_name)}${t.raw_memo ? '<br>' + esc(t.raw_memo) : ''}</div></div>` : ''}
       <div class="field"><label>Note</label><input id="ed-note" value="${esc(t.note || '')}"></div>
+      ${t.amount < 0 && t.payee_id && !t.transfer_account_id ? `<div class="field"><label>Subscription</label><div class="row">
+        ${t.subscription_name ? `<span>${esc(t.subscription_name)}</span>` : '<span class="muted">Not tracked</span>'}<span class="spacer"></span>
+        <button type="button" class="btn small" data-dlg-value="subscription">${t.subscription_name ? 'Edit…' : 'Track as subscription…'}</button></div></div>` : ''}
       ${t.reason ? `<p class="small muted">💡 ${esc(t.reason)}</p>` : ''}`,
     actions: [{ label: 'Delete', value: 'delete', danger: true, left: true },
       { label: 'Payee…', value: 'payee' }, { label: 'Split…', value: 'split' }, { label: 'Transfer…', value: 'transfer' },
       { label: 'Save', value: 'save', primary: true }],
   });
   if (!v) return;
-  if (v === 'save') {
+  // A note typed before going on to Payee…, Split…, Transfer… or the subscription isn't lost.
+  const note = $('#ed-note').value;
+  if (!['save', 'delete'].includes(v) && note !== (t.note || '')) await call('update_transaction', [id, { note }]);
+  if (v === 'subscription') {
+    if (!t.subscription_name) { if (!await newSubscriptionDialog(id)) return; }
+    else {
+      const subs = await call('subscriptions');
+      const x = [...subs.subscriptions, ...subs.bills, ...subs.cancelled].find(y => y.id === t.subscription_id);
+      if (!x || !await editSubscriptionDialog(x)) return;
+    }
+  } else if (v === 'save') {
     const changes = {};
-    if ($('#ed-note').value !== (t.note || '')) changes.note = $('#ed-note').value;
+    if (note !== (t.note || '')) changes.note = note;
     if (t.manual) {
       if ($('#ed-date').value && $('#ed-date').value !== t.date) changes.date = $('#ed-date').value;
       const a = parseMoney($('#ed-amount').value);
@@ -1719,6 +1773,25 @@ function bindSubForm(d) {
   $('#sf-cat', d).onclick = async e => { const id = await pickCategory(e.currentTarget, { income: false }); if (id) { e.target.dataset.id = id; e.target.textContent = catName(id); } };
 }
 
+// Edit… on the Subscriptions page, or on a transaction that's part of one. True if it changed.
+async function editSubscriptionDialog(x) {
+  const v = await dialog({ title: `Edit ${x.name}`, body: subFormHtml(x, false), onOpen: bindSubForm,
+    actions: [{ label: 'Stop tracking', value: 'delete', danger: true, left: true }, { label: 'Cancel', value: null }, { label: 'Save', value: 'ok', primary: true }] });
+  if (v === 'delete') { await call('delete_subscription', [x.id]); toast('Stopped tracking', { action: undoAction }); return true; }
+  if (v !== 'ok') return false;
+  const cat = $('#sf-cat').dataset.id;
+  const amount = parseMoney($('#sf-amount').value);
+  const changes = { name: $('#sf-name').value, kind: $('#sf-kind').value, cadence: $('#sf-cadence').value,
+    note: $('#sf-note').value, category_id: cat ? Number(cat) : null, pricing: $('#sf-pricing').value, ends_on: $('#sf-ends').value || null,
+    ...(amount && !Number.isNaN(amount) && Math.abs(amount) !== x.amount ? { amount: Math.abs(amount) } : {}) };
+  const same = changes.name === x.name && changes.kind === x.kind && changes.cadence === x.cadence && changes.note === (x.note || '') &&
+    changes.category_id === (x.category_id || null) && changes.pricing === x.pricing && changes.ends_on === (x.ends_on || null) && !changes.amount;
+  if (same) return false;  // nothing changed: just close
+  await call('update_subscription', [x.id, changes]);
+  toast('Saved', { action: undoAction });
+  return true;
+}
+
 async function subscriptionAction(btn) {
   const act = btn.dataset.act;
   const s = state.subs;
@@ -1757,18 +1830,7 @@ async function subscriptionAction(btn) {
     if ($('#sf-note').value) await call('update_subscription', [id, { note: $('#sf-note').value }]);
     toast(`Tracking ${$('#sf-name').value}`, { action: undoAction });
   } else if (act === 'sub-edit') {
-    const x = [...s.subscriptions, ...s.bills].find(y => y.id === Number(btn.dataset.sub));
-    const v = await dialog({ title: `Edit ${x.name}`, body: subFormHtml(x, false), onOpen: bindSubForm,
-      actions: [{ label: 'Stop tracking', value: 'delete', danger: true, left: true }, { label: 'Cancel', value: null }, { label: 'Save', value: 'ok', primary: true }] });
-    if (v === 'delete') { await call('delete_subscription', [x.id]); toast('Stopped tracking', { action: undoAction }); }
-    else if (v === 'ok') {
-      const cat = $('#sf-cat').dataset.id;
-      const amount = parseMoney($('#sf-amount').value);
-      await call('update_subscription', [x.id, { name: $('#sf-name').value, kind: $('#sf-kind').value, cadence: $('#sf-cadence').value,
-        note: $('#sf-note').value, category_id: cat ? Number(cat) : null, pricing: $('#sf-pricing').value, ends_on: $('#sf-ends').value || null,
-        ...(amount && !Number.isNaN(amount) ? { amount: Math.abs(amount) } : {}) }]);
-      toast('Saved', { action: undoAction });
-    } else return;
+    if (!await editSubscriptionDialog([...s.subscriptions, ...s.bills].find(y => y.id === Number(btn.dataset.sub)))) return;
   } else if (act === 'sub-cancel') {
     const x = [...s.subscriptions, ...s.bills].find(y => y.id === Number(btn.dataset.sub));
     if (!await confirmBox(`Mark ${x.name} as cancelled?`, 'It moves to Cancelled, and if it charges you again you\'ll be told in the Inbox.', 'Mark cancelled')) return;
@@ -1781,56 +1843,42 @@ async function subscriptionAction(btn) {
 
 // ── settings ────────────────────────────────────────────
 async function renderSettings() {
-  const [settings, info, months] = await Promise.all([call('get_settings'), call('app_info'), call('onboarding_state')]);
+  const [settings, info] = await Promise.all([call('get_settings'), call('app_info')]);
   let upd = info.updates || state.update || null;
   const live = await window.pywebview.api.call('window_action', ['update_state']);  // quiet: absent in the preview
   if (live && live.ok) upd = live.result;
   state.update = upd;
-  const updText = !upd ? 'Updates work in the installed app.' :
-    upd.unavailable ? `Off: ${upd.unavailable}.` :
+  const updText = !upd ? `You have ${info.version}. Updates work in the installed app.` :
+    upd.unavailable ? `You have ${upd.current}. Off: ${upd.unavailable}.` :
     upd.status === 'checking' ? 'Checking…' : upd.status === 'downloading' ? `Downloading ${upd.version}…` :
     upd.status === 'ready' ? `Version ${upd.version} is ready; it's installed when you quit.` :
-    upd.error ? `Last check failed: ${upd.error}` :
+    upd.error ? `You have ${upd.current}. Last check failed: ${upd.error}` :
     upd.checked ? `You have ${upd.current}, the latest (checked ${upd.checked === state.boot.today ? 'today' : dayYear(upd.checked)}).` : `You have ${upd.current}.`;
+  const row = (title, text, control) => `<div class="settings-row"><div class="what"><b>${title}</b>${text ? `<span>${text}</span>` : ''}</div>${control}</div>`;
+  const toggle = key => `<label class="switch"><input type="checkbox" data-setting="${key}" ${settings[key] ? 'checked' : ''}><span></span></label>`;
+  const open = what => `<button class="btn" data-act="open" data-what="${what}">Open</button>`;
   frame(`
     <div class="page-head"><h1>Settings</h1></div>
     <div class="stack">
       <div class="card">
-        <div class="settings-row"><div class="what"><b>Appearance</b></div>
-          <div class="seg" id="theme">${['system', 'light', 'dark'].map(t => `<button data-theme-set="${t}" aria-pressed="${settings.theme === t}">${t[0].toUpperCase() + t.slice(1)}</button>`).join('')}</div></div>
-        <div class="settings-row"><div class="what"><b>Import from Downloads</b><span>Bank files that land in ${esc(settings.downloads_dir || '~/Downloads')} are imported and moved into the app's Imported Files folder.</span></div>
-          <label class="switch"><input type="checkbox" data-setting="auto_import" ${settings.auto_import ? 'checked' : ''}><span></span></label></div>
-        <div class="settings-row"><div class="what"><b>Budget starts in</b><span>Transactions before this are kept for history and for working out what categories need.</span></div>
-          <select id="start-month">${months.months.map(m => `<option value="${m}" ${m === state.boot.budget_start ? 'selected' : ''}>${monthLong(m)}</option>`).join('')}</select></div>
-        <div class="settings-row"><div class="what"><b>"Needs" looks back over</b><span>How many past months the Budget page averages to show what a category actually needs.</span></div>
-          <div class="seg" id="avg">${[3, 6, 12].map(n => `<button data-avg="${n}" aria-pressed="${settings.average_months === n}">${n} months</button>`).join('')}</div></div>
-        <div class="settings-row"><div class="what"><b>Fill monthly amounts from spending</b><span>Sets every category without a monthly amount to what it actually needed on average.</span></div>
-          <button class="btn" data-act="fill-monthly">Fill them in</button></div>
-        <div class="settings-row"><div class="what"><b>Learn from an Actual Budget export</b><span>Its categories and which payees went where.</span></div>
-          <button class="btn" data-act="learn-actual">Choose file…</button></div>
+        ${row('Appearance', '', `<div class="seg" id="theme">${['system', 'light', 'dark'].map(t => `<button data-theme-set="${t}" aria-pressed="${settings.theme === t}">${t[0].toUpperCase() + t.slice(1)}</button>`).join('')}</div>`)}
+        ${row('Import from Downloads', 'Automatically import files from your Downloads folder.', toggle('auto_import'))}
+        ${row('Overspending carries over', 'An overspent category starts next month below zero. Off: it comes out of Ready to assign.', toggle('carry_overspending'))}
+        ${row('Learn from an Actual Budget export', 'Its categories and which payees went where.', '<button class="btn" data-act="learn-actual">Choose file…</button>')}
       </div>
       <div class="card">
-        <div class="settings-row"><div class="what"><b>Check for updates at launch</b><span id="update-text">${esc(updText)}</span></div>
-          <label class="switch"><input type="checkbox" data-setting="update_automatically" ${settings.update_automatically ? 'checked' : ''}><span></span></label></div>
-        <div class="settings-row"><div class="what"><b>GitHub access</b><span>${upd && upd.access ? `Using ${esc(upd.access)}.` : 'The code is private, so checking for updates needs a GitHub token (read access to the repository) or the GitHub CLI signed in.'}</span></div>
-          <input type="password" id="gh-token" placeholder="Token" style="width:180px"><button class="btn" data-act="save-token">Save</button></div>
-        <div class="settings-row"><div class="what"><b>Check for updates</b></div><button class="btn" data-act="check-updates">Check now</button></div>
+        ${row('Check for updates at launch', `<span id="update-text">${esc(updText)}</span>`, toggle('update_automatically'))}
+        ${row('Release notes', 'What changed in each version, on GitHub.', open('open_release_notes'))}
+        ${upd && upd.needs_access ? row('GitHub access', 'The app\'s repository is private: updates need a GitHub token with read access to it.',
+            '<input type="password" id="gh-token" placeholder="Token" style="width:180px"><button class="btn" data-act="save-token">Save</button>') : ''}
+        ${row('Check for updates', '', '<button class="btn" data-act="check-updates">Check now</button>')}
       </div>
       <div class="card">
-        <div class="settings-row"><div class="what"><b>Your data</b><span>${esc(info.data_dir)}. Backed up once a day (14 days kept). Nothing leaves this Mac.</span></div>
-          <button class="btn" data-act="reveal" data-what="reveal_data">Show</button></div>
-        <div class="settings-row"><div class="what"><b>Imported files</b><span>Every file the app imported, kept as it was.</span></div>
-          <button class="btn" data-act="reveal" data-what="reveal_imports">Show</button></div>
-        <div class="settings-row"><div class="what"><b>Log</b><span>For when something goes wrong.</span></div>
-          <button class="btn" data-act="reveal" data-what="reveal_log">Show</button></div>
-        <div class="settings-row"><div class="what"><b>Version</b></div><span class="muted">${esc(info.version)}</span></div>
+        ${row('Your data', 'Open the folder where all data is stored on your Mac.', open('open_data'))}
+        ${row('Imported files', 'Open the folder where all previously imported data is kept.', open('open_imports'))}
+        ${row('Log', 'For developer use: open log files for troubleshooting.', open('open_log'))}
       </div>
     </div>`);
-  $('#start-month').addEventListener('change', async e => {
-    await call('set_budget_start', [e.target.value]);
-    state.boot.budget_start = e.target.value;
-    toast(`The budget now starts in ${monthLong(e.target.value)}`);
-  });
 }
 
 async function settingsAction(btn) {
@@ -1843,14 +1891,10 @@ async function settingsAction(btn) {
     try { state.update = await call('window_action', ['check_updates']); }
     catch (e) { state.checkingByHand = false; throw e; }
     toast('Checking for updates…');
-  } else if (act === 'reveal') { await call('window_action', [btn.dataset.what]); return; }
+  } else if (act === 'open') { await call('window_action', [btn.dataset.what]); return; }
   else if (act === 'learn-actual') {
     const r = await call('learn_actual_file');
     if (r && r.learnt) toast(`Learnt ${r.learnt.examples} examples${r.refiled ? `, and filed ${r.refiled} waiting transactions` : ''}`);
-  } else if (act === 'fill-monthly') {
-    const r = await call('fill_monthly_from_averages', { months: (await call('get_settings')).average_months });
-    await loadCategories();
-    toast(`Set ${plural(r.changed, 'monthly amount')}`, { action: undoAction });
   }
   await renderSettings();
 }
@@ -1971,8 +2015,12 @@ window.appEvent = (name, payload) => {
     const review = (payload.counts && payload.counts.inbox) || 0;
     if (payload.counts) setCounts(payload.counts);
     const waiting = payload.needs_setup || [];
-    if (waiting.length && !payload.auto) setupFiles(waiting);  // you chose or dropped them: ask now
-    else if (waiting.length) toast(`${waiting.map(f => f.filename).join(', ')} ${waiting.length === 1 ? 'needs' : 'need'} setting up`, { action: { label: 'Set up', run: () => setupFiles(waiting) } });
+    if (waiting.length && !payload.auto) setupFiles(waiting);  // you dropped them: ask now
+    else if (waiting.length) {
+      const names = waiting.map(f => f.filename).join(', ');
+      toast(waiting.every(f => f.needs === 'new_account') ? `${names}: a new account?` : `${names} ${waiting.length === 1 ? 'needs' : 'need'} setting up`,
+        { action: { label: waiting.every(f => f.needs === 'new_account') ? 'Choose…' : 'Set up', run: () => setupFiles(waiting) } });
+    }
     if (!results.length && !payload.learnt) return;
     toast(added ? `Imported ${plural(added, 'new transaction')} from ${results.map(r => r.filename).join(', ')}${review ? ` · ${review} in the Inbox` : ''}`
       : `Nothing new in ${results.map(r => r.filename).join(', ')}`,
@@ -2013,8 +2061,7 @@ document.addEventListener('click', async e => {
   if (!btn) return;
   const act = btn.dataset.act;
   try {
-    if (act === 'import-files') { const r = await call('choose_and_import'); if (r) { window.appEvent('imported', r); } }
-    else if (act === 'restart-update') await call('window_action', ['install_update']);
+    if (act === 'restart-update') await call('window_action', ['install_update']);
     else if (act === 'assign') await openAssign();
     else if (act === 'catch-up') {
       if (await confirmBox(`Catch up ${monthOnly(state.month)}?`, 'Assigns exactly what each category spent this month, so nothing ends it overspent. Good for months gone by.', 'Catch up')) {
@@ -2047,8 +2094,6 @@ document.addEventListener('change', async e => {
 document.addEventListener('click', async e => {
   const t = e.target.closest('[data-theme-set]');
   if (t) { const s = await call('save_settings', [{ theme: t.dataset.themeSet }]); applyTheme(s.theme); renderSettings(); }
-  const a = e.target.closest('[data-avg]');
-  if (a) { await call('save_settings', [{ average_months: Number(a.dataset.avg) }]); renderSettings(); }
 });
 document.addEventListener('keydown', e => {
   if (e.target.dataset && e.target.dataset.assign !== undefined && e.key === 'Enter') {

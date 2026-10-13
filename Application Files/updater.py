@@ -1,12 +1,15 @@
 """Keeps the app up to date from its GitHub releases.
 
-The repository is private, so asking GitHub needs a token. The updater uses, in order:
+GitHub only shows a private repository's releases to someone with access, so the updater
+uses a token when it finds one, in order:
 1. a token saved in the Keychain from Settings (service "I Need A Budget", account
    "GitHub"): a fine-grained token with read access to this repository's contents is
    enough. This is how a second Mac (or a second person) gets updates;
 2. the GitHub CLI's login on this Mac (`gh auth token`).
-The token goes to curl on stdin (`--config -`), never on the command line, where other
-processes could see it.
+Without one it asks GitHub anonymously, which works once the repository is public. When
+GitHub won't show the releases to this copy, `needs_access` is set and Settings offers
+the token field. The token goes to curl on stdin (`--config -`), never on the command
+line, where other processes could see it.
 
 When: once, a few seconds after each launch (unless "Check for updates at launch" is off
 in Settings), and when you press Check now. Never in between: the maintainer's choice.
@@ -256,6 +259,7 @@ class Updater:
         self._team = None
         self._staged = None          # (version, app, folder) once downloaded and verified
         self._lock = threading.Lock()
+        self.needs_access = False    # GitHub wouldn't show this copy the releases: ask for a token
         self.unavailable_reason = self._why_unavailable()
 
     def _why_unavailable(self):
@@ -278,7 +282,7 @@ class Updater:
             checked = None
         return {"status": self.status, "version": self.version, "current": self._current,
                 "unavailable": self.unavailable_reason, "error": self.last_error, "checked": checked,
-                "access": source, "has_access": bool(token) or self._feed.startswith("file:")}
+                "access": source, "needs_access": self.needs_access}
 
     def start(self):
         if self.unavailable_reason:
@@ -318,10 +322,7 @@ class Updater:
             try:
                 token = None
                 if not self._feed.startswith("file:"):
-                    token, _ = find_token()
-                    if token is None:
-                        raise UpdateError("No GitHub access on this Mac. Sign in with the GitHub CLI "
-                                          "(gh auth login) or add a token in Settings.")
+                    token, _ = find_token()  # None: ask anonymously (a public repository)
                 release = self._latest_release(token)
                 self._last_check_file.write_text(date.today().isoformat(), encoding="utf-8")
                 if release is None or not is_newer(release[0], self._current):
@@ -347,12 +348,19 @@ class Updater:
             if not self._feed.startswith("file:"):
                 repo_code, _ = _curl(REPOSITORY_URL, "-", max_time=30, token=token, accept="application/vnd.github+json")
                 if repo_code in (401, 403, 404):
-                    raise UpdateError("This GitHub access can't see the app's repository. Check the token in Settings.")
+                    self.needs_access = True
+                    raise UpdateError("This GitHub access can't see the app's repository. Check the token in Settings."
+                                      if token else "The app's repository is private: add a GitHub token in Settings.")
+            self.needs_access = False
             return None  # no releases yet
-        if code in (401, 403):
+        if code in (401, 403) and token:
+            self.needs_access = True
             raise UpdateError("GitHub refused the token. Check it in Settings.")
+        if code in (401, 403):
+            raise UpdateError("GitHub is turning away checks for now. Try again later.")  # its anonymous limit
         if code not in (200, 0):
             raise UpdateError(f"GitHub answered with an error ({code}).")
+        self.needs_access = False
         try:
             return parse_release(json.loads(body))
         except ValueError:

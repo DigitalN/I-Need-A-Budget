@@ -258,3 +258,53 @@ def test_a_files_balance_corrects_one_typed_in_earlier_that_day(app):
     old = write(app.test_downloads, "Chequing-2.QFX", ofx_file("Tangerine", as_ofx_rows(CHEQUING_ROWS), balance="1.00"))
     call(app, "import_files", [str(old)])
     assert call(app, "accounts")[0]["balance"] == 150000
+
+
+def test_a_file_for_an_unseen_account_asks_new_or_one_you_have(app):
+    """Once the budget is set up, a file for an account the app hasn't seen asks before
+    making one: a replaced card or a renumbered account has a new number."""
+    call(app, "import_files", [str(write(app.test_downloads, "Chequing.CSV", bank_csv(CHEQUING_ROWS)))])
+    app.db.set_meta("onboarded", "1")
+    other = write(app.test_downloads, "Statement.QFX", ofx_file(
+        "Sample Credit Union", [("20260910", "-12.00", "SAMPLE SHOP", "", "B1")], acct="CHECKING", acct_id="0005678"))
+    out = call(app, "import_files", [str(other)])
+    assert out["results"] == [] and [f["needs"] for f in out["needs_setup"]] == ["new_account"]
+    [part] = call(app, "file_accounts", str(other))["parts"]
+    assert (part["account_id"], part["name"]) == (None, "Sample Credit Union Chequing")
+    assert [c["name"] for c in part["choices"]] == ["Chequing"]
+    [result] = call(app, "set_file_accounts", str(other), [{"index": 0, "account_id": part["choices"][0]["id"]}])["results"]
+    assert (result["account_name"], result["added"]) == ("Chequing", 1)
+    # It remembers the number: the next file from that account goes straight there.
+    later = write(app.test_downloads, "Statement-2.QFX", ofx_file(
+        "Sample Credit Union", [("20261001", "-5.00", "SAMPLE CAFE", "", "B2")], acct="CHECKING", acct_id="0005678"))
+    [result] = call(app, "import_files", [str(later)])["results"]
+    assert (result["account_name"], result["added"]) == ("Chequing", 1)
+    assert len(call(app, "accounts")) == 1
+
+
+def test_a_new_account_from_downloads_waits_for_its_name(app):
+    import os
+    import time
+    call(app, "import_files", [str(write(app.test_downloads, "Chequing.CSV", bank_csv(CHEQUING_ROWS)))])
+    app.db.set_meta("onboarded", "1")
+    # No card yet, so a card's file has nothing it could be: no question.
+    card = write(app.test_downloads, "Card.QFX", ofx_file(
+        "Sample Credit Union", [("20260911", "-8.00", "SAMPLE DINER", "", "C1")], card=True, acct_id="0009876"))
+    [result] = call(app, "import_files", [str(card)])["results"]
+    assert (result["account_name"], result["new_account"]) == ("Sample Credit Union card", True)
+
+    savings = write(app.test_downloads, "Savings.QFX", ofx_file(
+        "Sample Credit Union", [("20260912", "50.00", "SAMPLE DEPOSIT", "", "S1")], acct="SAVINGS", acct_id="0004444"))
+    os.utime(savings, (time.time() - 10, time.time() - 10))
+    waiting = app.watch_downloads()  # found in Downloads: waits in the Inbox
+    assert waiting["results"] == [] and [f["needs"] for f in waiting["needs_setup"]] == ["new_account"]
+    assert [(f["filename"], f["needs"]) for f in call(app, "inbox")["files"]] == [("Savings.QFX", "new_account")]
+    accounts = {a["name"]: a["id"] for a in call(app, "accounts")}
+    wrong = app.dispatch("set_file_accounts", [str(savings), [{"index": 0, "account_id": accounts["Sample Credit Union card"]}]])
+    assert not wrong["ok"] and "card" in wrong["error"]
+    taken = app.dispatch("set_file_accounts", [str(savings), [{"index": 0, "name": "chequing"}]])
+    assert not taken["ok"] and "already" in taken["error"]
+    [result] = call(app, "set_file_accounts", str(savings), [{"index": 0, "name": "Rainy Day"}])["results"]
+    assert (result["account_name"], result["added"]) == ("Rainy Day", 1)
+    assert not savings.exists()  # moved into Imported Files, like any import from Downloads
+    assert call(app, "inbox")["files"] == []

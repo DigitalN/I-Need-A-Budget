@@ -13,8 +13,8 @@ CATS = [{"id": FOOD, "role": "normal", "debt_account_id": None},
         {"id": CARD_PAY, "role": "payment", "debt_account_id": CARD}]
 
 
-def run(lines, payments=(), assigned=None, opening=0, end="2026-08"):
-    return compute("2026-07", end, CATS, lines, list(payments), assigned or {}, opening)
+def run(lines, payments=(), assigned=None, opening=0, end="2026-08", carry=False):
+    return compute("2026-07", end, CATS, lines, list(payments), assigned or {}, opening, carry_overspending=carry)
 
 
 def test_cash_spending_and_overspending():
@@ -25,6 +25,25 @@ def test_cash_spending_and_overspending():
     # Overspending doesn't carry: Food starts August at zero, and the 50 comes out of Ready to assign.
     assert aug["categories"][FOOD]["carried"] == 0
     assert aug["overspent_last_month"] == 50 and aug["ready_to_assign"] == 850
+
+
+def test_overspending_can_carry_over_instead():
+    """The setting: an overspent category starts next month below zero, and Ready to
+    assign is left alone. Next month's money covers it first."""
+    r = run([("2026-07", 1, False, FOOD, -150)], assigned={("2026-07", FOOD): 100}, opening=1000, carry=True)
+    jul, aug = r["2026-07"], r["2026-08"]
+    assert jul["ready_to_assign"] == 900
+    assert aug["categories"][FOOD]["carried"] == -50 and aug["categories"][FOOD]["available"] == -50
+    assert aug["overspent_last_month"] == 0 and aug["ready_to_assign"] == 900
+    r = run([("2026-07", 1, False, FOOD, -150), ("2026-08", CARD, True, FOOD, -30)],
+            assigned={("2026-07", FOOD): 100, ("2026-08", FOOD): 50}, opening=1000, carry=True)
+    aug = r["2026-08"]
+    # The 50 assigned covers July's 50 first, so August's card spending wasn't covered: new debt.
+    assert aug["categories"][FOOD]["available"] == -30 and aug["new_debt"] == 30
+    assert r["2026-08"]["categories"][CARD_PAY]["available"] == 0
+    # Uncovered card spending is debt on the card either way, not carried in the category.
+    r = run([("2026-07", CARD, True, FOOD, -80)], assigned={("2026-07", FOOD): 30}, opening=1000, carry=True)
+    assert r["2026-08"]["categories"][FOOD]["carried"] == 0 and r["2026-07"]["new_debt"] == 50
 
 
 def test_card_spending_moves_money_to_the_payment_envelope():
@@ -90,13 +109,14 @@ def test_money_always_adds_up_on_random_histories():
             for cat in (FOOD, BILLS, CARD_PAY):
                 if rng.random() < 0.7:
                     assigned[(m, cat)] = rng.randint(-5_000, 150_000)
-        result = compute(months[0], months[-1], CATS, lines, payments, assigned, opening)
-        running = opening
-        for m in months:
-            running += cash[m]
-            f = result[m]
-            carried = sum(max(c["available"], 0) for c in f["categories"].values())
-            assert f["ready_to_assign"] - f["overspent_this_month"] + carried == running, m
+        for carry in (False, True):
+            result = compute(months[0], months[-1], CATS, lines, payments, assigned, opening, carry_overspending=carry)
+            running = opening
+            for m in months:
+                running += cash[m]
+                f = result[m]
+                carried = sum(max(c["available"], 0) for c in f["categories"].values())
+                assert f["ready_to_assign"] - f["overspent_this_month"] + carried == running, (m, carry)
 
 
 def test_averages_use_whole_months_only():
@@ -136,6 +156,35 @@ def test_catch_up_and_assigning_a_paycheque(app):
     view = call(app, "apply_plan", "2026-10", [{"category_id": p["category_id"], "amount": p["amount"]} for p in plan["plan"]])
     cats = {c["name"]: c for g in view["groups"] for c in g["categories"]}
     assert cats["Rent"]["available"] == 0 and cats["Food"]["assigned"] == 20000
+    # What's already in a category counts: Food has 200 of its 500, Rent all of its 1000.
+    plan = call(app, "assign_plan", month="2026-10")
+    assert [(p["name"], p["has"], p["need"]) for p in plan["plan"]] == [("Rent", 100000, 0), ("Food", 20000, 30000)]
+    # Money carried over from last month counts too.
+    call(app, "set_assigned", "2026-09", ids["Food"], 15000)
+    plan = call(app, "assign_plan", month="2026-10")
+    assert [(p["name"], p["has"], p["need"]) for p in plan["plan"]][1] == ("Food", 35000, 15000)
+
+
+def test_overspending_carries_over_when_switched_on(app):
+    ids = categories(app, {"Everyday": ["Food"]})
+    call(app, "import_files", [str(write(app.test_downloads, "Chequing.CSV", bank_csv([
+        ("09/03/2026", "SAMPLE GROCER", "SAMPLE GROCER", "-80.00")])))])
+    [t] = call(app, "inbox")["items"]
+    call(app, "approve", txn_id=t["id"], category_id=ids["Food"])
+    [acct] = call(app, "accounts")
+    call(app, "set_balance", acct["id"], 100000, "2026-10-12")
+    call(app, "finish_onboarding", "2026-09")
+    call(app, "set_monthly_budget", ids["Food"], 50000)
+
+    food = lambda v: next(c for g in v["groups"] for c in g["categories"] if c["id"] == ids["Food"])
+    october = call(app, "month", "2026-10")
+    assert food(october)["available"] == 0 and october["summary"]["overspent_last_month"] == 8000
+    app.settings.update({"carry_overspending": True})
+    october = call(app, "month", "2026-10")
+    assert october["carry_overspending"]
+    assert food(october)["available"] == -8000 and october["summary"]["overspent_last_month"] == 0
+    assert october["summary"]["ready_to_assign"] == 108000  # the 1,000 in the bank, plus the 80 Food still owes
+    assert call(app, "assign_plan", month="2026-10")["plan"][0]["need"] == 58000  # last month's 80 too
 
 
 def test_category_details_have_last_month_the_average_and_a_note(app):

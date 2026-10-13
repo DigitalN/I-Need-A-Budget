@@ -24,7 +24,7 @@ def test_clickable_data_attributes_are_listened_for():
                     "data-sub", "data-what", "data-amount", "data-group", "data-import", "data-payee", "data-on",
                     "data-hidden", "data-cat", "data-into"}  # read by the handler of the button's action, not clicked on
     selectors = " ".join(re.findall(r"closest\('([^']+)'\)", PAGE))
-    handled_elsewhere = {"data-month", "data-theme-set", "data-avg", "data-move-group", "data-hide-cat",
+    handled_elsewhere = {"data-month", "data-theme-set", "data-move-group", "data-hide-cat",
                          "data-delete-cat", "data-delete-group", "data-split-cat", "data-split-del",
                          "data-split-add"}  # dataset checks in their own handlers
     missing = [a for a in on_buttons - carry_values - handled_elsewhere if f"[{a}" not in selectors]

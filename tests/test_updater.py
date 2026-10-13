@@ -92,3 +92,28 @@ def test_no_releases_is_up_to_date_but_no_access_is_an_error(tmp_path, monkeypat
     answers[updater.REPOSITORY_URL] = 404
     with pytest.raises(UpdateError, match="can't see the app's repository"):
         u._latest_release("token")
+
+
+def test_without_a_token_it_asks_anonymously_and_says_when_it_needs_one(monkeypatch):
+    """A public repository needs no token; a private one tells Settings to ask for one."""
+    import updater
+
+    answers = {}
+    sent = []
+
+    def fake_curl(url, *a, token=None, **k):
+        sent.append(token)
+        return answers[url], '{"tag_name": "v9.0.0", "assets": [{"name": "I.dmg", "url": "https://x/1"}]}'
+
+    monkeypatch.setattr(updater, "_curl", fake_curl)
+    u = updater.Updater.__new__(updater.Updater)
+    u._feed, u.needs_access = updater.FEED_URL, False
+    answers[updater.FEED_URL] = 200
+    assert u._latest_release(None) == ("9.0.0", "https://x/1") and sent == [None] and not u.needs_access
+    answers[updater.FEED_URL], answers[updater.REPOSITORY_URL] = 404, 404
+    with pytest.raises(UpdateError, match="private"):
+        u._latest_release(None)
+    assert u.needs_access
+    answers[updater.FEED_URL] = 200
+    u._latest_release("token")
+    assert not u.needs_access

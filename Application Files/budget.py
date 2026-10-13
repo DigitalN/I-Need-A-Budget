@@ -9,7 +9,11 @@
   (spending is negative, refunds and reimbursements positive).
 - **Overspending** (available below zero) doesn't carry over. Next month the category
   starts at zero again, and the overspent amount comes out of next month's Ready to
-  assign ("Overspent last month"), like Actual Budget does.
+  assign ("Overspent last month"), like Actual Budget and YNAB do.
+- Unless **overspending carries over** (a setting): then the category starts next month
+  below zero, still owing what it overspent, and Ready to assign is left alone. Money
+  assigned to it next month covers that first. Only cash overspending carries: uncovered
+  card spending is already new debt on the card (below).
 
 Credit cards and lines of credit (the debt accounts) work like YNAB:
 
@@ -29,14 +33,15 @@ Credit cards and lines of credit (the debt accounts) work like YNAB:
 - A balance transfer between two debt accounts moves debt, not money: no envelope changes.
 
 With these rules, at the end of every month:
-  Ready to assign − overspent this month + Σ carried into next month == cash in cash accounts.
-`tests/test_budget.py` checks that on random histories.
+  Ready to assign − overspent this month + Σ max(available, 0) == cash in cash accounts,
+whether overspending carries over or not. `tests/test_budget.py` checks that on random
+histories.
 """
 
 from util import add_months, months_between
 
 
-def compute(start, end, categories, lines, payments, assigned, opening_cash):
+def compute(start, end, categories, lines, payments, assigned, opening_cash, carry_overspending=False):
     """Budget figures for every month from `start` to `end`.
 
     categories: [{'id', 'role': 'normal' | 'income' | 'payment', 'debt_account_id'}]
@@ -46,6 +51,8 @@ def compute(start, end, categories, lines, payments, assigned, opening_cash):
         account and a debt account (a card payment is negative: money left chequing)
     assigned: {(month, category_id): cents}
     opening_cash: cash in cash accounts at the end of the day before `start`
+    carry_overspending: cash overspending stays in the category (below zero) next month
+        instead of coming out of next month's Ready to assign
     """
     roles = {c["id"]: c["role"] for c in categories}
     payment_for = {c["debt_account_id"]: c["id"] for c in categories if c["role"] == "payment"}
@@ -120,8 +127,12 @@ def compute(start, end, categories, lines, payments, assigned, opening_cash):
             "ready_to_assign": rta, "overspent_this_month": cash_over_total, "new_debt": credit_over_total,
             "categories": cats,
         }
-        carry = {cid: max(cats[cid]["available"], 0) for cid in carry}
-        previous_rta, previous_cash_over = rta, cash_over_total
+        if carry_overspending:  # what was overspent in cash stays with the category, below zero
+            carry = {cid: max(cats[cid]["available"], 0) - cats[cid]["overspent_cash"] for cid in carry}
+            previous_rta, previous_cash_over = rta, 0
+        else:
+            carry = {cid: max(cats[cid]["available"], 0) for cid in carry}
+            previous_rta, previous_cash_over = rta, cash_over_total
     return results
 
 

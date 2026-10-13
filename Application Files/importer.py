@@ -22,7 +22,9 @@ Formats (detected from the content, not the file name):
 Which account: from what the file says (see each format), else the one existing account
 that already has most of the file's rows, else a new account (or, for a set-up CSV, a
 question). A file never lands in an account just because it's the only one of its kind:
-with more than one bank that would put one bank's file in another bank's account.
+with more than one bank that would put one bank's file in another bank's account. Once the
+budget is set up, the app asks before making a new account when you already have one it
+could be (a replaced card has a new number): service.BudgetService._accounts_to_ask().
 
 Duplicates: each row gets a fingerprint from its date, amount and description, plus
 how many identical rows came before it in the same file. Exports overlap freely, so a
@@ -483,20 +485,38 @@ def find_or_create_account(conn, hint, rows=(), fps=()):
     so the next file from it is recognised straight away."""
     account_id = find_account(conn, hint, rows, fps)
     if account_id:
-        for key in hint.keys:
-            conn.execute("INSERT OR IGNORE INTO account_sources (key, account_id) VALUES (?, ?)", (key, account_id))
-        if hint.bank:
-            conn.execute("UPDATE accounts SET bank = ? WHERE id = ? AND bank IS NULL", (hint.bank, account_id))
+        learn_keys(conn, hint, account_id)
         return account_id, False
     if not hint.create:
         raise NeedsSetup("account")
+    return create_account_for(conn, hint), True
+
+
+def learn_keys(conn, hint, account_id, chosen=False):
+    """The account remembers what this file calls it (and its bank, if it had none). A key
+    another account already has stays with it, unless the person chose this account."""
+    for key in hint.keys:
+        conn.execute("INSERT INTO account_sources (key, account_id) VALUES (?, ?) ON CONFLICT(key) DO " +
+                     ("UPDATE SET account_id = excluded.account_id" if chosen else "NOTHING"), (key, account_id))
+    if hint.bank:
+        conn.execute("UPDATE accounts SET bank = ? WHERE id = ? AND bank IS NULL", (hint.bank, account_id))
+
+
+def suggested_name(conn, hint):
+    """The name a new account for this file gets: what the file calls it, made unique."""
     name = hint.name
     if conn.execute("SELECT 1 FROM accounts WHERE name = ? COLLATE NOCASE", (name,)).fetchone():
         name = f"{name} {hint.last4}" if hint.last4 else f"{name} 2"
+    return name
+
+
+def create_account_for(conn, hint, name=None):
+    """A new account for a file's rows, knowing the file's keys."""
+    name = name or suggested_name(conn, hint)
     keys = [k for k in hint.keys if not conn.execute("SELECT 1 FROM account_sources WHERE key = ?", (k,)).fetchone()]
     account_id = ledger.create_account(conn, name, hint.kind, keys=keys, last4=hint.last4, bank=hint.bank)
     log.info("Created account %s (%s)", name, hint.kind)
-    return account_id, True
+    return account_id
 
 
 def account_with_rows(conn, kind, rows, fps):
@@ -525,18 +545,25 @@ def account_with_rows(conn, kind, rows, fps):
     return matches[0] if len(matches) == 1 else None
 
 
-def import_parsed(conn, parsed, filename, sha, archived_path=None):
+def import_parsed(conn, parsed, filename, sha, archived_path=None, accounts=None):
     """Adds the new rows of a parsed bank file and files what it can, one Result per
-    account in the file. Call inside db.write()."""
+    account in the file. `accounts`: {part index: account id} for parts whose account the
+    person chose. Call inside db.write()."""
     if parsed.format == "actual":
         raise ImportError_("Actual Budget exports are learnt from, not imported.")
-    return [_import_part(conn, parsed.format, part, filename, sha, archived_path) for part in parsed.parts]
+    accounts = accounts or {}
+    return [_import_part(conn, parsed.format, part, filename, sha, archived_path, accounts.get(i))
+            for i, part in enumerate(parsed.parts)]
 
 
-def _import_part(conn, fmt, part, filename, sha, archived_path):
+def _import_part(conn, fmt, part, filename, sha, archived_path, account_id=None):
     result = Result(filename, fmt, total=len(part.rows), first_date=part.first_date, last_date=part.last_date)
     fps = fingerprints(part.rows)
-    account_id, created = find_or_create_account(conn, part.account, part.rows, fps)
+    if account_id is None:
+        account_id, created = find_or_create_account(conn, part.account, part.rows, fps)
+    else:
+        learn_keys(conn, part.account, account_id, chosen=True)
+        created = False
     acct = conn.execute("SELECT * FROM accounts WHERE id = ?", (account_id,)).fetchone()
     result.account_id, result.account_name, result.new_account = account_id, acct["name"], created
     import_id = conn.execute(

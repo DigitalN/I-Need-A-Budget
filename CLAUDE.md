@@ -92,10 +92,12 @@ All in `Application Files/`:
 - `subscriptions.py`: detection (steady rhythm; same price, or a once-a-month bill that
   varies), tracking with a name, category, price type and optional end date, price-change
   questions, "charged you again" alerts (after cancelling or after the end date).
-- `budget.py`: pure envelope math, credit cards included. Its docstring states the rules
-  and the invariant `tests/test_budget.py` checks on random histories.
-- `updater.py`, `launch.py`: updates from the private repo's GitHub releases; moving into
-  Applications; relaunching.
+- `budget.py`: pure envelope math, credit cards included, and the "overspending carries
+  over" setting. Its docstring states the rules and the invariant `tests/test_budget.py`
+  checks on random histories (both ways).
+- `updater.py`, `launch.py`: updates from the repo's GitHub releases (with a token if
+  there is one, else anonymously, for when it's public); moving into Applications;
+  relaunching.
 - `settings.py`: JSON settings, validated on every load and save.
 - `util.py`: money in cents, months and dates.
 - `index.html`: the whole interface, vanilla JS, no external resources. Pages: Budget,
@@ -136,7 +138,8 @@ All in `Application Files/`:
   and re-filing keep reasons with that phrase).
 - A charge more than 3× the payee's biggest past charge always asks.
 - **The updater is the only network access.** No HTTP server in the app (the dev preview
-  is a separate script), no analytics, no CDNs or remote fonts. The CSP in `index.html`
+  is a separate script), no analytics, no CDNs or remote fonts. (Settings → Release notes
+  opens GitHub in the browser; the app itself doesn't fetch it.) The CSP in `index.html`
   sets `connect-src 'none'`. A future Tangerine sync would be the second network access:
   it must be our own code (see Roadmap).
 - pywebview exposes every public attribute of `Api` to JavaScript; keep internals behind a
@@ -150,7 +153,7 @@ All in `Application Files/`:
 
 Ready to assign starts as the cash in chequing/savings when the budget starts; income
 adds, assigning takes. Overspending resets the category and comes out of next month's
-Ready to assign. Card spending from a funded category moves that money to the card's
+Ready to assign (or, with the setting on, stays in the category below zero). Card spending from a funded category moves that money to the card's
 payment envelope; uncovered card spending is new debt instead. Paying the card from
 chequing spends the payment envelope; old debt is paid down by assigning to it. Refunds
 and reimbursements go back into the category they came from. "Needs ~$X" on the Budget
@@ -166,8 +169,11 @@ page is the average of what a category actually spent in the last 3/6/12 whole m
 - Merging to `main` is not a release, but it's the go-ahead for one: Claude then runs
   `scripts/release.sh NOTES.md` (notes outside the repo). The maintainer never builds. Installed copies only update when a release is
   published on GitHub.
-- The repository is **private**. The updater authenticates with a token saved in the
-  Keychain from Settings, or the GitHub CLI's login (`gh auth token`).
+- The repository is **private** for now (the maintainer may make it public: it's
+  Apache-2.0 licensed, with NOTICE and CITATION.cff for credit). The updater uses a token
+  saved in the Keychain from Settings, or the GitHub CLI's login (`gh auth token`), and
+  asks anonymously without one. Settings shows the token field only when GitHub refused
+  this copy (`needs_access`).
 - Ask once before anything on GitHub (pushing, opening a PR, publishing a release), then
   do all of it. Check each step's result before the next one that can't be undone.
 - Releases are signed with the maintainer's Apple Development certificate (team
@@ -199,8 +205,15 @@ page is the average of what a category actually spent in the last 3/6/12 whole m
 Don't undo these without asking:
 
 - Data in by **auto-import from Downloads**: recognised bank files are imported when
-  they appear (or at launch) and moved into `Imported Files/`. Drag-and-drop and
-  "Import files…" also work. Actual exports are only learnt from, never moved.
+  they appear (or at launch) and moved into `Imported Files/`. Dropping files on the
+  window also works (there's no Import files button: the maintainer removed it).
+  Actual exports are only learnt from, never moved.
+- **A bank file for an account the app hasn't seen asks** "a new account, or one you
+  have?" (a replaced card has a new number) once the budget is set up and there's an
+  open account of the same sort (card or bank) it could be. Dropped files ask straight
+  away; files from Downloads wait at the top of the Inbox ("Don't import" ignores them).
+  The answer is remembered by the file's account number. During onboarding every
+  account is simply created.
 - **Any bank, not just Tangerine.** Quicken/Money/QuickBooks files are suggested
   wherever the app explains downloads (they need no setup and carry the balance). Other
   CSVs are **set up once** in a pop-up (columns, date order, money out sign, account);
@@ -236,7 +249,10 @@ Don't undo these without asking:
   in a long list.
 - **Payee clean-up with fuzzy matching** (store numbers, typos, truncation).
 - **Monthly budget per category** ("each month"), with "needs ~$X" from *actual* spending,
-  so it's right even when the user forgot to budget a month. The category panel offers
+  so it's right even when the user forgot to budget a month. "Each month" is a plan, not
+  money: Assign money… tops a category up to it, counting what's already in it (carried
+  in plus assigned this month). The maintainer once read "Still needs" as being asked
+  to assign twice; the window now shows Each month / Already in / Assign. The category panel offers
   "Last month" and "Last 3 months avg" (both actual spending), saves the amount as it's
   typed (no Save button), and has a per-category Notes box that also saves as typed.
 - Budgeting is **as each paycheque lands** (Assign money… fills categories up to their
@@ -246,16 +262,27 @@ Don't undo these without asking:
 - **Refunds and reimbursements go back to the category the money left from.**
 - **Subscriptions page** that treats subscriptions as their own thing: named per price,
   own category, price changes, late/cancelled tracking, "charged again" alerts. New prices
-  from a subscription payee always ask (see Key rules).
+  from a subscription payee always ask (see Key rules). A charge opened on the
+  Transactions page has a Subscription line: Track as subscription… or Edit….
 - **Window only, no menu bar item.** The close button asks, then quits the app entirely;
   ⌘Q quits without asking. A downloaded update installs on quit.
 - "Eating Out" was renamed **Food** (Actual's old name still matches through `old_names`).
 - **Update checks only at launch and on Check now**, never on a timer while the app is
   open (the maintainer's choice).
-- **Private repo, auto-updates via GitHub releases with a token.** The user may later
-  give a separate copy to their spouse (separate data, same updates). That copy needs a
-  read-only token in Settings.
+- **Auto-updates via GitHub releases.** The user may later give a separate copy to their
+  spouse or a friend (separate data, same updates). While the repo is private that copy
+  needs a read-only token in Settings; once it's public, nothing. People install from
+  the release's `.dmg` (README), never by building.
 - Budget can start months back; past months are caught up with one click ("Catch up").
+- **Overspending carries over** is a setting, off by default (a friend coming from YNAB
+  asked for it): an overspent category starts next month below zero instead of the
+  amount coming out of Ready to assign. Only cash overspending; card overspending is
+  debt on the card either way.
+- **Settings is kept short** (the maintainer's mock-up): Appearance, Import from
+  Downloads, Overspending carries over, Learn from Actual; updates, Release notes,
+  Check now (GitHub access only when needed); Open buttons for the data, imported
+  files and log folders. Budget start, the "needs" look-back and "fill monthly amounts"
+  were removed from it on purpose.
 
 ## Roadmap (future chats)
 

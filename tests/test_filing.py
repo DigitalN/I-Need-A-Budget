@@ -186,9 +186,11 @@ def test_filing_into_subscriptions_asks_what_it_is(app):
     result = call(app, "approve_many", items=[{"id": i["id"], "category_id": ids["Subscriptions"]} for i in items])
     prompt = result["subscription_prompt"]
     assert prompt and prompt["amount"] == 3850 and prompt["count"] == 3 and prompt["cadence"] == "monthly"
-    call(app, "subscription_from_transaction", txn_id=prompt["txn_id"], name="Couch", category_id=ids["Subscriptions"],
-         cadence="monthly", kind="bill")
+    out = call(app, "subscription_from_transaction", txn_id=prompt["txn_id"], name="Couch",
+               category_id=ids["Subscriptions"], cadence="monthly", kind="bill", note="Ends after 12 payments")
     assert {t["subscription_name"] for t in txns(app)} == {"Couch"}
+    [bill] = call(app, "subscriptions")["bills"]
+    assert (bill["id"], bill["note"], bill["usual_amount"]) == (out["subscription_id"], "Ends after 12 payments", 3850)
     # A new charge at that price files itself under its name.
     imp(app, "Chequing-2.CSV", bank_csv([
         ("10/24/2026", "EFT Withdrawal to SAMPLE PAYPLAN", "EFT Withdrawal to SAMPLE PAYPLAN", "-38.50")]))

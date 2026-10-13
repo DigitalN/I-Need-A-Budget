@@ -4,7 +4,8 @@ Launcher: logging, the single-instance lock, the database, the Downloads watcher
 updater, and the pywebview window. The page talks to Python through pywebview's
 in-process bridge (`window.pywebview.api.call(name, args)` → service.BudgetService), so
 the app opens no network ports. Its only network access is the update check
-(updater.py). All data stays in ~/Library/Application Support/I Need A Budget.
+(updater.py); "Release notes" in Settings opens GitHub in your browser. All data stays in
+~/Library/Application Support/I Need A Budget.
 
 Closing the window asks, then quits the app entirely (it isn't meant to keep running
 in the background). ⌘Q quits without asking. A downloaded update is installed on quit.
@@ -21,7 +22,7 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 APP_NAME = "I Need A Budget"
-VERSION = "1.0.2"  # the build reads it from here; see the release checklist in DEVELOPMENT.md
+VERSION = "1.0.3"  # the build reads it from here; see the release checklist in DEVELOPMENT.md
 if os.environ.get("INAB_DATA_DIR"):  # for development/testing against a throwaway folder
     DATA_DIR = Path(os.environ["INAB_DATA_DIR"]).expanduser()
     LOG_DIR = DATA_DIR / "Logs"
@@ -105,9 +106,10 @@ class BudgetApp:
         self._service = BudgetService(self._db, self._settings, DATA_DIR, hooks={
             "app_info": self._app_info,
             "choose_files": self._choose_files,
-            "reveal_data": lambda: self._reveal(DATA_DIR),
-            "reveal_imports": lambda: self._reveal(DATA_DIR / "Imported Files"),
-            "reveal_log": lambda: self._reveal(LOG_PATH),
+            "open_data": lambda: self._open_folder(DATA_DIR),
+            "open_imports": lambda: self._open_folder(DATA_DIR / "Imported Files"),
+            "open_log": lambda: self._open_folder(LOG_DIR),
+            "open_release_notes": self._open_release_notes,
             "update_state": self._updater.state,
             "check_updates": self._check_updates,
             "install_update": self._restart_into_update,
@@ -132,15 +134,23 @@ class BudgetApp:
             file_types=("Bank exports (*.csv;*.CSV;*.qfx;*.QFX;*.ofx;*.OFX;*.qbo;*.QBO)", "All files (*.*)"))
         return list(result or [])
 
-    def _reveal(self, path):
+    def _open_folder(self, path):
         from AppKit import NSURL, NSWorkspace
         from PyObjCTools import AppHelper
 
         path = Path(path)
-        if not path.exists() and not path.suffix:  # a folder that hasn't been needed yet
-            path.mkdir(parents=True, exist_ok=True)
-        url = NSURL.fileURLWithPath_(str(path))
-        AppHelper.callAfter(NSWorkspace.sharedWorkspace().activateFileViewerSelectingURLs_, [url])
+        path.mkdir(parents=True, exist_ok=True)  # Imported Files waits for the first import
+        AppHelper.callAfter(NSWorkspace.sharedWorkspace().openURL_, NSURL.fileURLWithPath_(str(path)))
+        return True
+
+    def _open_release_notes(self):
+        """In the browser: the app itself only ever talks to GitHub to update."""
+        from AppKit import NSURL, NSWorkspace
+        from PyObjCTools import AppHelper
+
+        import launch
+
+        AppHelper.callAfter(NSWorkspace.sharedWorkspace().openURL_, NSURL.URLWithString_(launch.RELEASES_URL))
         return True
 
     def _check_updates(self):
