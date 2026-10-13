@@ -6,6 +6,7 @@ Every function takes an open connection (`db.write()` / `db.read()`); none of th
 commits. Amounts are cents.
 """
 
+import transfers
 from payees import find_similar, merchant_key
 from util import day_before
 
@@ -25,13 +26,13 @@ def is_debt(kind):
 
 # ── accounts ──────────────────────────────────────────────────
 
-def create_account(conn, name, kind, keys=(), last4=None, anchor_date=None, anchor_balance=None):
+def create_account(conn, name, kind, keys=(), last4=None, anchor_date=None, anchor_balance=None, bank=None):
     if kind not in ACCOUNT_KINDS:
         raise ValueError(f"Unknown account type: {kind}")
     sort = conn.execute("SELECT COALESCE(MAX(sort), 0) + 1 FROM accounts").fetchone()[0]
     cur = conn.execute(
-        "INSERT INTO accounts (name, kind, last4, anchor_date, anchor_balance, sort) VALUES (?, ?, ?, ?, ?, ?)",
-        (name, kind, last4, anchor_date, anchor_balance, sort))
+        "INSERT INTO accounts (name, kind, bank, last4, anchor_date, anchor_balance, sort) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (name, kind, bank or None, last4, anchor_date, anchor_balance, sort))
     account_id = cur.lastrowid
     for key in keys:
         conn.execute("INSERT OR IGNORE INTO account_sources (key, account_id) VALUES (?, ?)", (key, account_id))
@@ -76,6 +77,108 @@ def opening_cash(conn, start_month):
         else:
             total += balance
     return total, missing
+
+
+def duplicate_accounts(conn):
+    """Accounts that look like a second copy of another one (a file was imported into a
+    new account when it belonged to an existing one): nearly all of the newer account's
+    transactions, where their dates overlap, are already in the older one.
+    [{'account_id', 'name', 'into_id', 'into_name', 'shared', 'total'}]"""
+    pairs = {}
+    for r in conn.execute("SELECT GROUP_CONCAT(DISTINCT account_id) AS ids FROM transactions "
+                          "WHERE fingerprint IS NOT NULL GROUP BY fingerprint HAVING COUNT(DISTINCT account_id) > 1"):
+        ids = sorted(int(i) for i in r["ids"].split(","))
+        for older in ids[:-1]:
+            pairs[(ids[-1], older)] = pairs.get((ids[-1], older), 0) + 1
+    accounts = {r["id"]: r for r in conn.execute(
+        "SELECT a.id, a.name, a.kind, MIN(t.date) AS first, MAX(t.date) AS last, COUNT(t.id) AS n FROM accounts a "
+        "JOIN transactions t ON t.account_id = a.id GROUP BY a.id")}
+    out, seen = [], set()
+    for (newer, older), shared in sorted(pairs.items(), key=lambda kv: -kv[1]):
+        a, b = accounts.get(newer), accounts.get(older)
+        if not a or not b or newer in seen or is_debt(a["kind"]) != is_debt(b["kind"]):
+            continue
+        overlapping = conn.execute("SELECT COUNT(*) FROM transactions WHERE account_id = ? AND date BETWEEN ? AND ?",
+                                   (newer, b["first"], b["last"])).fetchone()[0]
+        if shared >= min(3, a["n"]) and shared >= 0.8 * overlapping:
+            seen.add(newer)
+            out.append({"account_id": newer, "name": a["name"], "into_id": older, "into_name": b["name"],
+                        "shared": shared, "total": a["n"]})
+    return out
+
+
+def merge_accounts(conn, from_id, into_id):
+    """`from_id` turned out to be the same account as `into_id`. Its transactions that
+    `into_id` already has are dropped (keeping anything you decided about the copy), the
+    rest move over, and `from_id` goes. Returns (moved, dropped)."""
+    a = conn.execute("SELECT * FROM accounts WHERE id = ?", (from_id,)).fetchone()
+    b = conn.execute("SELECT * FROM accounts WHERE id = ?", (into_id,)).fetchone()
+    if a is None or b is None or from_id == into_id:
+        raise ValueError("Pick another account to merge into.")
+    if is_debt(a["kind"]) != is_debt(b["kind"]):
+        raise ValueError("A card or line of credit can only be merged with another one.")
+    moved = dropped = 0
+    for t in conn.execute("SELECT * FROM transactions WHERE account_id = ? ORDER BY date, id", (from_id,)).fetchall():
+        twin = None
+        if t["fingerprint"]:
+            twin = conn.execute("SELECT * FROM transactions WHERE account_id = ? AND fingerprint = ?",
+                                (into_id, t["fingerprint"])).fetchone()
+        if twin is None and t["fitid"]:
+            twin = conn.execute("SELECT * FROM transactions WHERE account_id = ? AND fitid = ?",
+                                (into_id, t["fitid"])).fetchone()
+        if twin is None:
+            if t["fitid"] and conn.execute("SELECT 1 FROM transactions WHERE account_id = ? AND fitid = ?",
+                                           (into_id, t["fitid"])).fetchone():
+                conn.execute("UPDATE transactions SET fitid = NULL WHERE id = ?", (t["id"],))
+            conn.execute("UPDATE transactions SET account_id = ? WHERE id = ?", (into_id, t["id"]))
+            moved += 1
+        else:
+            _drop_copy(conn, t, twin)
+            dropped += 1
+    conn.execute("UPDATE transactions SET transfer_account_id = ? WHERE transfer_account_id = ?", (into_id, from_id))
+    for t in conn.execute("SELECT id FROM transactions WHERE account_id = ? AND transfer_account_id = ?",
+                          (into_id, into_id)).fetchall():
+        transfers.unlink(conn, t["id"])  # was a transfer between the two copies
+    if a["bank"] and not b["bank"]:
+        conn.execute("UPDATE accounts SET bank = ? WHERE id = ?", (a["bank"], into_id))
+    for table in ("account_sources", "imports", "subscriptions"):
+        conn.execute(f"UPDATE {table} SET account_id = ? WHERE account_id = ?", (into_id, from_id))
+    if a["anchor_date"] is not None and (b["anchor_date"] is None or a["anchor_date"] > b["anchor_date"]):
+        # The newer balance wins (the copy's usually came from the bank's file).
+        conn.execute("UPDATE accounts SET anchor_date = ?, anchor_balance = ? WHERE id = ?",
+                     (a["anchor_date"], a["anchor_balance"], into_id))
+    if is_debt(a["kind"]):
+        old, new = payment_categories(conn).get(from_id), ensure_payment_envelope(conn, into_id)
+        for r in conn.execute("SELECT month, assigned FROM budget WHERE category_id = ?", (old,)).fetchall():
+            conn.execute("INSERT INTO budget (month, category_id, assigned) VALUES (?, ?, ?) ON CONFLICT(month, "
+                         "category_id) DO UPDATE SET assigned = assigned + excluded.assigned", (r["month"], new, r["assigned"]))
+    conn.execute("DELETE FROM accounts WHERE id = ?", (from_id,))
+    return moved, dropped
+
+
+def _drop_copy(conn, copy, twin):
+    """Deletes `copy`, a second copy of `twin`, moving onto `twin` what only the copy has:
+    your filing, a split, a note, its subscription, its transfer, its bank ID."""
+    if twin["status"] == "review" and copy["reason"] in ("Filed by you", "Split by you"):
+        conn.execute("UPDATE transactions SET category_id = ?, is_split = ?, status = 'done', reason = ?, refund_of = ? "
+                     "WHERE id = ?", (copy["category_id"], copy["is_split"], copy["reason"], copy["refund_of"], twin["id"]))
+        if copy["is_split"]:
+            conn.execute("DELETE FROM splits WHERE transaction_id = ?", (twin["id"],))
+            conn.execute("UPDATE splits SET transaction_id = ? WHERE transaction_id = ?", (twin["id"], copy["id"]))
+    if copy["note"] and not twin["note"]:
+        conn.execute("UPDATE transactions SET note = ? WHERE id = ?", (copy["note"], twin["id"]))
+    if copy["subscription_id"] and not twin["subscription_id"]:
+        conn.execute("UPDATE transactions SET subscription_id = ? WHERE id = ?", (copy["subscription_id"], twin["id"]))
+    conn.execute("UPDATE transactions SET refund_of = ? WHERE refund_of = ?", (twin["id"], copy["id"]))
+    other = conn.execute("SELECT * FROM transactions WHERE id = ?", (copy["transfer_id"],)).fetchone() \
+        if copy["transfer_id"] else None
+    conn.execute("DELETE FROM transactions WHERE id = ?", (copy["id"],))
+    if copy["fitid"] and not twin["fitid"] and not conn.execute(
+            "SELECT 1 FROM transactions WHERE account_id = ? AND fitid = ?", (twin["account_id"], copy["fitid"])).fetchone():
+        conn.execute("UPDATE transactions SET fitid = ? WHERE id = ?", (copy["fitid"], twin["id"]))
+    if other is not None and not twin["transfer_id"]:
+        transfers.link(conn, conn.execute("SELECT * FROM transactions WHERE id = ?", (twin["id"],)).fetchone(),
+                       conn.execute("SELECT * FROM transactions WHERE id = ?", (other["id"],)).fetchone())
 
 
 # ── special categories ───────────────────────────────────────

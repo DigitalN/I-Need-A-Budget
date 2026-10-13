@@ -100,11 +100,29 @@ def test_an_older_database_is_backed_up_then_upgraded(tmp_path):
     db = Database(path)
     columns = [r["name"] for r in db.conn.execute("PRAGMA table_info(categories)")]
     assert "note" in columns
-    assert db.get_meta("schema_version") == "2"
+    assert db.get_meta("schema_version") == "3"
     assert db.conn.execute("SELECT name, note FROM categories").fetchone()[:] == ("Rent", "")
-    backups = list((tmp_path / "Backups").glob("budget-before-upgrade-v1-to-v2-*.db"))
+    backups = list((tmp_path / "Backups").glob("budget-before-upgrade-v1-to-v3-*.db"))
     assert len(backups) == 1
     with db.write("Edit") as c:  # undo still works on the new column
         c.execute("UPDATE categories SET note = 'renews in March' WHERE id = 1")
     db.undo()
     assert db.conn.execute("SELECT note FROM categories").fetchone()[0] == ""
+
+
+def test_version_2_accounts_from_files_become_tangerine_accounts(tmp_path):
+    """Version 2 only read Tangerine's files; accounts added by hand have no bank."""
+    db = Database(tmp_path / "budget.db")
+    with db.write() as c:
+        c.execute("INSERT INTO accounts (id, name, kind) VALUES (1, 'Chequing', 'chequing'), (2, 'Cash', 'cash')")
+        c.execute("INSERT INTO account_sources (key, account_id) VALUES ('tangerine-bank:chequing', 1)")
+        c.execute("UPDATE meta SET value = '2' WHERE key = 'schema_version'")
+    for suffix in ("ins", "upd", "del"):
+        db.conn.execute(f"DROP TRIGGER undo_accounts_{suffix}")  # they name every column
+    db.conn.execute("ALTER TABLE accounts DROP COLUMN bank")
+    db.close()
+    db = Database(tmp_path / "budget.db")
+    assert db.get_meta("schema_version") == "3"
+    assert [tuple(r) for r in db.conn.execute("SELECT name, bank FROM accounts ORDER BY id")] == [("Chequing", "Tangerine"),
+                                                                                              ("Cash", None)]
+    assert len(list((tmp_path / "Backups").glob("budget-before-upgrade-v2-to-v3-*.db"))) == 1

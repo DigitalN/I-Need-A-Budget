@@ -64,20 +64,39 @@ def add_days(day, n):
     return (date.fromisoformat(day) + timedelta(days=n)).isoformat()
 
 
-def parse_date(text):
-    """Bank export dates: '10/08/2026' (month first, as Tangerine writes them),
-    '2026-10-08', or OFX's '20261008' / '20261008120000[-5:EST]'."""
+MONTHS = {m: i + 1 for i, m in enumerate(("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct",
+                                          "nov", "dec"))}
+
+
+def parse_date(text, order="mdy"):
+    """Bank export dates: '10/08/2026' (month first, as Tangerine writes them, unless
+    `order` is 'dmy'), '2026-10-08', '2026/10/08', OFX's '20261008' / '20261008120000[-5:EST]',
+    'Oct 8, 2026', '8 Oct 2026', '08-OCT-26'. Two-digit years are 20xx."""
     s = str(text).strip()
-    m = re.fullmatch(r"(\d{1,2})/(\d{1,2})/(\d{4})", s)
+    m = re.fullmatch(r"(\d{1,2})[/.-](\d{1,2})[/.-](\d{4}|\d{2})", s)
     if m:
-        return date(int(m.group(3)), int(m.group(1)), int(m.group(2))).isoformat()
-    m = re.fullmatch(r"(\d{4})-(\d{2})-(\d{2})", s)
+        a, b, year = int(m.group(1)), int(m.group(2)), _year(m.group(3))
+        month, day = (b, a) if order == "dmy" else (a, b)
+        return date(year, month, day).isoformat()
+    m = re.fullmatch(r"(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})", s)
     if m:
         return date(int(m.group(1)), int(m.group(2)), int(m.group(3))).isoformat()
     m = re.match(r"(\d{4})(\d{2})(\d{2})", s)
     if m:
         return date(int(m.group(1)), int(m.group(2)), int(m.group(3))).isoformat()
+    words = re.findall(r"[A-Za-z]+|\d+", s)
+    if len(words) == 3:
+        names = [w for w in words if w[:3].lower() in MONTHS and not w.isdigit()]
+        numbers = [w for w in words if w.isdigit()]
+        if len(names) == 1 and len(numbers) == 2:
+            day, year = (numbers if len(numbers[1]) >= len(numbers[0]) else numbers[::-1])
+            if len(day) <= 2:
+                return date(_year(year), MONTHS[names[0][:3].lower()], int(day)).isoformat()
     raise ValueError(f"Not a date: {text!r}")
+
+
+def _year(text):
+    return 2000 + int(text) if len(text) == 2 else int(text)
 
 
 def today():

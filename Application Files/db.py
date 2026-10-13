@@ -24,7 +24,7 @@ from pathlib import Path
 
 log = logging.getLogger("inab")
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 BACKUPS_KEPT = 14
 
 SCHEMA = """
@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS accounts (
     id INTEGER PRIMARY KEY,
     name TEXT NOT NULL,
     kind TEXT NOT NULL,                  -- chequing | savings | cash | credit_card | line_of_credit
+    bank TEXT,                           -- the bank or credit union, as the person calls it
     last4 TEXT,                          -- card digits, shown next to the name
     anchor_date TEXT,                    -- a balance the user gave us, at the end of this day
     anchor_balance INTEGER,
@@ -47,10 +48,33 @@ CREATE TABLE IF NOT EXISTS accounts (
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
--- How imported files find their account: 'tangerine-card:1234', 'tangerine-bank:chequing', 'ofx:...'
+-- How imported files find their account: 'number:rbc:1234' (bank and account number, from any
+-- kind of file), 'tangerine-card:1234', 'tangerine-bank:chequing', 'csv:3:statement' (a set-up
+-- CSV layout and the file's name), ...
 CREATE TABLE IF NOT EXISTS account_sources (
     key TEXT PRIMARY KEY,
     account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE
+);
+
+-- CSV files the app was shown how to read ("set it up once"), found by their header row.
+CREATE TABLE IF NOT EXISTS csv_layouts (
+    id INTEGER PRIMARY KEY,
+    signature TEXT NOT NULL UNIQUE,      -- importer.csv_signature(): the header, or the shape of a headerless file
+    has_header INTEGER NOT NULL DEFAULT 1,
+    date_col INTEGER NOT NULL,
+    date_order TEXT NOT NULL DEFAULT 'mdy',  -- mdy | dmy | ymd
+    desc_cols TEXT NOT NULL,             -- column numbers, comma-separated, joined in this order
+    amount_col INTEGER,                  -- one signed amount column...
+    out_col INTEGER,                     -- ...or money out and money in in two
+    in_col INTEGER,
+    negate INTEGER NOT NULL DEFAULT 0,   -- the amount column shows money out as positive
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Files in Downloads the person said aren't bank files: never asked about again.
+CREATE TABLE IF NOT EXISTS ignored_files (
+    sha256 TEXT PRIMARY KEY,
+    filename TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS category_groups (
@@ -197,7 +221,8 @@ INSERT OR IGNORE INTO undo_state (id, active) VALUES (1, 0);
 
 # Tables whose changes can be undone.
 UNDO_TABLES = ("meta", "accounts", "account_sources", "category_groups", "categories", "payees", "payee_keys",
-               "imports", "subscriptions", "transactions", "splits", "budget", "examples")
+               "imports", "subscriptions", "transactions", "splits", "budget", "examples", "csv_layouts",
+               "ignored_files")
 
 
 class Database:
@@ -241,7 +266,15 @@ class Database:
                     self.conn.execute("ALTER TABLE subscriptions ADD COLUMN pricing TEXT NOT NULL DEFAULT 'fixed'")
                 if "ends_on" not in columns:
                     self.conn.execute("ALTER TABLE subscriptions ADD COLUMN ends_on TEXT")
-            # Next upgrade: `if version is not None and version < 3: ...`, then raise SCHEMA_VERSION.
+            if version is not None and version < 3:
+                columns = [r["name"] for r in self.conn.execute("PRAGMA table_info(accounts)")]
+                if "bank" not in columns:
+                    self.conn.execute("ALTER TABLE accounts ADD COLUMN bank TEXT")
+                # Until version 3 the app only knew Tangerine's files: every account that came
+                # from a file is a Tangerine account.
+                self.conn.execute("UPDATE accounts SET bank = 'Tangerine' WHERE bank IS NULL AND id IN "
+                                  "(SELECT account_id FROM account_sources)")
+            # Next upgrade: `if version is not None and version < 4: ...`, then raise SCHEMA_VERSION.
             self.conn.execute("INSERT INTO meta (key, value) VALUES ('schema_version', ?) "
                               "ON CONFLICT(key) DO UPDATE SET value = excluded.value", (str(SCHEMA_VERSION),))
             if version is not None and version < SCHEMA_VERSION:

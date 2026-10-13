@@ -3,7 +3,7 @@ balance to a line of credit.
 
 A transfer shows up twice, once in each account's export, often a day or two apart
 ("Tangerine Credit Card Payment" -1,250.00 in Chequing, "PAYMENT - THANK YOU"
-+1,250.00 on the card). Both halves get `transfer_account_id` (the other account) and,
++1,250.00 on the card). The two halves can be at different banks. Both halves get `transfer_account_id` (the other account) and,
 once both are imported, `transfer_id` (each other). Transfers have no category: they
 aren't spending. The budget counts a card payment once, from the cash side.
 
@@ -11,11 +11,13 @@ If only one half is imported so far, it's still marked as a transfer to the obvi
 account, and the other half pairs with it when it arrives.
 """
 
+import re
+
 PAIR_WINDOW_DAYS = 7
 
 
 def _accounts(conn):
-    return {r["id"]: r for r in conn.execute("SELECT id, name, kind FROM accounts WHERE closed = 0")}
+    return {r["id"]: r for r in conn.execute("SELECT id, name, kind, bank FROM accounts WHERE closed = 0")}
 
 
 def find_counterpart(conn, txn, window=PAIR_WINDOW_DAYS):
@@ -61,7 +63,18 @@ def guess_other_account(conn, txn, accounts=None):
     else:
         wanted = ("chequing",)
     options = [a for a in accounts.values() if a["kind"] in wanted and a["id"] != here["id"]]
+    if len(options) > 1:
+        # Several cards (at different banks): only one the text names, never a guess.
+        options = [a for a in options if _named_in(a, text)]
     return options[0] if len(options) == 1 else None
+
+
+def _named_in(account, text):
+    """The account's bank, or a distinctive word of its name, is in `text` (upper case)."""
+    words = [account["bank"]] if account["bank"] else []
+    words += [w for w in re.split(r"[^A-Za-z0-9]+", account["name"])
+              if len(w) >= 3 and w.upper() not in ("CARD", "CREDIT", "PAYMENT", "THE", "AND", "LINE", "ACCOUNT")]
+    return any(re.search(rf"\b{re.escape(w.upper())}\b", text) for w in words)
 
 
 def pair(conn, txn):

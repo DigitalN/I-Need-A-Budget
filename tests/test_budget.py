@@ -120,14 +120,14 @@ def test_catch_up_and_assigning_a_paycheque(app):
         call(app, "approve", txn_id=t["id"], category_id=cid)
     accounts = {a["name"]: a["id"] for a in call(app, "accounts")}
     call(app, "set_balance", accounts["Chequing"], 500000, "2026-10-12")
-    call(app, "set_balance", accounts["Mastercard"], 12000, "2026-10-12")
+    call(app, "set_balance", accounts["Tangerine Mastercard"], 12000, "2026-10-12")
     call(app, "finish_onboarding", "2026-07")
 
     view = call(app, "catch_up", "2026-07")
     cats = {c["name"]: c for g in view["groups"] for c in g["categories"]}
     assert all(c["available"] >= 0 for c in cats.values())
     assert cats["Rent"]["assigned"] == 100000 and cats["Food"]["assigned"] == 12000
-    assert cats["Mastercard payment"]["available"] == 12000
+    assert cats["Tangerine Mastercard payment"]["available"] == 12000
 
     call(app, "set_monthly_budget", ids["Rent"], 100000)
     call(app, "set_monthly_budget", ids["Food"], 50000)

@@ -12,6 +12,12 @@ Tangerine quirks handled here:
 - Card processors prefix the merchant ("SQ *", "SP ", "LSP*", "PAYPAL *").
 - Chains add store numbers and the city ("McDonalds 12345 Red Deer AB").
 
+Other banks word the same things differently: "e-Transfer sent JANE DOE 4XYZ12" (RBC),
+"SEND E-TFR ***ABC" (TD), "Online Banking payment - 1234 SAMPLE UTILITY", "IDP PURCHASE"
+with the store in the memo. Those rules come after Tangerine's, and only see text
+Tangerine's rules didn't match, so a Tangerine row always reads the same as it always
+has (a changed description would split its payee in two).
+
 Only well-known chains belong in BRANDS. Never put anything personal in this file
 (people's names, local businesses someone uses, employers): the repository is meant
 to hold no private data at all.
@@ -189,6 +195,31 @@ _PROCESSOR = re.compile(
 _SMALL_WORDS = {"of", "and", "the", "an", "in", "on", "at", "for", "de", "du", "la", "le", "et", "to"}
 
 
+# Other banks. Each only runs on text none of the Tangerine rules above it matched.
+_E_TRANSFER_WORDS = (r"(?:INTERAC\s+)?(?:SEND\s+)?(?:E-?TRANSFER|E-?TFR|ETRNSFR|E-?TRF)\b\s*-?\s*"
+                     r"(?:SENT|SEND|RECEIVED|RECV|RCVD|AUTODEPOSIT|AUTO DEPOSIT|AUTODEP|DEPOSIT|REQUEST FULFILLED|FROM|TO)?\b")
+_BILL_WORDS = (r"(?:ONLINE BANKING PAYMENT|ONLINE BILL PAYMENT|ONLINE PAYMENT|TELEPHONE BILL PAYMENT|MB-? ?BILL PAYMENT|"
+               r"BILL PAYMENT|BILL PMT|MISC PAYMENT|PRE-?AUTHORI[ZS]ED (?:DEBIT|PAYMENT)|PREAUTHORIZED DEBIT|WWW PAYMENT)\b")
+_PAY_IN_WORDS = r"(?:PAYROLL DEPOSIT|PAYROLL DEP|PAY DEPOSIT|DIRECT DEPOSIT|DIRECT DEP|DEPOSIT FROM)\b"
+_PURCHASE_WORDS = (r"(?:INTERAC PURCHASE|INTERAC RETAIL PURCHASE|POINT OF SALE - INTERAC|POINT OF SALE PURCHASE|"
+                   r"POS PURCHASE|C-IDP PURCHASE|IDP PURCHASE|DEBIT CARD PURCHASE|VISA DEBIT PURCHASE|VISA DEBIT|"
+                   r"MASTERCARD DEBIT|OPOS)\b")
+_E_TRANSFER = re.compile(rf"^{_E_TRANSFER_WORDS}\s*-?\s*:?\s*(?:FROM|TO)?\b\s*:?\s*(.*)$")
+_OWN_TRANSFER = re.compile(
+    r"^(?:ONLINE BANKING TRANSFER|ONLINE TRANSFER|INTERNET TRANSFER|MOBILE TRANSFER|WWW TRANSFER|FUNDS TRANSFER|"
+    r"INTER-?ACCOUNT TRANSFER|TFR-(?:TO|FR)|TRANSFER (?:TO|FROM)|TRANSFER$)")
+_BILL_PAYMENT = re.compile(rf"^{_BILL_WORDS}\s*-?\s*(?:\d+\b)?\s*-?\s*(.*)$")
+_PAY_IN = re.compile(rf"^{_PAY_IN_WORDS}\s*-?\s*(.*)$")
+_PURCHASE = re.compile(rf"^{_PURCHASE_WORDS}\s*-?\s*(?:RETAIL PURCHASE\b)?\s*(?:\d{{3,}}\b)?\s*-?\s*")
+# A Name that only says what kind of transaction it is, with who it was with in the Memo.
+_TYPE_ONLY = re.compile(rf"(?:{_E_TRANSFER_WORDS}|{_BILL_WORDS}|{_PAY_IN_WORDS}|{_PURCHASE_WORDS})[\s\d:-]*")
+_CARD_WORDS = re.compile(r"\b(?:VISA|MASTER ?CARD|MC|AMEX|AMERICAN EXPRESS|CREDIT CARD|CARD PAYMENT)\b")
+_MORE_FEES = re.compile(
+    r"\bMONTHLY (?:ACCOUNT |PLAN |MAINTENANCE )?FEE\b|\bPLAN FEE\b|\bACCOUNT FEE\b|\bOVERDRAFT (?:FEE|INTEREST|CHARGE|"
+    r"HANDLING)\b|\bE-?TRANSFER FEE\b|\bINTERAC FEE\b|\bNETWORK FEE\b|\bFOREIGN (?:TRANSACTION|EXCHANGE) FEE\b|"
+    r"\bTRANSACTION FEE\b|\bCASH ADVANCE FEE\b")
+
+
 @dataclass
 class Description:
     name: str        # what to call the payee
@@ -296,9 +327,33 @@ def _full_text(name, memo):
     return name
 
 
+def _organization(text):
+    """A company paid by bill payment or paying you ("EFT Deposit from SAMPLE EMPLOYER")."""
+    brand = brand_of(text)
+    if brand:
+        return Description(brand, merchant_key(brand), "organization", brand=True)
+    words = text.split()
+    if len(words) > 1 and len(words[-1]) == 1:
+        words = words[:-1]  # cut off at 32 characters: "ATB FInancial L"
+    cleaned = " ".join(w.upper() if _looks_like_acronym(w) else title_case(w) for w in words)
+    return Description(cleaned, merchant_key(cleaned), "organization")
+
+
+def _person(text):
+    """Someone e-transferred, from what's left once the bank's wording is gone. Reference
+    codes ("4XYZ12", "***ABC") aren't part of a name."""
+    words = [w for w in str(text).split() if not re.search(r"[\d*#]", w)]
+    if not words:
+        return Description("E-transfer", person_key("E-transfer"), "person")
+    person = title_case(" ".join(words))
+    return Description(person, person_key(person), "person")
+
+
 def describe(name, memo="", account_kind="chequing"):
     """What a bank row is and who it's with. See the module docstring."""
     text = _full_text(name, memo)
+    if memo and " ".join(str(memo).split()) and _TYPE_ONLY.fullmatch(" ".join(str(name).split()).upper()):
+        text = f"{' '.join(str(name).split())} {' '.join(str(memo).split())}"  # "IDP PURCHASE" + the store
     upper = text.upper()
     is_card = account_kind in ("credit_card", "line_of_credit")
 
@@ -309,15 +364,7 @@ def describe(name, memo="", account_kind="chequing"):
 
     m = re.match(r"EFT (?:WITHDRAWAL TO|DEPOSIT FROM)\s+(.+)", upper)
     if m:
-        org = text[m.start(1):].strip()
-        brand = brand_of(org)
-        if brand:
-            return Description(brand, merchant_key(brand), "organization", brand=True)
-        words = org.split()
-        if len(words) > 1 and len(words[-1]) == 1:
-            words = words[:-1]  # cut off at 32 characters: "ATB FInancial L"
-        cleaned = " ".join(w.upper() if _looks_like_acronym(w) else title_case(w) for w in words)
-        return Description(cleaned, merchant_key(cleaned), "organization")
+        return _organization(text[m.start(1):].strip())
 
     m = re.match(r"INTERAC - PURCHASE - (.+)", upper)
     if m:
@@ -343,11 +390,50 @@ def describe(name, memo="", account_kind="chequing"):
     if re.search(r"\bANNUAL FEE\b|\bSERVICE (FEE|CHARGE)\b|\bOVERLIMIT\b|\bNSF\b", upper):
         return Description("Bank fee", "bankfee", "bank", hint="fee")
 
+    other = _other_banks(text, upper, is_card)
+    if isinstance(other, Description):
+        return other
+    if other is not None:
+        text, upper = other, other.upper()  # the store, with the bank's "purchase" wording gone
+
     brand = brand_of(upper)
     if brand:
         return Description(brand, merchant_key(brand), "merchant", brand=True)
     cleaned = clean_merchant(text)
     return Description(cleaned, merchant_key(cleaned), "merchant")
+
+
+def _other_banks(text, upper, is_card):
+    """Other banks' wording (see the module docstring): a Description, the text with a
+    debit purchase's prefix taken off, or None."""
+    if _MORE_FEES.search(upper):
+        return Description("Bank fee", "bankfee", "bank", hint="fee")
+    m = _E_TRANSFER.match(upper)
+    if m:
+        return _person(text[m.start(1):])
+    if _OWN_TRANSFER.match(upper):
+        return Description("Transfer", "transfer", "bank", hint="transfer")
+    m = _BILL_PAYMENT.match(upper)
+    if m:
+        payee = text[m.start(1):].strip()
+        if _CARD_WORDS.search(payee.upper()):
+            return Description("Credit card payment", "creditcardpayment", "bank", hint="transfer")
+        if re.search(r"\bLINE OF CREDIT\b|\bLOC\b", payee.upper()):
+            return Description("Line of credit transfer", "lineofcredittransfer", "bank", hint="transfer")
+        return _organization(payee) if payee else None
+    m = _PAY_IN.match(upper)
+    if m and text[m.start(1):].strip():
+        return _organization(text[m.start(1):].strip())
+    if not is_card and re.search(r"\bINTEREST (?:PAID|EARNED|CREDIT|DEPOSIT)\b|\bDEPOSIT INTEREST\b", upper):
+        return Description("Interest earned", "interestearned", "bank", hint="income")
+    if re.match(r"CASH WITHDRAWAL\b", upper):
+        return Description("Cash withdrawal", "cashwithdrawal", "bank", hint="cash")
+    if is_card and re.match(r"PAYMENT\b.*\bTHANK YOU\b|PAYMENT$|PYMT\b|PAYMENT FROM\b", upper):
+        return Description("Credit card payment", "creditcardpayment", "bank", hint="transfer")
+    m = _PURCHASE.match(upper)
+    if m and text[m.end():].strip():
+        return text[m.end():].strip()
+    return None
 
 
 def find_similar(name, key, known):

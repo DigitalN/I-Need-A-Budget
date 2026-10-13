@@ -1,14 +1,15 @@
 # I Need A Budget
 
-An envelope budget (like YNAB or Actual Budget) built around Tangerine's exports, as a
-Mac app: Python + pywebview, one window, SQLite. Building, the release checklist, how
+An envelope budget (like YNAB or Actual Budget) built around the files banks let you
+download, as a Mac app: Python + pywebview, one window, SQLite. Building, the release checklist, how
 updates work and the dev preview are in @DEVELOPMENT.md. What it does for the user is in
 README.md.
 
 The maintainer banks with Tangerine: a chequing account and a Mastercard, maybe a line
-of credit later. Tangerine's API is no use, so data comes from the CSV / OFX / QFX files
-Tangerine lets you download. They moved here from Actual Budget and have restarted
-budgets several times before: losing history or having to rebuild is the thing to avoid.
+of credit later. Other people's copies will use other banks (RBC, ATB, credit unions),
+so nothing may assume Tangerine. Data comes from the files banks let you download (OFX /
+QFX / QBO, CSV). They moved here from Actual Budget and have restarted budgets several
+times before: losing history or having to rebuild is the thing to avoid.
 
 ## Privacy: the first rule
 
@@ -60,20 +61,29 @@ All in `Application Files/`:
   The preview and most tests drive this same class.
 - `db.py`: schema, upgrades, the shared connection behind a lock, **undo** (triggers record
   inverse SQL; `db.write("Label")` makes one undoable step; updates only record changed
-  columns), daily backups. Schema is at version 2. To change it: raise `SCHEMA_VERSION`,
+  columns), daily backups. Schema is at version 3. To change it: raise `SCHEMA_VERSION`,
   add the column to `SCHEMA` *and* an `ALTER TABLE` step in `_migrate` for existing
   databases. Upgrades copy the database to `Backups/budget-before-upgrade-…` first. The
   user's real database has real data in it: test every upgrade on a copy of it first.
-- `importer.py`: detects and parses Tangerine card CSV, Tangerine bank CSV, OFX/QFX, and
-  Actual Budget's export (learnt from, never imported as transactions). Fingerprint dedup,
-  account matching, then `file_transactions()` files what it can.
+- `importer.py`: detects and parses OFX/QFX/QBO from any bank, Tangerine card and bank
+  CSVs, RBC's CSV (every account in one file, so a file has `parts`), CSVs set up once
+  (`csvlayout.py`), and Actual Budget's export (learnt from, never imported as
+  transactions). Account matching, fingerprint dedup, then `file_transactions()` files
+  what it can. Its docstring has the rules.
+- `csvlayout.py`: pure. Any bank's CSV: spots a table of dates and amounts (skipping a
+  preamble), guesses which column is which, names the layout by its header, reads rows.
+- `banks.py`: bank names. Free text on accounts; `canonical()` turns what files call a
+  bank into one spelling ("Royal Bank of Canada" → RBC) and `slug()` keys accounts by
+  bank and number across file types. `SUGGESTED` only feeds suggestions while typing.
 - `payees.py`: pure. Cleans bank descriptions (processor prefixes, store numbers,
-  truncated towns/provinces), recognises chains (`BRANDS`), e-transfer people, EFT
-  organisations, and hints (transfer / interest / income / cash / fee). `find_similar()`
-  is the fuzzy match (rapidfuzz): "SAVEWAY 1532" → Safeway.
-- `ledger.py`: accounts and balances (worked out from one anchor balance the user gives),
-  the special categories (Income, a payment envelope per debt account, Interest & Fees),
-  resolving/renaming/merging payees.
+  truncated towns/provinces), recognises chains (`BRANDS`), e-transfer people, EFT and
+  bill-payment organisations, and hints (transfer / interest / income / cash / fee).
+  Tangerine's wording first, then other banks' (RBC, TD, BMO...), which only see text
+  Tangerine's rules didn't match. `find_similar()` is the fuzzy match (rapidfuzz):
+  "SAVEWAY 1532" → Safeway.
+- `ledger.py`: accounts and balances (worked out from one anchor balance), the special
+  categories (Income, a payment envelope per debt account, Interest & Fees),
+  resolving/renaming/merging payees, spotting and merging an account imported twice.
 - `learn.py`: category guesses from history (amount- and recency-weighted votes), mixed
   payees, unusually big charges, refunds, e-transfer shares of a bill, card-category hints.
   `analyze()` returns options, whether it's sure, a reason, and an inbox group key.
@@ -96,7 +106,19 @@ All in `Application Files/`:
   left the account. Dates are ISO strings, months `YYYY-MM`.
 - **Never change `importer.fingerprint()`** (or `fingerprints()`): already-imported rows
   would stop matching and every overlapping file would import twice. Two identical rows in
-  one file are both kept (the occurrence count is part of the fingerprint).
+  one file are both kept (the occurrence count is part of the fingerprint). A row is also
+  a duplicate of one from a *different kind* of file in the same account with the same
+  date and amount (each matched once): a bank's CSV and Quicken file word things differently.
+- **Never change what `payees.describe()` returns for text it already handles**: a
+  changed key splits a payee in two. Add other banks' wording after Tangerine's rules,
+  and check it on a copy of real data (every existing transaction must describe the same).
+- **Accounts are never guessed across banks.** A file finds its account by bank and
+  number (`number:<bank>:<last4>`, the same from a CSV or a Quicken file), Tangerine's by
+  file name too, else the one account already holding its rows; otherwise it's a new
+  account, or for a set-up CSV a question. Tangerine labels every bank account SAVINGS in
+  its OFX/QFX files (chequing too): ACCTTYPE isn't trusted for Tangerine.
+- **A file's own balance (OFX LEDGERBAL) replaces any balance as old or older**: a
+  balance typed in during the day misses what the bank adds later that day.
 - **Learning only uses `status = 'done'` transactions** (plus Actual examples). Rows waiting
   in the inbox may carry a tentative category so the budget is roughly right, but they
   never teach the app anything.
@@ -171,9 +193,22 @@ page is the average of what a category actually spent in the last 3/6/12 whole m
 
 Don't undo these without asking:
 
-- Data in by **auto-import from Downloads**: recognised Tangerine files are imported when
+- Data in by **auto-import from Downloads**: recognised bank files are imported when
   they appear (or at launch) and moved into `Imported Files/`. Drag-and-drop and
   "Import files…" also work. Actual exports are only learnt from, never moved.
+- **Any bank, not just Tangerine.** Quicken/Money/QuickBooks files are suggested
+  wherever the app explains downloads (they need no setup and carry the balance). Other
+  CSVs are **set up once** in a pop-up (columns, date order, money out sign, account);
+  the layout is remembered by header and the account by file name with dates removed, so
+  the next file imports on its own and a new name only asks which account. Until then
+  the file waits at the top of the Inbox ("Not a bank file" ignores it for good). A CSV
+  you chose or dropped opens the pop-up straight away; one the watcher found shows a toast.
+- **The bank on an account is free text** with suggestions as you type (`banks.py`),
+  never a fixed list: there are too many credit unions. New accounts are named "Bank +
+  type" (editable, and Edit… changes name and bank any time); existing ones keep theirs.
+- **An account imported twice** is flagged (Inbox and Accounts) and fixed with Merge
+  into…: copies dropped (keeping your filing, notes, splits, transfers, bank IDs), the
+  rest moved, undoable.
 - **Review inbox** instead of a register: only what the app isn't sure about, with one
   click / keypress per decision, same-payee items and bill shares grouped into one card.
   Filing one teaches the app and re-files the rest of that payee, **except**:
@@ -222,8 +257,8 @@ Don't undo these without asking:
   session. It must be **entirely our own code**: no third-party Tangerine libraries (the
   user's explicit requirement), no stored password. The CSV/OFX import stays as fallback.
 - "Fund bills" one-click, bill due dates, safe-to-spend until payday.
-- A line of credit account: if it's not Tangerine, a generic CSV importer with column
-  mapping. Balance transfers between debt accounts already work (no envelope change).
+- A line of credit account: any bank's CSV can be set up now. Balance transfers between
+  debt accounts already work (no envelope change).
 - Spending reports (month over month, by payee).
 - A **Dashboard** home page (the user asked where it was; offered, not yet decided):
   ready to assign, balances and what's owed, inbox count, overspent or low envelopes,
@@ -231,10 +266,12 @@ Don't undo these without asking:
 
 ## Known gaps
 
-- OFX/QFX import is tested with made-up files only; no real Tangerine OFX/QFX yet.
+- Real Tangerine QFX/OFX files have been tried (that's how the SAVINGS label was found).
+  RBC's CSV, other banks' OFX and the payee wording for RBC/TD/BMO e-transfers, payroll
+  and bill payments are built from public descriptions and made-up files: check them
+  against a real file when one turns up.
 - Installing an update can only be tested once a second release exists (1.0.0 is the
   first). Follow "Testing the updater" in DEVELOPMENT.md before relying on it.
-- No generic CSV import (for a non-Tangerine line of credit): manual transactions only.
 
 ## Interface rules
 

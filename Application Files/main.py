@@ -1,4 +1,4 @@
-"""I Need A Budget: envelope budgeting for Tangerine accounts, as a Mac app.
+"""I Need A Budget: envelope budgeting from your bank's downloads, as a Mac app.
 
 Launcher: logging, the single-instance lock, the database, the Downloads watcher, the
 updater, and the pywebview window. The page talks to Python through pywebview's
@@ -129,7 +129,7 @@ class BudgetApp:
         result = self._window.create_file_dialog(
             webview.FileDialog.OPEN, allow_multiple=True,
             directory=str(self._settings.downloads_dir()),
-            file_types=("Bank exports (*.csv;*.CSV;*.qfx;*.QFX;*.ofx;*.OFX)", "All files (*.*)"))
+            file_types=("Bank exports (*.csv;*.CSV;*.qfx;*.QFX;*.ofx;*.OFX;*.qbo;*.QBO)", "All files (*.*)"))
         return list(result or [])
 
     def _reveal(self, path):
@@ -194,9 +194,9 @@ class BudgetApp:
     def _watch(self):
         while not self._quitting:
             try:
-                results = self._service.watch_downloads()
-                if results:
-                    self._send("imported", {"results": results, "counts": self._service.counts()})
+                outcome = self._service.watch_downloads()
+                if outcome:
+                    self._send("imported", outcome)
             except Exception:
                 log.exception("Watching Downloads failed")
             time.sleep(WATCH_EVERY)
@@ -255,7 +255,7 @@ class BudgetApp:
         ready = self._updater.status == "ready"
         alert.setInformativeText_(
             f"Version {self._updater.version} will be installed as it quits." if ready else
-            "Everything is saved. New Tangerine downloads are imported the next time you open it.")
+            "Everything is saved. New bank downloads are imported the next time you open it.")
         alert.addButtonWithTitle_("Quit")
         alert.addButtonWithTitle_("Cancel")
         if alert.runModal() != AppKit.NSAlertFirstButtonReturn:

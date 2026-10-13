@@ -16,14 +16,16 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 
+import banks
 import budget as budget_math
+import csvlayout
 import importer
 import ledger
 import subscriptions
 import transfers
 from learn import analyze
 from payees import describe
-from util import add_months, first_day, last_day, month_of, months_between, today
+from util import add_months, first_day, last_day, month_of, months_between, parse_date, today
 
 log = logging.getLogger("inab")
 
@@ -57,6 +59,7 @@ class BudgetService:
         self.data_dir = Path(data_dir)
         self.hooks = hooks or {}          # window features: choose_files, reveal, updates, app_info
         self._seen_files = {}             # Downloads watcher: path → (mtime, size) already looked at
+        self._file_status = {}            # path → ((mtime, size), what it needs or None): see _needs()
 
     # ── plumbing ──
 
@@ -70,7 +73,7 @@ class BudgetService:
             else:
                 result = fn(self, *(args or []))
             return {"ok": True, "result": result}
-        except (UserError, importer.ImportError_, ValueError) as e:
+        except (UserError, importer.ImportError_, ValueError) as e:  # LayoutError is a ValueError
             return {"ok": False, "error": str(e)}
         except Exception as e:
             log.exception("%s failed", name)
@@ -108,7 +111,8 @@ class BudgetService:
         with self.db.read() as c:
             review = c.execute("SELECT COUNT(*) FROM transactions WHERE status = 'review'").fetchone()[0]
             no_balance = c.execute("SELECT COUNT(*) FROM accounts WHERE anchor_date IS NULL AND closed = 0").fetchone()[0]
-        return {"inbox": review, "accounts_without_balance": no_balance, "undo": self.db.undo_label()}
+        pending = len(self.pending_files()) if self.db.get_meta("onboarded") == "1" else 0
+        return {"inbox": review + pending, "accounts_without_balance": no_balance, "undo": self.db.undo_label()}
 
     @exposed
     def undo(self):
@@ -136,24 +140,55 @@ class BudgetService:
         path = Path(path)
         item = {"path": str(path), "filename": path.name}
         try:
-            parsed = importer.parse(path)
+            with self.db.read() as c:
+                parsed = importer.parse(path, c)
+                needs = self._needs(c, path, parsed)
+        except importer.NeedsSetup:
+            needs, parsed = "layout", None
         except (importer.ImportError_, OSError) as e:
             return {**item, "format": None, "error": str(e)}
+        if needs:
+            return {**item, "format": "csv", "needs_setup": needs, **self._csv_summary(path)}
         item.update(format=parsed.format)
         if parsed.format == "actual":
             item.update(rows=len(parsed.actual_rows), account_name="Actual Budget export",
                         first_date=min((r["date"] for r in parsed.actual_rows), default=None),
                         last_date=max((r["date"] for r in parsed.actual_rows), default=None))
             return item
+        names = []
         with self.db.read() as c:
-            account_id = ledger.account_by_key(c, parsed.account.keys)
-            name = c.execute("SELECT name FROM accounts WHERE id = ?", (account_id,)).fetchone()["name"] \
-                if account_id else parsed.account.name
+            for part in parsed.parts:
+                account_id = importer.find_account(c, part.account, part.rows, importer.fingerprints(part.rows))
+                name = c.execute("SELECT name FROM accounts WHERE id = ?", (account_id,)).fetchone()["name"] \
+                    if account_id else part.account.name
+                names.append(f"{name} ••{part.account.last4}" if part.account.last4 and
+                             part.account.kind == "credit_card" and part.account.last4 not in name else name)
             seen = c.execute("SELECT 1 FROM imports WHERE sha256 = ?", (importer.sha256_of(path),)).fetchone()
-        label = f"{name} ••{parsed.account.last4}" if parsed.account.last4 and parsed.account.kind == "credit_card" else name
-        item.update(rows=len(parsed.rows), account_name=label, kind=parsed.account.kind,
-                    first_date=parsed.first_date, last_date=parsed.last_date, already_imported=bool(seen))
+        item.update(rows=len(parsed.rows), account_name=", ".join(names), kind=parsed.parts[0].account.kind
+                    if parsed.parts else None, first_date=parsed.first_date, last_date=parsed.last_date,
+                    already_imported=bool(seen))
         return item
+
+    def _needs(self, c, path, parsed):
+        """What a parsed file needs before it can be imported: 'account' for a set-up CSV
+        whose account the app doesn't know yet, else None."""
+        if parsed.format != "csv":
+            return None
+        part = parsed.parts[0]
+        found = importer.find_account(c, part.account, part.rows, importer.fingerprints(part.rows))
+        return None if found else "account"
+
+    def _csv_summary(self, path):
+        sniffed = csvlayout.sniff(importer.read_text(path))
+        rows = []
+        if sniffed:
+            for r in sniffed["rows"]:
+                try:
+                    rows.append(parse_any_date(r[sniffed["guess"]["date_col"]]))
+                except ValueError:
+                    continue
+        return {"rows": len(sniffed["rows"]) if sniffed else 0, "first_date": min(rows, default=None),
+                "last_date": max(rows, default=None)}
 
     def _candidates(self, folder):
         folder = Path(folder)
@@ -181,12 +216,15 @@ class BudgetService:
         """Imports bank files and learns from Actual exports. Files from Downloads are
         moved into the app's Imported Files folder afterwards."""
         downloads = self.settings.downloads_dir().resolve()
-        results, learnt, errors = [], None, []
+        results, learnt, errors, needs_setup = [], None, [], []
         parsed_files = []
         for p in paths:
             path = Path(p)
             try:
-                parsed_files.append((path, importer.parse(path)))
+                with self.db.read() as c:
+                    parsed_files.append((path, importer.parse(path, c)))
+            except importer.NeedsSetup as e:
+                needs_setup.append({"path": str(path), "filename": path.name, "needs": e.what})
             except (importer.ImportError_, OSError) as e:
                 errors.append({"filename": path.name, "error": str(e)})
         # Learn from Actual first, then bank files oldest first, so refunds and transfers
@@ -199,17 +237,28 @@ class BudgetService:
                     outcome = importer.learn_from_actual(c, parsed)
                 learnt = {"filename": path.name, **outcome}
                 continue
-            sha = importer.sha256_of(path)
-            with self.db.write() as c:
-                result = importer.import_parsed(c, parsed, path.name, sha)
-                if archive and in_downloads:
-                    archived = self._archive(path)
-                    c.execute("UPDATE imports SET archived_path = ? WHERE id = ?", (archived, result.import_id))
-            results.append(result.as_dict())
-            log.info("Imported %s: %d new, %d already there, %d filed, %d to review", path.name, result.added,
-                     result.duplicates, result.filed, result.to_review)
+            try:
+                file_results = self._import_one(path, parsed, archive and in_downloads)
+            except importer.NeedsSetup as e:
+                needs_setup.append({"path": str(path), "filename": path.name, "needs": e.what})
+                continue
+            results += file_results
         refiled = self.refile() if learnt or results else 0
-        return {"results": results, "learnt": learnt, "errors": errors, "refiled": refiled, "counts": self.counts()}
+        return {"results": results, "learnt": learnt, "errors": errors, "needs_setup": needs_setup,
+                "refiled": refiled, "counts": self.counts()}
+
+    def _import_one(self, path, parsed, archive):
+        sha = importer.sha256_of(path)
+        with self.db.write() as c:
+            file_results = importer.import_parsed(c, parsed, path.name, sha)
+            if archive:
+                archived = self._archive(path)
+                for result in file_results:
+                    c.execute("UPDATE imports SET archived_path = ? WHERE id = ?", (archived, result.import_id))
+        for result in file_results:
+            log.info("Imported %s into %s: %d new, %d already there, %d filed, %d to review", path.name,
+                     result.account_name, result.added, result.duplicates, result.filed, result.to_review)
+        return [r.as_dict() for r in file_results]
 
     @exposed
     def refile(self, payee_ids=None):
@@ -234,11 +283,12 @@ class BudgetService:
         return filed
 
     def watch_downloads(self):
-        """Called every few seconds by the watcher: imports new Tangerine files from
-        Downloads. Returns the import results (empty if nothing new)."""
+        """Called every few seconds by the watcher: imports new bank files from Downloads
+        (a CSV that needs setting up waits in the Inbox instead). Returns what
+        import_files() did, or None if there was nothing new."""
         s = self.settings.get()
         if not s["auto_import"] or self.db.get_meta("onboarded") != "1":
-            return []
+            return None
         ready = []
         for path in self._candidates(self.settings.downloads_dir()):
             try:
@@ -255,12 +305,16 @@ class BudgetService:
                 fmt = importer.detect(importer.read_text(path))
             except (importer.ImportError_, OSError):
                 continue
-            if fmt in ("tangerine_card", "tangerine_bank", "ofx"):
+            if fmt in importer.BANK_FORMATS:
                 ready.append(str(path))
         if not ready:
-            return []
+            return None
         outcome = self.import_files(ready)
-        return outcome["results"]
+        with self.db.read() as c:
+            ignored = {r["sha256"] for r in c.execute("SELECT sha256 FROM ignored_files")}
+        outcome["needs_setup"] = [f for f in outcome["needs_setup"] if importer.sha256_of(f["path"]) not in ignored]
+        outcome["auto"] = True  # the page offers to set files up rather than asking straight away
+        return outcome if outcome["results"] or outcome["needs_setup"] else None
 
     @exposed
     def choose_and_import(self):
@@ -269,6 +323,124 @@ class BudgetService:
         if not paths:
             return None
         return self.import_files(paths, archive=True)
+
+    # ── CSVs that need setting up ──
+
+    def pending_files(self):
+        """Files in Downloads that look like bank transactions but need setting up (or an
+        account) first, oldest first. Files you said aren't bank files are left out."""
+        out = []
+        with self.db.read() as c:
+            ignored = {r["sha256"] for r in c.execute("SELECT sha256 FROM ignored_files")}
+        for path in self._candidates(self.settings.downloads_dir()):
+            if path.suffix.lower() != ".csv":
+                continue
+            try:
+                st = path.stat()
+            except OSError:
+                continue
+            signature = (st.st_mtime, st.st_size)
+            cached = self._file_status.get(str(path))
+            if cached and cached[0] == signature:
+                needs, sha = cached[1], cached[2]
+            else:
+                needs, sha = self._file_needs(path), None
+                try:
+                    sha = importer.sha256_of(path)
+                except OSError:
+                    continue
+                self._file_status[str(path)] = (signature, needs, sha)
+            if needs and sha not in ignored:
+                out.append({"path": str(path), "filename": path.name, "needs": needs, "modified": st.st_mtime})
+        return sorted(out, key=lambda f: f["modified"])
+
+    def _file_needs(self, path):
+        try:
+            text = importer.read_text(path)
+            if importer.detect(text) != "csv":
+                return None
+            with self.db.read() as c:
+                return self._needs(c, path, importer.parse(path, c))
+        except importer.NeedsSetup as e:
+            return e.what
+        except (importer.ImportError_, OSError, ValueError):
+            return None
+
+    def _forget_file_status(self):
+        """After a layout or account is set up, files waiting in Downloads are looked at again."""
+        self._file_status.clear()
+        self._seen_files = {k: v for k, v in self._seen_files.items() if not k.lower().endswith(".csv")}
+
+    @exposed
+    def csv_setup(self, path):
+        """What the set-up pop-up shows for a CSV: its first rows, and the layout to start
+        from (the saved one for files like it, else a guess)."""
+        path = Path(path)
+        sniffed = csvlayout.sniff(importer.read_text(path))
+        if sniffed is None:
+            raise UserError("This doesn't look like a bank file: no column of dates and amounts.")
+        with self.db.read() as c:
+            saved = importer.saved_layout(c, sniffed)
+            suggested_account = None
+            if saved:
+                key = importer.csv_account_key(saved["id"], path.name)
+                suggested_account = ledger.account_by_key(c, [key])
+        width = sniffed["width"]
+        header = sniffed["header"] or [f"Column {i + 1}" for i in range(width)]
+        layout = {k: v for k, v in (saved or sniffed["guess"]).items() if k != "id"}
+        return {"path": str(path), "filename": path.name, "header": header, "has_header": bool(sniffed["header"]),
+                "sample": sniffed["rows"][:6], "rows": len(sniffed["rows"]), "layout": layout,
+                "saved": saved is not None, "account_id": suggested_account,
+                "suggested_name": importer.base_name(path.name)}
+
+    @exposed
+    def csv_preview(self, path, layout):
+        """The first transactions as the app would read them with this layout."""
+        text = importer.read_text(path)
+        sniffed = csvlayout.sniff(text)
+        clean = csvlayout.clean_layout(layout, sniffed["width"])
+        rows = csvlayout.read(text, clean)
+        return {"rows": [{"date": d, "amount": a, "description": t} for d, a, t in rows[:5]], "total": len(rows),
+                "first_date": min((r[0] for r in rows), default=None),
+                "last_date": max((r[0] for r in rows), default=None)}
+
+    @exposed
+    def setup_csv(self, path, layout, account):
+        """Saves how to read files like this one and which account this one is for, then
+        imports it. `account`: {'id'} for an existing account, or {'name', 'kind', 'bank'}."""
+        path = Path(path)
+        text = importer.read_text(path)
+        sniffed = csvlayout.sniff(text)
+        if sniffed is None:
+            raise UserError("This doesn't look like a bank file.")
+        csvlayout.read(text, csvlayout.clean_layout(layout, sniffed["width"]))  # every row must fit
+        with self.db.write() as c:
+            layout_id = importer.save_layout(c, sniffed, layout)
+            if account.get("id"):
+                account_id = int(account["id"])
+                if not c.execute("SELECT 1 FROM accounts WHERE id = ?", (account_id,)).fetchone():
+                    raise UserError("That account no longer exists.")
+            else:
+                name, bank = _name_with_bank(account.get("name"), account.get("bank"))
+                if c.execute("SELECT 1 FROM accounts WHERE name = ? COLLATE NOCASE", (name,)).fetchone():
+                    raise UserError("There's already an account with that name.")
+                if account.get("kind") not in ledger.ACCOUNT_KINDS:
+                    raise UserError("Pick the type of account.")
+                account_id = ledger.create_account(c, name, account["kind"], bank=bank)
+            c.execute("INSERT INTO account_sources (key, account_id) VALUES (?, ?) ON CONFLICT(key) DO UPDATE "
+                      "SET account_id = excluded.account_id", (importer.csv_account_key(layout_id, path.name), account_id))
+        self._forget_file_status()
+        downloads = self.settings.downloads_dir().resolve()
+        return self.import_files([str(path)], archive=path.resolve().parent == downloads)
+
+    @exposed
+    def ignore_file(self, path):
+        """Not a bank file: never ask about it again."""
+        path = Path(path)
+        with self.db.write() as c:
+            c.execute("INSERT OR IGNORE INTO ignored_files (sha256, filename) VALUES (?, ?)",
+                      (importer.sha256_of(path), path.name))
+        return self.counts()
 
     @exposed
     def imports(self):
@@ -795,11 +967,14 @@ class BudgetService:
             filed = self._transactions(
                 c, {"status": "done", "import_ids": recent_imports}, limit=300, order="t.date DESC, t.id DESC") \
                 if recent_imports else []
-            alerts = []
+            alerts = [{"type": "duplicate", **d} for d in ledger.duplicate_accounts(c)]
+            copies = {a["account_id"] for a in alerts}
             for a in c.execute("SELECT id, name FROM accounts WHERE anchor_date IS NULL AND closed = 0"):
+                if a["id"] in copies:
+                    continue  # merge it rather than give it a balance
                 alerts.append({"type": "balance", "account_id": a["id"],
                                "text": f"What's the balance of {a['name']}? The app needs it once to show balances."})
-        return {"items": items, "filed": filed, "alerts": alerts, "counts": self.counts()}
+        return {"items": items, "filed": filed, "alerts": alerts, "files": self.pending_files(), "counts": self.counts()}
 
     @exposed
     def approve(self, txn_id, category_id, refile=True):
@@ -1140,13 +1315,15 @@ class BudgetService:
 
     def _accounts(self, c):
         out = []
+        duplicates = {d["account_id"]: d for d in ledger.duplicate_accounts(c)}
         for a in c.execute("SELECT * FROM accounts ORDER BY closed, sort, id").fetchall():
             stats = c.execute("SELECT MIN(date) AS first, MAX(date) AS last, COUNT(*) AS n FROM transactions "
                               "WHERE account_id = ?", (a["id"],)).fetchone()
             last_import = c.execute("SELECT MAX(imported_at) FROM imports WHERE account_id = ?", (a["id"],)).fetchone()[0]
             out.append({**dict(a), "balance": ledger.account_balance(c, a["id"]), "is_debt": ledger.is_debt(a["kind"]),
                         "kind_label": ledger.KIND_LABELS.get(a["kind"], a["kind"]), "first_date": stats["first"],
-                        "last_date": stats["last"], "transactions": stats["n"], "last_import": last_import})
+                        "last_date": stats["last"], "transactions": stats["n"], "last_import": last_import,
+                        "duplicate_of": duplicates.get(a["id"])})
         return out
 
     @exposed
@@ -1155,12 +1332,19 @@ class BudgetService:
             return self._accounts(c)
 
     @exposed
-    def add_account(self, name, kind, balance=None, date=None):
-        name = _clean_name(name)
+    def bank_names(self):
+        """Suggestions for an account's bank: the banks already used, then well-known ones."""
+        with self.db.read() as c:
+            used = [r["bank"] for r in c.execute("SELECT DISTINCT bank FROM accounts WHERE bank IS NOT NULL ORDER BY bank")]
+        return used + [b for b in banks.SUGGESTED if b not in used]
+
+    @exposed
+    def add_account(self, name, kind, balance=None, date=None, bank=None):
+        name, bank = _name_with_bank(name, bank)
         with self.db.write(f"Add account {name}") as c:
             if c.execute("SELECT 1 FROM accounts WHERE name = ? COLLATE NOCASE", (name,)).fetchone():
                 raise UserError("There's already an account with that name.")
-            account_id = ledger.create_account(c, name, kind)
+            account_id = ledger.create_account(c, name, kind, bank=bank)
             if balance not in (None, ""):
                 cents = int(balance)
                 c.execute("UPDATE accounts SET anchor_date = ?, anchor_balance = ? WHERE id = ?",
@@ -1173,8 +1357,13 @@ class BudgetService:
         with self.db.write("Edit account") as c:
             if "name" in changes:
                 name = _clean_name(changes["name"])
+                if c.execute("SELECT 1 FROM accounts WHERE name = ? COLLATE NOCASE AND id != ?",
+                             (name, account_id)).fetchone():
+                    raise UserError("There's already an account with that name.")
                 c.execute("UPDATE accounts SET name = ? WHERE id = ?", (name, account_id))
                 c.execute("UPDATE categories SET name = ? WHERE debt_account_id = ?", (f"{name} payment", account_id))
+            if "bank" in changes:
+                c.execute("UPDATE accounts SET bank = ? WHERE id = ?", (_clean_bank(changes["bank"]), account_id))
             if "apr" in changes:
                 apr = changes["apr"]
                 c.execute("UPDATE accounts SET apr = ? WHERE id = ?", (None if apr in (None, "") else float(apr), account_id))
@@ -1220,6 +1409,15 @@ class BudgetService:
                       "VALUES (?, ?, ?, ?, NULL, 'review', 'To match the balance the bank shows')",
                       (account_id, self.today(), diff, payee))
         return {"adjusted": diff}
+
+    @exposed
+    def merge_accounts(self, from_id, into_id):
+        """`from_id` is the same account as `into_id`: see ledger.merge_accounts()."""
+        with self.db.write("Merge accounts") as c:
+            name = c.execute("SELECT name FROM accounts WHERE id = ?", (into_id,)).fetchone()
+            moved, dropped = ledger.merge_accounts(c, int(from_id), int(into_id))
+        log.info("Merged account %s into %s: %d moved, %d duplicates dropped", from_id, into_id, moved, dropped)
+        return {"into": name["name"] if name else "", "moved": moved, "dropped": dropped, "counts": self.counts()}
 
     @exposed
     def delete_account(self, account_id):
@@ -1384,6 +1582,32 @@ def _end_date(value):
     if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(value)):
         raise UserError("That end date isn't a date.")
     return str(value)
+
+
+def _clean_bank(name):
+    """A bank as typed: tidied, a known bank's usual name ("royal bank" → RBC), or None."""
+    name = " ".join(str(name or "").split())
+    if len(name) > 80:
+        raise UserError("That bank name is too long.")
+    return banks.canonical(name) or None
+
+
+def _name_with_bank(name, bank):
+    """(name, bank) for a new account. A name that starts with the bank as typed uses the
+    bank's usual name instead: 'atb financial Chequing' → 'ATB Chequing'."""
+    typed = " ".join(str(bank or "").split())
+    bank = _clean_bank(typed)
+    name = " ".join(str(name or "").split())
+    if typed and bank and name.lower().startswith(typed.lower()):
+        name = bank + name[len(typed):]
+    return _clean_name(name), bank
+
+
+def parse_any_date(text):
+    try:
+        return parse_date(text)
+    except ValueError:
+        return parse_date(text, "dmy")
 
 
 def _clean_name(name):

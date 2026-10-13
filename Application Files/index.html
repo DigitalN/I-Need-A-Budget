@@ -41,6 +41,7 @@
   color-scheme: dark;
 }
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 html, body { margin: 0; height: 100%; }
 body {
   background: var(--bg); color: var(--text); overflow: hidden;
@@ -249,6 +250,15 @@ body.dragging .drop-hint { display: flex; }
 .steps div.done { background: var(--accent); }
 .filelist label { display: grid; grid-template-columns: auto 1fr auto; gap: 12px; align-items: center; padding: 10px 4px; border-bottom: 1px solid var(--line); }
 .filelist label:last-child { border-bottom: 0; }
+.csv-sample { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; margin-bottom: 14px; }
+.csv-sample th, .csv-sample td { font-size: 12px; white-space: nowrap; max-width: 220px; overflow: hidden; text-overflow: ellipsis; padding: 5px 9px; }
+.csv-sample th[data-role]::after { content: attr(data-role); display: block; font-size: 10px; color: var(--accent); text-transform: none; letter-spacing: 0; }
+.csv-sample th[data-role] { color: var(--accent); background: var(--accent-soft); }
+.grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+.field > .seg { align-self: flex-start; }
+.csv-sample th { vertical-align: top; }
+.su-preview { border-top: 1px solid var(--line); padding-top: 10px; }
+.su-preview .row { padding: 2px 0; }
 .cat-editor .grp { margin-bottom: 14px; }
 .cat-editor .grp-head { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; }
 .cat-editor .grp-head input { font-weight: 600; flex: 1; }
@@ -286,14 +296,14 @@ body.dragging .drop-hint { display: flex; }
     </nav>
     <div class="side-foot">
       <button class="btn wide" data-act="import-files">Import files…</button>
-      <p class="hint">Tangerine downloads that land in your Downloads folder are imported on their own. You can also drop files on this window.</p>
+      <p class="hint">Bank downloads that land in your Downloads folder are imported on their own. You can also drop files on this window.</p>
     </div>
   </aside>
   <main id="main"></main>
 </div>
 <div id="onboard" class="onboard" hidden></div>
 <div id="toast"><span></span><button type="button"></button></div>
-<div class="drop-hint">Drop Tangerine files to import them</div>
+<div class="drop-hint">Drop bank files to import them</div>
 <dialog id="dlg"><form method="dialog"><div class="dlg-head"><div class="dlg-title"></div><button type="button" class="icon-btn dlg-x" title="Close without saving (Esc)" aria-label="Close">✕</button></div><div class="dlg-body"></div><div class="dlg-error"></div><div class="dlg-actions"></div></form></dialog>
 
 <script>
@@ -342,6 +352,12 @@ async function call(name, args) {
   }
   if (r.result && r.result.counts) setCounts(r.result.counts);
   return r.result;
+}
+// Like call(), but returns {ok, result, error} instead of showing errors as a toast.
+async function tryCall(name, args) {
+  const r = await window.pywebview.api.call(name, args === undefined ? [] : args);
+  if (r && r.ok && r.result && r.result.counts) setCounts(r.result.counts);
+  return r || { ok: false, error: 'Something went wrong' };
 }
 window.addEventListener('error', e => { try { window.pywebview.api.log_error(`${e.message} at ${e.filename}:${e.lineno}`); } catch (_) {} });
 window.addEventListener('unhandledrejection', e => {
@@ -399,7 +415,9 @@ function dialog({ title, body, actions, wide = false, onOpen }) {
       if (a.left) { b.style.marginRight = 'auto'; }
       bar.appendChild(b);
     });
-    d.onclose = () => finish(null);
+    // Only a close of this dialog: closing the previous one fires its close event after
+    // this one has opened, and that mustn't close this one.
+    d.onclose = () => { if (!d.open) finish(null); };
     d.querySelector('.dlg-x').onclick = () => finish(null);  // close without doing anything, like Esc
     d.oncancel = e => { e.preventDefault(); finish(null); };
     d.querySelector('form').onsubmit = e => {
@@ -885,7 +903,10 @@ function drawInbox() {
   state.blocks = blocks.flatMap(b => (b.items.length > 1 && !state.expanded.has(b.group)) ? [b] : b.items.map(i => ({ group: null, items: [i] })));
   state.inboxSel = Math.min(state.inboxSel, Math.max(0, state.blocks.length - 1));
   const alerts = data.alerts.map(a => a.type === 'balance' ? `<div class="notice">${esc(a.text)}<span class="spacer"></span>
-      <input style="width:130px;text-align:right" placeholder="Balance" data-balance-for="${a.account_id}"><button class="btn small" data-act="save-balance" data-account="${a.account_id}">Save</button></div>` : '').join('');
+      <input style="width:130px;text-align:right" placeholder="Balance" data-balance-for="${a.account_id}"><button class="btn small" data-act="save-balance" data-account="${a.account_id}">Save</button></div>`
+    : a.type === 'duplicate' ? duplicateNotice(a) : '').join('') +
+    (data.files || []).map((f, i) => `<div class="notice info"><span><b>${esc(f.filename)}</b> ${f.needs === 'layout' ? 'needs setting up once.' : 'is from a bank the app knows: which account is it for?'}</span><span class="spacer"></span>
+      <button class="btn small" data-act="ignore-file" data-index="${i}">Not a bank file</button><button class="btn small primary" data-act="setup-file" data-index="${i}">${f.needs === 'layout' ? 'Set up…' : 'Choose…'}</button></div>`).join('');
   const cards = state.blocks.map((b, i) => b.items.length > 1 ? groupCard(b, i) : itemCard(b.items[0], i)).join('');
   const filedRows = data.filed.map(t => `<tr><td class="muted nowrap">${day(t.date)}</td><td>${esc(t.payee_name || t.raw_name)}${t.subscription_name ? ` <span class="tag info">${esc(t.subscription_name)}</span>` : ''}</td>
       <td>${t.transfer_account_name ? `<span class="tag">Transfer</span>` : `<button class="link" data-act="recat" data-id="${t.id}">${esc(t.category_name || (t.is_split ? 'Split' : 'No category'))}</button>`}</td>
@@ -900,7 +921,7 @@ function drawInbox() {
       ${data.items.length && !shown.length ? `<div class="card empty"><b>Nothing matches</b>Try another search, or show everything.</div>` : ''}
       ${shown.length ? `<div class="items" id="items">${cards}</div>
         <p class="kbd-help">↑ ↓ to move · Return takes the highlighted suggestion · 1–4 picks one · / any category · T transfer · S split · ⌘Z undo</p>`
-        : (data.items.length ? '' : `<div class="card empty"><b>All caught up</b>Everything is filed. New Tangerine downloads show up here when there's something to decide.</div>`)}
+        : (data.items.length || (data.files || []).length ? '' : `<div class="card empty"><b>All caught up</b>Everything is filed. New bank downloads show up here when there's something to decide.</div>`)}
       ${data.filed.length ? `<details class="card" style="padding:10px 14px"><summary style="cursor:default;font-weight:600">Filed automatically from recent imports (${data.filed.length})</summary>
         <p class="small muted">Click a category to change it. The app learns from every change.</p>
         <table class="filed-list"><tbody>${filedRows}</tbody></table></details>` : ''}
@@ -1191,7 +1212,16 @@ async function inboxAction(btn, e) {
     await renderInbox();
   } else if (act === 'accept-all') await acceptAll();
   else if (act === 'save-balance') await saveBalanceFrom(btn);
-  else if (act === 'recat') {
+  else if (act === 'setup-file') await setupFiles([state.inbox.files[Number(btn.dataset.index)]]);
+  else if (act === 'ignore-file') {
+    const f = state.inbox.files[Number(btn.dataset.index)];
+    await call('ignore_file', [f.path]);
+    toast(`${f.filename} won't be asked about again`);
+    await renderInbox();
+  } else if (act === 'merge-account') {
+    const a = state.inbox.alerts.find(x => x.type === 'duplicate' && x.account_id === Number(btn.dataset.account));
+    if (a) await mergeAccount(a.account_id, a.into_id, a.name, a.into_name);
+  } else if (act === 'recat') {
     const cid = await pickCategory(btn);
     if (!cid) return;
     await call('update_transaction', [id, { category_id: cid }]);
@@ -1199,11 +1229,152 @@ async function inboxAction(btn, e) {
   }
 }
 
+function duplicateNotice(d) {
+  return `<div class="notice wrap"><span>${esc(d.name)} looks like a copy of ${esc(d.into_name)}: ${d.shared} of its ${plural(d.total, 'transaction')} are in both.</span><span class="spacer"></span>
+    <button class="btn small" data-act="merge-account" data-account="${d.account_id}" data-into="${d.into_id}">Merge into ${esc(d.into_name)}</button></div>`;
+}
+
+// One account into another (the same account imported twice). Undoable.
+const mergeText = (from, into) => `Transactions already in ${into} are dropped, the rest move over, and ${from} is removed. You can undo it right after.`;
+async function mergeAccount(fromId, intoId, fromName, intoName, ask = true) {
+  if (ask && !await confirmBox(`Merge ${fromName} into ${intoName}?`, mergeText(fromName, intoName), 'Merge')) return;
+  const r = await call('merge_accounts', [fromId, intoId]);
+  await loadCategories();
+  toast(`Merged into ${r.into}: ${plural(r.moved, 'transaction')} moved, ${plural(r.dropped, 'copy', 'copies')} removed`, { action: undoAction });
+  await refresh();
+}
+
+// ── CSVs from any bank: set up once ──
+const KIND_OPTIONS = [['chequing', 'Chequing'], ['savings', 'Savings'], ['credit_card', 'Credit card'],
+                      ['line_of_credit', 'Line of credit'], ['cash', 'Cash']];
+const bankList = names => `<datalist id="bank-list">${names.map(n => `<option value="${esc(n)}">`).join('')}</datalist>`;
+
+// Shows the app a CSV's columns and which account it's for, then imports it. Resolves
+// with the import's outcome, or null if closed.
+async function setupFile(path) {
+  const r = await tryCall('csv_setup', [path]);
+  if (!r.ok) { toast(r.error, { error: true }); return null; }
+  const info = r.result;
+  const [accounts, banks] = await Promise.all([call('accounts'), call('bank_names')]);
+  const L = info.layout, cols = info.header;
+  const colOptions = (selected, none) => (none ? `<option value="">${none}</option>` : '') +
+    cols.map((h, i) => `<option value="${i}" ${selected === i ? 'selected' : ''}>${esc(h)}</option>`).join('');
+  const lower = info.filename.toLowerCase();
+  const brand = /visa/.test(lower) ? 'Visa' : /master ?card|\bmc\b/.test(lower) ? 'Mastercard' : /amex/.test(lower) ? 'Amex' : '';
+  const kindGuess = brand || /card|credit/.test(lower) ? 'credit_card' : /saving/.test(lower) ? 'savings' : 'chequing';
+  const two = L.amount_col === null || L.amount_col === undefined;
+  let outcome = null, nameTouched = false, readLayout = () => ({}), readAccount = () => ({});
+  const v = await dialog({
+    title: info.saved ? `Which account is ${info.filename} for?` : `Set up ${info.filename}`,
+    wide: true,
+    body: `${info.saved ? '' : `<p class="small muted" style="margin-top:0">Show the app which column is which, once. Files like this one are read on their own after that. Quicken (QFX) or Money (OFX) downloads, if your bank has them, need no setting up and include the balance.</p>`}
+      <div class="csv-sample"><table><thead><tr>${cols.map((h, i) => `<th data-col="${i}">${esc(h)}</th>`).join('')}</tr></thead>
+        <tbody>${info.sample.slice(0, 4).map(r => `<tr>${r.map(c => `<td>${esc(c)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>
+      <div id="su-columns" ${info.saved ? 'hidden' : ''}>
+        <div class="grid2">
+          <div class="field"><label>Date</label><select id="su-date">${colOptions(L.date_col)}</select></div>
+          <div class="field"><label>Dates are</label><select id="su-order">${[['mdy', 'Month/Day/Year'], ['dmy', 'Day/Month/Year'], ['ymd', 'Year-Month-Day']].map(([v, t]) => `<option value="${v}" ${L.date_order === v ? 'selected' : ''}>${t}</option>`).join('')}</select></div>
+          <div class="field"><label>Description</label><select id="su-desc">${colOptions(L.desc_cols[0])}</select></div>
+          <div class="field"><label>More description</label><select id="su-desc2">${colOptions(L.desc_cols[1], 'None')}</select></div>
+        </div>
+        <div class="field"><label>Amounts</label><div class="seg" id="su-mode"><button type="button" data-mode="one" aria-pressed="${!two}">One column</button><button type="button" data-mode="two" aria-pressed="${two}">Money out and money in</button></div></div>
+        <div class="grid2" id="su-one" ${two ? 'hidden' : ''}>
+          <div class="field"><label>Amount</label><select id="su-amount">${colOptions(L.amount_col)}</select></div>
+          <div class="field"><label>Money out shows as</label><select id="su-negate"><option value="0" ${L.negate ? '' : 'selected'}>Negative (−12.50)</option><option value="1" ${L.negate ? 'selected' : ''}>Positive (12.50)</option></select></div>
+        </div>
+        <div class="grid2" id="su-two" ${two ? '' : 'hidden'}>
+          <div class="field"><label>Money out</label><select id="su-out">${colOptions(L.out_col)}</select></div>
+          <div class="field"><label>Money in</label><select id="su-in">${colOptions(L.in_col)}</select></div>
+        </div>
+      </div>
+      ${info.saved ? `<p class="small muted" style="margin-top:0">The app already knows files like this one. <button type="button" class="link" id="su-show-columns">Change columns…</button></p>` : ''}
+      <div class="field"><label>Account</label><select id="su-account"><option value="">New account…</option>${accounts.filter(a => !a.closed).map(a => `<option value="${a.id}" ${info.account_id === a.id ? 'selected' : ''}>${esc(a.name)}</option>`).join('')}</select></div>
+      <div class="grid3" id="su-new">
+        <div class="field"><label>Bank</label><input id="su-bank" list="bank-list" placeholder="Search or type a name" autocomplete="off">${bankList(banks)}</div>
+        <div class="field"><label>Type</label><select id="su-kind">${KIND_OPTIONS.map(([v, t]) => `<option value="${v}" ${v === kindGuess ? 'selected' : ''}>${t}</option>`).join('')}</select></div>
+        <div class="field"><label>Name</label><input id="su-name"></div>
+      </div>
+      <div class="su-preview small" id="su-preview"></div>`,
+    actions: [
+      { label: 'Not a bank file', value: 'ignore', left: true },
+      { label: 'Cancel', value: null },
+      { label: 'Import', value: 'import', primary: true, check: async () => {
+        const r = await tryCall('setup_csv', [path, readLayout(), readAccount()]);
+        if (!r.ok) return r.error;
+        outcome = r.result;
+        return null;
+      } },
+    ],
+    onOpen: d => {
+      const mode = () => $('#su-mode [aria-pressed="true"]', d).dataset.mode;
+      readLayout = () => ({
+        has_header: info.has_header, date_col: $('#su-date', d).value, date_order: $('#su-order', d).value,
+        desc_cols: [$('#su-desc', d).value, $('#su-desc2', d).value].filter(x => x !== ''),
+        amount_col: mode() === 'one' ? $('#su-amount', d).value : null, negate: $('#su-negate', d).value === '1',
+        out_col: mode() === 'two' ? $('#su-out', d).value : null, in_col: mode() === 'two' ? $('#su-in', d).value : null,
+      });
+      readAccount = () => $('#su-account', d).value ? { id: Number($('#su-account', d).value) }
+        : { name: $('#su-name', d).value, kind: $('#su-kind', d).value, bank: $('#su-bank', d).value };
+      const autoName = () => {
+        if (nameTouched) return;
+        const kind = $('#su-kind', d).value;
+        const label = kind === 'credit_card' && brand ? brand : KIND_OPTIONS.find(k => k[0] === kind)[1];
+        $('#su-name', d).value = [$('#su-bank', d).value.trim(), label].filter(Boolean).join(' ');
+      };
+      const preview = debounce(async () => {
+        const lay = readLayout();
+        $$('th[data-col]', d).forEach(th => {
+          const c = th.dataset.col, roles = [];
+          if (c === lay.date_col) roles.push('Date');
+          if (lay.desc_cols.includes(c)) roles.push('Description');
+          if (c === lay.amount_col) roles.push('Amount');
+          if (c === lay.out_col) roles.push('Money out');
+          if (c === lay.in_col) roles.push('Money in');
+          if (roles.length) th.dataset.role = roles.join(', '); else delete th.dataset.role;
+        });
+        const r = await tryCall('csv_preview', [path, lay]);
+        $('#su-preview', d).innerHTML = r.ok
+          ? `<div class="muted" style="margin-bottom:4px">${plural(r.result.total, 'transaction')}, ${dayYear(r.result.first_date)} – ${dayYear(r.result.last_date)}. The first few as the app reads them:</div>` +
+            r.result.rows.map(t => `<div class="row"><span class="muted nowrap" style="width:60px">${day(t.date)}</span><span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(t.description)}</span><span class="num ${t.amount > 0 ? 'pos' : ''}">${money(t.amount)}</span></div>`).join('')
+          : `<div class="neg">${esc(r.error)}</div>`;
+      }, 150);
+      $('#su-mode', d).addEventListener('click', e => {
+        const b = e.target.closest('[data-mode]');
+        if (!b) return;
+        $$('#su-mode button', d).forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+        $('#su-one', d).hidden = b.dataset.mode !== 'one';
+        $('#su-two', d).hidden = b.dataset.mode !== 'two';
+        preview();
+      });
+      const more = $('#su-show-columns', d);
+      if (more) more.addEventListener('click', () => { $('#su-columns', d).hidden = false; more.parentElement.hidden = true; });
+      $('#su-columns', d).addEventListener('change', preview);
+      const syncAccount = () => { $('#su-new', d).hidden = !!$('#su-account', d).value; };
+      $('#su-account', d).addEventListener('change', syncAccount);
+      $('#su-bank', d).addEventListener('input', autoName);
+      $('#su-kind', d).addEventListener('change', autoName);
+      $('#su-name', d).addEventListener('input', () => { nameTouched = true; });
+      syncAccount(); autoName(); preview();
+    },
+  });
+  if (v === 'ignore') { await call('ignore_file', [path]); toast(`${info.filename} won't be asked about again`); return null; }
+  return v === 'import' ? outcome : null;
+}
+
+// One after another: each pop-up waits for the one before.
+async function setupFiles(files) {
+  for (const f of files) {
+    const outcome = await setupFile(f.path);
+    if (outcome) window.appEvent('imported', outcome);
+  }
+  await refresh();
+}
+
 async function saveBalanceFrom(btn) {
   const acct = Number(btn.dataset.account);
   const input = $(`[data-balance-for="${acct}"]`);
   const cents = parseMoney(input.value);
-  if (cents === null || Number.isNaN(cents)) return toast('Enter the balance Tangerine shows', { error: true });
+  if (cents === null || Number.isNaN(cents)) return toast('Enter the balance your bank shows', { error: true });
   await call('set_balance', [acct, cents]);
   toast('Balance saved', { action: undoAction });
   await refresh();
@@ -1336,15 +1507,17 @@ async function renderAccounts() {
   const cards = accounts.filter(a => !a.closed).map(a => {
     const owe = a.is_debt;
     return `<div class="card acct">
-      <div class="row"><b>${esc(a.name)}</b>${a.last4 ? `<span class="faint small">••${esc(a.last4)}</span>` : ''}<span class="spacer"></span><span class="tag">${esc(a.kind_label)}</span></div>
+      <div class="row"><b>${esc(a.name)}</b><span class="faint small">${[a.bank && !a.name.toLowerCase().includes(a.bank.toLowerCase()) && esc(a.bank), a.last4 && `••${esc(a.last4)}`].filter(Boolean).join(' · ')}</span><span class="spacer"></span><span class="tag">${esc(a.kind_label)}</span></div>
       ${a.balance === null ? `<div class="notice" style="margin:10px 0">What ${owe ? 'do you owe on' : 'is the balance of'} this account right now?</div>
           <div class="row"><input style="width:150px;text-align:right" placeholder="${owe ? 'Amount owing' : 'Balance'}" data-balance-for="${a.id}"><button class="btn primary small" data-act="save-balance" data-account="${a.id}">Save</button></div>`
         : `<div class="bal num ${owe && a.balance < 0 ? 'neg' : ''}">${owe ? money(-a.balance) : money(a.balance)}</div>
            <div class="small muted">${owe ? 'owing' : 'balance'}${a.last_date ? ` · up to ${dayYear(a.last_date)}` : ''}</div>`}
       <div class="small muted" style="margin-top:8px">${plural(a.transactions, 'transaction')}${a.first_date ? ` since ${dayYear(a.first_date)}` : ''}${a.last_import ? ` · last import ${esc(a.last_import.slice(0, 10))}` : ''}</div>
+      ${a.duplicate_of ? `<div style="margin-top:10px">${duplicateNotice(a.duplicate_of)}</div>` : ''}
       <div class="row" style="margin-top:10px">
         ${a.balance !== null ? `<button class="btn small" data-act="check-balance" data-account="${a.id}">Check balance…</button>` : ''}
-        <button class="btn small" data-act="rename-account" data-account="${a.id}">Rename…</button>
+        <button class="btn small" data-act="edit-account" data-account="${a.id}">Edit…</button>
+        ${mergeTargets(accounts, a).length ? `<button class="btn small" data-act="merge-pick" data-account="${a.id}">Merge into…</button>` : ''}
         <span class="spacer"></span>
         <button class="icon-btn danger" data-act="delete-account" data-account="${a.id}" title="Delete account">✕</button>
       </div></div>`;
@@ -1376,7 +1549,7 @@ async function renderAccounts() {
   frame(`
     <div class="page-head"><h1>Accounts</h1><span class="spacer"></span><button class="btn" data-act="add-account">Add account…</button></div>
     <div class="stack">
-      <div class="acct-grid">${cards || '<div class="card empty"><b>No accounts yet</b>Import a Tangerine file and its account appears here.</div>'}</div>
+      <div class="acct-grid">${cards || '<div class="card empty"><b>No accounts yet</b>Import a bank file and its account appears here.</div>'}</div>
       ${debtCards ? `<h2 style="margin-top:12px">Paying down debt</h2>${debtCards}` : ''}
       ${importRows ? `<details class="card"><summary style="cursor:default;font-weight:600">Imported files</summary>
         <p class="small muted">Removing an import deletes the transactions it added (not ones another file also had).</p>
@@ -1384,16 +1557,34 @@ async function renderAccounts() {
     </div>`);
 }
 
+const mergeTargets = (accounts, a) => accounts.filter(x => x.id !== a.id && !x.closed && x.is_debt === a.is_debt);
+
 async function accountAction(btn) {
   const act = btn.dataset.act, id = Number(btn.dataset.account);
   const a = state.accounts.find(x => x.id === id);
   if (act === 'save-balance') return saveBalanceFrom(btn);
+  if (act === 'merge-account') {
+    const into = state.accounts.find(x => x.id === Number(btn.dataset.into));
+    return mergeAccount(a.id, into.id, a.name, into.name);
+  }
+  if (act === 'merge-pick') {
+    const targets = mergeTargets(state.accounts, a);
+    const v = await dialog({
+      title: `Merge ${a.name} into…`,
+      body: `<div class="field"><label>The same account as</label><select id="merge-into">${targets.map(x => `<option value="${x.id}" ${a.duplicate_of && a.duplicate_of.into_id === x.id ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select></div>
+        <p class="small muted">${esc(mergeText(a.name, 'that account'))}</p>`,
+      actions: [{ label: 'Cancel', value: null }, { label: 'Merge', value: 'ok', primary: true }],
+    });
+    if (v !== 'ok') return;
+    const into = targets.find(x => x.id === Number($('#merge-into').value));
+    return mergeAccount(a.id, into.id, a.name, into.name, false);
+  }
   if (act === 'check-balance') {
     const v = await dialog({
       title: `Check ${a.name}`,
       body: `<p class="muted">The app says ${a.is_debt ? 'you owe' : 'the balance is'} <b>${money(a.is_debt ? -a.balance : a.balance)}</b> after the last imported transaction (${dayYear(a.last_date)}).
-        If Tangerine shows something else, enter it: the app adds an adjustment for the difference${a.is_debt ? '' : ' (you choose its category in the Inbox)'}.</p>
-        <div class="field"><label>${a.is_debt ? 'Amount owing on Tangerine' : 'Balance on Tangerine'}</label><input id="rec-amount" style="text-align:right"></div>`,
+        If ${esc(a.bank || 'your bank')} shows something else, enter it: the app adds an adjustment for the difference${a.is_debt ? '' : ' (you choose its category in the Inbox)'}.</p>
+        <div class="field"><label>${a.is_debt ? 'Amount owing' : 'Balance'} at ${esc(a.bank || 'the bank')}</label><input id="rec-amount" style="text-align:right"></div>`,
       actions: [{ label: 'Cancel', value: null }, { label: 'Match it', value: 'ok', primary: true }],
     });
     if (v !== 'ok') return;
@@ -1401,12 +1592,19 @@ async function accountAction(btn) {
     if (cents === null || Number.isNaN(cents)) return;
     const r = await call('reconcile', [id, cents]);
     toast(r.adjusted ? `Adjusted by ${money(r.adjusted)}` : 'It already matches', { action: r.adjusted ? undoAction : undefined });
-  } else if (act === 'rename-account') {
-    const v = await dialog({ title: 'Rename account', body: `<div class="field"><label>Name</label><input id="acct-name" value="${esc(a.name)}"></div>`,
+  } else if (act === 'edit-account') {
+    const banks = await call('bank_names');
+    const v = await dialog({ title: `Edit ${a.name}`, body: `<div class="field"><label>Name</label><input id="acct-name" value="${esc(a.name)}"></div>
+        <div class="field"><label>Bank</label><input id="acct-bank" list="bank-list" value="${esc(a.bank || '')}" placeholder="Search or type a name" autocomplete="off">${bankList(banks)}</div>`,
       actions: [{ label: 'Cancel', value: null }, { label: 'Save', value: 'ok', primary: true }] });
     if (v !== 'ok') return;
-    await call('update_account', [id, { name: $('#acct-name').value }]);
+    const changes = {};
+    if ($('#acct-name').value.trim() !== a.name) changes.name = $('#acct-name').value;
+    if ($('#acct-bank').value.trim() !== (a.bank || '')) changes.bank = $('#acct-bank').value;
+    if (!Object.keys(changes).length) return;
+    await call('update_account', [id, changes]);
     await loadCategories();
+    toast('Saved', { action: undoAction });
   } else if (act === 'delete-account') {
     if (!await confirmBox(`Delete ${a.name}?`, `This deletes the account and its ${plural(a.transactions, 'transaction')}. You can undo it right after.`, 'Delete', true)) return;
     await call('delete_account', [id]);
@@ -1418,17 +1616,19 @@ async function accountAction(btn) {
     await call('update_account', [id, { apr: apr === '' ? null : Number(apr), planned_payment: Number.isNaN(pay) ? null : pay }]);
     toast('Saved');
   } else if (act === 'add-account') {
+    const banks = await call('bank_names');
     const v = await dialog({
       title: 'Add an account',
       body: `<p class="small muted">Accounts are added on their own when you import their files. Add one here for something else, like a line of credit.</p>
-        <div class="field"><label>Name</label><input id="na-name" placeholder="Line of credit"></div>
+        <div class="grid2"><div class="field"><label>Name</label><input id="na-name" placeholder="Line of credit"></div>
+        <div class="field"><label>Bank</label><input id="na-bank" list="bank-list" placeholder="Search or type a name" autocomplete="off">${bankList(banks)}</div></div>
         <div class="grid2"><div class="field"><label>Type</label><select id="na-kind"><option value="line_of_credit">Line of credit</option><option value="credit_card">Credit card</option><option value="chequing">Chequing</option><option value="savings">Savings</option><option value="cash">Cash</option></select></div>
         <div class="field"><label>Balance now (owing, for credit)</label><input id="na-balance" placeholder="0.00" style="text-align:right"></div></div>`,
       actions: [{ label: 'Cancel', value: null }, { label: 'Add', value: 'ok', primary: true, check: d => $('#na-name', d).value.trim() ? null : 'Give it a name.' }],
     });
     if (v !== 'ok') return;
     const bal = parseMoney($('#na-balance').value);
-    await call('add_account', { name: $('#na-name').value, kind: $('#na-kind').value, balance: Number.isNaN(bal) ? null : bal });
+    await call('add_account', { name: $('#na-name').value, kind: $('#na-kind').value, balance: Number.isNaN(bal) ? null : bal, bank: $('#na-bank').value });
     await loadCategories();
     toast('Account added', { action: undoAction });
   } else if (act === 'undo-import') {
@@ -1597,7 +1797,7 @@ async function renderSettings() {
       <div class="card">
         <div class="settings-row"><div class="what"><b>Appearance</b></div>
           <div class="seg" id="theme">${['system', 'light', 'dark'].map(t => `<button data-theme-set="${t}" aria-pressed="${settings.theme === t}">${t[0].toUpperCase() + t.slice(1)}</button>`).join('')}</div></div>
-        <div class="settings-row"><div class="what"><b>Import from Downloads</b><span>Tangerine files that land in ${esc(settings.downloads_dir || '~/Downloads')} are imported and moved into the app's Imported Files folder.</span></div>
+        <div class="settings-row"><div class="what"><b>Import from Downloads</b><span>Bank files that land in ${esc(settings.downloads_dir || '~/Downloads')} are imported and moved into the app's Imported Files folder.</span></div>
           <label class="switch"><input type="checkbox" data-setting="auto_import" ${settings.auto_import ? 'checked' : ''}><span></span></label></div>
         <div class="settings-row"><div class="what"><b>Budget starts in</b><span>Transactions before this are kept for history and for working out what categories need.</span></div>
           <select id="start-month">${months.months.map(m => `<option value="${m}" ${m === state.boot.budget_start ? 'selected' : ''}>${monthLong(m)}</option>`).join('')}</select></div>
@@ -1668,12 +1868,14 @@ async function renderOnboarding() {
   if (ob.step === 0) {
     if (!ob.files) ob.files = await call('scan_downloads');
     const files = ob.files.files;
-    body = `<h3>1. Bring in your Tangerine files</h3>
-      <p class="muted">On tangerine.ca, open an account, choose <b>Download transactions</b>, and save as CSV (or Quicken/Money: those even include the balance). Grab a few months for both chequing and the credit card. Overlapping files are fine: nothing is imported twice.</p>
-      <div class="card filelist">${files.length ? files.map((f, i) => `<label><input type="checkbox" data-file="${i}" ${f.already_imported ? '' : 'checked'}>
+    body = `<h3>1. Bring in your bank files</h3>
+      <p class="muted">From your bank's website, download a few months of transactions for each account. Pick <b>Quicken (QFX)</b> or <b>Money (OFX)</b> if it's offered: those include the balance and need no setting up. CSV works too. Overlapping files are fine: nothing is imported twice.</p>
+      <div class="card filelist">${files.length ? files.map((f, i) => f.needs_setup ? `<label><button type="button" data-ob="setup" data-file="${i}" class="btn small">Set up…</button>
+          <div><b>${esc(f.filename)}</b><div class="small muted">${plural(f.rows, 'transaction')}${f.first_date ? `, ${dayYear(f.first_date)} – ${dayYear(f.last_date)}` : ''} · ${f.needs_setup === 'layout' ? 'show the app its columns once' : 'which account is it for?'}</div></div>
+          <span class="tag">CSV</span></label>` : `<label><input type="checkbox" data-file="${i}" ${f.already_imported ? '' : 'checked'}>
           <div><b>${esc(f.account_name || f.filename)}</b> <span class="muted small">${esc(f.filename)}</span><div class="small muted">${f.format === 'actual' ? 'Learn your categories and which payees go where' : `${plural(f.rows, 'transaction')}, ${dayYear(f.first_date)} – ${dayYear(f.last_date)}`}${f.already_imported ? ' · already imported' : ''}</div></div>
           <span class="tag ${f.format === 'actual' ? 'info' : ''}">${f.format === 'actual' ? 'Actual Budget' : f.format === 'ofx' ? 'OFX' : 'CSV'}</span></label>`).join('')
-        : `<div class="empty"><b>No Tangerine files in ${esc(ob.files.folder)}</b>Download some, then look again.</div>`}</div>
+        : `<div class="empty"><b>No bank files in ${esc(ob.files.folder)}</b>Download some, then look again.</div>`}</div>
       ${ob.results ? `<div class="notice info" style="margin-top:12px">${ob.results}</div>` : ''}
       <div class="row" style="margin-top:16px"><button class="btn" data-ob="rescan">Look again</button><button class="btn" data-ob="choose">Choose files…</button><span class="spacer"></span>
         <button class="btn primary" data-ob="import">${files.some(f => !f.already_imported) ? 'Import and continue' : 'Continue'}</button></div>`;
@@ -1688,7 +1890,7 @@ async function renderOnboarding() {
   } else if (ob.step === 2) {
     await loadAccounts();
     body = `<h3>3. Balances</h3>
-      <p class="muted">What does Tangerine show for each account right now? The app works out every past balance from this one number, so it only asks once.</p>
+      <p class="muted">What does your bank show for each account right now? The app works out every past balance from this one number, so it only asks once.</p>
       <div class="card">${state.accounts.map(a => `<div class="settings-row"><div class="what"><b>${esc(a.name)}</b><span>${a.is_debt ? 'Amount owing (the balance on the card)' : 'Balance'}${a.last_date ? ` · transactions up to ${dayYear(a.last_date)}` : ''}</span></div>
           <input style="width:150px;text-align:right" data-ob-balance="${a.id}" value="${a.balance !== null ? moneyPlain(a.is_debt ? -a.balance : a.balance) : ''}" placeholder="0.00"></div>`).join('') || '<p class="faint">No accounts yet: go back and import a file.</p>'}</div>
       <div class="row" style="margin-top:16px"><button class="btn" data-ob="back">Back</button><span class="spacer"></span><button class="btn primary" data-ob="save-balances">Continue</button></div>`;
@@ -1712,7 +1914,14 @@ async function onboardingAction(btn) {
   if (a === 'rescan') { ob.files = null; ob.results = null; }
   else if (a === 'choose') {
     const r = await call('choose_and_import');
-    if (r) { ob.results = summarizeImport(r); ob.files = null; }
+    if (r) {
+      const parts = [summarizeImport(r)];
+      for (const f of r.needs_setup || []) { const o = await setupFile(f.path); if (o) parts.push(summarizeImport(o)); }
+      ob.results = parts.join(' · '); ob.files = null;
+    }
+  } else if (a === 'setup') {
+    const o = await setupFile(ob.files.files[Number(btn.dataset.file)].path);
+    if (o) { ob.results = summarizeImport(o); ob.files = null; }
   } else if (a === 'import') {
     const paths = $$('[data-file]').filter(el => el.checked).map(el => ob.files.files[Number(el.dataset.file)].path);
     if (paths.length) {
@@ -1743,7 +1952,8 @@ async function onboardingAction(btn) {
 }
 function summarizeImport(r) {
   const parts = [];
-  for (const x of r.results || []) parts.push(`${x.filename}: ${x.added} new${x.duplicates ? `, ${x.duplicates} already there` : ''}`);
+  const several = new Set((r.results || []).filter((x, i, all) => all.findIndex(y => y.filename === x.filename) !== i).map(x => x.filename));
+  for (const x of r.results || []) parts.push(`${x.filename}${several.has(x.filename) ? ` (${x.account_name})` : ''}: ${x.added} new${x.duplicates ? `, ${x.duplicates} already there` : ''}`);
   if (r.learnt) parts.push(`learnt ${r.learnt.examples} examples from ${r.learnt.filename}`);
   for (const e of r.errors || []) parts.push(`${e.filename}: ${e.error}`);
   return parts.join(' · ') || 'Nothing new';
@@ -1757,6 +1967,9 @@ window.appEvent = (name, payload) => {
     const added = results.reduce((s, r) => s + r.added, 0);
     const review = (payload.counts && payload.counts.inbox) || 0;
     if (payload.counts) setCounts(payload.counts);
+    const waiting = payload.needs_setup || [];
+    if (waiting.length && !payload.auto) setupFiles(waiting);  // you chose or dropped them: ask now
+    else if (waiting.length) toast(`${waiting.map(f => f.filename).join(', ')} ${waiting.length === 1 ? 'needs' : 'need'} setting up`, { action: { label: 'Set up', run: () => setupFiles(waiting) } });
     if (!results.length && !payload.learnt) return;
     toast(added ? `Imported ${plural(added, 'new transaction')} from ${results.map(r => r.filename).join(', ')}${review ? ` · ${review} in the Inbox` : ''}`
       : `Nothing new in ${results.map(r => r.filename).join(', ')}`,
