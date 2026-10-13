@@ -37,3 +37,10 @@ def test_clickable_data_attributes_are_listened_for():
 def test_suggestion_chips_file_the_card_when_clicked():
     assert re.search(r"closest\('\[data-act\], #main \[data-pick\]'\)", PAGE)
     assert "btn.dataset.pick" in PAGE
+
+
+def test_a_categorys_monthly_amount_is_called_budgeted():
+    """The maintainer's word for it is Budgeted, never "Each month"."""
+    assert "Each month" not in PAGE
+    assert '<th class="r">Budgeted</th><th class="r">Assigned</th>' in PAGE
+    assert "Monthly Budgeted Amount" in PAGE and "data-copy-budget" in PAGE

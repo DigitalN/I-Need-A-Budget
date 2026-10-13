@@ -171,6 +171,10 @@ th.r, td.r { text-align: right; }
 .btable .cat .name:hover { color: var(--accent); }
 .btable .cat.hidden-cat { opacity: .5; }
 .btable col.c-num { width: 132px; }
+.btable td.assign-cell { white-space: nowrap; }
+.copy-budget { border: 0; background: transparent; color: var(--faint); border-radius: 5px; padding: 1px 5px; margin-right: 2px; cursor: default; }
+.btable tr:hover .copy-budget { color: var(--muted); }
+.copy-budget:hover { background: var(--hover); color: var(--accent) !important; }
 .money-input { width: 108px; text-align: right; background: transparent !important; box-shadow: none !important; border-radius: 5px; padding: 3px 6px; font-variant-numeric: tabular-nums; }
 .money-input:hover { box-shadow: inset 0 0 0 1px var(--line-strong) !important; }
 .money-input:focus { background: var(--input) !important; box-shadow: inset 0 0 0 1px var(--accent), 0 0 0 3px var(--accent-soft) !important; }
@@ -606,7 +610,7 @@ async function renderBudget() {
       rows.push(`<tr class="cat ${c.hidden ? 'hidden-cat' : ''}">
         <td><span class="name" data-cat="${c.id}">${esc(c.name)}</span></td>
         <td class="r">${monthly}</td>
-        <td class="r">${view.before_start ? '' : `<input class="money-input ${c.assigned ? '' : 'zero'}" data-assign="${c.id}" value="${moneyPlain(c.assigned)}" inputmode="decimal" ${isDebt && false ? 'disabled' : ''}>`}</td>
+        <td class="r assign-cell">${view.before_start ? '' : `${c.monthly_budget !== null && c.monthly_budget !== c.assigned ? `<button class="copy-budget" data-copy-budget="${c.id}" tabindex="-1" title="Assign the budgeted ${esc(money(c.monthly_budget))}">→</button>` : ''}<input class="money-input ${c.assigned ? '' : 'zero'}" data-assign="${c.id}" value="${moneyPlain(c.assigned)}" inputmode="decimal" ${isDebt && false ? 'disabled' : ''}>`}</td>
         <td class="r num ${c.activity < 0 ? '' : (c.activity > 0 ? 'pos' : 'faint')}">${c.activity ? `<span class="spent-link" data-spent="${c.id}" title="What makes up this">${money(c.activity)}</span>` : money(c.activity)}</td>
         <td class="r">${view.before_start ? '' : `<span class="pill ${pillClass}"${overNote}>${money(avail ?? 0)}</span>`}</td></tr>`);
     }
@@ -623,7 +627,7 @@ async function renderBudget() {
       ${hero}
       <div class="card" style="padding:6px 8px">
         <table class="btable"><colgroup><col><col class="c-num"><col class="c-num"><col class="c-num"><col class="c-num"></colgroup>
-          <thead><tr><th>Category</th><th class="r">Each month</th><th class="r">Assigned</th><th class="r">Spent</th><th class="r">Available</th></tr></thead>
+          <thead><tr><th>Category</th><th class="r">Budgeted</th><th class="r">Assigned</th><th class="r">Spent</th><th class="r">Available</th></tr></thead>
           <tbody>${rows.join('')}</tbody></table>
       </div>
       ${view.groups.length ? `<p class="kbd-help">Click a category or what it spent to see this month's transactions and what it needed in past months. Type in Assigned and press Return; Tab moves to the next one.</p>` : ''}
@@ -666,6 +670,14 @@ async function saveAssigned(input) {
   await renderBudget();
   toast(`Assigned ${money(cents ?? 0)} to ${catName(id) || 'category'}`, { action: undoAction });
 }
+// The → in the Assigned column: assign what's budgeted for the month, without typing it.
+async function assignBudgeted(id) {
+  const c = findCat(id);
+  if (!c || c.monthly_budget === null) return;
+  await call('set_assigned', [state.month, id, c.monthly_budget]);
+  await renderBudget();
+  toast(`Assigned ${money(c.monthly_budget)} to ${c.name}`, { action: undoAction });
+}
 const findCat = id => { for (const g of (state.view || {}).groups || []) for (const c of g.categories) if (c.id === id) return c; return null; };
 
 // What makes up a Spent figure: every transaction (a split counts only its line here) and,
@@ -700,10 +712,12 @@ async function openCategory(id) {
   const max = Math.max(1, ...hist.map(h => h.spent));
   const bars = hist.map(h => `<div class="bar ${h.complete ? '' : 'partial'}" title="${monthLong(h.month)}: ${money(h.spent)}">
       <em>${h.spent ? money(h.spent).replace('.00', '') : ''}</em><div style="height:${Math.max(0, h.spent) / max * 80}%"></div><span>${monthShort(h.month)}</span></div>`).join('');
-  const avg = Object.entries(d.averages).map(([n, a]) =>
-    `<div class="row" style="padding:4px 0"><span class="muted">Last ${a.months} ${a.months === 1 ? 'month' : 'months'}</span><span class="spacer"></span>
-      <b class="num">${money(a.amount)}</b>${d.debt_account_id ? '' : `<button class="btn small" data-act="use-amount" data-amount="${a.amount}">Use</button>`}</div>`).join('');
-  const avg3 = d.averages[3];
+  // What it spent last month, then the averages (one of a single month would repeat it).
+  const useRow = (label, amount, title = '') => `<div class="row" style="padding:4px 0"${title ? ` title="${esc(title)}"` : ''}>
+      <span class="muted">${label}</span><span class="spacer"></span><b class="num">${money(amount)}</b>
+      <button class="btn small" data-act="use-amount" data-amount="${amount}">Use</button></div>`;
+  const spentRows = useRow('Last month', d.last_month.amount, `What ${d.name} actually spent in ${monthLong(d.last_month.month)}`) +
+    Object.values(d.averages).filter(a => a.months > 1).map(a => useRow(`Last ${a.months} months`, a.amount, 'Average of what was actually spent')).join('');
   const bg = document.createElement('div'); bg.className = 'drawer-bg';
   const dr = document.createElement('div'); dr.className = 'drawer';
   dr.innerHTML = `
@@ -711,10 +725,14 @@ async function openCategory(id) {
     ${d.debt_account_id ? `<p class="muted small">This envelope holds the money for paying the card. Card spending from a category that has the money moves it here automatically. To pay down what you already owe, assign extra here.</p>` : ''}
     ${spentCard(d.spent, d.month)}
     ${d.debt_account_id ? '' : `<div class="card" style="margin-top:12px">
-      <h2>What it actually needed</h2>
-      <p class="small muted" style="margin:0">Based on what was really spent (refunds and money back count), not what was budgeted.</p>
+      <div class="row"><h2 style="margin:0">Monthly Budgeted Amount</h2><span class="spacer"></span><span id="monthly-status" class="small muted"></span></div>
+      <p class="small muted" style="margin:4px 0 0">What it actually spent (refunds count).</p>
       <div class="bars">${bars || '<span class="faint">No spending yet</span>'}</div>
-      <div style="margin-top:10px">${avg || '<span class="faint small">Not enough history for an average yet.</span>'}</div>
+      <div style="margin-top:10px">${spentRows}</div>
+      <div class="row" style="padding:8px 0 0;margin-top:6px;border-top:1px solid var(--line)"><b>Budgeted</b><span class="spacer"></span>
+        <input id="monthly-input" class="num" style="width:110px;text-align:right" inputmode="decimal"
+          value="${d.monthly_budget === null ? '' : moneyPlain(d.monthly_budget)}" placeholder="Not set">
+        <button class="btn small ghost" data-act="use-amount" data-amount="">Clear</button></div>
     </div>`}
     <div class="card" style="margin-top:12px">
       <h2>Move money</h2>
@@ -726,22 +744,10 @@ async function openCategory(id) {
       <div class="row"><h2 style="margin:0">Notes</h2><span class="spacer"></span><span id="note-status" class="small muted"></span></div>
       <textarea id="cat-note" rows="4" style="width:100%;margin-top:8px;resize:vertical" placeholder="Anything to remember about ${esc(d.name)}: when it renews, what it covers…">${esc(d.note || '')}</textarea>
     </div>
-    ${d.debt_account_id ? '' : `<div class="card" style="margin-top:12px">
-      <h2>Each month</h2>
-      <div class="row"><input id="monthly-input" class="num" style="width:130px;text-align:right" inputmode="decimal"
-          value="${d.monthly_budget === null ? '' : moneyPlain(d.monthly_budget)}" placeholder="Not set">
-        <span id="monthly-status" class="small muted"></span></div>
-      <div class="row wrap" style="margin-top:8px">
-        <button class="btn small" data-act="use-amount" data-amount="${d.last_month.amount}" title="What ${esc(d.name)} actually spent in ${monthLong(d.last_month.month)}">Last month · ${money(d.last_month.amount)}</button>
-        ${avg3 ? `<button class="btn small" data-act="use-amount" data-amount="${avg3.amount}" title="Average of what was actually spent">Last ${avg3.months === 1 ? 'month' : avg3.months + ' months'} avg · ${money(avg3.amount)}</button>` : ''}
-        <button class="btn small ghost" data-act="use-amount" data-amount="">Clear</button>
-      </div>
-      <p class="small muted" style="margin:8px 0 0">What this category should get every month. "Assign money" fills categories up to this, bills first. Saved as you type.</p>
-    </div>`}
     ${d.subscriptions.length ? `<div class="card" style="margin-top:12px"><h2>Subscriptions here</h2>${d.subscriptions.map(s => `<div class="row"><span>${esc(s.name)}</span><span class="spacer"></span><span class="num">${money(s.amount)}/${s.cadence === 'yearly' ? 'yr' : s.cadence === 'weekly' ? 'wk' : 'mo'}</span></div>`).join('')}</div>` : ''}`;
   document.body.append(bg, dr);
 
-  // Both the monthly amount and the note save as they're typed.
+  // Both the budgeted amount and the note save as they're typed.
   let changed = false;
   let savedMonthly = d.monthly_budget, savedNote = d.note || '';
   const show = (el, text, bad = false) => { if (el) { el.textContent = text; el.className = 'small ' + (bad ? 'neg' : 'muted'); } };
@@ -837,11 +843,11 @@ async function openAssign(amount) {
     <div class="field"><label>Amount to share out</label>
       <div class="row"><input id="assign-amount" style="width:140px;text-align:right" value="${moneyPlain(plan.amount)}"><button type="button" class="btn small" id="assign-recalc">Recalculate</button>
       <span class="muted small">Ready to assign: ${money(plan.ready_to_assign)}</span></div></div>
-    ${plan.plan.length ? `<p class="small muted" style="margin-top:0">"Each month" is only the plan: money is in a category once it's assigned. This tops each one up to its monthly amount, in budget order.</p>
-      <table><thead><tr><th>Category</th><th class="r">Each month</th><th class="r">Already in</th><th class="r">Assign</th></tr></thead><tbody>${rows}</tbody></table>
+    ${plan.plan.length ? `<p class="small muted" style="margin-top:0">"Budgeted" is only the plan: money is in a category once it's assigned. This tops each one up to its budgeted amount, in budget order.</p>
+      <table><thead><tr><th>Category</th><th class="r">Budgeted</th><th class="r">Already in</th><th class="r">Assign</th></tr></thead><tbody>${rows}</tbody></table>
       <p class="small" id="assign-left">Left over: <b>${money(plan.left_over)}</b></p>`
-      : `<div class="notice info">No category has a monthly amount yet. Click a category on the Budget page to set one (it shows what it actually needed), or type amounts straight into the Assigned column.</div>`}
-    ${plan.without_monthly_amount.length && plan.plan.length ? `<p class="small faint">No monthly amount: ${esc(plan.without_monthly_amount.join(', '))}</p>` : ''}`;
+      : `<div class="notice info">No category has a budgeted amount yet. Click a category on the Budget page to set one (it shows what it actually spent), or type amounts straight into the Assigned column.</div>`}
+    ${plan.without_monthly_amount.length && plan.plan.length ? `<p class="small faint">Not budgeted: ${esc(plan.without_monthly_amount.join(', '))}</p>` : ''}`;
   const result = await dialog({
     title: `Assign money in ${monthOnly(state.month)}`, body, wide: true,
     actions: plan.plan.length ? [{ label: 'Cancel', value: null }, { label: 'Assign', value: 'go', primary: true }] : [{ label: 'OK', value: null, primary: true }],
@@ -2143,6 +2149,8 @@ document.addEventListener('click', async e => {
   if (spentGroup) return openGroupSpent(Number(spentGroup.dataset.spentGroup));
   const spent = e.target.closest('.btable [data-spent]');
   if (spent) return openCategory(Number(spent.dataset.spent));
+  const copy = e.target.closest('.btable [data-copy-budget]');
+  if (copy) return assignBudgeted(Number(copy.dataset.copyBudget));
   const g = e.target.closest('.btable .group');
   if (g) { await call('set_group_collapsed', [Number(g.dataset.group), !g.classList.contains('collapsed')]); return renderBudget(); }
   const cat = e.target.closest('.btable [data-cat]');

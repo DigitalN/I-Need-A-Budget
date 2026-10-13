@@ -258,21 +258,25 @@ Don't undo these without asking:
 - The inbox has a finder (search + a button per payee with counts) so nothing gets lost
   in a long list.
 - **Payee clean-up with fuzzy matching** (store numbers, typos, truncation).
-- **Monthly budget per category** ("each month"), with "needs ~$X" from *actual* spending,
-  so it's right even when the user forgot to budget a month. "Each month" is a plan, not
-  money: Assign money… tops a category up to it, counting what's already in it (carried
-  in plus assigned this month). The maintainer once read "Still needs" as being asked
-  to assign twice; the window now shows Each month / Already in / Assign. The category panel offers
-  "Last month" and "Last 3 months avg" (both actual spending), saves the amount as it's
-  typed (no Save button), and has a per-category Notes box that also saves as typed.
+- **A budgeted amount per category** (`monthly_budget`), shown as **Budgeted**: the
+  maintainer's word for it (never "Each month", which they disliked). "Needs ~$X" from
+  *actual* spending shows when none is set, so it's right even when the user forgot to
+  budget a month. Budgeted is a plan, not money: Assign money… tops a category up to it,
+  counting what's already in it (carried in plus assigned this month). The maintainer
+  once read "Still needs" as being asked to assign twice; the window shows Budgeted /
+  Already in / Assign. The **→** beside a category's Assigned box (only when Assigned
+  isn't already the budgeted amount) assigns exactly the budgeted amount, undoably.
 - **The category pop-over** (click a category's name or its Spent figure) is wide and in
   the maintainer's order: this month's transactions (adding up to Spent: a split counts
   only its line; a card's payment envelope lists payments and the card spending moved in,
-  from `budget.compute`'s `moved_from`), what it actually needed, Move money, Notes, Each
-  month. A group's Spent opens the same list for the whole group. Clicking a transaction
-  opens it (it has a Category field) and the pop-over reopens with the change.
+  from `budget.compute`'s `moved_from`), **Monthly Budgeted Amount**, Move money, Notes.
+  Monthly Budgeted Amount is one section: the bars of what it actually spent, Last month,
+  then Last 3/6/12 months (each with Use), and the Budgeted field, saved as it's typed (no
+  Save button); Notes also save as typed. A group's Spent opens the same list for the
+  whole group. Clicking a transaction opens it (it has a Category field) and the pop-over
+  reopens with the change.
 - Budgeting is **as each paycheque lands** (Assign money… fills categories up to their
-  monthly amount, in order), not a lump at the start of the month.
+  budgeted amount, in order), not a lump at the start of the month.
 - **Credit cards YNAB-style** (payment envelopes, paying down a balance), with room for a
   line of credit as a third, debt account.
 - **Refunds and reimbursements go back to the category the money left from.**
