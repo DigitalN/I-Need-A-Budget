@@ -1,0 +1,45 @@
+# ── Private data: never commit ──────────────────────────────
+# The app keeps everything in ~/Library/Application Support/I Need A Budget, outside
+# this repository. These patterns catch strays: bank exports, databases, backups.
+# scripts/hooks/pre-commit blocks them again even if someone uses `git add -f`.
+*.csv
+*.CSV
+*.ofx
+*.OFX
+*.qfx
+*.QFX
+*.qbo
+*.QBO
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*.zip
+Personal/
+private/
+data/
+Backups/
+Imported Files/
+.git-denylist
+.env
+
+# Logs
+*.log
+Logs/
+
+# Build output (scripts/build.sh builds in ~/Library/Caches/I Need A Budget-build)
+Application Files/build/
+Application Files/dist/
+*.app/
+dist/
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Editor / OS
+.DS_Store
+.vscode/
+.idea/

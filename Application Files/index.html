@@ -1,0 +1,1869 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!-- No network access of any kind: everything is inline and data comes from the
+     pywebview bridge (window.pywebview.api), which is not an HTTP connection.
+     'unsafe-eval' is required because pywebview delivers API return values with
+     eval(); this page never evaluates strings itself. -->
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval'; style-src 'unsafe-inline'; img-src data:; font-src 'none'; connect-src 'none'; media-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'">
+<meta name="color-scheme" content="light dark">
+<title>I Need A Budget</title>
+<style>
+:root {
+  --bg: #f5f5f7; --side: #ececef; --card: #ffffff; --card-2: #fafafa; --text: #1d1d1f; --muted: #6e6e73;
+  --faint: #aeaeb2; --line: rgba(0,0,0,.08); --line-strong: rgba(0,0,0,.14); --hover: rgba(0,0,0,.04);
+  --accent: #007aff; --accent-soft: rgba(0,122,255,.12); --pos: #1f9d55; --pos-soft: rgba(31,157,85,.13);
+  --neg: #d70015; --neg-soft: rgba(215,0,21,.10); --warn: #b25e00; --warn-soft: rgba(255,149,0,.15);
+  --shadow: 0 1px 2px rgba(0,0,0,.05), 0 0 0 .5px rgba(0,0,0,.06); --pop: 0 10px 30px rgba(0,0,0,.18), 0 0 0 .5px rgba(0,0,0,.1);
+  --seg-bg: rgba(0,0,0,.06); --seg-on: #ffffff; --input: #ffffff;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #1c1c1e; --side: #232325; --card: #2c2c2e; --card-2: #323234; --text: #f5f5f7; --muted: #a1a1a6;
+    --faint: #636366; --line: rgba(255,255,255,.08); --line-strong: rgba(255,255,255,.16); --hover: rgba(255,255,255,.05);
+    --accent: #0a84ff; --accent-soft: rgba(10,132,255,.2); --pos: #32d74b; --pos-soft: rgba(50,215,75,.16);
+    --neg: #ff6961; --neg-soft: rgba(255,105,97,.16); --warn: #ffb340; --warn-soft: rgba(255,179,64,.16);
+    --shadow: 0 0 0 .5px rgba(255,255,255,.08); --pop: 0 10px 30px rgba(0,0,0,.5), 0 0 0 .5px rgba(255,255,255,.12);
+    --seg-bg: rgba(255,255,255,.08); --seg-on: #636366; --input: #1c1c1e;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #1c1c1e; --side: #232325; --card: #2c2c2e; --card-2: #323234; --text: #f5f5f7; --muted: #a1a1a6;
+  --faint: #636366; --line: rgba(255,255,255,.08); --line-strong: rgba(255,255,255,.16); --hover: rgba(255,255,255,.05);
+  --accent: #0a84ff; --accent-soft: rgba(10,132,255,.2); --pos: #32d74b; --pos-soft: rgba(50,215,75,.16);
+  --neg: #ff6961; --neg-soft: rgba(255,105,97,.16); --warn: #ffb340; --warn-soft: rgba(255,179,64,.16);
+  --shadow: 0 0 0 .5px rgba(255,255,255,.08); --pop: 0 10px 30px rgba(0,0,0,.5), 0 0 0 .5px rgba(255,255,255,.12);
+  --seg-bg: rgba(255,255,255,.08); --seg-on: #636366; --input: #1c1c1e;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body {
+  background: var(--bg); color: var(--text); overflow: hidden;
+  font: 13px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+button, input, select, textarea { font: inherit; color: inherit; }
+.num { font-variant-numeric: tabular-nums; }
+.muted { color: var(--muted); } .faint { color: var(--faint); }
+.pos { color: var(--pos); } .neg { color: var(--neg); } .warn { color: var(--warn); }
+.small { font-size: 12px; } .tiny { font-size: 11px; }
+.right { text-align: right; } .nowrap { white-space: nowrap; }
+.spacer { flex: 1; }
+.row { display: flex; align-items: center; gap: 8px; }
+.wrap { flex-wrap: wrap; }
+h1 { font-size: 22px; font-weight: 650; letter-spacing: -.01em; margin: 0; }
+h2 { font-size: 12px; font-weight: 600; letter-spacing: .02em; text-transform: uppercase; color: var(--muted); margin: 0 0 10px; }
+h3 { font-size: 15px; font-weight: 600; margin: 0 0 10px; }
+a, .link { color: var(--accent); cursor: pointer; text-decoration: none; background: none; border: 0; padding: 0; }
+a:hover, .link:hover { text-decoration: underline; }
+
+/* ── layout ─────────────────────────────────── */
+.app { display: grid; grid-template-columns: 208px 1fr; height: 100%; }
+.side { background: var(--side); border-right: 1px solid var(--line); display: flex; flex-direction: column; padding: 14px 10px; min-height: 0; }
+.brand { display: flex; align-items: center; gap: 9px; padding: 4px 8px 16px; font-weight: 650; font-size: 14px; }
+.brand svg { width: 26px; height: 26px; flex: none; }
+.side nav { display: flex; flex-direction: column; gap: 2px; }
+.side nav button {
+  display: flex; align-items: center; gap: 10px; border: 0; background: transparent; border-radius: 7px;
+  padding: 7px 9px; text-align: left; cursor: default; font-weight: 500;
+}
+.side nav button svg { width: 17px; height: 17px; flex: none; opacity: .75; }
+.side nav button:hover { background: var(--hover); }
+.side nav button[aria-current="page"] { background: var(--accent-soft); color: var(--accent); }
+.side nav button[aria-current="page"] svg { opacity: 1; }
+.badge { margin-left: auto; background: var(--accent); color: #fff; border-radius: 9px; padding: 0 7px; font-size: 11px; font-weight: 600; min-width: 18px; text-align: center; }
+.badge:empty { display: none; }
+.side-foot { margin-top: auto; display: flex; flex-direction: column; gap: 8px; padding: 0 4px; }
+.side-foot .hint { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.4; }
+main { overflow-y: auto; min-width: 0; position: relative; }
+.page { max-width: 1060px; margin: 0 auto; padding: 22px 26px 60px; }
+.page-head { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; flex-wrap: wrap; }
+.card { background: var(--card); border-radius: 12px; box-shadow: var(--shadow); padding: 16px 18px; min-width: 0; }
+.stack { display: flex; flex-direction: column; gap: 14px; }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.notice { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-radius: 10px; background: var(--warn-soft); color: var(--text); }
+.notice.info { background: var(--accent-soft); }
+.notice.bad { background: var(--neg-soft); }
+.empty { text-align: center; padding: 40px 20px; color: var(--muted); }
+.empty b { display: block; color: var(--text); font-size: 15px; margin-bottom: 4px; }
+
+/* ── controls ───────────────────────────────── */
+.btn {
+  border: 0; border-radius: 7px; padding: 5px 12px; background: var(--card); box-shadow: inset 0 0 0 .5px var(--line-strong), 0 .5px 1px rgba(0,0,0,.08);
+  cursor: default; font-weight: 500; white-space: nowrap;
+}
+.btn:hover { background: var(--card-2); }
+.btn:disabled { opacity: .5; }
+.btn.primary { background: var(--accent); color: #fff; box-shadow: none; }
+.btn.primary:hover { filter: brightness(1.06); }
+.btn.danger { color: var(--neg); }
+.btn.small { padding: 2px 9px; font-size: 12px; }
+.btn.wide { width: 100%; }
+.btn.ghost { background: transparent; box-shadow: none; color: var(--accent); }
+.btn.ghost:hover { background: var(--accent-soft); }
+input[type=text], input[type=search], input[type=date], input[type=password], input:not([type]), select, textarea {
+  background: var(--input); border: 0; box-shadow: inset 0 0 0 1px var(--line-strong); border-radius: 6px; padding: 5px 8px; outline: none;
+}
+input:focus, select:focus, textarea:focus { box-shadow: inset 0 0 0 1px var(--accent), 0 0 0 3px var(--accent-soft); }
+select { padding-right: 24px; }
+.seg { display: inline-flex; background: var(--seg-bg); border-radius: 8px; padding: 2px; gap: 2px; }
+.seg button { border: 0; background: transparent; padding: 3px 12px; border-radius: 6px; cursor: default; font-weight: 500; }
+.seg button[aria-pressed="true"] { background: var(--seg-on); box-shadow: 0 1px 2px rgba(0,0,0,.12); }
+.switch { position: relative; width: 34px; height: 20px; flex: none; }
+.switch input { opacity: 0; width: 0; height: 0; }
+.switch span { position: absolute; inset: 0; background: var(--seg-bg); border-radius: 10px; transition: background .15s; }
+.switch span::after { content: ""; position: absolute; width: 16px; height: 16px; left: 2px; top: 2px; background: #fff; border-radius: 50%; box-shadow: 0 1px 2px rgba(0,0,0,.25); transition: transform .15s; }
+.switch input:checked + span { background: var(--pos); }
+.switch input:checked + span::after { transform: translateX(14px); }
+.chip {
+  border: 0; border-radius: 13px; padding: 3px 11px; background: var(--seg-bg); cursor: default; font-weight: 500; font-size: 12px; white-space: nowrap;
+}
+.chip:hover { background: var(--accent-soft); color: var(--accent); }
+.chip.first { background: var(--accent); color: #fff; }
+.chip.first:hover { filter: brightness(1.06); }
+.chip kbd { font: inherit; opacity: .6; margin-right: 4px; font-size: 11px; }
+.pill { display: inline-block; border-radius: 10px; padding: 1px 9px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.pill.pos { background: var(--pos-soft); color: var(--pos); }
+.pill.neg { background: var(--neg-soft); color: var(--neg); }
+.pill.zero { background: var(--seg-bg); color: var(--muted); }
+.tag { display: inline-block; border-radius: 4px; padding: 0 6px; font-size: 11px; font-weight: 600; background: var(--seg-bg); color: var(--muted); }
+.tag.warn { background: var(--warn-soft); color: var(--warn); }
+.tag.bad { background: var(--neg-soft); color: var(--neg); }
+.tag.good { background: var(--pos-soft); color: var(--pos); }
+.tag.info { background: var(--accent-soft); color: var(--accent); }
+
+/* ── tables ─────────────────────────────────── */
+table { width: 100%; border-collapse: collapse; }
+th { text-align: left; font-weight: 600; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .03em; padding: 6px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+td { padding: 7px 10px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+tr:last-child td { border-bottom: 0; }
+tbody tr.clickable:hover td { background: var(--hover); }
+th.r, td.r { text-align: right; }
+
+/* ── budget ─────────────────────────────────── */
+.months { display: flex; align-items: center; gap: 4px; overflow-x: auto; scrollbar-width: none; padding: 2px; }
+.months::-webkit-scrollbar { display: none; }
+.months button { border: 0; background: transparent; border-radius: 6px; padding: 4px 9px; cursor: default; white-space: nowrap; font-weight: 500; color: var(--muted); }
+.months button:hover { background: var(--hover); }
+.months button.current { color: var(--text); }
+.months button[aria-current="true"] { background: var(--accent); color: #fff; }
+.months .year { font-size: 10px; color: var(--faint); padding: 0 2px; font-weight: 600; }
+.hero { display: flex; flex-wrap: wrap; gap: 18px 34px; align-items: center; }
+.hero > :first-child { min-width: 230px; }
+.hero .breakdown { flex: 1; min-width: 260px; }
+.breakdown span:nth-child(even) { white-space: nowrap; }
+.rta-label { color: var(--muted); font-weight: 500; }
+.rta { font-size: 38px; font-weight: 650; letter-spacing: -.02em; line-height: 1.1; }
+.breakdown { display: grid; grid-template-columns: auto auto; gap: 2px 14px; justify-content: start; font-size: 12px; }
+.breakdown span:nth-child(odd) { text-align: right; font-variant-numeric: tabular-nums; }
+.hero-actions { display: flex; flex-direction: column; gap: 6px; align-items: stretch; }
+.btable td, .btable th { padding: 6px 10px; }
+.btable .group td { background: var(--card-2); font-weight: 600; cursor: default; }
+.btable .group .caret { display: inline-block; width: 12px; color: var(--muted); transition: transform .12s; }
+.btable .group.collapsed .caret { transform: rotate(-90deg); }
+.btable .cat td:first-child { padding-left: 28px; }
+.btable .cat .name { cursor: pointer; }
+.btable .cat .name:hover { color: var(--accent); }
+.btable .cat.hidden-cat { opacity: .5; }
+.btable col.c-num { width: 132px; }
+.money-input { width: 108px; text-align: right; background: transparent !important; box-shadow: none !important; border-radius: 5px; padding: 3px 6px; font-variant-numeric: tabular-nums; }
+.money-input:hover { box-shadow: inset 0 0 0 1px var(--line-strong) !important; }
+.money-input:focus { background: var(--input) !important; box-shadow: inset 0 0 0 1px var(--accent), 0 0 0 3px var(--accent-soft) !important; }
+.money-input.zero { color: var(--faint); }
+.monthly { color: var(--muted); font-size: 12px; cursor: pointer; }
+.monthly:hover { color: var(--accent); }
+.needs { color: var(--warn); font-size: 11px; }
+.sub-note { font-size: 11px; color: var(--muted); }
+
+/* ── inbox ──────────────────────────────────── */
+.items { display: flex; flex-direction: column; gap: 8px; }
+.item { background: var(--card); border-radius: 11px; box-shadow: var(--shadow); padding: 11px 14px; display: grid; grid-template-columns: 1fr auto; gap: 6px 18px; outline: none; }
+.item.selected { box-shadow: 0 0 0 2px var(--accent), var(--shadow); }
+.item .who { font-weight: 600; font-size: 14px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.item .meta { color: var(--muted); font-size: 12px; }
+.item .raw { color: var(--faint); font-size: 11px; font-family: ui-monospace, Menlo, monospace; }
+.item .why { color: var(--muted); font-size: 12px; display: flex; gap: 6px; align-items: baseline; }
+.item .amount { font-size: 16px; font-weight: 600; text-align: right; font-variant-numeric: tabular-nums; }
+.item .chips { grid-column: 1 / -1; display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.item .chips .sep { width: 1px; height: 18px; background: var(--line-strong); margin: 0 4px; }
+.item.group-card { border-left: 3px solid var(--accent); }
+.item .sublist { grid-column: 1 / -1; border-top: 1px solid var(--line); padding-top: 6px; }
+.item .sublist div { display: flex; gap: 10px; font-size: 12px; padding: 2px 0; }
+.item.leaving { opacity: 0; transform: translateX(20px); transition: all .18s; }
+.question { grid-column: 1 / -1; background: var(--accent-soft); border-radius: 8px; padding: 8px 10px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.filed-list td { font-size: 12px; }
+
+/* ── panels, dialogs, popovers ──────────────── */
+.drawer-bg { position: fixed; inset: 0; background: rgba(0,0,0,.18); z-index: 20; }
+.drawer { position: fixed; top: 0; right: 0; bottom: 0; width: 420px; background: var(--bg); box-shadow: var(--pop); z-index: 21; overflow-y: auto; padding: 20px 22px 40px; }
+.bars { display: flex; align-items: flex-end; gap: 6px; height: 110px; padding-top: 14px; }
+.bars .bar { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; gap: 3px; min-width: 0; }
+.bars .bar div { width: 100%; background: var(--accent); border-radius: 3px 3px 0 0; min-height: 1px; opacity: .85; }
+.bars .bar.partial div { opacity: .35; }
+.bars .bar span { font-size: 10px; color: var(--muted); }
+.bars .bar em { font-size: 9px; color: var(--muted); font-style: normal; white-space: nowrap; }
+dialog { border: 0; border-radius: 13px; padding: 0; background: var(--card); color: var(--text); box-shadow: var(--pop); width: min(560px, calc(100vw - 60px)); max-height: calc(100vh - 60px); }
+dialog.wide { width: min(780px, calc(100vw - 60px)); }
+dialog::backdrop { background: rgba(0,0,0,.25); }
+dialog form { display: flex; flex-direction: column; max-height: calc(100vh - 60px); }
+.dlg-head { display: flex; align-items: center; gap: 10px; padding: 14px 14px 0 20px; }
+.dlg-title { flex: 1; font-size: 15px; font-weight: 650; min-width: 0; }
+.dlg-x { font-size: 14px; padding: 3px 8px; }
+.dlg-body { padding: 12px 20px; overflow-y: auto; }
+.dlg-error { color: var(--neg); padding: 0 20px; min-height: 0; }
+.dlg-error:empty { display: none; }
+.dlg-actions { display: flex; gap: 8px; justify-content: flex-end; padding: 12px 20px 16px; }
+.field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; }
+.field > label, .label { font-size: 12px; font-weight: 600; color: var(--muted); }
+.field input, .field select, .field textarea { width: 100%; }
+.popover { position: fixed; z-index: 50; background: var(--card); border-radius: 10px; box-shadow: var(--pop); width: 270px; max-height: 360px; display: flex; flex-direction: column; overflow: hidden; }
+.popover input { margin: 8px; }
+.popover .list { overflow-y: auto; padding: 0 6px 6px; }
+.popover .g { font-size: 10px; text-transform: uppercase; letter-spacing: .04em; font-weight: 700; color: var(--faint); padding: 8px 8px 3px; }
+.popover .o { padding: 5px 9px; border-radius: 6px; cursor: default; }
+.popover .o.active { background: var(--accent); color: #fff; }
+#toast {
+  position: fixed; left: 50%; bottom: 22px; transform: translate(-50%, 30px); opacity: 0; pointer-events: none; z-index: 60;
+  background: rgba(30,30,32,.94); color: #fff; padding: 9px 12px 9px 16px; border-radius: 10px; display: flex; gap: 14px; align-items: center;
+  transition: all .2s; box-shadow: 0 6px 20px rgba(0,0,0,.25); max-width: 70vw;
+}
+#toast.show { opacity: 1; transform: translate(-50%, 0); pointer-events: auto; }
+#toast.error { background: #b4001a; }
+#toast button { border: 0; background: rgba(255,255,255,.16); color: #fff; border-radius: 6px; padding: 3px 10px; font-weight: 600; cursor: default; }
+#toast button:empty { display: none; }
+.update-bar { position: sticky; top: 0; z-index: 10; background: var(--accent); color: #fff; padding: 8px 26px; display: flex; gap: 12px; align-items: center; }
+.update-bar .btn { background: #fff; color: var(--accent); }
+.drop-hint { position: fixed; inset: 10px; border: 3px dashed var(--accent); border-radius: 16px; background: var(--accent-soft); z-index: 70; display: none; align-items: center; justify-content: center; font-size: 20px; font-weight: 600; color: var(--accent); pointer-events: none; }
+body.dragging .drop-hint { display: flex; }
+
+/* ── onboarding ─────────────────────────────── */
+.onboard { position: fixed; inset: 0; background: var(--bg); z-index: 40; overflow-y: auto; }
+.onboard .inner { max-width: 760px; margin: 0 auto; padding: 40px 30px 60px; }
+.steps { display: flex; gap: 6px; margin: 14px 0 26px; }
+.steps div { flex: 1; height: 4px; border-radius: 2px; background: var(--seg-bg); }
+.steps div.done { background: var(--accent); }
+.filelist label { display: grid; grid-template-columns: auto 1fr auto; gap: 12px; align-items: center; padding: 10px 4px; border-bottom: 1px solid var(--line); }
+.filelist label:last-child { border-bottom: 0; }
+.cat-editor .grp { margin-bottom: 14px; }
+.cat-editor .grp-head { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; }
+.cat-editor .grp-head input { font-weight: 600; flex: 1; }
+.cat-editor .cat-row { display: flex; gap: 6px; align-items: center; padding: 3px 0 3px 18px; }
+.cat-editor .cat-row input { flex: 1; }
+.icon-btn { border: 0; background: transparent; color: var(--muted); border-radius: 5px; padding: 2px 6px; cursor: default; }
+.icon-btn:hover { background: var(--hover); color: var(--text); }
+.icon-btn.danger:hover { color: var(--neg); }
+.kbd-help { color: var(--faint); font-size: 11px; }
+.settings-row { display: flex; align-items: center; gap: 14px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+.settings-row:last-child { border-bottom: 0; }
+.settings-row .what { flex: 1; }
+.settings-row .what b { display: block; font-weight: 600; }
+.settings-row .what span { color: var(--muted); font-size: 12px; }
+.acct-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; }
+.bal { font-size: 26px; font-weight: 650; letter-spacing: -.01em; margin: 4px 0; }
+.mini-bars { display: flex; gap: 4px; align-items: flex-end; height: 44px; }
+.mini-bars div { flex: 1; background: var(--neg); opacity: .6; border-radius: 2px 2px 0 0; min-height: 1px; }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="side">
+    <div class="brand">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><rect x="1" y="5" width="30" height="22" rx="5" fill="#1f9d55"/><path d="M3 9l13 9 13-9" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <span>I Need A Budget</span>
+    </div>
+    <nav id="nav">
+      <button data-nav="budget"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="2" y="4" width="16" height="12" rx="2.5"/><path d="M3 6l7 5 7-5" stroke-linejoin="round"/></svg>Budget</button>
+      <button data-nav="inbox"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 11l2-7h10l2 7v4a1 1 0 01-1 1H4a1 1 0 01-1-1z" stroke-linejoin="round"/><path d="M3 11h4l1 2h4l1-2h4" stroke-linejoin="round"/></svg>Inbox<span class="badge" id="inbox-badge"></span></button>
+      <button data-nav="transactions"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 5h12M4 10h12M4 15h12"/></svg>Transactions</button>
+      <button data-nav="accounts"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M3 8l7-4 7 4M4 8v7M8 8v7M12 8v7M16 8v7M3 16h14"/></svg>Accounts<span class="badge" id="accounts-badge"></span></button>
+      <button data-nav="subscriptions"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M15 7a6 6 0 00-10.5-1.5M5 13a6 6 0 0010.5 1.5"/><path d="M4 2.5v3.2h3.2M16 17.5v-3.2h-3.2"/></svg>Subscriptions</button>
+      <button data-nav="settings"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="10" cy="10" r="2.6"/><path d="M10 2.5v2M10 15.5v2M17.5 10h-2M4.5 10h-2M15.3 4.7l-1.4 1.4M6.1 13.9l-1.4 1.4M15.3 15.3l-1.4-1.4M6.1 6.1L4.7 4.7" stroke-linecap="round"/></svg>Settings</button>
+    </nav>
+    <div class="side-foot">
+      <button class="btn wide" data-act="import-files">Import files…</button>
+      <p class="hint">Tangerine downloads that land in your Downloads folder are imported on their own. You can also drop files on this window.</p>
+    </div>
+  </aside>
+  <main id="main"></main>
+</div>
+<div id="onboard" class="onboard" hidden></div>
+<div id="toast"><span></span><button type="button"></button></div>
+<div class="drop-hint">Drop Tangerine files to import them</div>
+<dialog id="dlg"><form method="dialog"><div class="dlg-head"><div class="dlg-title"></div><button type="button" class="icon-btn dlg-x" title="Close without saving (Esc)" aria-label="Close">✕</button></div><div class="dlg-body"></div><div class="dlg-error"></div><div class="dlg-actions"></div></form></dialog>
+
+<script>
+'use strict';
+
+// ── helpers ─────────────────────────────────────────────
+const $ = (sel, root = document) => root.querySelector(sel);
+const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const money = (c, opts = {}) => {
+  if (c === null || c === undefined || Number.isNaN(c)) return '—';
+  const s = (Math.abs(c) / 100).toLocaleString('en-CA', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const sign = c < 0 ? '−' : (opts.sign && c > 0 ? '+' : '');
+  return sign + (opts.bare ? '' : '$') + s;
+};
+const moneyPlain = c => c ? (c / 100).toLocaleString('en-CA', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '0.00';
+function parseMoney(text) {
+  const t = String(text ?? '').replace(/[$,\s]/g, '').replace(/−/g, '-');
+  if (t === '') return null;
+  if (!/^[-+]?(\d+(\.\d{0,2})?|\.\d{1,2})$/.test(t)) return NaN;
+  return Math.round(parseFloat(t) * 100);
+}
+const monthLong = m => new Date(m + '-15T12:00').toLocaleDateString('en-CA', { month: 'long', year: 'numeric' });
+const monthShort = m => new Date(m + '-15T12:00').toLocaleDateString('en-CA', { month: 'short' });
+const monthOnly = m => new Date(m + '-15T12:00').toLocaleDateString('en-CA', { month: 'long' });
+const day = d => d ? new Date(d + 'T12:00').toLocaleDateString('en-CA', { month: 'short', day: 'numeric' }) : '';
+const dayYear = d => d ? new Date(d + 'T12:00').toLocaleDateString('en-CA', { month: 'short', day: 'numeric', year: 'numeric' }) : '';
+const plural = (n, one, many) => `${n} ${n === 1 ? one : (many || one + 's')}`;
+const addMonths = (m, n) => { let [y, mo] = m.split('-').map(Number); const i = y * 12 + mo - 1 + n; return `${Math.floor(i / 12)}-${String(i % 12 + 1).padStart(2, '0')}`; };
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const debounce = (fn, ms) => { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; };
+
+class UserFacingError extends Error {}
+function logError(where, e) {
+  console.error(where, e);
+  try { window.pywebview.api.log_error(`${where}: ${(e && e.stack) || e}`); } catch (_) {}
+}
+async function call(name, args) {
+  const api = window.pywebview && window.pywebview.api;
+  if (!api) throw new Error('The app bridge is not ready');
+  const r = await api.call(name, args === undefined ? [] : args);
+  if (!r || !r.ok) {
+    const msg = (r && r.error) || 'Something went wrong';
+    toast(msg, { error: true });
+    throw new UserFacingError(msg);
+  }
+  if (r.result && r.result.counts) setCounts(r.result.counts);
+  return r.result;
+}
+window.addEventListener('error', e => { try { window.pywebview.api.log_error(`${e.message} at ${e.filename}:${e.lineno}`); } catch (_) {} });
+window.addEventListener('unhandledrejection', e => {
+  if (e.reason instanceof UserFacingError) return;
+  try { window.pywebview.api.log_error(String(e.reason && e.reason.stack || e.reason)); } catch (_) {}
+});
+
+let toastTimer;
+function toast(msg, opts = {}) {
+  const el = $('#toast');
+  el.querySelector('span').textContent = msg;
+  const btn = el.querySelector('button');
+  btn.textContent = opts.action ? opts.action.label : '';
+  btn.onclick = opts.action ? () => { el.classList.remove('show'); opts.action.run(); } : null;
+  el.classList.toggle('error', !!opts.error);
+  el.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove('show'), opts.action ? 7000 : (opts.error ? 6000 : 3200));
+}
+const undoAction = { label: 'Undo', run: () => doUndo() };
+
+async function doUndo() {
+  try {
+    const r = await call('undo');
+    toast(`Undone: ${r.undone}`);
+    await refresh();
+  } catch (_) {}
+}
+
+// Dialog: resolves with the clicked action's value (or null). `check(dlg)` on an action
+// returns an error message to keep it open.
+function dialog({ title, body, actions, wide = false, onOpen }) {
+  return new Promise(resolve => {
+    const d = $('#dlg');
+    d.classList.toggle('wide', wide);
+    d.querySelector('.dlg-title').textContent = title;
+    d.querySelector('.dlg-body').innerHTML = body;
+    d.querySelector('.dlg-error').textContent = '';
+    const bar = d.querySelector('.dlg-actions');
+    bar.innerHTML = '';
+    let done = false;
+    const finish = v => { if (done) return; done = true; d.close(); resolve(v); };
+    (actions || [{ label: 'OK', value: true, primary: true }]).forEach(a => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'btn' + (a.primary ? ' primary' : '') + (a.danger ? ' danger' : '');
+      b.textContent = a.label;
+      b.onclick = async () => {
+        if (a.check) {
+          const err = await a.check(d);
+          if (err) { d.querySelector('.dlg-error').textContent = err; return; }
+        }
+        finish(a.value);
+      };
+      if (a.left) { b.style.marginRight = 'auto'; }
+      bar.appendChild(b);
+    });
+    d.onclose = () => finish(null);
+    d.querySelector('.dlg-x').onclick = () => finish(null);  // close without doing anything, like Esc
+    d.oncancel = e => { e.preventDefault(); finish(null); };
+    d.querySelector('form').onsubmit = e => {
+      e.preventDefault();
+      const primary = bar.querySelector('.btn.primary');
+      if (primary) primary.click();
+    };
+    d.showModal();
+    if (onOpen) onOpen(d);
+    const first = d.querySelector('.dlg-body input, .dlg-body select, .dlg-body textarea');
+    if (first) { first.focus(); if (first.select) first.select(); }
+  });
+}
+const confirmBox = (title, text, label = 'OK', danger = false) => dialog({
+  title, body: `<p>${esc(text)}</p>`,
+  actions: [{ label: 'Cancel', value: false }, { label, value: true, primary: !danger, danger }],
+});
+
+// Category picker popover. Resolves with a category id, or null.
+let pickerCleanup = null;
+function pickCategory(anchor, { income = true, title = '' } = {}) {
+  if (pickerCleanup) pickerCleanup();
+  return new Promise(resolve => {
+    const pop = document.createElement('div');
+    pop.className = 'popover';
+    pop.innerHTML = `<input type="search" placeholder="${esc(title || 'Category')}"><div class="list"></div>`;
+    // An open dialog sits in the browser's top layer, above everything else on the page,
+    // so the list has to live inside it to show on top.
+    const openDialog = $('#dlg').open ? $('#dlg') : null;
+    (openDialog || document.body).appendChild(pop);
+    const r = anchor.getBoundingClientRect();
+    const top = Math.min(r.bottom + 4, window.innerHeight - 370);
+    pop.style.top = Math.max(8, top) + 'px';
+    pop.style.left = Math.max(8, Math.min(r.left, window.innerWidth - 280)) + 'px';
+    const input = pop.querySelector('input'), list = pop.querySelector('.list');
+    let active = 0, options = [];
+    const groups = state.categories.filter(g => g.role !== 'debt' || g.categories.some(c => !c.debt_account_id));
+    const draw = () => {
+      const q = input.value.trim().toLowerCase();
+      options = [];
+      let html = '';
+      for (const g of groups) {
+        if (g.role === 'income' && !income) continue;
+        const cats = g.categories.filter(c => !c.hidden && !c.debt_account_id && (!q || c.name.toLowerCase().includes(q)));
+        if (!cats.length) continue;
+        html += `<div class="g">${esc(g.name)}</div>`;
+        for (const c of cats) { html += `<div class="o" data-id="${c.id}">${esc(c.name)}</div>`; options.push(c.id); }
+      }
+      list.innerHTML = html || '<div class="o faint">No category matches</div>';
+      active = Math.min(active, Math.max(0, options.length - 1));
+      mark();
+    };
+    const mark = () => $$('.o[data-id]', list).forEach((el, i) => {
+      el.classList.toggle('active', i === active);
+      if (i === active) el.scrollIntoView({ block: 'nearest' });
+    });
+    const close = v => { cleanup(); resolve(v); };
+    const outside = e => { if (!pop.contains(e.target)) close(null); };
+    const cleanup = () => { pop.remove(); document.removeEventListener('mousedown', outside, true); pickerCleanup = null; };
+    pickerCleanup = () => close(null);
+    input.addEventListener('input', () => { active = 0; draw(); });
+    input.addEventListener('keydown', e => {
+      if (e.key === 'ArrowDown') { active = Math.min(active + 1, options.length - 1); mark(); e.preventDefault(); }
+      else if (e.key === 'ArrowUp') { active = Math.max(active - 1, 0); mark(); e.preventDefault(); }
+      else if (e.key === 'Enter') { e.preventDefault(); if (options.length) close(options[active]); }
+      else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(null); }
+    });
+    list.addEventListener('mousedown', e => { const o = e.target.closest('.o[data-id]'); if (o) { e.preventDefault(); close(Number(o.dataset.id)); } });
+    setTimeout(() => document.addEventListener('mousedown', outside, true), 0);
+    draw();
+    input.focus();
+  });
+}
+
+// ── state ───────────────────────────────────────────────
+const state = {
+  page: 'budget', month: null, boot: null, categories: [], accounts: [], counts: {},
+  inboxSel: 0, txFilters: { month: null }, expanded: new Set(), update: null, inboxFind: { text: '', payee: null },
+};
+
+function setCounts(c) {
+  if (!c) return;
+  state.counts = c;
+  $('#inbox-badge').textContent = c.inbox ? c.inbox : '';
+  $('#accounts-badge').textContent = c.accounts_without_balance ? '!' : '';
+}
+async function loadCategories() { state.categories = await call('categories'); }
+async function loadAccounts() { state.accounts = await call('accounts'); }
+const catName = id => { for (const g of state.categories) for (const c of g.categories) if (c.id === id) return c.name; return null; };
+const incomeIds = () => state.categories.filter(g => g.role === 'income').flatMap(g => g.categories.map(c => c.id));
+
+function navigate(page, opts = {}) {
+  state.page = page;
+  if (opts.month) state.month = opts.month;
+  $$('#nav button').forEach(b => b.setAttribute('aria-current', b.dataset.nav === page ? 'page' : 'false'));
+  $('#main').scrollTop = 0;
+  return refresh();
+}
+
+async function refresh() {
+  const pages = { budget: renderBudget, inbox: renderInbox, transactions: renderTransactions,
+                  accounts: renderAccounts, subscriptions: renderSubscriptions, settings: renderSettings };
+  try {
+    await (pages[state.page] || renderBudget)();
+  } catch (e) {
+    if (!(e instanceof UserFacingError)) { logError(`Showing ${state.page}`, e); toast('Something went wrong showing this page', { error: true }); }
+  }
+}
+
+function frame(html) {
+  const bar = state.update && state.update.status === 'ready'
+    ? `<div class="update-bar"><span>Version ${esc(state.update.version)} is ready. It's installed when you quit.</span><span class="spacer"></span><button class="btn small" data-act="restart-update">Restart now</button></div>` : '';
+  $('#main').innerHTML = bar + `<div class="page">${html}</div>`;
+}
+
+// ── budget ──────────────────────────────────────────────
+async function renderBudget() {
+  if (!state.month) state.month = state.boot.current_month;
+  const [view] = await Promise.all([call('month', [state.month]), state.categories.length ? null : loadCategories()]);
+  state.view = view;
+  const s = view.summary;
+  const prev = addMonths(view.month, -1);
+  let monthsHtml = '';
+  let lastYear = null;
+  for (const m of view.months) {
+    const y = m.slice(0, 4);
+    if (y !== lastYear) { monthsHtml += `<span class="year">${y}</span>`; lastYear = y; }
+    monthsHtml += `<button data-month="${m}" aria-current="${m === view.month}" class="${m === view.current_month ? 'current' : ''}">${monthShort(m)}</button>`;
+  }
+  const notices = [];
+  if (view.missing_balances.length) notices.push(`<div class="notice">Tell the app the balance of ${esc(view.missing_balances.join(' and '))} so it knows how much money you have. <span class="spacer"></span><button class="btn small" data-nav-to="accounts">Set balance</button></div>`);
+  if (view.before_start) notices.push(`<div class="notice info">This is before your budget starts (${monthLong(view.budget_start)}), so it only shows what was spent. <span class="spacer"></span><button class="btn small" data-act="start-here">Start the budget in ${monthOnly(view.month)}</button></div>`);
+  if (view.to_review) notices.push(`<div class="notice info">${plural(view.to_review, 'transaction')} from ${monthOnly(view.month)} still ${view.to_review === 1 ? 'needs' : 'need'} a look. <span class="spacer"></span><button class="btn small" data-nav-to="inbox">Open Inbox</button></div>`);
+  if (view.future_short.length) notices.push(`<div class="notice bad">You've assigned more than you have in ${view.future_short.map(monthOnly).join(', ')}.</div>`);
+
+  let hero = '';
+  if (s) {
+    const rtaClass = s.ready_to_assign < 0 ? 'neg' : (s.ready_to_assign > 0 ? 'pos' : '');
+    const lines = [
+      [money(s.carried_rta), view.month === view.budget_start ? 'Cash when the budget started' : `Left over from ${monthOnly(prev)}`],
+      [money(s.income, { sign: true }), `Income in ${monthOnly(view.month)}`],
+    ];
+    if (s.overspent_last_month) lines.push([money(-s.overspent_last_month), `Overspent in ${monthOnly(prev)}`]);
+    if (s.uncategorized) lines.push([money(s.uncategorized, { sign: true }), 'Not in a category yet']);
+    lines.push([money(-s.assigned), `Assigned in ${monthOnly(view.month)}`]);
+    hero = `<div class="card hero">
+      <div><div class="rta-label">Ready to assign</div><div class="rta num ${rtaClass}">${money(s.ready_to_assign)}</div>
+        ${s.new_debt ? `<div class="small warn">${money(s.new_debt)} of card spending wasn't covered by a category: it's new debt.</div>` : ''}</div>
+      <div class="breakdown">${lines.map(([a, b]) => `<span>${a}</span><span class="muted">${esc(b)}</span>`).join('')}</div>
+      <div class="hero-actions">
+        <button class="btn primary" data-act="assign">Assign money…</button>
+        ${view.is_past ? `<button class="btn" data-act="catch-up" title="Assign exactly what was spent, so nothing ends the month overspent">Catch up this month</button>` : ''}
+        <button class="btn" data-act="edit-categories">Edit categories…</button>
+      </div></div>`;
+  }
+
+  const rows = [];
+  for (const g of view.groups) {
+    const collapsed = !!g.collapsed;
+    const isDebt = g.role === 'debt';
+    rows.push(`<tr class="group ${collapsed ? 'collapsed' : ''}" data-group="${g.id}">
+      <td><span class="caret">▾</span> ${esc(g.name)}</td><td></td>
+      <td class="r num">${view.before_start ? '' : money(g.assigned)}</td><td class="r num">${money(g.activity)}</td>
+      <td class="r num">${view.before_start ? '' : money(g.available)}</td></tr>`);
+    if (collapsed) continue;
+    for (const c of g.categories) {
+      if (c.hidden && !c.assigned && !c.activity && !c.available) continue;
+      const avail = c.available;
+      const pillClass = avail === null ? 'zero' : (avail < 0 ? 'neg' : (avail > 0 ? 'pos' : 'zero'));
+      let monthly;
+      if (c.debt_account_id) {
+        monthly = c.owing ? `<span class="sub-note">owe ${money(c.owing)}${c.not_covered ? ` · <span class="warn">${money(c.not_covered)} not covered</span>` : ''}</span>` : '';
+      } else if (c.monthly_budget !== null) {
+        monthly = `<span class="monthly num" data-cat="${c.id}">${money(c.monthly_budget)}</span>`;
+      } else if (c.needed) {
+        monthly = `<span class="needs" data-cat="${c.id}" style="cursor:pointer" title="Average actual spending over the last ${view.average_months.length} months">needs ~${money(c.needed)}</span>`;
+      } else {
+        monthly = `<span class="monthly faint" data-cat="${c.id}">—</span>`;
+      }
+      const overNote = c.overspent_credit ? ` title="${esc(money(c.overspent_credit))} of this was on a card without money in the category: it became debt"` :
+        (c.overspent_cash ? ` title="${esc(money(c.overspent_cash))} overspent: it comes out of next month's Ready to assign"` : '');
+      rows.push(`<tr class="cat ${c.hidden ? 'hidden-cat' : ''}">
+        <td><span class="name" data-cat="${c.id}">${esc(c.name)}</span></td>
+        <td class="r">${monthly}</td>
+        <td class="r">${view.before_start ? '' : `<input class="money-input ${c.assigned ? '' : 'zero'}" data-assign="${c.id}" value="${moneyPlain(c.assigned)}" inputmode="decimal" ${isDebt && false ? 'disabled' : ''}>`}</td>
+        <td class="r num ${c.activity < 0 ? '' : (c.activity > 0 ? 'pos' : 'faint')}">${money(c.activity)}</td>
+        <td class="r">${view.before_start ? '' : `<span class="pill ${pillClass}"${overNote}>${money(avail ?? 0)}</span>`}</td></tr>`);
+    }
+  }
+
+  frame(`
+    <div class="page-head"><h1>${monthLong(view.month)}</h1><span class="spacer"></span>
+      <button class="btn small" data-month="${addMonths(view.month, -1)}">‹</button>
+      <button class="btn small" data-month="${view.current_month}">Today</button>
+      <button class="btn small" data-month="${addMonths(view.month, 1)}">›</button></div>
+    <div class="months" id="months">${monthsHtml}</div>
+    <div class="stack" style="margin-top:12px">
+      ${notices.join('')}
+      ${hero}
+      <div class="card" style="padding:6px 8px">
+        <table class="btable"><colgroup><col><col class="c-num"><col class="c-num"><col class="c-num"><col class="c-num"></colgroup>
+          <thead><tr><th>Category</th><th class="r">Each month</th><th class="r">Assigned</th><th class="r">Spent</th><th class="r">Available</th></tr></thead>
+          <tbody>${rows.join('')}</tbody></table>
+      </div>
+      ${view.groups.length ? `<p class="kbd-help">Click a category to see what it actually needed in past months. Type in Assigned and press Return; Tab moves to the next one.</p>` : ''}
+    </div>`);
+  const cur = $('#months button[aria-current="true"]');
+  if (cur) cur.scrollIntoView({ inline: 'center', block: 'nearest' });
+}
+
+async function saveAssigned(input) {
+  const cents = parseMoney(input.value);
+  if (Number.isNaN(cents)) { toast('That isn\'t an amount', { error: true }); return; }
+  const id = Number(input.dataset.assign);
+  const current = findCat(id);
+  if (current && (cents ?? 0) === current.assigned) { input.value = moneyPlain(current.assigned); return; }
+  await call('set_assigned', [state.month, id, cents ?? 0]);
+  await renderBudget();
+  toast(`Assigned ${money(cents ?? 0)} to ${catName(id) || 'category'}`, { action: undoAction });
+}
+const findCat = id => { for (const g of (state.view || {}).groups || []) for (const c of g.categories) if (c.id === id) return c; return null; };
+
+async function openCategory(id) {
+  const d = await call('category_detail', { category_id: id, month: state.month });
+  const hist = d.history.slice(-12);
+  const max = Math.max(1, ...hist.map(h => h.spent));
+  const bars = hist.map(h => `<div class="bar ${h.complete ? '' : 'partial'}" title="${monthLong(h.month)}: ${money(h.spent)}">
+      <em>${h.spent ? money(h.spent).replace('.00', '') : ''}</em><div style="height:${Math.max(0, h.spent) / max * 80}%"></div><span>${monthShort(h.month)}</span></div>`).join('');
+  const avg = Object.entries(d.averages).map(([n, a]) =>
+    `<div class="row" style="padding:4px 0"><span class="muted">Last ${a.months} ${a.months === 1 ? 'month' : 'months'}</span><span class="spacer"></span>
+      <b class="num">${money(a.amount)}</b>${d.debt_account_id ? '' : `<button class="btn small" data-act="use-amount" data-amount="${a.amount}">Use</button>`}</div>`).join('');
+  const avg3 = d.averages[3];
+  const txns = d.transactions.map(t => `<tr><td class="muted nowrap">${day(t.date)}</td><td>${esc(t.payee_name || t.raw_name)}${t.subscription_name ? ` <span class="tag info">${esc(t.subscription_name)}</span>` : ''}</td><td class="r num ${t.amount > 0 ? 'pos' : ''}">${money(t.amount)}</td></tr>`).join('');
+  const bg = document.createElement('div'); bg.className = 'drawer-bg';
+  const dr = document.createElement('div'); dr.className = 'drawer';
+  dr.innerHTML = `
+    <div class="row"><h3 style="margin:0">${esc(d.name)}</h3><span class="spacer"></span><button class="icon-btn" data-close>✕</button></div>
+    ${d.debt_account_id ? `<p class="muted small">This envelope holds the money for paying the card. Card spending from a category that has the money moves it here automatically. To pay down what you already owe, assign extra here.</p>` : ''}
+    ${d.debt_account_id ? '' : `<div class="card" style="margin-top:12px">
+      <h2>Each month</h2>
+      <div class="row"><input id="monthly-input" class="num" style="width:130px;text-align:right" inputmode="decimal"
+          value="${d.monthly_budget === null ? '' : moneyPlain(d.monthly_budget)}" placeholder="Not set">
+        <span id="monthly-status" class="small muted"></span></div>
+      <div class="row wrap" style="margin-top:8px">
+        <button class="btn small" data-act="use-amount" data-amount="${d.last_month.amount}" title="What ${esc(d.name)} actually spent in ${monthLong(d.last_month.month)}">Last month · ${money(d.last_month.amount)}</button>
+        ${avg3 ? `<button class="btn small" data-act="use-amount" data-amount="${avg3.amount}" title="Average of what was actually spent">Last ${avg3.months === 1 ? 'month' : avg3.months + ' months'} avg · ${money(avg3.amount)}</button>` : ''}
+        <button class="btn small ghost" data-act="use-amount" data-amount="">Clear</button>
+      </div>
+      <p class="small muted" style="margin:8px 0 0">What this category should get every month. "Assign money" fills categories up to this, bills first. Saved as you type.</p>
+    </div>`}
+    <div class="card" style="margin-top:12px">
+      <h2>What it actually needed</h2>
+      <p class="small muted" style="margin:0">Based on what was really spent (refunds and money back count), not what was budgeted.</p>
+      <div class="bars">${bars || '<span class="faint">No spending yet</span>'}</div>
+      <div style="margin-top:10px">${avg || '<span class="faint small">Not enough history for an average yet.</span>'}</div>
+    </div>
+    <div class="card" style="margin-top:12px">
+      <h2>Move money</h2>
+      <div class="row wrap"><input id="move-amount" style="width:110px;text-align:right" placeholder="0.00">
+        <button class="btn" data-act="move-to" data-cat="${d.id}">Move to…</button>
+        <button class="btn" data-act="move-from" data-cat="${d.id}">Take from…</button></div>
+    </div>
+    ${d.subscriptions.length ? `<div class="card" style="margin-top:12px"><h2>Subscriptions here</h2>${d.subscriptions.map(s => `<div class="row"><span>${esc(s.name)}</span><span class="spacer"></span><span class="num">${money(s.amount)}/${s.cadence === 'yearly' ? 'yr' : s.cadence === 'weekly' ? 'wk' : 'mo'}</span></div>`).join('')}</div>` : ''}
+    <div class="card" style="margin-top:12px;padding:8px 10px">
+      <h2 style="padding:6px 0 0 4px">${monthLong(d.month)}</h2>
+      ${txns ? `<table>${txns}</table>` : '<p class="faint small" style="padding:0 4px">Nothing this month.</p>'}
+    </div>
+    <div class="card" style="margin-top:12px">
+      <div class="row"><h2 style="margin:0">Notes</h2><span class="spacer"></span><span id="note-status" class="small muted"></span></div>
+      <textarea id="cat-note" rows="4" style="width:100%;margin-top:8px;resize:vertical" placeholder="Anything to remember about ${esc(d.name)}: when it renews, what it covers…">${esc(d.note || '')}</textarea>
+    </div>`;
+  document.body.append(bg, dr);
+
+  // Both the monthly amount and the note save as they're typed.
+  let changed = false;
+  let savedMonthly = d.monthly_budget, savedNote = d.note || '';
+  const show = (el, text, bad = false) => { if (el) { el.textContent = text; el.className = 'small ' + (bad ? 'neg' : 'muted'); } };
+  const monthlyInput = $('#monthly-input', dr), monthlyStatus = $('#monthly-status', dr);
+  const noteInput = $('#cat-note', dr), noteStatus = $('#note-status', dr);
+  const saveMonthly = async () => {
+    if (!monthlyInput) return;
+    const cents = parseMoney(monthlyInput.value);
+    if (Number.isNaN(cents) || (cents !== null && cents < 0)) return show(monthlyStatus, 'Not an amount', true);
+    if (cents === savedMonthly) return show(monthlyStatus, monthlyStatus.textContent === 'Not an amount' ? '' : monthlyStatus.textContent);
+    savedMonthly = cents;
+    show(monthlyStatus, 'Saving…');
+    try {
+      await call('set_monthly_budget', [d.id, cents]);
+      changed = true;
+      show(monthlyStatus, cents === null ? 'Cleared' : 'Saved');
+    } catch (_) { savedMonthly = undefined; show(monthlyStatus, 'Not saved', true); }
+  };
+  const saveNote = async () => {
+    const text = noteInput.value;
+    if (text === savedNote) return;
+    savedNote = text;
+    show(noteStatus, 'Saving…');
+    try { await call('set_category_note', [d.id, text]); show(noteStatus, 'Saved'); }
+    catch (_) { savedNote = undefined; show(noteStatus, 'Not saved', true); }
+  };
+  if (monthlyInput) {
+    monthlyInput.addEventListener('input', debounce(saveMonthly, 600));
+    monthlyInput.addEventListener('change', saveMonthly);
+    monthlyInput.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); monthlyInput.blur(); } });
+  }
+  noteInput.addEventListener('input', debounce(saveNote, 700));
+  noteInput.addEventListener('change', saveNote);
+
+  const close = async () => {
+    document.removeEventListener('keydown', onKey);
+    await Promise.all([saveMonthly(), saveNote()]);  // anything typed in the last moment
+    bg.remove(); dr.remove();
+    if (changed) { await loadCategories(); await renderBudget(); }
+  };
+  const onKey = e => { if (e.key === 'Escape' && !$('#dlg').open && !$('.popover')) close(); };
+  document.addEventListener('keydown', onKey);
+  bg.onclick = close;
+  dr.addEventListener('click', async e => {
+    if (e.target.closest('[data-close]')) return close();
+    const btn = e.target.closest('[data-act]');
+    if (!btn) return;
+    const act = btn.dataset.act, cat = Number(btn.dataset.cat);
+    if (act === 'use-amount') {
+      monthlyInput.value = btn.dataset.amount === '' ? '' : moneyPlain(Number(btn.dataset.amount));
+      await saveMonthly();
+    } else if (act === 'move-to' || act === 'move-from') {
+      const cents = parseMoney($('#move-amount', dr).value);
+      if (!cents || cents < 0) return toast('Enter an amount to move', { error: true });
+      const other = await pickCategory(btn, { income: false, title: act === 'move-to' ? 'Move to…' : 'Take from…' });
+      if (!other) return;
+      const [from, to] = act === 'move-to' ? [cat, other] : [other, cat];
+      await call('move_money', [state.month, from, to, cents]);
+      changed = true;
+      await close();
+      toast(`Moved ${money(cents)} from ${catName(from)} to ${catName(to)}`, { action: undoAction });
+    }
+  });
+}
+
+async function openAssign(amount) {
+  const plan = await call('assign_plan', { month: state.month, amount: amount ?? null });
+  const rows = plan.plan.map((p, i) => `<tr><td>${esc(p.name)} <span class="faint small">${esc(p.group)}</span></td>
+      <td class="r num muted">${money(p.need)}</td>
+      <td class="r"><input class="money-input" style="box-shadow: inset 0 0 0 1px var(--line-strong) !important" data-i="${i}" value="${moneyPlain(p.amount)}"></td></tr>`).join('');
+  const body = `
+    <div class="field"><label>Amount to share out</label>
+      <div class="row"><input id="assign-amount" style="width:140px;text-align:right" value="${moneyPlain(plan.amount)}"><button type="button" class="btn small" id="assign-recalc">Recalculate</button>
+      <span class="muted small">Ready to assign: ${money(plan.ready_to_assign)}</span></div></div>
+    ${plan.plan.length ? `<p class="small muted" style="margin-top:0">Fills each category up to its monthly amount, in budget order. Change any line before you assign.</p>
+      <table><thead><tr><th>Category</th><th class="r">Still needs</th><th class="r">Assign</th></tr></thead><tbody>${rows}</tbody></table>
+      <p class="small" id="assign-left">Left over: <b>${money(plan.left_over)}</b></p>`
+      : `<div class="notice info">No category has a monthly amount yet. Click a category on the Budget page to set one (it shows what it actually needed), or type amounts straight into the Assigned column.</div>`}
+    ${plan.without_monthly_amount.length && plan.plan.length ? `<p class="small faint">No monthly amount: ${esc(plan.without_monthly_amount.join(', '))}</p>` : ''}`;
+  const result = await dialog({
+    title: `Assign money in ${monthOnly(state.month)}`, body, wide: true,
+    actions: plan.plan.length ? [{ label: 'Cancel', value: null }, { label: 'Assign', value: 'go', primary: true }] : [{ label: 'OK', value: null, primary: true }],
+    onOpen: d => {
+      const left = () => {
+        const total = parseMoney($('#assign-amount', d).value) || 0;
+        const used = $$('[data-i]', d).reduce((s, el) => s + (parseMoney(el.value) || 0), 0);
+        const el = $('#assign-left', d); if (el) el.innerHTML = `Left over: <b class="${total - used < 0 ? 'neg' : ''}">${money(total - used)}</b>`;
+      };
+      $$('[data-i]', d).forEach(el => el.addEventListener('input', left));
+      const recalc = $('#assign-recalc', d);
+      recalc.onclick = async () => {
+        const v = parseMoney($('#assign-amount', d).value);
+        if (Number.isNaN(v)) return;
+        d.close();
+        openAssign(v);
+      };
+    },
+  });
+  if (result !== 'go') return;
+  const allocations = $$('#dlg [data-i]').map(el => ({ category_id: plan.plan[Number(el.dataset.i)].category_id, amount: parseMoney(el.value) || 0 })).filter(a => a.amount);
+  if (!allocations.length) return;
+  await call('apply_plan', [state.month, allocations]);
+  await renderBudget();
+  toast(`Assigned ${money(allocations.reduce((s, a) => s + a.amount, 0))}`, { action: undoAction });
+}
+
+// ── categories editor (budget + onboarding) ─────────────
+function categoryEditorHtml(groups) {
+  return `<div class="cat-editor">${groups.map(g => `
+    <div class="grp" data-group="${g.id}">
+      <div class="grp-head">
+        <input value="${esc(g.name)}" data-rename-group="${g.id}" ${g.role !== 'normal' ? 'disabled' : ''}>
+        ${g.role === 'normal' ? `<button type="button" class="icon-btn" data-move-group="${g.id}" data-dir="-1" title="Move up">↑</button>
+        <button type="button" class="icon-btn" data-move-group="${g.id}" data-dir="1" title="Move down">↓</button>
+        <button type="button" class="icon-btn danger" data-delete-group="${g.id}" title="Delete group">✕</button>` : `<span class="tag">${g.role === 'income' ? 'Income' : 'Cards'}</span>`}
+      </div>
+      ${g.categories.map(c => `<div class="cat-row">
+        <input value="${esc(c.name)}" data-rename-cat="${c.id}" ${c.debt_account_id ? 'disabled' : ''}>
+        ${c.debt_account_id ? '<span class="tag">Card payment</span>' : `
+        <button type="button" class="icon-btn" data-hide-cat="${c.id}" data-hidden="${c.hidden}" title="${c.hidden ? 'Show' : 'Hide'}">${c.hidden ? 'Show' : 'Hide'}</button>
+        <button type="button" class="icon-btn danger" data-delete-cat="${c.id}" title="Delete">✕</button>`}
+      </div>`).join('')}
+      ${g.role !== 'debt' ? `<div class="cat-row"><input placeholder="Add a category…" data-add-cat="${g.id}"></div>` : ''}
+    </div>`).join('')}
+    <div class="row"><input placeholder="Add a group…" data-add-group style="flex:1"></div>
+  </div>`;
+}
+function bindCategoryEditor(root, rerender) {
+  const run = async (fn, msg) => { try { await fn(); await loadCategories(); await rerender(); if (msg) toast(msg, { action: undoAction }); } catch (_) {} };
+  root.addEventListener('change', e => {
+    const el = e.target;
+    if (el.dataset.renameGroup) run(() => call('rename_group', [Number(el.dataset.renameGroup), el.value]));
+    else if (el.dataset.renameCat) run(() => call('rename_category', [Number(el.dataset.renameCat), el.value]));
+  });
+  root.addEventListener('keydown', e => {
+    const el = e.target;
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    if (el.dataset.addCat !== undefined && el.value.trim()) run(() => call('add_category', [Number(el.dataset.addCat), el.value]));
+    else if (el.dataset.addGroup !== undefined && el.value.trim()) run(() => call('add_group', [el.value]));
+    else el.blur();
+  });
+  root.addEventListener('click', async e => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    if (b.dataset.moveGroup) run(() => call('move_group', [Number(b.dataset.moveGroup), Number(b.dataset.dir)]));
+    else if (b.dataset.hideCat) run(() => call('set_category_hidden', [Number(b.dataset.hideCat), b.dataset.hidden !== '1']));
+    else if (b.dataset.deleteCat) {
+      run(() => call('delete_category', [Number(b.dataset.deleteCat)]), 'Category deleted; its transactions went back to the Inbox');
+    } else if (b.dataset.deleteGroup) {
+      run(() => call('delete_group', [Number(b.dataset.deleteGroup)]), 'Group deleted');
+    }
+  });
+}
+async function openCategoryEditor() {
+  await loadCategories();
+  const d = $('#dlg');
+  const promise = dialog({ title: 'Categories', body: categoryEditorHtml(state.categories), wide: true, actions: [{ label: 'Done', value: true, primary: true }] });
+  const body = d.querySelector('.dlg-body');
+  const rerender = async () => { body.innerHTML = categoryEditorHtml(state.categories); };
+  if (!body.dataset.bound) { bindCategoryEditor(body, rerender); body.dataset.bound = '1'; }
+  await promise;
+  delete body.dataset.bound;
+  await renderBudget();
+}
+
+// ── inbox ───────────────────────────────────────────────
+async function renderInbox() {
+  if (!state.categories.length) await loadCategories();
+  state.inbox = await call('inbox');
+  drawInbox();
+}
+
+const inboxMatches = (it, text) => {
+  const q = text.trim().toLowerCase();
+  if (!q) return true;
+  return [it.payee_name, it.raw_name, it.raw_memo, it.reason, it.account_name, money(it.amount), (Math.abs(it.amount) / 100).toFixed(2)]
+    .some(v => String(v || '').toLowerCase().includes(q));
+};
+
+// Draws the inbox from state.inbox (no fetch), so typing in the finder is instant.
+function drawInbox() {
+  const data = state.inbox;
+  const find = state.inboxFind;
+  const shown = data.items.filter(it => (!find.payee || it.payee_id === find.payee) && inboxMatches(it, find.text));
+  state.inboxShown = shown;
+  // Who's waiting: a button per payee, most first, to show just theirs.
+  const byPayee = new Map();
+  for (const it of data.items) {
+    const k = it.payee_id || 0;
+    const e = byPayee.get(k) || { id: it.payee_id, name: it.payee_name || it.raw_name || 'Unknown', n: 0 };
+    e.n += 1; byPayee.set(k, e);
+  }
+  const payees = [...byPayee.values()].sort((a, b) => b.n - a.n || a.name.localeCompare(b.name));
+  const finder = data.items.length ? `<div class="card" style="padding:10px 12px">
+      <div class="row"><input type="search" id="inbox-search" placeholder="Find in the inbox: payee, description or amount" style="flex:1" value="${esc(find.text)}">
+        ${find.text || find.payee ? `<span class="small muted nowrap">Showing ${shown.length} of ${data.items.length}</span><button class="btn small" data-act="inbox-clear">Show all</button>` : ''}</div>
+      <div class="row wrap" style="margin-top:8px">${payees.map(p => `<button class="chip ${find.payee === p.id ? 'first' : ''}" data-act="inbox-payee" data-payee="${p.id ?? ''}">${esc(p.name)} <span style="opacity:.6">${p.n}</span></button>`).join('')}</div>
+    </div>` : '';
+  // Same payee (and same guess), or shares of one bill: one card for all of them.
+  const blocks = [], byGroup = new Map();
+  for (const it of shown) {
+    if (it.group && !it.similar_payee && !it.subscription_choices) {
+      if (byGroup.has(it.group)) { byGroup.get(it.group).items.push(it); continue; }
+      const b = { group: it.group, items: [it] };
+      byGroup.set(it.group, b); blocks.push(b);
+    } else blocks.push({ group: null, items: [it] });
+  }
+  state.blocks = blocks.flatMap(b => (b.items.length > 1 && !state.expanded.has(b.group)) ? [b] : b.items.map(i => ({ group: null, items: [i] })));
+  state.inboxSel = Math.min(state.inboxSel, Math.max(0, state.blocks.length - 1));
+  const alerts = data.alerts.map(a => a.type === 'balance' ? `<div class="notice">${esc(a.text)}<span class="spacer"></span>
+      <input style="width:130px;text-align:right" placeholder="Balance" data-balance-for="${a.account_id}"><button class="btn small" data-act="save-balance" data-account="${a.account_id}">Save</button></div>` : '').join('');
+  const cards = state.blocks.map((b, i) => b.items.length > 1 ? groupCard(b, i) : itemCard(b.items[0], i)).join('');
+  const filedRows = data.filed.map(t => `<tr><td class="muted nowrap">${day(t.date)}</td><td>${esc(t.payee_name || t.raw_name)}${t.subscription_name ? ` <span class="tag info">${esc(t.subscription_name)}</span>` : ''}</td>
+      <td>${t.transfer_account_name ? `<span class="tag">Transfer</span>` : `<button class="link" data-act="recat" data-id="${t.id}">${esc(t.category_name || (t.is_split ? 'Split' : 'No category'))}</button>`}</td>
+      <td class="muted small">${esc(t.reason)}</td><td class="r num ${t.amount > 0 ? 'pos' : ''}">${money(t.amount)}</td></tr>`).join('');
+  const withGuess = shown.filter(i => i.category_id && !i.subscription_choices && !i.similar_payee).length;
+  frame(`
+    <div class="page-head"><h1>Inbox</h1><span class="muted">${data.items.length ? plural(data.items.length, 'transaction') + ' to look at' : ''}</span><span class="spacer"></span>
+      ${withGuess ? `<button class="btn" data-act="accept-all">Accept all ${withGuess} suggestions${shown.length < data.items.length ? ' shown' : ''}</button>` : ''}</div>
+    <div class="stack">
+      ${alerts}
+      ${finder}
+      ${data.items.length && !shown.length ? `<div class="card empty"><b>Nothing matches</b>Try another search, or show everything.</div>` : ''}
+      ${shown.length ? `<div class="items" id="items">${cards}</div>
+        <p class="kbd-help">↑ ↓ to move · Return takes the highlighted suggestion · 1–4 picks one · / any category · T transfer · S split · ⌘Z undo</p>`
+        : (data.items.length ? '' : `<div class="card empty"><b>All caught up</b>Everything is filed. New Tangerine downloads show up here when there's something to decide.</div>`)}
+      ${data.filed.length ? `<details class="card" style="padding:10px 14px"><summary style="cursor:default;font-weight:600">Filed automatically from recent imports (${data.filed.length})</summary>
+        <p class="small muted">Click a category to change it. The app learns from every change.</p>
+        <table class="filed-list"><tbody>${filedRows}</tbody></table></details>` : ''}
+    </div>`);
+  const search = $('#inbox-search');
+  if (search) {
+    search.addEventListener('input', debounce(e => { state.inboxFind.text = e.target.value; state.inboxFind.focus = true; state.inboxSel = 0; drawInbox(); }, 150));
+    if (state.inboxFind.focus) { search.focus(); search.setSelectionRange(search.value.length, search.value.length); }
+  }
+  state.inboxFind.focus = false;
+  markSelected(false);
+}
+
+function chipsHtml(suggestions, current, offset = 0) {
+  const ids = suggestions.map(s => s.id);
+  const list = [...suggestions];
+  if (current && !ids.includes(current)) list.unshift({ id: current, name: catName(current) || '?' });
+  return list.slice(0, 4).map((s, i) => `<button class="chip ${i === 0 ? 'first' : ''}" data-pick="${s.id}"><kbd>${i + 1 + offset}</kbd>${esc(s.name)}</button>`).join('');
+}
+
+function itemCard(t, i) {
+  const who = esc(t.payee_name || t.raw_name || 'Unknown');
+  const question = t.similar_payee ? `<div class="question">Is <b>${who}</b> the same as <b>${esc(t.similar_payee.name)}</b>?
+      <button class="btn small" data-act="same" data-id="${t.id}" data-yes="1">Yes, same</button><button class="btn small" data-act="same" data-id="${t.id}" data-yes="0">No, different</button></div>` : '';
+  const sub = t.subscription_choices ? `<div class="question"><span>${t.subscription_choices.map(c =>
+      `<button class="btn small" data-act="sub-link" data-id="${t.id}" data-sub="${c.id}">New price for ${esc(c.name)}${c.due_now ? ' (due now)' : ''}</button>`).join(' ')}</span>
+      <button class="btn small" data-act="sub-new" data-id="${t.id}">A new subscription…</button>
+      <span class="small muted">Or pick a category below for a one-off purchase.</span></div>` : '';
+  return `<div class="item" data-index="${i}" tabindex="-1">
+    <div>
+      <div class="who"><span class="link" style="color:inherit" data-act="rename" data-id="${t.id}" title="Rename or change payee">${who}</span>
+        ${t.subscription_name ? `<span class="tag info">${esc(t.subscription_name)}</span>` : ''}</div>
+      <div class="meta">${dayYear(t.date)} · ${esc(t.account_name)}${t.bank_category ? ` · card says “${esc(t.bank_category)}”` : ''}</div>
+      <div class="raw">${esc(t.raw_name)}${t.raw_memo && t.raw_memo !== t.raw_name && !t.raw_memo.startsWith('Rewards') ? ' · ' + esc(t.raw_memo) : ''}</div>
+      ${t.reason ? `<div class="why">💡 <span>${esc(t.reason)}</span></div>` : ''}
+    </div>
+    <div class="amount ${t.amount > 0 ? 'pos' : ''}">${money(t.amount, { sign: t.amount > 0 })}</div>
+    ${question}${sub}
+    <div class="chips">${chipsHtml(t.suggestions || [], t.category_id)}
+      <button class="chip" data-act="other" data-id="${t.id}">Other…</button><span class="sep"></span>
+      <button class="btn small ghost" data-act="transfer" data-id="${t.id}">Transfer</button>
+      <button class="btn small ghost" data-act="split" data-id="${t.id}">Split</button>
+      ${t.payee_kind !== 'bank' && t.payee_id ? `<button class="btn small ghost" data-act="always-ask" data-payee="${t.payee_id}" data-on="${t.always_ask ? 0 : 1}" title="${t.always_ask ? 'Let the app file this payee on its own again' : 'Never file this payee without asking'}">${t.always_ask ? 'Stop always asking' : 'Always ask'}</button>` : ''}
+    </div>
+  </div>`;
+}
+
+function groupCard(b, i) {
+  const first = b.items[0];
+  const total = b.items.reduce((s, t) => s + t.amount, 0);
+  const dates = b.items.map(t => t.date).sort();
+  const share = first.reason && first.reason.startsWith('Looks like a');
+  const title = share ? `${b.items.length} e-transfers that look like shares of one bill` : `${esc(first.payee_name || first.raw_name)} · ${b.items.length} transactions`;
+  return `<div class="item group-card" data-index="${i}" tabindex="-1">
+    <div>
+      <div class="who">${title}</div>
+      <div class="meta">${day(dates[0])} – ${dayYear(dates[dates.length - 1])} · ${esc([...new Set(b.items.map(t => t.account_name))].join(', '))}</div>
+      ${first.reason ? `<div class="why">💡 <span>${esc(first.reason)}</span></div>` : ''}
+    </div>
+    <div class="amount ${total > 0 ? 'pos' : ''}">${money(total, { sign: total > 0 })}</div>
+    <div class="sublist">${b.items.slice(0, 6).map(t => `<div><span class="muted">${day(t.date)}</span><span>${esc(t.payee_name || t.raw_name)}</span><span class="spacer"></span><span class="num">${money(t.amount)}</span></div>`).join('')}
+      ${b.items.length > 6 ? `<div class="faint">and ${b.items.length - 6} more</div>` : ''}</div>
+    <div class="chips">${chipsHtml(first.suggestions || [], first.category_id)}
+      <button class="chip" data-act="other-group" data-index="${i}">Other…</button><span class="sep"></span>
+      <button class="btn small ghost" data-act="expand" data-group="${esc(b.group)}">File one at a time</button>
+      ${b.group.startsWith('payee:') && first.payee_id ? `<button class="btn small ghost" data-act="always-ask" data-payee="${first.payee_id}" data-on="1" title="Show each of this payee's transactions on its own card, and never file them without asking">Always ask</button>` : ''}
+      <span class="small muted">Files all ${b.items.length}.</span></div>
+  </div>`;
+}
+
+function markSelected(scroll = true) {
+  $$('.item').forEach(el => el.classList.toggle('selected', Number(el.dataset.index) === state.inboxSel));
+  const el = $(`.item[data-index="${state.inboxSel}"]`);
+  if (el && scroll) el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+}
+
+async function fileBlock(index, categoryId) {
+  const b = state.blocks[index];
+  if (!b || !categoryId) return;
+  const el = $(`.item[data-index="${index}"]`);
+  if (el) el.classList.add('leaving');
+  const ids = b.items.map(t => t.id);
+  // "File one at a time" on a group means exactly that: filing one never files the others.
+  const oneAtATime = ids.length === 1 && b.items[0].group && state.expanded.has(b.items[0].group);
+  const r = ids.length > 1 ? await call('approve_many', { items: ids.map(id => ({ id, category_id: categoryId })) })
+                           : await call('approve', { txn_id: ids[0], category_id: categoryId, refile: !oneAtATime });
+  const t = b.items[0];
+  const name = t.payee_name || t.raw_name;
+  let msg = `${ids.length > 1 ? plural(ids.length, 'transaction') : name} → ${catName(categoryId)}`;
+  if (r.also_filed) msg += ` · also filed ${r.also_filed} more like it`;
+  const total = b.items.reduce((s, x) => s + x.amount, 0);
+  if (incomeIds().includes(categoryId) && total > 0) {
+    toast(msg, { action: { label: `Assign ${money(total)}`, run: () => { state.month = t.date.slice(0, 7); navigate('budget').then(() => openAssign(total)); } } });
+  } else toast(msg, { action: undoAction });
+  await renderInbox();
+  if (r.subscription_prompt) await subscriptionPrompt(r.subscription_prompt);
+}
+
+// Filed a charge that looks like a subscription or bill that isn't tracked yet: ask what it is.
+async function subscriptionPrompt(q) {
+  const v = await dialog({
+    title: `What's this ${esc(q.payee)} charge for?`,
+    body: `<p class="muted">${esc(q.payee)} charged <b>${money(q.amount)}</b>${q.count > 1 ? ` (${q.count} times at this price)` : ''}. ${esc(q.why)}.
+        Name it and it's tracked: its charges show as <b>${esc(q.payee)} · name</b>, go to its envelope on their own,
+        and you're told when the price changes or it stops.</p>
+      <div class="field"><label>What's it for?</label><input id="sp-name" placeholder="e.g. ${esc(q.payee)} — couch, Apple Music, phone plan"></div>
+      <div class="grid2">
+        <div class="field"><label>Type</label><select id="sp-kind"><option value="subscription" ${q.kind !== 'bill' ? 'selected' : ''}>Subscription</option><option value="bill" ${q.kind === 'bill' ? 'selected' : ''}>Bill or payment plan</option></select></div>
+        <div class="field"><label>Charges</label><select id="sp-cadence">${['monthly', 'yearly', 'weekly'].map(c => `<option value="${c}" ${q.cadence === c ? 'selected' : ''}>${c[0].toUpperCase() + c.slice(1)}</option>`).join('')}</select></div>
+      </div>
+      <div class="grid2">
+        <div class="field"><label>Price</label>${pricingSelect('sp-pricing', q.pricing)}</div>
+        <div class="field"><label>Ends on (optional)</label><input type="date" id="sp-ends"></div>
+      </div>
+      <div class="field"><label>Envelope</label><button type="button" class="btn" id="sp-cat" data-id="${q.category_id}" style="text-align:left">${esc(q.category)}</button></div>`,
+    actions: [{ label: 'Not recurring', value: 'no', left: true }, { label: 'Ask me later', value: null },
+      { label: 'Track it', value: 'ok', primary: true, check: d => $('#sp-name', d).value.trim() ? null : 'Give it a name, like what it was for.' }],
+    onOpen: d => { $('#sp-cat', d).onclick = async e => { const id = await pickCategory(e.currentTarget, { income: false }); if (id) { e.target.dataset.id = id; e.target.textContent = catName(id); } }; },
+  });
+  if (v === 'ok') {
+    const name = $('#sp-name').value.trim();
+    await call('subscription_from_transaction', { txn_id: q.txn_id, name, category_id: Number($('#sp-cat').dataset.id),
+      cadence: $('#sp-cadence').value, kind: $('#sp-kind').value, pricing: $('#sp-pricing').value, ends_on: $('#sp-ends').value || null });
+    toast(`Tracking ${q.payee} · ${name}`, { action: undoAction });
+  } else if (v === 'no') {
+    await call('not_a_subscription', [q.txn_id]);
+    toast(`Won't ask about ${q.payee} at ${money(q.amount)} again`, { action: undoAction });
+  }
+}
+
+async function acceptAll() {
+  const items = (state.inboxShown || state.inbox.items).filter(i => i.category_id && !i.subscription_choices && !i.similar_payee).map(i => ({ id: i.id, category_id: i.category_id }));
+  if (!items.length) return;
+  if (!await confirmBox('Accept all suggestions?', `Files ${plural(items.length, 'transaction')} in the category the app suggested. You can change any of them later.`, 'Accept all')) return;
+  const r = await call('approve_many', [items]);
+  toast(`Filed ${plural(items.length + (r.also_filed || 0), 'transaction')}`, { action: undoAction });
+  await renderInbox();
+}
+
+async function transferDialog(txId, fromAccountName) {
+  await loadAccounts();
+  const t = findTx(txId);
+  const options = state.accounts.filter(a => a.id !== (t ? t.account_id : null) && !a.closed);
+  const v = await dialog({
+    title: 'Transfer between your accounts',
+    body: `<p class="muted">Money moving between your own accounts isn't spending, so it has no category. ${options.length ? '' : 'Add the other account on the Accounts page first.'}</p>
+      <div class="field"><label>${t && t.amount < 0 ? 'Went to' : 'Came from'}</label><select id="tr-acct">${options.map(a => `<option value="${a.id}" ${t && t.transfer_account_id === a.id ? 'selected' : ''}>${esc(a.name)}</option>`).join('')}</select></div>`,
+    actions: [...(t && t.transfer_account_id ? [{ label: 'Not a transfer', value: 'none', left: true }] : []), { label: 'Cancel', value: null }, { label: 'Mark as transfer', value: 'ok', primary: true }],
+  });
+  if (!v) return false;
+  const account = v === 'none' ? null : Number($('#tr-acct').value);
+  await call('update_transaction', [txId, { transfer_account_id: account }]);
+  toast(account ? 'Marked as a transfer' : 'No longer a transfer', { action: undoAction });
+  return true;
+}
+
+const findTx = id => {
+  for (const src of [state.inbox && state.inbox.items, state.inbox && state.inbox.filed, state.txns && state.txns.items]) {
+    for (const t of src || []) if (t.id === id) return t;
+  }
+  return null;
+};
+
+async function splitDialog(txId) {
+  const t = findTx(txId);
+  if (!t) return false;
+  const lines = t.splits && t.splits.length ? t.splits.map(s => ({ category_id: s.category_id, amount: s.amount }))
+    : [{ category_id: t.category_id, amount: t.amount }, { category_id: null, amount: 0 }];
+  const draw = d => {
+    const body = d.querySelector('.dlg-body');
+    const used = lines.reduce((s, l) => s + (l.amount || 0), 0);
+    body.innerHTML = `<p class="muted">${esc(t.payee_name || t.raw_name)} · ${dayYear(t.date)} · <b>${money(t.amount)}</b></p>
+      ${lines.map((l, i) => `<div class="row" style="margin-bottom:6px">
+        <button type="button" class="btn" style="flex:1;text-align:left" data-split-cat="${i}">${esc(catName(l.category_id) || 'Pick a category…')}</button>
+        <input style="width:120px;text-align:right" data-split-amt="${i}" value="${moneyPlain(Math.abs(l.amount))}">
+        <button type="button" class="icon-btn danger" data-split-del="${i}">✕</button></div>`).join('')}
+      <div class="row"><button type="button" class="btn small" data-split-add>Add a line</button><span class="spacer"></span>
+        <span class="small">Left to split: <b class="${used !== t.amount ? 'warn' : 'pos'}">${money(Math.abs(t.amount - used))}</b></span></div>`;
+  };
+  const sign = t.amount < 0 ? -1 : 1;
+  const v = await dialog({
+    title: 'Split transaction', body: '',
+    actions: [...(t.is_split ? [{ label: 'Unsplit', value: 'unsplit', left: true }] : []), { label: 'Cancel', value: null },
+      { label: 'Save split', value: 'ok', primary: true, check: () => {
+        const sum = lines.reduce((s, l) => s + (l.amount || 0), 0);
+        if (lines.filter(l => l.amount).length < 2) return 'Add at least two lines.';
+        if (sum !== t.amount) return `The lines add up to ${money(Math.abs(sum))}, not ${money(Math.abs(t.amount))}.`;
+        if (lines.some(l => l.amount && !l.category_id)) return 'Every line needs a category.';
+        return null;
+      } }],
+    onOpen: d => {
+      draw(d);
+      const body = d.querySelector('.dlg-body');
+      body.oninput = e => {
+        const i = e.target.dataset.splitAmt;
+        if (i === undefined) return;
+        const c = parseMoney(e.target.value);
+        lines[Number(i)].amount = Number.isNaN(c) || c === null ? 0 : sign * Math.abs(c);
+        const used = lines.reduce((s, l) => s + (l.amount || 0), 0);
+        const b = body.querySelector('.row:last-child b');
+        b.textContent = money(Math.abs(t.amount - used)); b.className = used !== t.amount ? 'warn' : 'pos';
+      };
+      body.onclick = async e => {
+        const b = e.target.closest('button');
+        if (!b) return;
+        if (b.dataset.splitCat !== undefined) {
+          const id = await pickCategory(b);
+          if (id) { lines[Number(b.dataset.splitCat)].category_id = id; draw(d); }
+        } else if (b.dataset.splitDel !== undefined) { lines.splice(Number(b.dataset.splitDel), 1); draw(d); }
+        else if (b.dataset.splitAdd !== undefined) {
+          const used = lines.reduce((s, l) => s + (l.amount || 0), 0);
+          lines.push({ category_id: null, amount: t.amount - used }); draw(d);
+        }
+      };
+    },
+  });
+  if (v === 'unsplit') { await call('unsplit_transaction', [txId]); toast('Unsplit', { action: undoAction }); return true; }
+  if (v !== 'ok') return false;
+  await call('split_transaction', [txId, lines.filter(l => l.amount)]);
+  toast('Split saved', { action: undoAction });
+  return true;
+}
+
+async function renameDialog(txId) {
+  const t = findTx(txId);
+  if (!t) return false;
+  const payees = await call('payees');
+  const v = await dialog({
+    title: 'Payee',
+    body: `<p class="muted small">The bank wrote <span style="font-family:ui-monospace,Menlo,monospace">${esc(t.raw_name)}</span>. Give it a clearer name, or pick another payee it belongs to: every transaction with the same bank description moves with it, and the app remembers.</p>
+      <div class="field"><label>Payee</label><input id="payee-name" list="payee-list" value="${esc(t.payee_name || '')}"></div>
+      <datalist id="payee-list">${payees.map(p => `<option value="${esc(p.name)}">`).join('')}</datalist>`,
+    actions: [{ label: 'Cancel', value: null }, { label: 'Save', value: 'ok', primary: true }],
+  });
+  if (v !== 'ok') return false;
+  await call('update_transaction', [txId, { payee: $('#payee-name').value }]);
+  toast('Payee saved', { action: undoAction });
+  return true;
+}
+
+async function newSubscriptionDialog(txId) {
+  const t = findTx(txId);
+  const v = await dialog({
+    title: 'Track as a new subscription',
+    body: `<p class="muted">${esc(t.payee_name)} at ${money(-t.amount)}. From now on, charges at this price show under this name and go to its category without asking.</p>
+      <div class="field"><label>Name</label><input id="sub-name" placeholder="e.g. Apple Music"></div>
+      <div class="grid2"><div class="field"><label>Charges</label><select id="sub-cadence"><option value="monthly">Monthly</option><option value="yearly">Yearly</option><option value="weekly">Weekly</option></select></div>
+      <div class="field"><label>Category</label><button type="button" class="btn" id="sub-cat" data-id="${t.category_id || ''}" style="text-align:left">${esc(catName(t.category_id) || 'Pick…')}</button></div></div>
+      <div class="grid2"><div class="field"><label>Price</label>${pricingSelect('sub-pricing', 'fixed')}</div>
+        <div class="field"><label>Ends on (optional)</label><input type="date" id="sub-ends"></div></div>`,
+    actions: [{ label: 'Cancel', value: null }, { label: 'Track it', value: 'ok', primary: true, check: d => $('#sub-name', d).value.trim() ? (($('#sub-cat', d).dataset.id) ? null : 'Pick a category.') : 'Give it a name.' }],
+    onOpen: d => { $('#sub-cat', d).onclick = async e => { const id = await pickCategory(e.currentTarget, { income: false }); if (id) { e.target.dataset.id = id; e.target.textContent = catName(id); } }; },
+  });
+  if (v !== 'ok') return false;
+  await call('subscription_from_transaction', { txn_id: txId, name: $('#sub-name').value, category_id: Number($('#sub-cat').dataset.id), cadence: $('#sub-cadence').value, pricing: $('#sub-pricing').value, ends_on: $('#sub-ends').value || null });
+  toast(`Tracking ${$('#sub-name').value}`, { action: undoAction });
+  return true;
+}
+
+async function inboxAction(btn, e) {
+  const act = btn.dataset.act;
+  const id = Number(btn.dataset.id);
+  const card = btn.closest('.item');
+  if (card) { state.inboxSel = Number(card.dataset.index); markSelected(false); }
+  if (btn.dataset.pick) return fileBlock(Number(card.dataset.index), Number(btn.dataset.pick));
+  if (act === 'other' || act === 'other-group') {
+    const cid = await pickCategory(btn);
+    if (cid) await fileBlock(Number(card.dataset.index), cid);
+  } else if (act === 'expand') { state.expanded.add(btn.dataset.group); await renderInbox(); }
+  else if (act === 'inbox-payee') {
+    const id = btn.dataset.payee ? Number(btn.dataset.payee) : null;
+    state.inboxFind.payee = state.inboxFind.payee === id ? null : id;
+    state.inboxSel = 0; drawInbox();
+  } else if (act === 'inbox-clear') { state.inboxFind = { text: '', payee: null }; state.inboxSel = 0; drawInbox(); }
+  else if (act === 'transfer') { if (await transferDialog(id)) await renderInbox(); }
+  else if (act === 'split') { if (await splitDialog(id)) await renderInbox(); }
+  else if (act === 'rename') { if (await renameDialog(id)) await renderInbox(); }
+  else if (act === 'same') {
+    await call('same_payee', [id, btn.dataset.yes === '1']);
+    await renderInbox();
+  } else if (act === 'sub-link') {
+    await call('link_subscription', [id, Number(btn.dataset.sub)]);
+    toast('New price saved', { action: undoAction }); await renderInbox();
+  } else if (act === 'sub-new') { if (await newSubscriptionDialog(id)) await renderInbox(); }
+  else if (act === 'always-ask') {
+    await call('set_always_ask', [Number(btn.dataset.payee), btn.dataset.on === '1']);
+    toast(btn.dataset.on === '1' ? 'Each one gets its own card now, and none are filed without asking' : 'Grouped on one card again', { action: undoAction });
+    await renderInbox();
+  } else if (act === 'accept-all') await acceptAll();
+  else if (act === 'save-balance') await saveBalanceFrom(btn);
+  else if (act === 'recat') {
+    const cid = await pickCategory(btn);
+    if (!cid) return;
+    await call('update_transaction', [id, { category_id: cid }]);
+    toast(`Changed to ${catName(cid)}`, { action: undoAction }); await renderInbox();
+  }
+}
+
+async function saveBalanceFrom(btn) {
+  const acct = Number(btn.dataset.account);
+  const input = $(`[data-balance-for="${acct}"]`);
+  const cents = parseMoney(input.value);
+  if (cents === null || Number.isNaN(cents)) return toast('Enter the balance Tangerine shows', { error: true });
+  await call('set_balance', [acct, cents]);
+  toast('Balance saved', { action: undoAction });
+  await refresh();
+}
+
+function inboxKeys(e) {
+  if (state.page !== 'inbox' || !state.blocks || !state.blocks.length) return;
+  if (e.target.closest('input, textarea, select, dialog, .popover')) return;
+  const b = state.blocks[state.inboxSel];
+  const card = $(`.item[data-index="${state.inboxSel}"]`);
+  if (e.key === 'ArrowDown' || e.key === 'j') { state.inboxSel = Math.min(state.inboxSel + 1, state.blocks.length - 1); markSelected(); e.preventDefault(); }
+  else if (e.key === 'ArrowUp' || e.key === 'k') { state.inboxSel = Math.max(state.inboxSel - 1, 0); markSelected(); e.preventDefault(); }
+  else if (e.key === 'Enter') { const chip = card && card.querySelector('[data-pick]'); if (chip) { e.preventDefault(); fileBlock(state.inboxSel, Number(chip.dataset.pick)); } }
+  else if (/^[1-4]$/.test(e.key)) { const chip = card && card.querySelectorAll('[data-pick]')[Number(e.key) - 1]; if (chip) { e.preventDefault(); fileBlock(state.inboxSel, Number(chip.dataset.pick)); } }
+  else if (e.key === '/') { const o = card && card.querySelector('[data-act^="other"]'); if (o) { e.preventDefault(); o.click(); } }
+  else if (e.key === 't' && b.items.length === 1) { e.preventDefault(); inboxAction(card.querySelector('[data-act="transfer"]')); }
+  else if (e.key === 's' && b.items.length === 1) { e.preventDefault(); inboxAction(card.querySelector('[data-act="split"]')); }
+}
+
+// ── transactions ────────────────────────────────────────
+async function renderTransactions() {
+  if (!state.categories.length) await loadCategories();
+  await loadAccounts();
+  const f = state.txFilters;
+  const data = await call('transactions', [{ ...f, limit: 1000 }]);
+  state.txns = data;
+  const months = state.view ? state.view.months : [];
+  const catOptions = state.categories.map(g => `<optgroup label="${esc(g.name)}">${g.categories.map(c => `<option value="${c.id}" ${f.category_id == c.id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</optgroup>`).join('');
+  const rows = data.items.map(t => `<tr class="clickable" data-tx="${t.id}">
+      <td class="muted nowrap">${dayYear(t.date)}</td>
+      <td class="small muted">${esc(t.account_name)}</td>
+      <td>${esc(t.payee_name || t.raw_name)}${t.subscription_name ? ` <span class="tag info">${esc(t.subscription_name)}</span>` : ''}${t.note ? ` <span class="faint small">· ${esc(t.note)}</span>` : ''}${t.status === 'review' ? ' <span class="tag warn">to review</span>' : ''}</td>
+      <td>${t.transfer_account_name ? `<span class="tag">${t.amount < 0 ? 'To' : 'From'} ${esc(t.transfer_account_name)}</span>` :
+            t.is_split ? `<span class="tag">Split</span> <span class="small muted">${esc(t.splits.map(s => s.category_name).join(', '))}</span>` :
+            `<button class="link" data-act="tx-cat" data-id="${t.id}">${esc(t.category_name || 'No category')}</button>`}</td>
+      <td class="r num ${t.amount > 0 ? 'pos' : ''}">${money(t.amount)}</td></tr>`).join('');
+  frame(`
+    <div class="page-head"><h1>Transactions</h1><span class="spacer"></span><button class="btn" data-act="add-tx">Add transaction…</button></div>
+    <div class="row wrap" style="margin-bottom:12px">
+      <input type="search" id="tx-search" placeholder="Search payee, description, note or amount" style="flex:1;min-width:220px" value="${esc(f.search || '')}">
+      <select id="tx-account"><option value="">All accounts</option>${state.accounts.map(a => `<option value="${a.id}" ${f.account_id == a.id ? 'selected' : ''}>${esc(a.name)}</option>`).join('')}</select>
+      <select id="tx-month"><option value="">All months</option>${[...months].reverse().map(m => `<option value="${m}" ${f.month === m ? 'selected' : ''}>${monthLong(m)}</option>`).join('')}</select>
+      <select id="tx-category"><option value="">All categories</option>${catOptions}</select>
+    </div>
+    <div class="card" style="padding:4px 8px">
+      ${data.items.length ? `<table><thead><tr><th>Date</th><th>Account</th><th>Payee</th><th>Category</th><th class="r">Amount</th></tr></thead><tbody>${rows}</tbody></table>
+        <p class="small muted" style="padding:4px 10px">${plural(data.items.length, 'transaction')} · total ${money(data.total)}</p>`
+        : '<div class="empty"><b>No transactions</b>Nothing matches these filters.</div>'}
+    </div>`);
+  const refetch = debounce(() => renderTransactions(), 250);
+  $('#tx-search').addEventListener('input', e => { f.search = e.target.value; refetch(); });
+  $('#tx-account').addEventListener('change', e => { f.account_id = e.target.value || null; renderTransactions(); });
+  $('#tx-month').addEventListener('change', e => { f.month = e.target.value || null; renderTransactions(); });
+  $('#tx-category').addEventListener('change', e => { f.category_id = e.target.value || null; renderTransactions(); });
+  if (f.search) { const s = $('#tx-search'); s.focus(); s.setSelectionRange(s.value.length, s.value.length); }
+}
+
+async function editTransaction(id) {
+  const t = findTx(id);
+  if (!t) return;
+  const v = await dialog({
+    title: t.payee_name || t.raw_name || 'Transaction',
+    body: `<div class="grid2">
+        <div class="field"><label>Date</label>${t.manual ? `<input type="date" id="ed-date" value="${t.date}">` : `<div>${dayYear(t.date)}</div>`}</div>
+        <div class="field"><label>Amount</label>${t.manual ? `<input id="ed-amount" value="${moneyPlain(t.amount)}">` : `<div class="num ${t.amount > 0 ? 'pos' : ''}">${money(t.amount)}</div>`}</div></div>
+      <div class="field"><label>Account</label><div>${esc(t.account_name)}</div></div>
+      ${t.raw_name ? `<div class="field"><label>The bank wrote</label><div class="small" style="font-family:ui-monospace,Menlo,monospace">${esc(t.raw_name)}${t.raw_memo ? '<br>' + esc(t.raw_memo) : ''}</div></div>` : ''}
+      <div class="field"><label>Note</label><input id="ed-note" value="${esc(t.note || '')}"></div>
+      ${t.reason ? `<p class="small muted">💡 ${esc(t.reason)}</p>` : ''}`,
+    actions: [{ label: 'Delete', value: 'delete', danger: true, left: true },
+      { label: 'Payee…', value: 'payee' }, { label: 'Split…', value: 'split' }, { label: 'Transfer…', value: 'transfer' },
+      { label: 'Save', value: 'save', primary: true }],
+  });
+  if (!v) return;
+  if (v === 'save') {
+    const changes = {};
+    if ($('#ed-note').value !== (t.note || '')) changes.note = $('#ed-note').value;
+    if (t.manual) {
+      if ($('#ed-date').value && $('#ed-date').value !== t.date) changes.date = $('#ed-date').value;
+      const a = parseMoney($('#ed-amount').value);
+      if (!Number.isNaN(a) && a !== null && a !== t.amount) changes.amount = a;
+    }
+    if (!Object.keys(changes).length) return;  // nothing changed: just close
+    await call('update_transaction', [id, changes]);
+    toast('Saved', { action: undoAction });
+  } else if (v === 'delete') {
+    const ok = await confirmBox('Delete this transaction?', t.manual ? 'It will be removed.' : 'It will be removed. If you import a file that contains it again, it comes back.', 'Delete', true);
+    if (!ok) return;
+    await call('delete_transaction', [id]);
+    toast('Deleted', { action: undoAction });
+  } else if (v === 'payee') { if (!await renameDialog(id)) return; }
+  else if (v === 'split') { if (!await splitDialog(id)) return; }
+  else if (v === 'transfer') { if (!await transferDialog(id)) return; }
+  await refresh();
+}
+
+async function addTransaction() {
+  await loadAccounts();
+  const today = state.boot.today;
+  let catId = null;
+  const v = await dialog({
+    title: 'Add a transaction',
+    body: `<p class="small muted">For cash or an account the app can't import. Bank transactions arrive on their own.</p>
+      <div class="grid2"><div class="field"><label>Account</label><select id="add-acct">${state.accounts.filter(a => !a.closed).map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join('')}</select></div>
+      <div class="field"><label>Date</label><input type="date" id="add-date" value="${today}"></div></div>
+      <div class="field"><label>Payee</label><input id="add-payee"></div>
+      <div class="grid2"><div class="field"><label>Amount</label><div class="row"><div class="seg" id="add-dir"><button type="button" aria-pressed="true" data-dir="-1">Spent</button><button type="button" aria-pressed="false" data-dir="1">Received</button></div><input id="add-amount" style="flex:1;text-align:right" placeholder="0.00"></div></div>
+      <div class="field"><label>Category</label><button type="button" class="btn" id="add-cat" style="text-align:left">Pick…</button></div></div>`,
+    actions: [{ label: 'Cancel', value: null }, { label: 'Add', value: 'ok', primary: true, check: d => {
+      const a = parseMoney($('#add-amount', d).value);
+      return (!a || Number.isNaN(a)) ? 'Enter an amount.' : null;
+    } }],
+    onOpen: d => {
+      $('#add-dir', d).onclick = e => { const b = e.target.closest('button'); if (!b) return; $$('#add-dir button', d).forEach(x => x.setAttribute('aria-pressed', x === b)); };
+      $('#add-cat', d).onclick = async e => { const id = await pickCategory(e.currentTarget); if (id) { catId = id; e.target.textContent = catName(id); } };
+    },
+  });
+  if (v !== 'ok') return;
+  const dir = Number($('#add-dir [aria-pressed="true"]').dataset.dir);
+  await call('add_transaction', { account_id: Number($('#add-acct').value), date: $('#add-date').value, payee: $('#add-payee').value,
+    amount: dir * Math.abs(parseMoney($('#add-amount').value)), category_id: catId });
+  toast('Added', { action: undoAction });
+  await refresh();
+}
+
+// ── accounts ────────────────────────────────────────────
+async function renderAccounts() {
+  const [accounts, debt, imports] = await Promise.all([call('accounts'), call('debt'), call('imports')]);
+  state.accounts = accounts;
+  const cards = accounts.filter(a => !a.closed).map(a => {
+    const owe = a.is_debt;
+    return `<div class="card acct">
+      <div class="row"><b>${esc(a.name)}</b>${a.last4 ? `<span class="faint small">••${esc(a.last4)}</span>` : ''}<span class="spacer"></span><span class="tag">${esc(a.kind_label)}</span></div>
+      ${a.balance === null ? `<div class="notice" style="margin:10px 0">What ${owe ? 'do you owe on' : 'is the balance of'} this account right now?</div>
+          <div class="row"><input style="width:150px;text-align:right" placeholder="${owe ? 'Amount owing' : 'Balance'}" data-balance-for="${a.id}"><button class="btn primary small" data-act="save-balance" data-account="${a.id}">Save</button></div>`
+        : `<div class="bal num ${owe && a.balance < 0 ? 'neg' : ''}">${owe ? money(-a.balance) : money(a.balance)}</div>
+           <div class="small muted">${owe ? 'owing' : 'balance'}${a.last_date ? ` · up to ${dayYear(a.last_date)}` : ''}</div>`}
+      <div class="small muted" style="margin-top:8px">${plural(a.transactions, 'transaction')}${a.first_date ? ` since ${dayYear(a.first_date)}` : ''}${a.last_import ? ` · last import ${esc(a.last_import.slice(0, 10))}` : ''}</div>
+      <div class="row" style="margin-top:10px">
+        ${a.balance !== null ? `<button class="btn small" data-act="check-balance" data-account="${a.id}">Check balance…</button>` : ''}
+        <button class="btn small" data-act="rename-account" data-account="${a.id}">Rename…</button>
+        <span class="spacer"></span>
+        <button class="icon-btn danger" data-act="delete-account" data-account="${a.id}" title="Delete account">✕</button>
+      </div></div>`;
+  }).join('');
+  const debtCards = debt.accounts.map(d => {
+    const maxI = Math.max(1, ...d.interest.map(i => i.amount));
+    const payoff = d.payoff ? (d.payoff.months === 0 ? 'Paid off.' : `At ${money(d.estimate_payment)} a month it's paid off in about ${plural(d.payoff.months, 'month')}${d.apr ? `, costing ${money(d.payoff.interest)} in interest` : ' (enter the interest rate to include interest)'}.`)
+      : (d.estimate_payment ? 'At this payment the interest grows faster than you pay it down.' : 'Enter a monthly payment to see when it\'s paid off.');
+    return `<div class="card">
+      <div class="row"><b>${esc(d.name)}</b><span class="spacer"></span><span class="tag ${d.not_covered ? 'warn' : 'good'}">${d.not_covered ? money(d.not_covered) + ' not covered' : 'Covered'}</span></div>
+      <div class="grid2" style="margin-top:10px">
+        <div><div class="muted small">You owe</div><div class="bal num">${money(d.owing)}</div>
+          <div class="small muted">Set aside to pay it: <b>${money(d.set_aside)}</b></div></div>
+        <div><div class="muted small">Interest & fees, last 6 months</div>
+          <div class="mini-bars" title="${esc(d.interest.map(i => monthShort(i.month) + ' ' + money(i.amount)).join(', '))}">${d.interest.map(i => `<div style="height:${i.amount / maxI * 100}%"></div>`).join('')}</div>
+          <div class="small muted">${money(d.interest.reduce((s, i) => s + i.amount, 0))} total</div></div>
+      </div>
+      <div class="row wrap" style="margin-top:12px">
+        <label class="small muted">Interest rate</label><input style="width:70px;text-align:right" data-apr="${d.account_id}" value="${d.apr ?? ''}" placeholder="20.99">%
+        <label class="small muted" style="margin-left:10px">Paying each month</label><input style="width:110px;text-align:right" data-payment="${d.account_id}" value="${d.planned_payment ? moneyPlain(d.planned_payment) : ''}" placeholder="${d.estimate_payment ? moneyPlain(d.estimate_payment) : '0.00'}">
+        <button class="btn small" data-act="save-debt" data-account="${d.account_id}">Save</button>
+      </div>
+      <p class="small" style="margin:8px 0 0">${payoff}</p>
+      <p class="small muted" style="margin:6px 0 0">To pay it down faster, assign extra money to <b>${esc(d.name)} payment</b> on the Budget page.</p>
+    </div>`;
+  }).join('');
+  const importRows = imports.map(i => `<tr><td class="small">${esc(i.imported_at.slice(0, 16).replace('T', ' '))}</td><td>${esc(i.filename)}</td><td class="small muted">${esc(i.account_name || '')}</td>
+      <td class="small">${i.rows_new} new of ${i.rows_total}</td><td class="r"><button class="btn small" data-act="undo-import" data-import="${i.id}" ${i.rows_new ? '' : 'disabled'}>Remove</button></td></tr>`).join('');
+  frame(`
+    <div class="page-head"><h1>Accounts</h1><span class="spacer"></span><button class="btn" data-act="add-account">Add account…</button></div>
+    <div class="stack">
+      <div class="acct-grid">${cards || '<div class="card empty"><b>No accounts yet</b>Import a Tangerine file and its account appears here.</div>'}</div>
+      ${debtCards ? `<h2 style="margin-top:12px">Paying down debt</h2>${debtCards}` : ''}
+      ${importRows ? `<details class="card"><summary style="cursor:default;font-weight:600">Imported files</summary>
+        <p class="small muted">Removing an import deletes the transactions it added (not ones another file also had).</p>
+        <table><tbody>${importRows}</tbody></table></details>` : ''}
+    </div>`);
+}
+
+async function accountAction(btn) {
+  const act = btn.dataset.act, id = Number(btn.dataset.account);
+  const a = state.accounts.find(x => x.id === id);
+  if (act === 'save-balance') return saveBalanceFrom(btn);
+  if (act === 'check-balance') {
+    const v = await dialog({
+      title: `Check ${a.name}`,
+      body: `<p class="muted">The app says ${a.is_debt ? 'you owe' : 'the balance is'} <b>${money(a.is_debt ? -a.balance : a.balance)}</b> after the last imported transaction (${dayYear(a.last_date)}).
+        If Tangerine shows something else, enter it: the app adds an adjustment for the difference${a.is_debt ? '' : ' (you choose its category in the Inbox)'}.</p>
+        <div class="field"><label>${a.is_debt ? 'Amount owing on Tangerine' : 'Balance on Tangerine'}</label><input id="rec-amount" style="text-align:right"></div>`,
+      actions: [{ label: 'Cancel', value: null }, { label: 'Match it', value: 'ok', primary: true }],
+    });
+    if (v !== 'ok') return;
+    const cents = parseMoney($('#rec-amount').value);
+    if (cents === null || Number.isNaN(cents)) return;
+    const r = await call('reconcile', [id, cents]);
+    toast(r.adjusted ? `Adjusted by ${money(r.adjusted)}` : 'It already matches', { action: r.adjusted ? undoAction : undefined });
+  } else if (act === 'rename-account') {
+    const v = await dialog({ title: 'Rename account', body: `<div class="field"><label>Name</label><input id="acct-name" value="${esc(a.name)}"></div>`,
+      actions: [{ label: 'Cancel', value: null }, { label: 'Save', value: 'ok', primary: true }] });
+    if (v !== 'ok') return;
+    await call('update_account', [id, { name: $('#acct-name').value }]);
+    await loadCategories();
+  } else if (act === 'delete-account') {
+    if (!await confirmBox(`Delete ${a.name}?`, `This deletes the account and its ${plural(a.transactions, 'transaction')}. You can undo it right after.`, 'Delete', true)) return;
+    await call('delete_account', [id]);
+    await loadCategories();
+    toast('Account deleted', { action: undoAction });
+  } else if (act === 'save-debt') {
+    const apr = $(`[data-apr="${id}"]`).value.trim();
+    const pay = parseMoney($(`[data-payment="${id}"]`).value);
+    await call('update_account', [id, { apr: apr === '' ? null : Number(apr), planned_payment: Number.isNaN(pay) ? null : pay }]);
+    toast('Saved');
+  } else if (act === 'add-account') {
+    const v = await dialog({
+      title: 'Add an account',
+      body: `<p class="small muted">Accounts are added on their own when you import their files. Add one here for something else, like a line of credit.</p>
+        <div class="field"><label>Name</label><input id="na-name" placeholder="Line of credit"></div>
+        <div class="grid2"><div class="field"><label>Type</label><select id="na-kind"><option value="line_of_credit">Line of credit</option><option value="credit_card">Credit card</option><option value="chequing">Chequing</option><option value="savings">Savings</option><option value="cash">Cash</option></select></div>
+        <div class="field"><label>Balance now (owing, for credit)</label><input id="na-balance" placeholder="0.00" style="text-align:right"></div></div>`,
+      actions: [{ label: 'Cancel', value: null }, { label: 'Add', value: 'ok', primary: true, check: d => $('#na-name', d).value.trim() ? null : 'Give it a name.' }],
+    });
+    if (v !== 'ok') return;
+    const bal = parseMoney($('#na-balance').value);
+    await call('add_account', { name: $('#na-name').value, kind: $('#na-kind').value, balance: Number.isNaN(bal) ? null : bal });
+    await loadCategories();
+    toast('Account added', { action: undoAction });
+  } else if (act === 'undo-import') {
+    if (!await confirmBox('Remove this import?', 'Deletes the transactions this file added.', 'Remove', true)) return;
+    const r = await call('undo_import', [Number(btn.dataset.import)]);
+    toast(`Removed ${plural(r.removed, 'transaction')}`, { action: undoAction });
+  }
+  await renderAccounts();
+}
+
+// ── subscriptions ───────────────────────────────────────
+const per = c => ({ monthly: '/mo', yearly: '/yr', weekly: '/wk' }[c] || '');
+const PRICING_LABELS = {
+  fixed: 'Same Price',
+  currency: 'Same Price, Different Currency',
+  varies: 'Fluctuates Every Time',
+};
+const pricingSelect = (id, value) => `<select id="${id}">${Object.entries(PRICING_LABELS).map(([k, label]) =>
+  `<option value="${k}" ${(value || 'fixed') === k ? 'selected' : ''}>${label}</option>`).join('')}</select>`;
+function priceCell(x) {
+  if (x.pricing === 'varies') {
+    return `≈ ${money(x.amount)}<span class="muted small">${per(x.cadence)}</span>
+      ${x.low !== null && x.low !== undefined ? `<div class="small muted">${money(x.low)}–${money(x.high)}${x.last_amount ? ` · last ${money(x.last_amount)}` : ''}</div>` : ''}`;
+  }
+  const was = x.previous_amount ? `<div><span class="tag ${x.amount > x.previous_amount ? 'warn' : 'good'}">was ${money(x.previous_amount)}</span></div>` : '';
+  if (x.pricing === 'currency') return `≈ ${money(x.amount)}<span class="muted small">${per(x.cadence)}</span><div class="small muted">different currency</div>${was}`;
+  return `${money(x.amount)}<span class="muted small">${per(x.cadence)}</span>${was}`;
+}
+async function renderSubscriptions() {
+  if (!state.categories.length) await loadCategories();
+  const s = await call('subscriptions');
+  state.subs = s;
+  const table = (list, empty) => list.length ? `<table><thead><tr><th>Name</th><th>Category</th><th class="r">Price</th><th>Next charge</th><th class="r">A month</th><th></th></tr></thead><tbody>
+    ${list.map(x => `<tr>
+      <td><b>${esc(x.name)}</b>${x.payee_name && x.payee_name !== x.name ? ` <span class="small muted">${esc(x.payee_name)}</span>` : ''}${x.note ? `<div class="small muted">${esc(x.note)}</div>` : ''}</td>
+      <td>${x.category_name ? esc(x.category_name) : '<span class="faint">Ask each time</span>'}</td>
+      <td class="r num nowrap">${priceCell(x)}</td>
+      <td class="nowrap">${x.next_date ? dayYear(x.next_date) : '—'}${x.overdue ? ' <span class="tag warn" title="It hasn\'t charged when expected. Cancelled?">late</span>' : ''}
+        ${x.ends_on ? `<div class="small ${x.charged_after_end.length ? 'neg' : 'muted'}">${x.ended ? 'ended' : 'ends'} ${dayYear(x.ends_on)}${x.ending_soon ? ' <span class="tag warn">ending soon</span>' : ''}${x.charged_after_end.length ? ' · charged after it ended' : ''}</div>` : ''}</td>
+      <td class="r num">${money(x.monthly)}</td>
+      <td class="r nowrap"><button class="btn small" data-act="sub-edit" data-sub="${x.id}">Edit…</button> <button class="btn small" data-act="sub-cancel" data-sub="${x.id}">Cancelled</button></td></tr>`).join('')}</tbody></table>`
+    : `<p class="faint small">${empty}</p>`;
+  const sugg = s.suggested.map((c, i) => `<div class="item" style="grid-template-columns:1fr auto">
+      <div><div class="who">${esc(c.name)}<span class="tag">${c.pricing === 'varies' ? 'fluctuates every time' : c.kind === 'bill' ? 'looks like a bill' : 'subscription?'}</span></div>
+        <div class="meta">${c.pricing === 'varies'
+          ? `about ${money(c.amount)} a month, from ${money(c.low)} to ${money(c.high)} · ${plural(c.count, 'month')} in a row, last on ${dayYear(c.last_date)}`
+          : `${c.pricing === 'currency' ? '≈ ' : ''}${money(c.amount)}${per(c.cadence)} · charged ${plural(c.count, 'time')}, last on ${dayYear(c.last_date)}${c.pricing === 'currency' ? ' · different currency' : ''}${c.previous_amount ? ` · was ${money(c.previous_amount)}` : ''}`}</div></div>
+      <div class="amount">${money(c.monthly)}<span class="muted small">/mo</span></div>
+      <div class="chips"><button class="btn small ${c.kind !== 'bill' ? 'primary' : ''}" data-act="sug-track" data-i="${i}" data-kind="subscription">Track as subscription…</button>
+        <button class="btn small ${c.kind === 'bill' ? 'primary' : ''}" data-act="sug-track" data-i="${i}" data-kind="bill">Track as bill…</button>
+        <button class="btn small ghost" data-act="sug-dismiss" data-i="${i}">Not recurring</button></div></div>`).join('');
+  const cancelled = s.cancelled.map(x => `<tr><td><b>${esc(x.name)}</b></td><td class="small muted">cancelled ${dayYear(x.cancelled_on)}</td>
+      <td>${x.charged_after_cancel.length ? `<span class="tag bad">Charged again ${x.charged_after_cancel.map(c => day(c.date) + ' ' + money(-c.amt)).join(', ')}</span>` : '<span class="tag good">No charges since</span>'}</td>
+      <td class="r"><button class="btn small" data-act="sub-reactivate" data-sub="${x.id}">Active again</button> <button class="icon-btn danger" data-act="sub-delete" data-sub="${x.id}" title="Stop tracking">✕</button></td></tr>`).join('');
+  frame(`
+    <div class="page-head"><h1>Subscriptions</h1><span class="spacer"></span><button class="btn" data-act="sub-add">Add one…</button></div>
+    <div class="stack">
+      <div class="grid2">
+        <div class="card"><div class="muted">Subscriptions</div><div class="rta num">${money(s.monthly_subscriptions)}<span class="muted" style="font-size:15px"> a month</span></div><div class="small muted">${money(s.monthly_subscriptions * 12)} a year</div></div>
+        <div class="card"><div class="muted">Bills</div><div class="rta num">${money(s.monthly_bills)}<span class="muted" style="font-size:15px"> a month</span></div><div class="small muted">${money(s.monthly_bills * 12)} a year</div></div>
+      </div>
+      ${s.cancelled.some(x => x.charged_after_cancel.length) ? `<div class="notice bad">Something you cancelled has charged you again. See Cancelled below.</div>` : ''}
+      ${[...s.subscriptions, ...s.bills].filter(x => x.charged_after_end.length).map(x => `<div class="notice bad"><b>${esc(x.name)}</b>&nbsp;should have ended on ${dayYear(x.ends_on)}, but charged ${x.charged_after_end.map(c => money(c.amt) + ' on ' + day(c.date)).join(', ')}. Time to call ${esc(x.payee_name || 'them')}, or change its end date.</div>`).join('')}
+      ${sugg ? `<div><h2>Found in your transactions</h2><p class="small muted" style="margin-top:-6px">Name each one (Apple, for example, bills iCloud+ and Apple Music separately: each price is its own subscription).</p><div class="items">${sugg}</div></div>` : ''}
+      <div class="card"><h2>Subscriptions</h2>${table(s.subscriptions, 'None tracked yet. Track one from the suggestions above, or add one.')}</div>
+      <div class="card"><h2>Bills</h2>${table(s.bills, 'No bills tracked yet.')}</div>
+      ${cancelled ? `<div class="card"><h2>Cancelled</h2><p class="small muted" style="margin-top:-6px">Watched in case they charge you anyway.</p><table><tbody>${cancelled}</tbody></table></div>` : ''}
+    </div>`);
+}
+
+function subFormHtml(x, withPayee) {
+  return `${withPayee ? `<div class="field"><label>Who charges it (as the bank shows it)</label><input id="sf-payee" list="sf-payees" placeholder="Apple"></div><datalist id="sf-payees"></datalist>` : ''}
+    <div class="field"><label>Name</label><input id="sf-name" value="${esc(x.name || '')}" placeholder="e.g. iCloud+"></div>
+    <div class="grid2">
+      <div class="field"><label>${x.pricing === 'varies' ? 'Typical amount' : 'Price'}</label><input id="sf-amount" value="${x.amount ? moneyPlain(x.amount) : ''}" style="text-align:right"></div>
+      <div class="field"><label>Charges</label><select id="sf-cadence">${['monthly', 'yearly', 'weekly'].map(c => `<option value="${c}" ${x.cadence === c ? 'selected' : ''}>${c[0].toUpperCase() + c.slice(1)}</option>`).join('')}</select></div>
+      <div class="field"><label>Type</label><select id="sf-kind"><option value="subscription" ${x.kind !== 'bill' ? 'selected' : ''}>Subscription</option><option value="bill" ${x.kind === 'bill' ? 'selected' : ''}>Bill</option></select></div>
+      <div class="field"><label>Category</label><button type="button" class="btn" id="sf-cat" data-id="${x.category_id || ''}" style="text-align:left">${esc(catName(x.category_id) || 'Ask each time')}</button></div>
+    </div>
+    <div class="grid2">
+      <div class="field"><label>Price</label>${pricingSelect('sf-pricing', x.pricing)}</div>
+      <div class="field"><label>Ends on (optional)</label><input type="date" id="sf-ends" value="${esc(x.ends_on || '')}"></div>
+    </div>
+    <p class="small muted" style="margin-top:-6px">With an end date, any charge after it goes to the Inbox with a warning.</p>
+    <div class="field"><label>Note</label><input id="sf-note" value="${esc(x.note || '')}" placeholder="How to cancel, account email…"></div>`;
+}
+function bindSubForm(d) {
+  $('#sf-cat', d).onclick = async e => { const id = await pickCategory(e.currentTarget, { income: false }); if (id) { e.target.dataset.id = id; e.target.textContent = catName(id); } };
+}
+
+async function subscriptionAction(btn) {
+  const act = btn.dataset.act;
+  const s = state.subs;
+  if (act === 'sug-track') {
+    const c = s.suggested[Number(btn.dataset.i)];
+    const x = { name: c.name, amount: c.amount, cadence: c.cadence, kind: btn.dataset.kind, category_id: c.category_id, pricing: c.pricing };
+    const v = await dialog({ title: `Track ${c.name} at ${money(c.amount)}`, body: subFormHtml(x, false), onOpen: bindSubForm,
+      actions: [{ label: 'Cancel', value: null }, { label: 'Track it', value: 'ok', primary: true, check: d => $('#sf-name', d).value.trim() ? null : 'Give it a name.' }] });
+    if (v !== 'ok') return;
+    const cat = $('#sf-cat').dataset.id;
+    const id = await call('track_subscription', { candidate: c, kind: $('#sf-kind').value, name: $('#sf-name').value, category_id: cat ? Number(cat) : null, pricing: $('#sf-pricing').value, ends_on: $('#sf-ends').value || null });
+    const note = $('#sf-note').value, cadence = $('#sf-cadence').value;
+    const amount = parseMoney($('#sf-amount').value);
+    const priceChanged = amount && !Number.isNaN(amount) && Math.abs(amount) !== c.amount;
+    if (note || cadence !== c.cadence || priceChanged) {
+      await call('update_subscription', [id, { note, cadence, ...(priceChanged ? { amount: Math.abs(amount) } : {}) }]);
+    }
+    toast(`Tracking ${$('#sf-name').value}`, { action: undoAction });
+  } else if (act === 'sug-dismiss') {
+    await call('dismiss_subscription', [s.suggested[Number(btn.dataset.i)]]);
+    toast('Won\'t suggest that again', { action: undoAction });
+  } else if (act === 'sub-add') {
+    const payees = await call('payees');
+    const v = await dialog({ title: 'Add a subscription', body: subFormHtml({ cadence: 'monthly', kind: 'subscription' }, true),
+      onOpen: d => { bindSubForm(d); $('#sf-payees', d).innerHTML = payees.map(p => `<option value="${esc(p.name)}">`).join(''); },
+      actions: [{ label: 'Cancel', value: null }, { label: 'Add', value: 'ok', primary: true, check: d => {
+        if (!$('#sf-payee', d).value.trim()) return 'Who charges it?';
+        if (!$('#sf-name', d).value.trim()) return 'Give it a name.';
+        const a = parseMoney($('#sf-amount', d).value); return (!a || Number.isNaN(a)) ? 'Enter the price.' : null;
+      } }] });
+    if (v !== 'ok') return;
+    const cat = $('#sf-cat').dataset.id;
+    const id = await call('add_subscription', { payee: $('#sf-payee').value, name: $('#sf-name').value, amount: Math.abs(parseMoney($('#sf-amount').value)),
+      cadence: $('#sf-cadence').value, kind: $('#sf-kind').value, category_id: cat ? Number(cat) : null, pricing: $('#sf-pricing').value,
+      ends_on: $('#sf-ends').value || null });
+    if ($('#sf-note').value) await call('update_subscription', [id, { note: $('#sf-note').value }]);
+    toast(`Tracking ${$('#sf-name').value}`, { action: undoAction });
+  } else if (act === 'sub-edit') {
+    const x = [...s.subscriptions, ...s.bills].find(y => y.id === Number(btn.dataset.sub));
+    const v = await dialog({ title: `Edit ${x.name}`, body: subFormHtml(x, false), onOpen: bindSubForm,
+      actions: [{ label: 'Stop tracking', value: 'delete', danger: true, left: true }, { label: 'Cancel', value: null }, { label: 'Save', value: 'ok', primary: true }] });
+    if (v === 'delete') { await call('delete_subscription', [x.id]); toast('Stopped tracking', { action: undoAction }); }
+    else if (v === 'ok') {
+      const cat = $('#sf-cat').dataset.id;
+      const amount = parseMoney($('#sf-amount').value);
+      await call('update_subscription', [x.id, { name: $('#sf-name').value, kind: $('#sf-kind').value, cadence: $('#sf-cadence').value,
+        note: $('#sf-note').value, category_id: cat ? Number(cat) : null, pricing: $('#sf-pricing').value, ends_on: $('#sf-ends').value || null,
+        ...(amount && !Number.isNaN(amount) ? { amount: Math.abs(amount) } : {}) }]);
+      toast('Saved', { action: undoAction });
+    } else return;
+  } else if (act === 'sub-cancel') {
+    const x = [...s.subscriptions, ...s.bills].find(y => y.id === Number(btn.dataset.sub));
+    if (!await confirmBox(`Mark ${x.name} as cancelled?`, 'It moves to Cancelled, and if it charges you again you\'ll be told in the Inbox.', 'Mark cancelled')) return;
+    await call('cancel_subscription', [x.id]);
+    toast(`${x.name} marked cancelled`, { action: undoAction });
+  } else if (act === 'sub-reactivate') { await call('reactivate_subscription', [Number(btn.dataset.sub)]); }
+  else if (act === 'sub-delete') { await call('delete_subscription', [Number(btn.dataset.sub)]); toast('Stopped tracking', { action: undoAction }); }
+  await renderSubscriptions();
+}
+
+// ── settings ────────────────────────────────────────────
+async function renderSettings() {
+  const [settings, info, months] = await Promise.all([call('get_settings'), call('app_info'), call('onboarding_state')]);
+  let upd = info.updates || state.update || null;
+  const live = await window.pywebview.api.call('window_action', ['update_state']);  // quiet: absent in the preview
+  if (live && live.ok) upd = live.result;
+  state.update = upd;
+  const updText = !upd ? 'Updates work in the installed app.' :
+    upd.unavailable ? `Off: ${upd.unavailable}.` :
+    upd.status === 'checking' ? 'Checking…' : upd.status === 'downloading' ? `Downloading ${upd.version}…` :
+    upd.status === 'ready' ? `Version ${upd.version} is ready; it's installed when you quit.` :
+    upd.error ? `Last check failed: ${upd.error}` : `You have ${upd.current}.`;
+  frame(`
+    <div class="page-head"><h1>Settings</h1></div>
+    <div class="stack">
+      <div class="card">
+        <div class="settings-row"><div class="what"><b>Appearance</b></div>
+          <div class="seg" id="theme">${['system', 'light', 'dark'].map(t => `<button data-theme-set="${t}" aria-pressed="${settings.theme === t}">${t[0].toUpperCase() + t.slice(1)}</button>`).join('')}</div></div>
+        <div class="settings-row"><div class="what"><b>Import from Downloads</b><span>Tangerine files that land in ${esc(settings.downloads_dir || '~/Downloads')} are imported and moved into the app's Imported Files folder.</span></div>
+          <label class="switch"><input type="checkbox" data-setting="auto_import" ${settings.auto_import ? 'checked' : ''}><span></span></label></div>
+        <div class="settings-row"><div class="what"><b>Budget starts in</b><span>Transactions before this are kept for history and for working out what categories need.</span></div>
+          <select id="start-month">${months.months.map(m => `<option value="${m}" ${m === state.boot.budget_start ? 'selected' : ''}>${monthLong(m)}</option>`).join('')}</select></div>
+        <div class="settings-row"><div class="what"><b>"Needs" looks back over</b><span>How many past months the Budget page averages to show what a category actually needs.</span></div>
+          <div class="seg" id="avg">${[3, 6, 12].map(n => `<button data-avg="${n}" aria-pressed="${settings.average_months === n}">${n} months</button>`).join('')}</div></div>
+        <div class="settings-row"><div class="what"><b>Fill monthly amounts from spending</b><span>Sets every category without a monthly amount to what it actually needed on average.</span></div>
+          <button class="btn" data-act="fill-monthly">Fill them in</button></div>
+        <div class="settings-row"><div class="what"><b>Learn from an Actual Budget export</b><span>Its categories and which payees went where.</span></div>
+          <button class="btn" data-act="learn-actual">Choose file…</button></div>
+      </div>
+      <div class="card">
+        <div class="settings-row"><div class="what"><b>Update automatically</b><span id="update-text">${esc(updText)}</span></div>
+          <label class="switch"><input type="checkbox" data-setting="update_automatically" ${settings.update_automatically ? 'checked' : ''}><span></span></label></div>
+        <div class="settings-row"><div class="what"><b>GitHub access</b><span>${upd && upd.access ? `Using ${esc(upd.access)}.` : 'The code is private, so checking for updates needs a GitHub token (read access to the repository) or the GitHub CLI signed in.'}</span></div>
+          <input type="password" id="gh-token" placeholder="Token" style="width:180px"><button class="btn" data-act="save-token">Save</button></div>
+        <div class="settings-row"><div class="what"><b>Check for updates</b></div><button class="btn" data-act="check-updates">Check now</button></div>
+      </div>
+      <div class="card">
+        <div class="settings-row"><div class="what"><b>Your data</b><span>${esc(info.data_dir)}. Backed up once a day (14 days kept). Nothing leaves this Mac.</span></div>
+          <button class="btn" data-act="reveal" data-what="reveal_data">Show</button></div>
+        <div class="settings-row"><div class="what"><b>Imported files</b><span>Every file the app imported, kept as it was.</span></div>
+          <button class="btn" data-act="reveal" data-what="reveal_imports">Show</button></div>
+        <div class="settings-row"><div class="what"><b>Log</b><span>For when something goes wrong.</span></div>
+          <button class="btn" data-act="reveal" data-what="reveal_log">Show</button></div>
+        <div class="settings-row"><div class="what"><b>Version</b></div><span class="muted">${esc(info.version)}</span></div>
+      </div>
+    </div>`);
+  $('#start-month').addEventListener('change', async e => {
+    await call('set_budget_start', [e.target.value]);
+    state.boot.budget_start = e.target.value;
+    toast(`The budget now starts in ${monthLong(e.target.value)}`);
+  });
+}
+
+async function settingsAction(btn) {
+  const act = btn.dataset.act;
+  if (act === 'save-token') {
+    const st = await call('window_action', ['set_github_token', $('#gh-token').value]);
+    state.update = st; toast($('#gh-token').value ? 'Token saved in the Keychain' : 'Token removed');
+  } else if (act === 'check-updates') {
+    state.update = await call('window_action', ['check_updates']);
+    toast('Checking for updates…');
+  } else if (act === 'reveal') { await call('window_action', [btn.dataset.what]); return; }
+  else if (act === 'learn-actual') {
+    const r = await call('learn_actual_file');
+    if (r && r.learnt) toast(`Learnt ${r.learnt.examples} examples${r.refiled ? `, and filed ${r.refiled} waiting transactions` : ''}`);
+  } else if (act === 'fill-monthly') {
+    const r = await call('fill_monthly_from_averages', { months: (await call('get_settings')).average_months });
+    await loadCategories();
+    toast(`Set ${plural(r.changed, 'monthly amount')}`, { action: undoAction });
+  }
+  await renderSettings();
+}
+
+// ── onboarding ──────────────────────────────────────────
+const ob = { step: 0, files: null, results: null };
+async function showOnboarding() {
+  $('#onboard').hidden = false;
+  await renderOnboarding();
+}
+async function renderOnboarding() {
+  const root = $('#onboard');
+  const steps = ['Files', 'Categories', 'Balances', 'Start'];
+  const head = `<div class="row"><svg viewBox="0 0 32 32" width="34" height="34"><rect x="1" y="5" width="30" height="22" rx="5" fill="#1f9d55"/><path d="M3 9l13 9 13-9" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    <h1>Let's set up your budget</h1></div>
+    <div class="steps">${steps.map((s, i) => `<div class="${i <= ob.step ? 'done' : ''}" title="${s}"></div>`).join('')}</div>`;
+  let body = '';
+  if (ob.step === 0) {
+    if (!ob.files) ob.files = await call('scan_downloads');
+    const files = ob.files.files;
+    body = `<h3>1. Bring in your Tangerine files</h3>
+      <p class="muted">On tangerine.ca, open an account, choose <b>Download transactions</b>, and save as CSV (or Quicken/Money: those even include the balance). Grab a few months for both chequing and the credit card. Overlapping files are fine: nothing is imported twice.</p>
+      <div class="card filelist">${files.length ? files.map((f, i) => `<label><input type="checkbox" data-file="${i}" ${f.already_imported ? '' : 'checked'}>
+          <div><b>${esc(f.account_name || f.filename)}</b> <span class="muted small">${esc(f.filename)}</span><div class="small muted">${f.format === 'actual' ? 'Learn your categories and which payees go where' : `${plural(f.rows, 'transaction')}, ${dayYear(f.first_date)} – ${dayYear(f.last_date)}`}${f.already_imported ? ' · already imported' : ''}</div></div>
+          <span class="tag ${f.format === 'actual' ? 'info' : ''}">${f.format === 'actual' ? 'Actual Budget' : f.format === 'ofx' ? 'OFX' : 'CSV'}</span></label>`).join('')
+        : `<div class="empty"><b>No Tangerine files in ${esc(ob.files.folder)}</b>Download some, then look again.</div>`}</div>
+      ${ob.results ? `<div class="notice info" style="margin-top:12px">${ob.results}</div>` : ''}
+      <div class="row" style="margin-top:16px"><button class="btn" data-ob="rescan">Look again</button><button class="btn" data-ob="choose">Choose files…</button><span class="spacer"></span>
+        <button class="btn primary" data-ob="import">${files.some(f => !f.already_imported) ? 'Import and continue' : 'Continue'}</button></div>`;
+  } else if (ob.step === 1) {
+    await loadCategories();
+    const normal = state.categories.filter(g => g.role === 'normal');
+    body = `<h3>2. Your categories</h3>
+      <p class="muted">These are your envelopes. Rename, add or remove anything; you can change them any time.</p>
+      ${normal.length ? '' : `<div class="notice info" style="margin-bottom:12px">No categories yet. <span class="spacer"></span><button class="btn small" data-ob="starter">Use a starter set</button></div>`}
+      <div class="card" id="ob-cats">${categoryEditorHtml(state.categories)}</div>
+      <div class="row" style="margin-top:16px"><button class="btn" data-ob="back">Back</button><span class="spacer"></span><button class="btn primary" data-ob="next">Continue</button></div>`;
+  } else if (ob.step === 2) {
+    await loadAccounts();
+    body = `<h3>3. Balances</h3>
+      <p class="muted">What does Tangerine show for each account right now? The app works out every past balance from this one number, so it only asks once.</p>
+      <div class="card">${state.accounts.map(a => `<div class="settings-row"><div class="what"><b>${esc(a.name)}</b><span>${a.is_debt ? 'Amount owing (the balance on the card)' : 'Balance'}${a.last_date ? ` · transactions up to ${dayYear(a.last_date)}` : ''}</span></div>
+          <input style="width:150px;text-align:right" data-ob-balance="${a.id}" value="${a.balance !== null ? moneyPlain(a.is_debt ? -a.balance : a.balance) : ''}" placeholder="0.00"></div>`).join('') || '<p class="faint">No accounts yet: go back and import a file.</p>'}</div>
+      <div class="row" style="margin-top:16px"><button class="btn" data-ob="back">Back</button><span class="spacer"></span><button class="btn primary" data-ob="save-balances">Continue</button></div>`;
+  } else {
+    const os = await call('onboarding_state');
+    ob.start = ob.start || os.suggested_start;
+    body = `<h3>4. When should the budget start?</h3>
+      <p class="muted">Pick the first month to budget. Everything before it stays as history: it's what the app learns from and what it uses to tell you what each category actually needs. Starting a few months back means you can catch up those months in one click instead of starting from scratch.</p>
+      <div class="card"><div class="settings-row"><div class="what"><b>Start in</b><span>Suggested: ${monthLong(os.suggested_start)}, the first month every account has complete data for.</span></div>
+        <select id="ob-start">${os.months.map(m => `<option value="${m}" ${m === ob.start ? 'selected' : ''}>${monthLong(m)}</option>`).join('')}</select></div></div>
+      <div class="row" style="margin-top:16px"><button class="btn" data-ob="back">Back</button><span class="spacer"></span><button class="btn primary" data-ob="finish">Start budgeting</button></div>`;
+  }
+  root.innerHTML = `<div class="inner">${head}${body}</div>`;
+  if (ob.step === 1) {
+    const box = $('#ob-cats');
+    bindCategoryEditor(box, async () => { box.innerHTML = categoryEditorHtml(state.categories); });
+  }
+}
+async function onboardingAction(btn) {
+  const a = btn.dataset.ob;
+  if (a === 'rescan') { ob.files = null; ob.results = null; }
+  else if (a === 'choose') {
+    const r = await call('choose_and_import');
+    if (r) { ob.results = summarizeImport(r); ob.files = null; }
+  } else if (a === 'import') {
+    const paths = $$('[data-file]').filter(el => el.checked).map(el => ob.files.files[Number(el.dataset.file)].path);
+    if (paths.length) {
+      btn.disabled = true; btn.textContent = 'Importing…';
+      const r = await call('import_files', [paths]);
+      ob.results = summarizeImport(r);
+      toast(ob.results);
+    }
+    ob.step = 1; ob.files = null;
+  } else if (a === 'starter') { await call('use_starter_categories'); }
+  else if (a === 'back') ob.step = Math.max(0, ob.step - 1);
+  else if (a === 'next') ob.step += 1;
+  else if (a === 'save-balances') {
+    for (const el of $$('[data-ob-balance]')) {
+      const cents = parseMoney(el.value);
+      if (cents === null) continue;
+      if (Number.isNaN(cents)) return toast('One of the balances isn\'t an amount', { error: true });
+      await call('set_balance', [Number(el.dataset.obBalance), cents]);
+    }
+    ob.step = 3;
+  } else if (a === 'finish') {
+    state.boot = await call('finish_onboarding', [$('#ob-start').value]);
+    $('#onboard').hidden = true;
+    await loadCategories();
+    return navigate(state.counts.inbox ? 'inbox' : 'budget');
+  }
+  await renderOnboarding();
+}
+function summarizeImport(r) {
+  const parts = [];
+  for (const x of r.results || []) parts.push(`${x.filename}: ${x.added} new${x.duplicates ? `, ${x.duplicates} already there` : ''}`);
+  if (r.learnt) parts.push(`learnt ${r.learnt.examples} examples from ${r.learnt.filename}`);
+  for (const e of r.errors || []) parts.push(`${e.filename}: ${e.error}`);
+  return parts.join(' · ') || 'Nothing new';
+}
+
+// ── events from Python ──────────────────────────────────
+window.appEvent = (name, payload) => {
+  if (name === 'imported') {
+    if (payload.error) return toast(payload.error, { error: true });
+    const results = payload.results || [];
+    const added = results.reduce((s, r) => s + r.added, 0);
+    const review = (payload.counts && payload.counts.inbox) || 0;
+    if (payload.counts) setCounts(payload.counts);
+    if (!results.length && !payload.learnt) return;
+    toast(added ? `Imported ${plural(added, 'new transaction')} from ${results.map(r => r.filename).join(', ')}${review ? ` · ${review} in the Inbox` : ''}`
+      : `Nothing new in ${results.map(r => r.filename).join(', ')}`,
+      review ? { action: { label: 'Open Inbox', run: () => navigate('inbox') } } : {});
+    if (!$('#dlg').open && !$('.drawer') && !$('.popover')) refresh();
+  } else if (name === 'update') {
+    state.update = payload;
+    if (state.page === 'settings') renderSettings();
+    else if (payload.status === 'ready') refresh();
+  }
+};
+
+// ── wiring ──────────────────────────────────────────────
+document.addEventListener('click', async e => {
+  const nav = e.target.closest('[data-nav]');
+  if (nav) return navigate(nav.dataset.nav);
+  const to = e.target.closest('[data-nav-to]');
+  if (to) return navigate(to.dataset.navTo);
+  const obBtn = e.target.closest('[data-ob]');
+  if (obBtn) { try { await onboardingAction(obBtn); } catch (_) {} return; }
+  const m = e.target.closest('#main [data-month]');
+  if (m) { state.month = m.dataset.month; return renderBudget(); }
+  const g = e.target.closest('.btable .group');
+  if (g) { await call('set_group_collapsed', [Number(g.dataset.group), !g.classList.contains('collapsed')]); return renderBudget(); }
+  const cat = e.target.closest('.btable [data-cat]');
+  if (cat) return openCategory(Number(cat.dataset.cat));
+  const row = e.target.closest('tr[data-tx]');
+  // Suggestion chips ([data-pick]) are actions too: they file the card they're on.
+  const btn = e.target.closest('[data-act], #main [data-pick]');
+  if (!btn && row) return editTransaction(Number(row.dataset.tx));
+  if (!btn) return;
+  const act = btn.dataset.act;
+  try {
+    if (act === 'import-files') { const r = await call('choose_and_import'); if (r) { window.appEvent('imported', r); } }
+    else if (act === 'restart-update') await call('window_action', ['install_update']);
+    else if (act === 'assign') await openAssign();
+    else if (act === 'catch-up') {
+      if (await confirmBox(`Catch up ${monthOnly(state.month)}?`, 'Assigns exactly what each category spent this month, so nothing ends it overspent. Good for months gone by.', 'Catch up')) {
+        await call('catch_up', [state.month]); await renderBudget(); toast(`${monthOnly(state.month)} caught up`, { action: undoAction });
+      }
+    } else if (act === 'start-here') {
+      await call('set_budget_start', [state.month]); state.boot.budget_start = state.month; await renderBudget();
+      toast(`The budget now starts in ${monthLong(state.month)}`);
+    } else if (act === 'edit-categories') await openCategoryEditor();
+    else if (act === 'tx-cat') {
+      const cid = await pickCategory(btn);
+      if (cid) { await call('update_transaction', [Number(btn.dataset.id), { category_id: cid }]); toast(`Changed to ${catName(cid)}`, { action: undoAction }); await renderTransactions(); }
+    } else if (act === 'add-tx') await addTransaction();
+    else if (state.page === 'inbox') await inboxAction(btn, e);
+    else if (state.page === 'accounts') await accountAction(btn);
+    else if (state.page === 'subscriptions') await subscriptionAction(btn);
+    else if (state.page === 'settings') await settingsAction(btn);
+  } catch (err) {
+    if (!(err instanceof UserFacingError)) { logError(`Action ${act}`, err); toast('Something went wrong', { error: true }); }
+  }
+});
+document.addEventListener('change', async e => {
+  const el = e.target;
+  if (el.dataset.assign) return saveAssigned(el).catch(() => {});
+  if (el.dataset.setting) {
+    await call('save_settings', [{ [el.dataset.setting]: el.checked }]);
+    toast('Saved');
+  }
+});
+document.addEventListener('click', async e => {
+  const t = e.target.closest('[data-theme-set]');
+  if (t) { const s = await call('save_settings', [{ theme: t.dataset.themeSet }]); applyTheme(s.theme); renderSettings(); }
+  const a = e.target.closest('[data-avg]');
+  if (a) { await call('save_settings', [{ average_months: Number(a.dataset.avg) }]); renderSettings(); }
+});
+document.addEventListener('keydown', e => {
+  if (e.target.dataset && e.target.dataset.assign !== undefined && e.key === 'Enter') {
+    e.preventDefault();
+    const inputs = $$('[data-assign]');
+    const i = inputs.indexOf(e.target);
+    e.target.blur();
+    if (inputs[i + 1]) setTimeout(() => { const n = $(`[data-assign="${inputs[i + 1].dataset.assign}"]`); if (n) { n.focus(); n.select(); } }, 120);
+    return;
+  }
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z' && !e.shiftKey && !e.target.closest('input, textarea')) {
+    e.preventDefault(); doUndo(); return;
+  }
+  inboxKeys(e);
+});
+document.addEventListener('focusin', e => { if (e.target.dataset && e.target.dataset.assign !== undefined) setTimeout(() => e.target.select(), 0); });
+let dragDepth = 0;
+document.addEventListener('dragenter', e => { if (e.dataTransfer && [...e.dataTransfer.types].includes('Files')) { dragDepth++; document.body.classList.add('dragging'); } });
+document.addEventListener('dragleave', () => { dragDepth = Math.max(0, dragDepth - 1); if (!dragDepth) document.body.classList.remove('dragging'); });
+document.addEventListener('drop', () => { dragDepth = 0; document.body.classList.remove('dragging'); });
+document.addEventListener('dragover', e => e.preventDefault());
+
+function applyTheme(theme) {
+  if (theme === 'system') document.documentElement.removeAttribute('data-theme');
+  else document.documentElement.setAttribute('data-theme', theme);
+}
+
+async function start() {
+  state.boot = await call('bootstrap');
+  applyTheme(state.boot.settings.theme);
+  setCounts(state.boot.counts);
+  state.update = state.boot.app && state.boot.app.updates;
+  if (!state.boot.onboarded) return showOnboarding();
+  await loadCategories();
+  await navigate(state.counts.inbox ? 'inbox' : 'budget');
+}
+if (window.pywebview && window.pywebview.api) start();
+else window.addEventListener('pywebviewready', start);
+</script>
+</body>
+</html>

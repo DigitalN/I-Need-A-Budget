@@ -1,0 +1,264 @@
+# I Need A Budget
+
+An envelope budget (like YNAB or Actual Budget) built around Tangerine's exports, as a
+Mac app: Python + pywebview, one window, SQLite. Building, the release checklist, how
+updates work and the dev preview are in @DEVELOPMENT.md. What it does for the user is in
+README.md.
+
+The maintainer banks with Tangerine: a chequing account and a Mastercard, maybe a line
+of credit later. Tangerine's API is no use, so data comes from the CSV / OFX / QFX files
+Tangerine lets you download. They moved here from Actual Budget and have restarted
+budgets several times before: losing history or having to rebuild is the thing to avoid.
+
+## Privacy: the first rule
+
+**No private financial data may ever reach GitHub.** That covers bank files, the
+database, account or card digits, people's names (e-transfers), employers, payees
+that are local businesses, category names that reveal finances, and real amounts.
+
+- All data lives outside the repository: `~/Library/Application Support/I Need A Budget`
+  (database, settings, `Imported Files/`, `Backups/`) and `~/Library/Logs/I Need A Budget`.
+- `.gitignore` excludes bank files and databases. `scripts/hooks/pre-commit` (switched on
+  with `git config core.hooksPath scripts/hooks`; First Time Setup does it) refuses
+  commits with those files, card-number shapes, or any word in `.git-denylist`, a local,
+  ignored list of private words. `tests/test_privacy.py` checks the working tree the same
+  way. Never bypass the hook, and never weaken these checks.
+- Tests and examples use made-up data only ("SAMPLE CAFE CALGARY AB", made-up amounts).
+  Build card file names in code (`tests/helpers.CARD_FILE`) so no card-number shape
+  appears in the source.
+- `payees.BRANDS` is for well-known chains only, never local businesses someone uses.
+- The user's own categories were seeded straight into their data folder by a one-off
+  script outside the repo. There's no personal seed data in the code.
+- To test against real data, use a throwaway folder (`INAB_DATA_DIR=…`, or the preview's
+  default `~/Library/Caches/I Need A Budget-preview`) and copies of the files. Don't
+  print real data into commit messages, docs or PRs.
+
+## Debugging
+
+Application logs: `~/Library/Logs/I Need A Budget/app.log` (rotating, 3 × 1 MB). Page
+(JavaScript) errors are forwarded there too. When the user reports a bug, **read the log
+first**. The updater logs `Automatic updates off: <reason>`, `Up to date at`,
+`Downloading`, `ready to install`, `Installed …` or `Update check failed: …`.
+`Page connected` means the window loaded and reached Python.
+
+To reproduce without touching the user's data: `INAB_DATA_DIR=<tmp folder>` (logs go to
+`<tmp folder>/Logs/`), and `INAB_TODAY=2026-10-12` to pin "today". To see the interface,
+run the dev preview (`python3 scripts/preview.py`, or the `preview` entry in
+`.claude/launch.json`) and open it in the browser pane: it's the real page driving the
+real engine over localhost. Claude's shell can't screenshot the app's own window.
+
+## Architecture
+
+All in `Application Files/`:
+
+- `main.py`: launcher. Logging, single-instance lock, daily DB backup, the pywebview
+  window, the Downloads watcher thread, the updater, and `Api`, which exposes one method,
+  `call(name, args)`, to the page. `VERSION` here is the app's only version number.
+- `service.py`: everything the page can ask for. `BudgetService.dispatch()` runs only
+  methods marked `@exposed`; results are `{"ok": true, "result": …}` or
+  `{"ok": false, "error": "…"}`. Raise `UserError` for messages the user should see.
+  The preview and most tests drive this same class.
+- `db.py`: schema, upgrades, the shared connection behind a lock, **undo** (triggers record
+  inverse SQL; `db.write("Label")` makes one undoable step; updates only record changed
+  columns), daily backups. Schema is at version 2. To change it: raise `SCHEMA_VERSION`,
+  add the column to `SCHEMA` *and* an `ALTER TABLE` step in `_migrate` for existing
+  databases. Upgrades copy the database to `Backups/budget-before-upgrade-…` first. The
+  user's real database has real data in it: test every upgrade on a copy of it first.
+- `importer.py`: detects and parses Tangerine card CSV, Tangerine bank CSV, OFX/QFX, and
+  Actual Budget's export (learnt from, never imported as transactions). Fingerprint dedup,
+  account matching, then `file_transactions()` files what it can.
+- `payees.py`: pure. Cleans bank descriptions (processor prefixes, store numbers,
+  truncated towns/provinces), recognises chains (`BRANDS`), e-transfer people, EFT
+  organisations, and hints (transfer / interest / income / cash / fee). `find_similar()`
+  is the fuzzy match (rapidfuzz): "SAVEWAY 1532" → Safeway.
+- `ledger.py`: accounts and balances (worked out from one anchor balance the user gives),
+  the special categories (Income, a payment envelope per debt account, Interest & Fees),
+  resolving/renaming/merging payees.
+- `learn.py`: category guesses from history (amount- and recency-weighted votes), mixed
+  payees, unusually big charges, refunds, e-transfer shares of a bill, card-category hints.
+  `analyze()` returns options, whether it's sure, a reason, and an inbox group key.
+- `transfers.py`: pairing the two halves of a transfer between own accounts.
+- `subscriptions.py`: detection (steady rhythm; same price, or a once-a-month bill that
+  varies), tracking with a name, category, price type and optional end date, price-change
+  questions, "charged you again" alerts (after cancelling or after the end date).
+- `budget.py`: pure envelope math, credit cards included. Its docstring states the rules
+  and the invariant `tests/test_budget.py` checks on random histories.
+- `updater.py`, `launch.py`: updates from the private repo's GitHub releases; moving into
+  Applications; relaunching.
+- `settings.py`: JSON settings, validated on every load and save.
+- `util.py`: money in cents, months and dates.
+- `index.html`: the whole interface, vanilla JS, no external resources. Pages: Budget,
+  Inbox, Transactions, Accounts, Subscriptions, Settings, plus first-run onboarding.
+
+## Key rules
+
+- **Money is integer cents** everywhere (Python and the page's API). Negative means money
+  left the account. Dates are ISO strings, months `YYYY-MM`.
+- **Never change `importer.fingerprint()`** (or `fingerprints()`): already-imported rows
+  would stop matching and every overlapping file would import twice. Two identical rows in
+  one file are both kept (the occurrence count is part of the fingerprint).
+- **Learning only uses `status = 'done'` transactions** (plus Actual examples). Rows waiting
+  in the inbox may carry a tentative category so the budget is roughly right, but they
+  never teach the app anything.
+- **Subscriptions have a price type** (`subscriptions.pricing`; shown to the user as "Same Price",
+  "Same Price, Different Currency" and "Fluctuates Every Time", their wording): `fixed` (exact price ±2¢;
+  any other price from that payee is a question: "new price for X, a new subscription, or
+  a one-off?", because Apple bills several things under one name), `currency` (billed in
+  US$: a wobble within 6% is the same price, not a change; set automatically from the
+  card's "Foreign Currency Spend" tag or repeated drift), and `varies` (a power bill: any
+  amount from that payee; the page shows the typical amount and range). Detection
+  suggests `varies` for a once-a-month payee whose amount moved at least twice.
+- **Optional end date** on a subscription: a charge after it (or after it was marked
+  cancelled) goes to the inbox with a warning containing "charged you again" (the inbox
+  and re-filing keep reasons with that phrase).
+- A charge more than 3× the payee's biggest past charge always asks.
+- **The updater is the only network access.** No HTTP server in the app (the dev preview
+  is a separate script), no analytics, no CDNs or remote fonts. The CSP in `index.html`
+  sets `connect-src 'none'`. A future Tangerine sync would be the second network access:
+  it must be our own code (see Roadmap).
+- pywebview exposes every public attribute of `Api` to JavaScript; keep internals behind a
+  leading underscore. AppKit calls run on the main thread (`AppHelper.callAfter`).
+- Every user-facing change should be undoable: wrap it in `db.write("Short label")`.
+  Background imports aren't undoable (they're removed from Accounts → Imported files).
+- `~/Documents` is iCloud-synced on this machine; `scripts/build.sh` builds in
+  `~/Library/Caches` and runs `xattr -cr` before signing.
+
+## Budget rules (summary; budget.py has the detail)
+
+Ready to assign starts as the cash in chequing/savings when the budget starts; income
+adds, assigning takes. Overspending resets the category and comes out of next month's
+Ready to assign. Card spending from a funded category moves that money to the card's
+payment envelope; uncovered card spending is new debt instead. Paying the card from
+chequing spends the payment envelope; old debt is paid down by assigning to it. Refunds
+and reimbursements go back into the category they came from. "Needs ~$X" on the Budget
+page is the average of what a category actually spent in the last 3/6/12 whole months
+(from every month with data for all accounts, before the budget start too).
+
+## Releasing
+
+- A release means the whole **Release checklist** in DEVELOPMENT.md, every time.
+- Merging to `main` is not a release. Installed copies only update when a release is
+  published on GitHub.
+- The repository is **private**. The updater authenticates with a token saved in the
+  Keychain from Settings, or the GitHub CLI's login (`gh auth token`).
+- Ask once before anything on GitHub (pushing, opening a PR, publishing a release), then
+  do all of it. Check each step's result before the next one that can't be undone.
+- Releases are signed with the maintainer's Apple Development certificate (team
+  `XT4LT7MS6Y`); installed copies refuse updates from any other team. No Developer ID or
+  notarization.
+- Releases have only the `.dmg`.
+
+## Testing on the maintainer's Mac
+
+- Their real copy runs from `/Applications` with real data. Don't quit it, reinstall it
+  or touch `~/Library/Application Support/I Need A Budget` without asking.
+- Say so before opening windows on screen for a test. For the built app, launch a copy
+  against a throwaway folder: `open -n --env INAB_DATA_DIR=/tmp/x "/Applications/I Need A Budget.app"`
+  (and point `downloads_dir` in that folder's `settings.json` somewhere harmless, or the
+  watcher will import from the real Downloads).
+- After testing, quit test copies and delete their folders.
+- To try the interface on real data: copy the database with SQLite's backup API (read-only
+  source) into `~/Library/Caches/I Need A Budget-preview/`, write a `settings.json` there
+  whose `downloads_dir` is an empty folder, run the `preview` launch entry, and delete the
+  folder afterwards. The preview loads `service.py` once: restart it after Python changes.
+
+## Git
+
+- Work on a branch, not `main`. The maintainer opens pull requests with Create PR.
+- The pre-commit hook must stay on (`git config core.hooksPath` → `scripts/hooks`).
+
+## Decisions already made
+
+Don't undo these without asking:
+
+- Data in by **auto-import from Downloads**: recognised Tangerine files are imported when
+  they appear (or at launch) and moved into `Imported Files/`. Drag-and-drop and
+  "Import files…" also work. Actual exports are only learnt from, never moved.
+- **Review inbox** instead of a register: only what the app isn't sure about, with one
+  click / keypress per decision, same-payee items and bill shares grouped into one card.
+  Filing one teaches the app and re-files the rest of that payee, **except**:
+  - **"File one at a time"** on a group means exactly that: filing one never files the
+    others (`approve(..., refile=False)`).
+  - **Transfers with people are never assumed**: e-transfers to or from a person are
+    never filed automatically, never grouped by person, never pre-filled with a guess,
+    and never treated as refunds. The last choice is only suggested. (The user hit this
+    with several transfers to one person, each for something different.)
+- **Filing a charge into a subscriptions category** (or one that charges on a steady
+  rhythm) asks "What's this for?": name it to track it as a subscription or bill, or
+  "Not recurring" to stop asking about that payee at that price.
+- The inbox shows today's reasoning (re-analysed on each load), and pending items are
+  re-filed under the current rules at every launch.
+- **Inbox grouping is controlled by the payee's "Always ask" switch**: off, a payee's
+  items share one card (even a mixed payee like Amazon, split with "File one at a time");
+  on, one card each and never filed without asking. People, refunds and unusually big
+  charges always get their own card. `learn.analyze()` sets the group key.
+- The inbox has a finder (search + a button per payee with counts) so nothing gets lost
+  in a long list.
+- **Payee clean-up with fuzzy matching** (store numbers, typos, truncation).
+- **Monthly budget per category** ("each month"), with "needs ~$X" from *actual* spending,
+  so it's right even when the user forgot to budget a month. The category panel offers
+  "Last month" and "Last 3 months avg" (both actual spending), saves the amount as it's
+  typed (no Save button), and has a per-category Notes box that also saves as typed.
+- Budgeting is **as each paycheque lands** (Assign money… fills categories up to their
+  monthly amount, in order), not a lump at the start of the month.
+- **Credit cards YNAB-style** (payment envelopes, paying down a balance), with room for a
+  line of credit as a third, debt account.
+- **Refunds and reimbursements go back to the category the money left from.**
+- **Subscriptions page** that treats subscriptions as their own thing: named per price,
+  own category, price changes, late/cancelled tracking, "charged again" alerts. New prices
+  from a subscription payee always ask (see Key rules).
+- **Window only, no menu bar item.** The close button asks, then quits the app entirely;
+  ⌘Q quits without asking. A downloaded update installs on quit.
+- "Eating Out" was renamed **Food** (Actual's old name still matches through `old_names`).
+- **Private repo, auto-updates via GitHub releases with a token.** The user may later
+  give a separate copy to their spouse (separate data, same updates). That copy needs a
+  read-only token in Settings.
+- Budget can start months back; past months are caught up with one click ("Catch up").
+
+## Roadmap (future chats)
+
+- **Sync with Tangerine** (deferred by the user): a window showing tangerine.ca where
+  the user signs in themselves (PIN, 2FA), then the app reads transactions through that
+  session. It must be **entirely our own code**: no third-party Tangerine libraries (the
+  user's explicit requirement), no stored password. The CSV/OFX import stays as fallback.
+- "Fund bills" one-click, bill due dates, safe-to-spend until payday.
+- A line of credit account: if it's not Tangerine, a generic CSV importer with column
+  mapping. Balance transfers between debt accounts already work (no envelope change).
+- Spending reports (month over month, by payee).
+- A **Dashboard** home page (the user asked where it was; offered, not yet decided):
+  ready to assign, balances and what's owed, inbox count, overspent or low envelopes,
+  bills due before the next paycheque, spending against what each category needs.
+
+## Known gaps
+
+- OFX/QFX import is tested with made-up files only; no real Tangerine OFX/QFX yet.
+- Installing an update can only be tested once a second release exists (1.0.0 is the
+  first). Follow "Testing the updater" in DEVELOPMENT.md before relying on it.
+- No generic CSV import (for a non-Tangerine line of credit): manual transactions only.
+
+## Interface rules
+
+- Every pop-up has a ✕ top right that closes without saving (the `dialog()` helper adds
+  it). Save with no changes just closes, with no "Saved" message.
+- A popover opened from a pop-up (the category list) is attached inside the open
+  `<dialog>`: dialogs live in the browser's top layer, above anything else on the page.
+- Every clickable thing needs a handler: `[data-act]` buttons are dispatched by the
+  document click handler (plus each page's action function), suggestion chips by
+  `[data-pick]`. `tests/test_page.py` fails on a button action nobody handles. A button
+  that silently does nothing is the worst kind of bug here: it happened once.
+- Amounts and notes in side panels save as they're typed (debounced), no Save button.
+- Copy is short and plain. The user trims explanations that don't earn their place;
+  don't add paragraphs of help text to forms.
+- **Test the interface with the mouse**, not only the keyboard, in the dev preview on a
+  copy of the real data (see Testing). Several bugs only showed up when clicking.
+
+## Working style
+
+- When fixing a reported problem, think through the related cases and fix the whole
+  class, so the maintainer doesn't have to report each one.
+- The maintainer often adds requests mid-task: fold them into the work in progress.
+
+## Tests
+
+`python3 -m pytest` (tests/, all synthetic data). `tests/test_privacy.py` fails if the
+working tree has anything from `.git-denylist` or a card-number shape.
