@@ -199,7 +199,12 @@ th.r, td.r { text-align: right; }
 
 /* ── panels, dialogs, popovers ──────────────── */
 .drawer-bg { position: fixed; inset: 0; background: rgba(0,0,0,.18); z-index: 20; }
-.drawer { position: fixed; top: 0; right: 0; bottom: 0; width: 420px; background: var(--bg); box-shadow: var(--pop); z-index: 21; overflow-y: auto; padding: 20px 22px 40px; }
+.drawer { position: fixed; top: 0; right: 0; bottom: 0; width: min(640px, calc(100vw - 80px)); background: var(--bg); box-shadow: var(--pop); z-index: 21; overflow-y: auto; padding: 20px 22px 40px; }
+.spent-link { cursor: pointer; border-radius: 4px; }
+.spent-link:hover { text-decoration: underline; }
+.spent-lines tr[data-line-tx] { cursor: pointer; }
+.spent-lines tr[data-line-tx]:hover td { background: var(--accent-soft); }
+.spent-lines tfoot td { border-top: 1px solid var(--line-strong); font-weight: 600; }
 .bars { display: flex; align-items: flex-end; gap: 6px; height: 110px; padding-top: 14px; }
 .bars .bar { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; gap: 3px; min-width: 0; }
 .bars .bar div { width: 100%; background: var(--accent); border-radius: 3px 3px 0 0; min-height: 1px; opacity: .85; }
@@ -576,7 +581,7 @@ async function renderBudget() {
     const isDebt = g.role === 'debt';
     rows.push(`<tr class="group ${collapsed ? 'collapsed' : ''}" data-group="${g.id}">
       <td><span class="caret">▾</span> ${esc(g.name)}</td><td></td>
-      <td class="r num">${view.before_start ? '' : money(g.assigned)}</td><td class="r num">${money(g.activity)}</td>
+      <td class="r num">${view.before_start ? '' : money(g.assigned)}</td><td class="r num">${g.activity ? `<span class="spent-link" data-spent-group="${g.id}" title="What makes up this">${money(g.activity)}</span>` : money(g.activity)}</td>
       <td class="r num">${view.before_start ? '' : money(g.available)}</td></tr>`);
     if (collapsed) continue;
     for (const c of g.categories) {
@@ -599,7 +604,7 @@ async function renderBudget() {
         <td><span class="name" data-cat="${c.id}">${esc(c.name)}</span></td>
         <td class="r">${monthly}</td>
         <td class="r">${view.before_start ? '' : `<input class="money-input ${c.assigned ? '' : 'zero'}" data-assign="${c.id}" value="${moneyPlain(c.assigned)}" inputmode="decimal" ${isDebt && false ? 'disabled' : ''}>`}</td>
-        <td class="r num ${c.activity < 0 ? '' : (c.activity > 0 ? 'pos' : 'faint')}">${money(c.activity)}</td>
+        <td class="r num ${c.activity < 0 ? '' : (c.activity > 0 ? 'pos' : 'faint')}">${c.activity ? `<span class="spent-link" data-spent="${c.id}" title="What makes up this">${money(c.activity)}</span>` : money(c.activity)}</td>
         <td class="r">${view.before_start ? '' : `<span class="pill ${pillClass}"${overNote}>${money(avail ?? 0)}</span>`}</td></tr>`);
     }
   }
@@ -618,7 +623,7 @@ async function renderBudget() {
           <thead><tr><th>Category</th><th class="r">Each month</th><th class="r">Assigned</th><th class="r">Spent</th><th class="r">Available</th></tr></thead>
           <tbody>${rows.join('')}</tbody></table>
       </div>
-      ${view.groups.length ? `<p class="kbd-help">Click a category to see what it actually needed in past months. Type in Assigned and press Return; Tab moves to the next one.</p>` : ''}
+      ${view.groups.length ? `<p class="kbd-help">Click a category or what it spent to see this month's transactions and what it needed in past months. Type in Assigned and press Return; Tab moves to the next one.</p>` : ''}
     </div>`);
   const cur = $('#months button[aria-current="true"]');
   if (cur) cur.scrollIntoView({ inline: 'center', block: 'nearest' });
@@ -636,6 +641,32 @@ async function saveAssigned(input) {
 }
 const findCat = id => { for (const g of (state.view || {}).groups || []) for (const c of g.categories) if (c.id === id) return c; return null; };
 
+// What makes up a Spent figure: every transaction (a split counts only its line here) and,
+// for a card's payment envelope, the payments and the card spending moved in. Adds up to it.
+function spentCard(sp, month, { group = false } = {}) {
+  state.spentTx = sp.transactions;
+  const rows = sp.lines.map(l => `<tr ${l.id ? `data-line-tx="${l.id}"` : ''}>
+      <td class="muted nowrap">${l.date ? day(l.date) : ''}</td>
+      <td>${esc(l.label || l.payee_name)}${l.subscription_name ? ` <span class="tag info">${esc(l.subscription_name)}</span>` : ''}${l.split ? ` <span class="tag" title="Only its ${esc(l.category_name)} line counts here">split of ${money(l.full_amount)}</span>` : ''}${l.status === 'review' ? ' <span class="tag warn">to review</span>' : ''}${l.note ? `<div class="small faint">${esc(l.note)}</div>` : ''}</td>
+      ${group ? `<td class="small muted">${esc(l.category_name || '')}</td>` : ''}
+      <td class="small muted">${esc(l.account_name || '')}</td>
+      <td class="r num ${l.amount > 0 ? 'pos' : ''}">${money(l.amount)}</td></tr>`).join('');
+  return `<div class="card" style="margin-top:12px;padding:8px 10px">
+      <h2 style="padding:6px 0 0 4px">${monthLong(month)}</h2>
+      ${rows ? `<table class="spent-lines"><tbody>${rows}</tbody>
+          <tfoot><tr><td></td><td>Spent</td>${group ? '<td></td>' : ''}<td></td><td class="r num">${money(sp.total)}</td></tr></tfoot></table>`
+        : '<p class="faint small" style="padding:0 4px">Nothing this month.</p>'}
+    </div>`;
+}
+
+// A transaction clicked in a pop-over opens on top of it; the pop-over reopens afterwards
+// with what changed.
+async function editFromDrawer(txId, close, reopen) {
+  await editTransaction(txId);
+  await close();
+  await reopen();
+}
+
 async function openCategory(id) {
   const d = await call('category_detail', { category_id: id, month: state.month });
   const hist = d.history.slice(-12);
@@ -646,12 +677,28 @@ async function openCategory(id) {
     `<div class="row" style="padding:4px 0"><span class="muted">Last ${a.months} ${a.months === 1 ? 'month' : 'months'}</span><span class="spacer"></span>
       <b class="num">${money(a.amount)}</b>${d.debt_account_id ? '' : `<button class="btn small" data-act="use-amount" data-amount="${a.amount}">Use</button>`}</div>`).join('');
   const avg3 = d.averages[3];
-  const txns = d.transactions.map(t => `<tr><td class="muted nowrap">${day(t.date)}</td><td>${esc(t.payee_name || t.raw_name)}${t.subscription_name ? ` <span class="tag info">${esc(t.subscription_name)}</span>` : ''}</td><td class="r num ${t.amount > 0 ? 'pos' : ''}">${money(t.amount)}</td></tr>`).join('');
   const bg = document.createElement('div'); bg.className = 'drawer-bg';
   const dr = document.createElement('div'); dr.className = 'drawer';
   dr.innerHTML = `
     <div class="row"><h3 style="margin:0">${esc(d.name)}</h3><span class="spacer"></span><button class="icon-btn" data-close>✕</button></div>
     ${d.debt_account_id ? `<p class="muted small">This envelope holds the money for paying the card. Card spending from a category that has the money moves it here automatically. To pay down what you already owe, assign extra here.</p>` : ''}
+    ${spentCard(d.spent, d.month)}
+    ${d.debt_account_id ? '' : `<div class="card" style="margin-top:12px">
+      <h2>What it actually needed</h2>
+      <p class="small muted" style="margin:0">Based on what was really spent (refunds and money back count), not what was budgeted.</p>
+      <div class="bars">${bars || '<span class="faint">No spending yet</span>'}</div>
+      <div style="margin-top:10px">${avg || '<span class="faint small">Not enough history for an average yet.</span>'}</div>
+    </div>`}
+    <div class="card" style="margin-top:12px">
+      <h2>Move money</h2>
+      <div class="row wrap"><input id="move-amount" style="width:110px;text-align:right" placeholder="0.00">
+        <button class="btn" data-act="move-to" data-cat="${d.id}">Move to…</button>
+        <button class="btn" data-act="move-from" data-cat="${d.id}">Take from…</button></div>
+    </div>
+    <div class="card" style="margin-top:12px">
+      <div class="row"><h2 style="margin:0">Notes</h2><span class="spacer"></span><span id="note-status" class="small muted"></span></div>
+      <textarea id="cat-note" rows="4" style="width:100%;margin-top:8px;resize:vertical" placeholder="Anything to remember about ${esc(d.name)}: when it renews, what it covers…">${esc(d.note || '')}</textarea>
+    </div>
     ${d.debt_account_id ? '' : `<div class="card" style="margin-top:12px">
       <h2>Each month</h2>
       <div class="row"><input id="monthly-input" class="num" style="width:130px;text-align:right" inputmode="decimal"
@@ -664,27 +711,7 @@ async function openCategory(id) {
       </div>
       <p class="small muted" style="margin:8px 0 0">What this category should get every month. "Assign money" fills categories up to this, bills first. Saved as you type.</p>
     </div>`}
-    <div class="card" style="margin-top:12px">
-      <h2>What it actually needed</h2>
-      <p class="small muted" style="margin:0">Based on what was really spent (refunds and money back count), not what was budgeted.</p>
-      <div class="bars">${bars || '<span class="faint">No spending yet</span>'}</div>
-      <div style="margin-top:10px">${avg || '<span class="faint small">Not enough history for an average yet.</span>'}</div>
-    </div>
-    <div class="card" style="margin-top:12px">
-      <h2>Move money</h2>
-      <div class="row wrap"><input id="move-amount" style="width:110px;text-align:right" placeholder="0.00">
-        <button class="btn" data-act="move-to" data-cat="${d.id}">Move to…</button>
-        <button class="btn" data-act="move-from" data-cat="${d.id}">Take from…</button></div>
-    </div>
-    ${d.subscriptions.length ? `<div class="card" style="margin-top:12px"><h2>Subscriptions here</h2>${d.subscriptions.map(s => `<div class="row"><span>${esc(s.name)}</span><span class="spacer"></span><span class="num">${money(s.amount)}/${s.cadence === 'yearly' ? 'yr' : s.cadence === 'weekly' ? 'wk' : 'mo'}</span></div>`).join('')}</div>` : ''}
-    <div class="card" style="margin-top:12px;padding:8px 10px">
-      <h2 style="padding:6px 0 0 4px">${monthLong(d.month)}</h2>
-      ${txns ? `<table>${txns}</table>` : '<p class="faint small" style="padding:0 4px">Nothing this month.</p>'}
-    </div>
-    <div class="card" style="margin-top:12px">
-      <div class="row"><h2 style="margin:0">Notes</h2><span class="spacer"></span><span id="note-status" class="small muted"></span></div>
-      <textarea id="cat-note" rows="4" style="width:100%;margin-top:8px;resize:vertical" placeholder="Anything to remember about ${esc(d.name)}: when it renews, what it covers…">${esc(d.note || '')}</textarea>
-    </div>`;
+    ${d.subscriptions.length ? `<div class="card" style="margin-top:12px"><h2>Subscriptions here</h2>${d.subscriptions.map(s => `<div class="row"><span>${esc(s.name)}</span><span class="spacer"></span><span class="num">${money(s.amount)}/${s.cadence === 'yearly' ? 'yr' : s.cadence === 'weekly' ? 'wk' : 'mo'}</span></div>`).join('')}</div>` : ''}`;
   document.body.append(bg, dr);
 
   // Both the monthly amount and the note save as they're typed.
@@ -733,6 +760,8 @@ async function openCategory(id) {
   bg.onclick = close;
   dr.addEventListener('click', async e => {
     if (e.target.closest('[data-close]')) return close();
+    const line = e.target.closest('[data-line-tx]');
+    if (line) return editFromDrawer(Number(line.dataset.lineTx), close, () => openCategory(id));
     const btn = e.target.closest('[data-act]');
     if (!btn) return;
     const act = btn.dataset.act, cat = Number(btn.dataset.cat);
@@ -750,6 +779,24 @@ async function openCategory(id) {
       await close();
       toast(`Moved ${money(cents)} from ${catName(from)} to ${catName(to)}`, { action: undoAction });
     }
+  });
+}
+
+async function openGroupSpent(groupId) {
+  const d = await call('spent_detail', { month: state.month, group_id: groupId });
+  const bg = document.createElement('div'); bg.className = 'drawer-bg';
+  const dr = document.createElement('div'); dr.className = 'drawer';
+  dr.innerHTML = `<div class="row"><h3 style="margin:0">${esc(d.name)}</h3><span class="spacer"></span><button class="icon-btn" data-close>✕</button></div>
+    ${spentCard(d, d.month, { group: true })}`;
+  document.body.append(bg, dr);
+  const close = async () => { document.removeEventListener('keydown', onKey); bg.remove(); dr.remove(); };
+  const onKey = e => { if (e.key === 'Escape' && !$('#dlg').open && !$('.popover')) close(); };
+  document.addEventListener('keydown', onKey);
+  bg.onclick = close;
+  dr.addEventListener('click', e => {
+    if (e.target.closest('[data-close]')) return close();
+    const line = e.target.closest('[data-line-tx]');
+    if (line) editFromDrawer(Number(line.dataset.lineTx), close, () => openGroupSpent(groupId));
   });
 }
 
@@ -1076,7 +1123,7 @@ async function transferDialog(txId, fromAccountName) {
 }
 
 const findTx = id => {
-  for (const src of [state.inbox && state.inbox.items, state.inbox && state.inbox.filed, state.txns && state.txns.items]) {
+  for (const src of [state.inbox && state.inbox.items, state.inbox && state.inbox.filed, state.txns && state.txns.items, state.spentTx]) {
     for (const t of src || []) if (t.id === id) return t;
   }
   return null;
@@ -1481,7 +1528,8 @@ async function editTransaction(id) {
     body: `<div class="grid2">
         <div class="field"><label>Date</label>${t.manual ? `<input type="date" id="ed-date" value="${t.date}">` : `<div>${dayYear(t.date)}</div>`}</div>
         <div class="field"><label>Amount</label>${t.manual ? `<input id="ed-amount" value="${moneyPlain(t.amount)}">` : `<div class="num ${t.amount > 0 ? 'pos' : ''}">${money(t.amount)}</div>`}</div></div>
-      <div class="field"><label>Account</label><div>${esc(t.account_name)}</div></div>
+      <div class="grid2"><div class="field"><label>Account</label><div>${esc(t.account_name)}</div></div>
+        ${t.is_split || t.transfer_account_id ? '' : `<div class="field"><label>Category</label><button type="button" class="btn" id="ed-cat" data-id="${t.category_id || ''}" style="text-align:left">${esc(t.category_name || 'Pick…')}</button></div>`}</div>
       ${t.raw_name ? `<div class="field"><label>The bank wrote</label><div class="small" style="font-family:ui-monospace,Menlo,monospace">${esc(t.raw_name)}${t.raw_memo ? '<br>' + esc(t.raw_memo) : ''}</div></div>` : ''}
       <div class="field"><label>Note</label><input id="ed-note" value="${esc(t.note || '')}"></div>
       ${t.amount < 0 && t.payee_id && !t.transfer_account_id ? `<div class="field"><label>Subscription</label><div class="row">
@@ -1491,11 +1539,23 @@ async function editTransaction(id) {
     actions: [{ label: 'Delete', value: 'delete', danger: true, left: true },
       { label: 'Payee…', value: 'payee' }, { label: 'Split…', value: 'split' }, { label: 'Transfer…', value: 'transfer' },
       { label: 'Save', value: 'save', primary: true }],
+    onOpen: d => {
+      const b = $('#ed-cat', d);
+      if (b) b.onclick = async () => { const cid = await pickCategory(b); if (cid) { b.dataset.id = cid; b.textContent = catName(cid); } };
+    },
   });
   if (!v) return;
-  // A note typed before going on to Payee…, Split…, Transfer… or the subscription isn't lost.
+  // A note or category chosen before going on to Payee…, Split…, Transfer… or the subscription isn't lost.
   const note = $('#ed-note').value;
-  if (!['save', 'delete'].includes(v) && note !== (t.note || '')) await call('update_transaction', [id, { note }]);
+  const picked = $('#ed-cat') && Number($('#ed-cat').dataset.id) || null;
+  const edits = {};
+  if (note !== (t.note || '')) edits.note = note;
+  if (picked && picked !== t.category_id) edits.category_id = picked;
+  if (!['save', 'delete'].includes(v)) {
+    // A split or a transfer replaces the category, so only the note is kept for those.
+    const keep = ['split', 'transfer'].includes(v) ? ('note' in edits ? { note: edits.note } : {}) : edits;
+    if (Object.keys(keep).length) await call('update_transaction', [id, keep]);
+  }
   if (v === 'subscription') {
     if (!t.subscription_name) { if (!await newSubscriptionDialog(id)) return; }
     else {
@@ -1504,8 +1564,7 @@ async function editTransaction(id) {
       if (!x || !await editSubscriptionDialog(x)) return;
     }
   } else if (v === 'save') {
-    const changes = {};
-    if (note !== (t.note || '')) changes.note = note;
+    const changes = { ...edits };
     if (t.manual) {
       if ($('#ed-date').value && $('#ed-date').value !== t.date) changes.date = $('#ed-date').value;
       const a = parseMoney($('#ed-amount').value);
@@ -2050,6 +2109,10 @@ document.addEventListener('click', async e => {
   if (obBtn) { try { await onboardingAction(obBtn); } catch (_) {} return; }
   const m = e.target.closest('#main [data-month]');
   if (m) { state.month = m.dataset.month; return renderBudget(); }
+  const spentGroup = e.target.closest('.btable [data-spent-group]');
+  if (spentGroup) return openGroupSpent(Number(spentGroup.dataset.spentGroup));
+  const spent = e.target.closest('.btable [data-spent]');
+  if (spent) return openCategory(Number(spent.dataset.spent));
   const g = e.target.closest('.btable .group');
   if (g) { await call('set_group_collapsed', [Number(g.dataset.group), !g.classList.contains('collapsed')]); return renderBudget(); }
   const cat = e.target.closest('.btable [data-cat]');

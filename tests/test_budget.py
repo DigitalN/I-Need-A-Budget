@@ -3,7 +3,7 @@
 import random
 
 from budget import average_spending, complete_months_before, compute
-from helpers import CARD_FILE, bank_csv, call, card_csv, categories, write
+from helpers import CARD_FILE, bank_csv, call, card_csv, categories, txns, write
 
 FOOD, BILLS, INCOME, CARD_PAY = 1, 2, 3, 4
 CARD, LOC = 10, 11   # debt accounts
@@ -200,3 +200,46 @@ def test_category_details_have_last_month_the_average_and_a_note(app):
     assert detail["last_month"] == {"month": "2026-09", "amount": 45000}
     assert detail["averages"][3]["amount"] == 30000
     assert detail["note"] == "Costco run every second week"
+
+
+def test_what_makes_up_spent_adds_up_to_it(app):
+    """Clicking Spent (a category's or a group's) lists what makes it up: a split counts
+    only its line, and a card's payment envelope shows the payment and the card spending
+    moved in. The total is always the figure on the Budget page."""
+    categories(app, {"Bills": ["Rent"], "Everyday": ["Food", "Fun"]})
+    call(app, "import_files", [str(write(app.test_downloads, CARD_FILE, card_csv([
+        ("10/03/2026", "SAMPLE GROCER CALGARY AB", "-120.00", "Groceries"),
+        ("10/04/2026", "SAMPLE CINEMA CALGARY AB", "-30.00", "Entertainment")])))])
+    call(app, "import_files", [str(write(app.test_downloads, "Chequing.CSV", bank_csv([
+        ("10/01/2026", "EFT Withdrawal to SAMPLE LANDLORD", "EFT Withdrawal to SAMPLE LANDLORD", "-1000.00"),
+        ("10/02/2026", "EFT Deposit from SAMPLE EMPLOYER", "EFT Deposit from SAMPLE EMPLOYER", "2000.00"),
+        ("10/06/2026", "Tangerine Credit Card Payment", "Tangerine Credit Card Payment", "-50.00"),
+    ])))])
+    ids = {c["name"]: c["id"] for g in call(app, "categories") for c in g["categories"]}
+    for t in call(app, "inbox")["items"]:
+        name = t["raw_name"]
+        cid = ids["Rent"] if "LANDLORD" in name else ids["Income"] if t["amount"] > 0 else \
+            ids["Fun"] if "CINEMA" in name else ids["Food"]
+        call(app, "approve", txn_id=t["id"], category_id=cid, refile=False)
+    grocer = next(t for t in txns(app) if "GROCER" in t["raw_name"])
+    call(app, "split_transaction", grocer["id"], [{"category_id": ids["Food"], "amount": -8000},
+                                                  {"category_id": ids["Fun"], "amount": -4000}])
+    accounts = {a["name"]: a["id"] for a in call(app, "accounts")}
+    call(app, "set_balance", accounts["Chequing"], 500000, "2026-10-12")
+    call(app, "set_balance", accounts["Tangerine Mastercard"], 10000, "2026-10-12")
+    call(app, "finish_onboarding", "2026-10")
+    call(app, "set_assigned", "2026-10", ids["Food"], 10000)
+    call(app, "set_assigned", "2026-10", ids["Fun"], 10000)
+
+    view = call(app, "month", "2026-10")
+    for g in view["groups"]:
+        assert call(app, "spent_detail", month="2026-10", group_id=g["id"])["total"] == g["activity"], g["name"]
+        for cat in g["categories"]:
+            detail = call(app, "spent_detail", month="2026-10", category_id=cat["id"])
+            assert detail["total"] == cat["activity"], cat["name"]
+    food = call(app, "spent_detail", month="2026-10", category_id=ids["Food"])
+    assert [(l["amount"], l["split"], l["full_amount"]) for l in food["lines"]] == [(-8000, 1, -12000)]
+    card = call(app, "category_detail", category_id=ids["Tangerine Mastercard payment"], month="2026-10")["spent"]
+    assert {l.get("label"): l["amount"] for l in card["lines"]} == {
+        "Payment from Chequing": -5000, "Card spending from Food": 8000, "Card spending from Fun": 7000}
+    assert card["total"] == 10000
