@@ -39,7 +39,8 @@ that are local businesses, category names that reveal finances, and real amounts
 Application logs: `~/Library/Logs/I Need A Budget/app.log` (rotating, 3 × 1 MB). Page
 (JavaScript) errors are forwarded there too. When the user reports a bug, **read the log
 first**. The updater logs `Automatic updates off: <reason>`, `Up to date at`,
-`Downloading`, `ready to install`, `Installed …` or `Update check failed: …`.
+`Downloading`, `ready to install`, `Installed …` or `Update check failed: …`. "Up to date"
+also when no release has been published yet: merging isn't releasing.
 `Page connected` means the window loaded and reached Python.
 
 To reproduce without touching the user's data: `INAB_DATA_DIR=<tmp folder>` (logs go to

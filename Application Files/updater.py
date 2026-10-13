@@ -39,6 +39,7 @@ log = logging.getLogger("inab")
 
 IDLE, CHECKING, DOWNLOADING, READY = "idle", "checking", "downloading", "ready"
 FEED_URL = f"https://api.github.com/repos/{REPOSITORY}/releases/latest"
+REPOSITORY_URL = f"https://api.github.com/repos/{REPOSITORY}"
 FIRST_CHECK_DELAY = 30   # seconds after launch
 CHECK_EVERY = 3600       # seconds between "is a check due?" looks while open
 KEYCHAIN_SERVICE = APP_NAME
@@ -277,8 +278,12 @@ class Updater:
 
     def state(self):
         token, source = (None, None) if self._feed.startswith("file:") else find_token()
+        try:
+            checked = self._last_check_file.read_text(encoding="utf-8").strip() or None
+        except OSError:
+            checked = None
         return {"status": self.status, "version": self.version, "current": self._current,
-                "unavailable": self.unavailable_reason, "error": self.last_error,
+                "unavailable": self.unavailable_reason, "error": self.last_error, "checked": checked,
                 "access": source, "has_access": bool(token) or self._feed.startswith("file:")}
 
     def start(self):
@@ -353,7 +358,13 @@ class Updater:
     def _latest_release(self, token):
         code, body = _curl(self._feed, "-", max_time=30, token=token, accept="application/vnd.github+json")
         if code == 404:
-            return None  # no releases yet (or the token can't see the repository)
+            # GitHub says the same when there are no releases and when this access can't see
+            # the (private) repository at all. Only the first is "up to date".
+            if not self._feed.startswith("file:"):
+                repo_code, _ = _curl(REPOSITORY_URL, "-", max_time=30, token=token, accept="application/vnd.github+json")
+                if repo_code in (401, 403, 404):
+                    raise UpdateError("This GitHub access can't see the app's repository. Check the token in Settings.")
+            return None  # no releases yet
         if code in (401, 403):
             raise UpdateError("GitHub refused the token. Check it in Settings.")
         if code not in (200, 0):

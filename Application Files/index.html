@@ -1790,7 +1790,8 @@ async function renderSettings() {
     upd.unavailable ? `Off: ${upd.unavailable}.` :
     upd.status === 'checking' ? 'Checking…' : upd.status === 'downloading' ? `Downloading ${upd.version}…` :
     upd.status === 'ready' ? `Version ${upd.version} is ready; it's installed when you quit.` :
-    upd.error ? `Last check failed: ${upd.error}` : `You have ${upd.current}.`;
+    upd.error ? `Last check failed: ${upd.error}` :
+    upd.checked ? `You have ${upd.current}, the latest (checked ${upd.checked === state.boot.today ? 'today' : dayYear(upd.checked)}).` : `You have ${upd.current}.`;
   frame(`
     <div class="page-head"><h1>Settings</h1></div>
     <div class="stack">
@@ -1838,7 +1839,9 @@ async function settingsAction(btn) {
     const st = await call('window_action', ['set_github_token', $('#gh-token').value]);
     state.update = st; toast($('#gh-token').value ? 'Token saved in the Keychain' : 'Token removed');
   } else if (act === 'check-updates') {
-    state.update = await call('window_action', ['check_updates']);
+    state.checkingByHand = true;  // the answer comes as an 'update' event: see appEvent
+    try { state.update = await call('window_action', ['check_updates']); }
+    catch (e) { state.checkingByHand = false; throw e; }
     toast('Checking for updates…');
   } else if (act === 'reveal') { await call('window_action', [btn.dataset.what]); return; }
   else if (act === 'learn-actual') {
@@ -1977,6 +1980,13 @@ window.appEvent = (name, payload) => {
     if (!$('#dlg').open && !$('.drawer') && !$('.popover')) refresh();
   } else if (name === 'update') {
     state.update = payload;
+    if (state.checkingByHand && payload.status !== 'checking') {
+      // Always answer a check you asked for: "nothing happened" is the worst outcome.
+      state.checkingByHand = false;
+      if (payload.error) toast(`Couldn't check for updates: ${payload.error}`, { error: true });
+      else if (payload.status === 'downloading') toast(`Found version ${payload.version}. Downloading it…`);
+      else if (payload.status === 'idle') toast(`You're up to date: ${payload.current} is the latest version.`);
+    }
     if (state.page === 'settings') renderSettings();
     else if (payload.status === 'ready') refresh();
   }

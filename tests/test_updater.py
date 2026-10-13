@@ -64,3 +64,19 @@ def test_applications_folder(tmp_path):
     assert in_applications_folder("/Applications/I Need A Budget.app")
     assert not in_applications_folder("/Applications Old/I Need A Budget.app")
     assert not in_applications_folder(tmp_path / "I Need A Budget.app")
+
+
+def test_no_releases_is_up_to_date_but_no_access_is_an_error(tmp_path, monkeypatch):
+    """GitHub answers 404 both when there's no release yet and when the token can't see the
+    private repository; only the first may be reported as up to date."""
+    import updater
+
+    answers = {}
+    monkeypatch.setattr(updater, "_curl", lambda url, *a, **k: (answers[url], "{}"))
+    u = updater.Updater.__new__(updater.Updater)
+    u._feed = updater.FEED_URL
+    answers[updater.FEED_URL], answers[updater.REPOSITORY_URL] = 404, 200
+    assert u._latest_release("token") is None
+    answers[updater.REPOSITORY_URL] = 404
+    with pytest.raises(UpdateError, match="can't see the app's repository"):
+        u._latest_release("token")
