@@ -26,13 +26,13 @@ def is_debt(kind):
 
 # ── accounts ──────────────────────────────────────────────────
 
-def create_account(conn, name, kind, keys=(), last4=None, anchor_date=None, anchor_balance=None):
+def create_account(conn, name, kind, keys=(), last4=None, anchor_date=None, anchor_balance=None, bank=None):
     if kind not in ACCOUNT_KINDS:
         raise ValueError(f"Unknown account type: {kind}")
     sort = conn.execute("SELECT COALESCE(MAX(sort), 0) + 1 FROM accounts").fetchone()[0]
     cur = conn.execute(
-        "INSERT INTO accounts (name, kind, last4, anchor_date, anchor_balance, sort) VALUES (?, ?, ?, ?, ?, ?)",
-        (name, kind, last4, anchor_date, anchor_balance, sort))
+        "INSERT INTO accounts (name, kind, bank, last4, anchor_date, anchor_balance, sort) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (name, kind, bank or None, last4, anchor_date, anchor_balance, sort))
     account_id = cur.lastrowid
     for key in keys:
         conn.execute("INSERT OR IGNORE INTO account_sources (key, account_id) VALUES (?, ?)", (key, account_id))
@@ -139,6 +139,8 @@ def merge_accounts(conn, from_id, into_id):
     for t in conn.execute("SELECT id FROM transactions WHERE account_id = ? AND transfer_account_id = ?",
                           (into_id, into_id)).fetchall():
         transfers.unlink(conn, t["id"])  # was a transfer between the two copies
+    if a["bank"] and not b["bank"]:
+        conn.execute("UPDATE accounts SET bank = ? WHERE id = ?", (a["bank"], into_id))
     for table in ("account_sources", "imports", "subscriptions"):
         conn.execute(f"UPDATE {table} SET account_id = ? WHERE account_id = ?", (into_id, from_id))
     if a["anchor_date"] is not None and (b["anchor_date"] is None or a["anchor_date"] > b["anchor_date"]):

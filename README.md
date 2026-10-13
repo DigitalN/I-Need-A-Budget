@@ -1,8 +1,8 @@
 # I Need A Budget
 
-Envelope budgeting (every dollar gets a job, like YNAB or Actual Budget) built for
-Tangerine accounts, as a Mac app. You download your transactions from tangerine.ca and
-the app does the rest: imports them without duplicates, cleans up the payee names,
+Envelope budgeting (every dollar gets a job, like YNAB or Actual Budget) as a Mac app,
+for any bank or credit union. You download your transactions from your bank's website
+and the app does the rest: imports them without duplicates, cleans up the payee names,
 files what it recognises, and asks you only about the rest.
 
 Everything stays on your Mac. The only thing it ever connects to is GitHub, to update
@@ -20,19 +20,29 @@ The code is private, so updates need GitHub access on that Mac: the GitHub CLI s
 
 The first time it opens, it walks you through four steps:
 
-1. **Files:** it lists the Tangerine downloads (and an Actual Budget export, if you
-   have one) in your Downloads folder. Import them. Overlapping files are fine.
+1. **Files:** it lists the bank downloads (and an Actual Budget export, if you have
+   one) in your Downloads folder. Import them. Overlapping files are fine.
 2. **Categories:** your envelopes. Edit them any time.
-3. **Balances:** what Tangerine shows for each account right now. Asked once.
+3. **Balances:** what your bank shows for each account right now. Asked once (files
+   that include the balance fill it in themselves).
 4. **Start month:** start a few months back and catch those months up in one click, so
    your history isn't lost.
 
 ## Using it
 
-**Getting transactions in.** On tangerine.ca, download an account's transactions (CSV,
-or Quicken/Money, which also include the balance). Files that land in Downloads are
-imported automatically and moved into the app's own folder. You can also drop files on
-the window or use **Import files…**. Nothing is ever imported twice.
+**Getting transactions in.** On your bank's website, download an account's transactions.
+**Quicken (QFX), Money (OFX) or QuickBooks (QBO)** files are best: nearly every bank
+offers them, they include the balance, and they need no setting up. The app also reads
+Tangerine's and RBC's CSVs as they are, and any other bank's CSV once you've shown it
+which column is which (it remembers, so the next file from that bank imports on its
+own). Files that land in Downloads are imported automatically and moved into the app's
+own folder; a CSV that needs setting up waits at the top of the Inbox. You can also
+drop files on the window or use **Import files…**. Nothing is ever imported twice, even
+when the same account comes in as a CSV one day and a Quicken file the next.
+
+**Accounts** each have a bank (type any bank or credit union; well-known ones are
+suggested). If an account ever ends up in the app twice, it says so and **Merge into…**
+puts them back together.
 
 **Inbox.** Only what the app isn't sure about shows up here, with its best guesses.
 Click one (or press 1–4, Return for the first) and it's filed. ⌘Z undoes anything.

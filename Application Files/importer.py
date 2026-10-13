@@ -1,30 +1,37 @@
 """Reading bank exports and adding their new transactions, never twice.
 
 Formats (detected from the content, not the file name):
+- OFX / QFX / QBO ("Microsoft Money", "Quicken" and "QuickBooks" downloads, which nearly
+  every bank offers): every transaction has the bank's own ID (FITID), the file includes
+  the balance, and it says which bank (<ORG>) and account it's for. The best kind of file.
+  Tangerine calls every bank account SAVINGS in these, chequing included, so for Tangerine
+  the file name (the account's nickname, as with its CSVs) decides which account it is.
 - Tangerine credit card CSV: `Transaction date,Transaction,Name,Memo,Amount`. The file
   is named after the masked card number (four digits, x's, then the card's last four), which tells us
   which card. Memo holds the card's own category ("Rewards earned: 0.20 ~ Category: Restaurant").
 - Tangerine bank account CSV: `Date,Transaction,Name,Memo,Amount`. Named after the
   account's nickname ("Chequing.CSV"). Name is cut at 32 characters; Memo has it in full.
-- OFX / QFX (Tangerine's "Microsoft Money" and "Quicken" downloads): every transaction
-  has the bank's own ID (FITID), and the file includes the account balance. The account
-  is found by its bank and number. Tangerine calls every bank account SAVINGS in these
-  files, chequing included, so for Tangerine the file name (the account's nickname, as
-  with its CSVs) decides which account it is, not ACCTTYPE.
+- RBC CSV: `Account Type,Account Number,Transaction Date,Cheque Number,Description 1,
+  Description 2,CAD$,USD$`, every account in one file, told apart by number.
+- Any other bank's CSV, once the person has shown the app its columns (csvlayout.py).
+  The layout is saved and found again by the file's header; which account a file is for
+  is saved by its file name (dates taken out), and asked when the name is new.
 - Actual Budget's transaction export: not imported as transactions, only learnt from
   (its categories and which payees went where). See `learn_from_actual()`.
 
 Which account: from what the file says (see each format), else the one existing account
-that already has most of the file's rows, else a new account. A file never lands in an
-account just because it's the only one of its kind: with more than one bank that would
-put one bank's file in another bank's account.
+that already has most of the file's rows, else a new account (or, for a set-up CSV, a
+question). A file never lands in an account just because it's the only one of its kind:
+with more than one bank that would put one bank's file in another bank's account.
 
 Duplicates: each row gets a fingerprint from its date, amount and description, plus
 how many identical rows came before it in the same file. Exports overlap freely, so a
 row whose fingerprint is already in the account is skipped, while two identical coffees
 on the same day in one file are both kept. **Never change `fingerprint()`**: rows
 already imported would stop matching and every overlapping file would import twice.
-OFX rows are also matched on FITID.
+OFX rows are also matched on FITID. A bank's CSV and its Quicken file can describe the
+same transaction differently, so a row is also the same as one from a *different kind*
+of file in that account with the same date and amount (each matched once).
 """
 
 import csv
@@ -35,6 +42,8 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import banks
+import csvlayout
 import ledger
 import subscriptions
 import transfers
@@ -46,12 +55,24 @@ log = logging.getLogger("inab")
 
 CARD_HEADER = ["transaction date", "transaction", "name", "memo", "amount"]
 BANK_HEADER = ["date", "transaction", "name", "memo", "amount"]
+RBC_HEADER = ["account type", "account number", "transaction date", "cheque number", "description 1",
+              "description 2", "cad$"]
 ACTUAL_HEADER = ["account", "date", "payee", "notes", "category_group", "category", "amount"]
-SUPPORTED_SUFFIXES = {".csv", ".ofx", ".qfx"}
+SUPPORTED_SUFFIXES = {".csv", ".ofx", ".qfx", ".qbo"}
+BANK_FORMATS = ("ofx", "tangerine_card", "tangerine_bank", "rbc", "csv")
 
 
 class ImportError_(Exception):
     """A file that isn't a bank export we can read."""
+
+
+class NeedsSetup(ImportError_):
+    """A CSV the app hasn't been shown how to read yet ('layout'), or whose account it
+    doesn't know yet ('account'). The page asks, then calls the import again."""
+
+    def __init__(self, what):
+        super().__init__("This file needs setting up first." if what == "layout" else "Which account is this file for?")
+        self.what = what
 
 
 @dataclass
@@ -72,15 +93,35 @@ class AccountHint:
     name: str
     last4: str = None
     legacy_keys: list = field(default_factory=list)  # looked up after `keys`, never saved
+    bank: str = None
+    create: bool = True   # False: ask which account rather than make one
+
+
+@dataclass
+class Part:
+    """One account's rows in a file (most files have one; RBC's CSV has every account)."""
+    account: AccountHint
+    rows: list
+    balance: tuple = None  # (date, cents) when the file states one (OFX)
+
+    @property
+    def first_date(self):
+        return min((r.date for r in self.rows), default=None)
+
+    @property
+    def last_date(self):
+        return max((r.date for r in self.rows), default=None)
 
 
 @dataclass
 class Parsed:
-    format: str           # tangerine_card | tangerine_bank | ofx | actual
-    rows: list = field(default_factory=list)
-    account: AccountHint = None
-    balance: tuple = None  # (date, cents) when the file states one (OFX)
+    format: str           # one of BANK_FORMATS, or actual
+    parts: list = field(default_factory=list)
     actual_rows: list = field(default_factory=list)
+
+    @property
+    def rows(self):
+        return [r for part in self.parts for r in part.rows]
 
     @property
     def first_date(self):
@@ -115,6 +156,8 @@ def base_name(filename):
 
 
 def detect(text):
+    """The file's format (see the module docstring), or None. 'csv' is a CSV that looks like
+    bank transactions but isn't a layout the app knows by itself."""
     head = text.lstrip()[:400]
     if head.upper().startswith("OFXHEADER") or "<OFX>" in text[:5000].upper():
         return "ofx"
@@ -127,13 +170,18 @@ def detect(text):
         return "tangerine_card"
     if header[:5] == BANK_HEADER:
         return "tangerine_bank"
+    if header[:7] == RBC_HEADER:
+        return "rbc"
     if header[:7] == ACTUAL_HEADER:
         return "actual"
+    if csvlayout.sniff(text):
+        return "csv"
     return None
 
 
-def parse(path):
-    """Reads one file. Raises ImportError_ if it isn't a format we know."""
+def parse(path, conn=None):
+    """Reads one file. Raises ImportError_ if it isn't a format we know, NeedsSetup for a
+    CSV whose layout hasn't been set up (looked up through `conn`)."""
     path = Path(path)
     text = read_text(path)
     fmt = detect(text)
@@ -143,9 +191,13 @@ def parse(path):
         return _parse_tangerine(text, path.name, card=False)
     if fmt == "ofx":
         return _parse_ofx(text, path.name)
+    if fmt == "rbc":
+        return _parse_rbc(text)
+    if fmt == "csv":
+        return _parse_csv(text, path.name, conn)
     if fmt == "actual":
         return _parse_actual(text)
-    raise ImportError_("This isn't a Tangerine export, an OFX/QFX file or an Actual Budget export.")
+    raise ImportError_("This doesn't look like a bank file: no column of dates and amounts.")
 
 
 def _parse_tangerine(text, filename, card):
@@ -169,17 +221,17 @@ def _parse_tangerine(text, filename, card):
         digits = re.findall(r"\d{4}", stem)
         last4 = digits[-1] if digits else None
         keys = [f"tangerine-card:{last4}"] if last4 else []
-        hint = AccountHint(keys + ["tangerine-card"], "credit_card", "Mastercard", last4)
+        hint = AccountHint(keys + ["tangerine-card"], "credit_card", "Tangerine Mastercard", last4, bank="Tangerine")
     else:
         key, kind, name = _tangerine_bank_account(filename)
-        hint = AccountHint([key], kind, name)
-    return Parsed("tangerine_card" if card else "tangerine_bank", rows, hint)
+        hint = AccountHint([key], kind, name, bank="Tangerine")
+    return Parsed("tangerine_card" if card else "tangerine_bank", [Part(hint, rows)])
 
 
 def account_number_key(bank, last4):
     """The account_sources key for an account number, the same whichever kind of file
     from that bank it came in."""
-    return f"number:{re.sub(r'[^a-z0-9]', '', str(bank or '').lower()) or 'unknown'}:{last4}"
+    return f"number:{banks.slug(bank) or 'unknown'}:{last4}"
 
 
 def _tangerine_bank_account(filename):
@@ -191,12 +243,62 @@ def _tangerine_bank_account(filename):
     return f"tangerine-bank:{lower}", kind, stem.title() if stem.islower() or stem.isupper() else stem
 
 
+def _kind_from_label(label):
+    """An account type as a bank writes it ("MasterCard", "Line of Credit", "Savings") → kind."""
+    t = str(label).lower()
+    if re.search(r"line of credit|\bloc\b|credit line|creditline", t):
+        return "line_of_credit"
+    if re.search(r"visa|master ?card|amex|american express|credit|card", t):
+        return "credit_card"
+    if "saving" in t or "moneymrkt" in t:
+        return "savings"
+    return "chequing"
+
+
+def _parse_rbc(text):
+    """RBC's CSV: every account in one file. Description 1 is often what happened
+    ("e-Transfer sent") and Description 2 who with; the name is both."""
+    reader = csv.reader(io.StringIO(text))
+    next(reader)
+    parts = {}
+    for line in reader:
+        if len(line) < 7 or not any(cell.strip() for cell in line):
+            continue
+        acct_type, number, date_text, _cheque, d1, d2, cad = (cell.strip() for cell in line[:7])
+        usd = line[7].strip() if len(line) > 7 else ""
+        try:
+            row = Row(parse_date(date_text), to_cents(cad or usd), " ".join(p for p in (d1, d2) if p))
+        except ValueError as e:
+            raise ImportError_(f"Couldn't read a row ({e}).") from None
+        digits = re.sub(r"\D", "", number)
+        last4 = digits[-4:] if len(digits) >= 4 else None
+        if (acct_type.lower(), last4) not in parts:
+            kind = _kind_from_label(acct_type)
+            label = {"chequing": "Chequing", "savings": "Savings", "line_of_credit": "Line of Credit"}.get(kind) or \
+                ("Mastercard" if re.search(r"master ?card", acct_type, re.I) else acct_type.title() or "Card")
+            keys = [account_number_key("RBC", last4)] if last4 else []
+            parts[(acct_type.lower(), last4)] = Part(AccountHint(keys, kind, f"RBC {label}", last4, bank="RBC"), [])
+        parts[(acct_type.lower(), last4)].rows.append(row)
+    return Parsed("rbc", list(parts.values()))
+
+
 def _ofx_value(block, tag):
     m = re.search(rf"<{tag}>\s*([^<\r\n]*)", block, re.IGNORECASE)
     return m.group(1).strip() if m else None
 
 
 def _parse_ofx(text, filename):
+    bank = _ofx_bank(text)
+    statements = [m.group(1) for m in re.finditer(
+        r"<(?:CC)?STMTRS>(.*?)(?:</(?:CC)?STMTRS>|(?=<(?:CC)?STMTRS>)|$)", text, re.IGNORECASE | re.DOTALL)]
+    parts = [_ofx_statement(block, bank, filename if len(statements) == 1 else None)
+             for block in statements or [text]]
+    return Parsed("ofx", parts)
+
+
+def _ofx_statement(text, bank, filename):
+    """One account's statement in an OFX file. `filename` only when it's the file's only
+    statement (Tangerine's file name is the account's nickname)."""
     rows = []
     for block in re.findall(r"<STMTTRN>(.*?)(?:</STMTTRN>|(?=<STMTTRN>)|(?=</BANKTRANLIST>))", text,
                             re.IGNORECASE | re.DOTALL):
@@ -220,23 +322,22 @@ def _parse_ofx(text, filename):
     acct_type = (_ofx_value(acct_block.group(1), "ACCTTYPE") if acct_block else None) or ""
     digits = re.sub(r"\D", "", acct_id)
     last4 = digits[-4:] if len(digits) >= 4 else None
-    bank = _ofx_bank(text)
     tangerine = bank == "Tangerine"
     number_keys = [account_number_key(bank, last4)] if last4 else []
     if is_card:
         keys = number_keys + (([f"tangerine-card:{last4}"] if last4 else []) + ["tangerine-card"] if tangerine else [])
-        hint = AccountHint(keys, "credit_card", "Mastercard" if tangerine else f"{bank} card" if bank else "Credit card",
-                           last4)
+        hint = AccountHint(keys, "credit_card", "Tangerine Mastercard" if tangerine else f"{bank} card" if bank else "Credit card",
+                           last4, bank=bank)
     else:
         kind = "savings" if acct_type.upper() in ("SAVINGS", "MONEYMRKT") else \
             "line_of_credit" if acct_type.upper() == "CREDITLINE" else "chequing"
         legacy = [f"ofx:{kind}:{last4}"] if last4 else []  # how version 1.0 keyed OFX accounts
-        if tangerine:
+        if tangerine and filename:
             key, kind, name = _tangerine_bank_account(filename)
-            hint = AccountHint(number_keys + [key], kind, name, last4, legacy)
+            hint = AccountHint(number_keys + [key], kind, name, last4, legacy, bank=bank)
         else:
             label = kind.replace("_", " ").title()
-            hint = AccountHint(number_keys, kind, f"{bank} {label}" if bank else label, last4, legacy)
+            hint = AccountHint(number_keys, kind, f"{bank} {label}" if bank else label, last4, legacy, bank=bank)
     balance = None
     ledger_block = re.search(r"<LEDGERBAL>(.*?)(?:</LEDGERBAL>|<AVAILBAL>|$)", text, re.IGNORECASE | re.DOTALL)
     if ledger_block:
@@ -246,7 +347,7 @@ def _parse_ofx(text, filename):
                 balance = (parse_date(as_of), to_cents(amount))
         except ValueError:
             balance = None
-    return Parsed("ofx", rows, hint, balance)
+    return Part(hint, rows, balance)
 
 
 def _ofx_bank(text):
@@ -254,12 +355,63 @@ def _ofx_bank(text):
     org = (_ofx_value(text, "ORG") or "").strip()
     if "tangerine" in org.lower() or (_ofx_value(text, "BANKID") or "").lstrip("0") == "614":
         return "Tangerine"  # 614 is Tangerine's institution number
-    return _unescape(org) or None
+    return banks.canonical(_unescape(org)) or None
 
 
 def _unescape(text):
     return (text.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
             .replace("&apos;", "'").replace("&quot;", '"'))
+
+
+def csv_name_key(filename):
+    """What a set-up CSV's file name says about its account, dates left out:
+    'Visa transactions 2026-10-13 (1).csv' → 'visa transactions'."""
+    stem = base_name(filename).lower()
+    stem = re.sub(r"\d{4}[-_.]?\d{2}[-_.]?\d{2}|\d{1,2}[-_.]\d{1,2}[-_.]\d{2,4}", " ", stem)
+    return " ".join(re.sub(r"[^a-z0-9]+", " ", stem).split()) or "file"
+
+
+def csv_account_key(layout_id, filename):
+    return f"csv:{layout_id}:{csv_name_key(filename)}"
+
+
+def saved_layout(conn, sniffed):
+    """The layout saved for files like this one, or None."""
+    row = conn.execute("SELECT * FROM csv_layouts WHERE signature = ?", (csvlayout.signature(sniffed),)).fetchone()
+    if row is None:
+        return None
+    layout = {k: row[k] for k in csvlayout.LAYOUT_KEYS if k != "desc_cols"}
+    layout.update(id=row["id"], has_header=bool(row["has_header"]), negate=bool(row["negate"]),
+                  desc_cols=[int(c) for c in row["desc_cols"].split(",") if c != ""])
+    return layout
+
+
+def save_layout(conn, sniffed, layout):
+    """Saves (or replaces) the layout for files like this one. Returns its id."""
+    layout = csvlayout.clean_layout(layout, sniffed["width"])
+    values = (int(layout["has_header"]), layout["date_col"], layout["date_order"],
+              ",".join(str(c) for c in layout["desc_cols"]), layout["amount_col"], layout["out_col"],
+              layout["in_col"], int(layout["negate"]))
+    signature = csvlayout.signature(sniffed)
+    conn.execute("INSERT INTO csv_layouts (signature, has_header, date_col, date_order, desc_cols, amount_col, out_col, "
+                 "in_col, negate) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(signature) DO UPDATE SET "
+                 "has_header = excluded.has_header, date_col = excluded.date_col, date_order = excluded.date_order, "
+                 "desc_cols = excluded.desc_cols, amount_col = excluded.amount_col, out_col = excluded.out_col, "
+                 "in_col = excluded.in_col, negate = excluded.negate", (signature, *values))
+    return conn.execute("SELECT id FROM csv_layouts WHERE signature = ?", (signature,)).fetchone()["id"]
+
+
+def _parse_csv(text, filename, conn):
+    sniffed = csvlayout.sniff(text)
+    layout = saved_layout(conn, sniffed) if conn is not None else None
+    if layout is None:
+        raise NeedsSetup("layout")
+    try:
+        rows = [Row(day, cents, description) for day, cents, description in csvlayout.read(text, layout)]
+    except csvlayout.LayoutError as e:
+        raise ImportError_(f"{e}. Set the file up again from the Inbox.") from None
+    hint = AccountHint([csv_account_key(layout["id"], filename)], "chequing", base_name(filename), create=False)
+    return Parsed("csv", [Part(hint, rows)])
 
 
 def _parse_actual(text):
@@ -318,21 +470,31 @@ class Result:
         return dict(self.__dict__)
 
 
-def find_or_create_account(conn, hint, rows=(), fps=()):
-    """The account a file's rows belong to: by what the file says (`hint.keys`), else the
-    existing account that already has the file's rows, else a new one. A found account
-    learns the file's keys, so the next file from it is recognised straight away."""
-    account_id = ledger.account_by_key(conn, hint.keys) or ledger.account_by_key(conn, hint.legacy_keys) \
+def find_account(conn, hint, rows=(), fps=()):
+    """The existing account a file's rows belong to, or None: by what the file says
+    (`hint.keys`), else the one account that already has the file's rows."""
+    return ledger.account_by_key(conn, hint.keys) or ledger.account_by_key(conn, hint.legacy_keys) \
         or account_with_rows(conn, hint.kind, rows, fps)
+
+
+def find_or_create_account(conn, hint, rows=(), fps=()):
+    """The account a file's rows belong to (see find_account), else a new one (raises
+    NeedsSetup instead when `hint.create` is off). A found account learns the file's keys,
+    so the next file from it is recognised straight away."""
+    account_id = find_account(conn, hint, rows, fps)
     if account_id:
         for key in hint.keys:
             conn.execute("INSERT OR IGNORE INTO account_sources (key, account_id) VALUES (?, ?)", (key, account_id))
+        if hint.bank:
+            conn.execute("UPDATE accounts SET bank = ? WHERE id = ? AND bank IS NULL", (hint.bank, account_id))
         return account_id, False
+    if not hint.create:
+        raise NeedsSetup("account")
     name = hint.name
     if conn.execute("SELECT 1 FROM accounts WHERE name = ? COLLATE NOCASE", (name,)).fetchone():
         name = f"{name} {hint.last4}" if hint.last4 else f"{name} 2"
     keys = [k for k in hint.keys if not conn.execute("SELECT 1 FROM account_sources WHERE key = ?", (k,)).fetchone()]
-    account_id = ledger.create_account(conn, name, hint.kind, keys=keys, last4=hint.last4)
+    account_id = ledger.create_account(conn, name, hint.kind, keys=keys, last4=hint.last4, bank=hint.bank)
     log.info("Created account %s (%s)", name, hint.kind)
     return account_id, True
 
@@ -364,30 +526,49 @@ def account_with_rows(conn, kind, rows, fps):
 
 
 def import_parsed(conn, parsed, filename, sha, archived_path=None):
-    """Adds the new rows of a parsed bank file and files what it can. Call inside db.write()."""
+    """Adds the new rows of a parsed bank file and files what it can, one Result per
+    account in the file. Call inside db.write()."""
     if parsed.format == "actual":
         raise ImportError_("Actual Budget exports are learnt from, not imported.")
-    result = Result(filename, parsed.format, total=len(parsed.rows),
-                    first_date=parsed.first_date, last_date=parsed.last_date)
-    fps = fingerprints(parsed.rows)
-    account_id, created = find_or_create_account(conn, parsed.account, parsed.rows, fps)
+    return [_import_part(conn, parsed.format, part, filename, sha, archived_path) for part in parsed.parts]
+
+
+def _import_part(conn, fmt, part, filename, sha, archived_path):
+    result = Result(filename, fmt, total=len(part.rows), first_date=part.first_date, last_date=part.last_date)
+    fps = fingerprints(part.rows)
+    account_id, created = find_or_create_account(conn, part.account, part.rows, fps)
     acct = conn.execute("SELECT * FROM accounts WHERE id = ?", (account_id,)).fetchone()
     result.account_id, result.account_name, result.new_account = account_id, acct["name"], created
     import_id = conn.execute(
         "INSERT INTO imports (filename, sha256, account_id, format, rows_total, first_date, last_date, archived_path) "
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        (filename, sha, account_id, parsed.format, len(parsed.rows), parsed.first_date, parsed.last_date,
-         archived_path)).lastrowid
+        (filename, sha, account_id, fmt, len(part.rows), part.first_date, part.last_date, archived_path)).lastrowid
     result.import_id = import_id
 
+    # Rows from a different kind of file (this bank's CSV, when this is its Quicken file):
+    # the same date and amount is the same transaction, whatever each file called it.
+    others = {}
+    for r in conn.execute("SELECT t.id, t.date, t.amount FROM transactions t JOIN imports i ON i.id = t.import_id "
+                          "WHERE t.account_id = ? AND i.format != ? AND t.date BETWEEN ? AND ? ORDER BY t.id",
+                          (account_id, fmt, part.first_date or "", part.last_date or "")):
+        others.setdefault((r["date"], r["amount"]), []).append(r["id"])
+
     new_ids = []
-    for row, fp in zip(parsed.rows, fps):
-        exists = conn.execute("SELECT 1 FROM transactions WHERE account_id = ? AND fingerprint = ?",
-                              (account_id, fp)).fetchone()
-        if not exists and row.fitid:
-            exists = conn.execute("SELECT 1 FROM transactions WHERE account_id = ? AND fitid = ?",
-                                  (account_id, row.fitid)).fetchone()
-        if exists:
+    for row, fp in zip(part.rows, fps):
+        same = others.get((row.date, row.amount), [])
+        existing = conn.execute("SELECT id, fitid FROM transactions WHERE account_id = ? AND fingerprint = ?",
+                                (account_id, fp)).fetchone()
+        if existing is None and row.fitid:
+            existing = conn.execute("SELECT id, fitid FROM transactions WHERE account_id = ? AND fitid = ?",
+                                    (account_id, row.fitid)).fetchone()
+        if existing is None and same:
+            existing = conn.execute("SELECT id, fitid FROM transactions WHERE id = ?", (same[0],)).fetchone()
+        if existing is not None:
+            if existing["id"] in same:
+                same.remove(existing["id"])
+            if row.fitid and not existing["fitid"] and not conn.execute(
+                    "SELECT 1 FROM transactions WHERE account_id = ? AND fitid = ?", (account_id, row.fitid)).fetchone():
+                conn.execute("UPDATE transactions SET fitid = ? WHERE id = ?", (row.fitid, existing["id"]))
             result.duplicates += 1
             continue
         desc = describe(row.name, row.memo, acct["kind"])
@@ -404,11 +585,11 @@ def import_parsed(conn, parsed, filename, sha, archived_path=None):
     filed, review = file_transactions(conn, new_ids)
     result.filed, result.to_review = filed, review
 
-    if parsed.balance:
+    if part.balance:
         # The bank's own balance beats one typed in by hand: a balance typed during the day
         # misses what the bank adds later that day, and every balance is worked out from
         # this one. So a file's balance replaces any as old as it, or older.
-        as_of, balance = parsed.balance
+        as_of, balance = part.balance
         ours = ledger.account_balance(conn, account_id, as_of)
         if acct["anchor_date"] is None or as_of >= acct["anchor_date"]:
             conn.execute("UPDATE accounts SET anchor_date = ?, anchor_balance = ? WHERE id = ?",

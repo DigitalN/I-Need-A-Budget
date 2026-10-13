@@ -19,8 +19,9 @@ def test_card_rows_and_which_card(tmp_path):
     ]))
     parsed = importer.parse(path)
     assert parsed.format == "tangerine_card"
-    assert parsed.account.kind == "credit_card" and parsed.account.last4 == "1234"
-    assert parsed.account.keys[0] == "tangerine-card:1234"
+    [part] = parsed.parts
+    assert part.account.kind == "credit_card" and part.account.last4 == "1234"
+    assert part.account.keys[0] == "tangerine-card:1234" and part.account.bank == "Tangerine"
     assert [(r.date, r.amount, r.bank_category) for r in parsed.rows] == [
         ("2026-10-08", -701, "Restaurant"), ("2026-10-07", 5215, "Other")]
 
@@ -28,10 +29,10 @@ def test_card_rows_and_which_card(tmp_path):
 def test_bank_account_comes_from_the_file_name(tmp_path):
     for name in ("Chequing.CSV", "Chequing-2.CSV", "Chequing (1).csv"):
         parsed = importer.parse(write(tmp_path, name, bank_csv([("05/01/2026", "Interest Paid", "Interest Paid", "0.03")])))
-        assert parsed.account.keys == ["tangerine-bank:chequing"]
-        assert parsed.account.name == "Chequing"
+        assert parsed.parts[0].account.keys == ["tangerine-bank:chequing"]
+        assert parsed.parts[0].account.name == "Chequing"
     savings = importer.parse(write(tmp_path, "Savings.CSV", bank_csv([])))
-    assert savings.account.kind == "savings"
+    assert savings.parts[0].account.kind == "savings"
 
 
 def test_identical_rows_in_one_file_are_both_kept(app):
@@ -90,7 +91,7 @@ def test_ofx_rows_ids_and_balance(app):
     parsed = importer.parse(path)
     assert parsed.format == "ofx"
     assert [(r.date, r.amount, r.fitid) for r in parsed.rows] == [("2026-09-08", -17125, "A1"), ("2026-09-14", 198765, "A2")]
-    assert parsed.balance == ("2026-09-30", 150025)
+    assert parsed.parts[0].balance == ("2026-09-30", 150025)
     call(app, "import_files", [str(path)])
     accounts = call(app, "accounts")
     assert accounts[0]["balance"] == 150025  # taken from the file
@@ -238,7 +239,7 @@ def test_cards_and_bank_accounts_are_never_merged(app):
     call(app, "import_files", [str(write(app.test_downloads, CARD_FILE,
                                          card_csv([("09/02/2026", "SAMPLE CAFE CALGARY AB", "-7.01", "Restaurant")])))])
     accounts = {a["name"]: a["id"] for a in call(app, "accounts")}
-    result = app.dispatch("merge_accounts", [accounts["Mastercard"], accounts["Chequing"]])
+    result = app.dispatch("merge_accounts", [accounts["Tangerine Mastercard"], accounts["Chequing"]])
     assert not result["ok"] and "card" in result["error"]
 
 

@@ -83,7 +83,7 @@ app = BUNDLE(
         'LSApplicationCategoryType': 'public.app-category.finance',
         'NSHighResolutionCapable': True,
         'NSDownloadsFolderUsageDescription':
-            'I Need A Budget imports the Tangerine files you download, then moves them into its own folder.',
+            'I Need A Budget imports the bank files you download, then moves them into its own folder.',
         'NSHumanReadableCopyright': 'Private. Not for distribution.',
     },
 )

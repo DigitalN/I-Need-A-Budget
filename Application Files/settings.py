@@ -16,7 +16,7 @@ THEMES = ("system", "light", "dark")
 
 DEFAULTS = {
     "theme": "system",
-    "auto_import": True,          # import Tangerine files that land in Downloads
+    "auto_import": True,          # import bank files that land in Downloads
     "downloads_dir": "",          # '' means ~/Downloads
     "update_automatically": True,
     "average_months": 3,          # how many months "needed per month" looks back over
