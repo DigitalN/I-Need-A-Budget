@@ -169,8 +169,10 @@ page is the average of what a category actually spent in the last 3/6/12 whole m
 - Merging to `main` is not a release, but it's the go-ahead for one: Claude then runs
   `scripts/release.sh NOTES.md` (notes outside the repo). The maintainer never builds. Installed copies only update when a release is
   published on GitHub.
-- The repository is **private** for now (the maintainer may make it public: it's
-  Apache-2.0 licensed, with NOTICE and CITATION.cff for credit). The updater uses a token
+- The repository is **private** for now (the maintainer may make it public). It's
+  **GPL-3.0-only**, the maintainer's choice, made knowing the GPL allows selling: what
+  they want is that nobody builds a closed product from it. NOTICE is a section 7(b)
+  attribution term; CITATION.cff gives GitHub's "Cite this repository". The updater uses a token
   saved in the Keychain from Settings, or the GitHub CLI's login (`gh auth token`), and
   asks anonymously without one. Settings shows the token field only when GitHub refused
   this copy (`needs_access`).

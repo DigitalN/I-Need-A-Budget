@@ -103,7 +103,8 @@ anything in your local `.git-denylist`.
 
 ## License
 
-[Apache License 2.0](LICENSE): use it, change it and share it, including your own
-versions. If you share it or something built from it, keep the [NOTICE](NOTICE) file
-with it so the original project stays credited. GitHub's **Cite this repository**
-button (from [CITATION.cff](CITATION.cff)) gives the reference to use.
+[GNU GPL v3](LICENSE): use it, change it and share it. Anything you share that's built
+from it must be under the GPL too, with its full source, so it can't become a closed
+product. Keep the [NOTICE](NOTICE) file with it so the original project stays credited.
+GitHub's **Cite this repository** button (from [CITATION.cff](CITATION.cff)) gives the
+reference to use.
