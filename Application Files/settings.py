@@ -20,6 +20,7 @@ DEFAULTS = {
     "downloads_dir": "",          # '' means ~/Downloads
     "update_automatically": True,
     "average_months": 3,          # how many months "needed per month" looks back over
+    "carry_overspending": False,  # an overspent category starts next month below zero (see budget.py)
 }
 
 
@@ -30,7 +31,7 @@ def validate(raw):
         return s
     if raw.get("theme") in THEMES:
         s["theme"] = raw["theme"]
-    for key in ("auto_import", "update_automatically"):
+    for key in ("auto_import", "update_automatically", "carry_overspending"):
         if isinstance(raw.get(key), bool):
             s[key] = raw[key]
     if isinstance(raw.get("downloads_dir"), str):

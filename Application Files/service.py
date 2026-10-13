@@ -171,12 +171,31 @@ class BudgetService:
 
     def _needs(self, c, path, parsed):
         """What a parsed file needs before it can be imported: 'account' for a set-up CSV
-        whose account the app doesn't know yet, else None."""
-        if parsed.format != "csv":
+        whose account the app doesn't know yet, 'new_account' for any other bank file with
+        an account the app should ask about (see _accounts_to_ask), else None."""
+        if parsed.format == "actual":
             return None
+        if parsed.format != "csv":
+            return "new_account" if self._accounts_to_ask(c, parsed) else None
         part = parsed.parts[0]
         found = importer.find_account(c, part.account, part.rows, importer.fingerprints(part.rows))
         return None if found else "account"
+
+    def _accounts_to_ask(self, c, parsed, chosen=()):
+        """The parts of a bank file whose account the app hasn't seen, when you already have
+        an account it could be (a card for a card's file, a bank account for a bank
+        account's): a new account, or one you have under a new number? Not while setting
+        up the budget, when every account is new. `chosen`: part indexes already answered."""
+        if self.db.get_meta("onboarded") != "1":
+            return []
+        kinds = {ledger.is_debt(r["kind"]) for r in c.execute("SELECT kind FROM accounts WHERE closed = 0")}
+        out = []
+        for i, part in enumerate(parsed.parts):
+            if i in chosen or ledger.is_debt(part.account.kind) not in kinds:
+                continue
+            if not importer.find_account(c, part.account, part.rows, importer.fingerprints(part.rows)):
+                out.append(i)
+        return out
 
     def _csv_summary(self, path):
         sniffed = csvlayout.sniff(importer.read_text(path))
@@ -215,6 +234,11 @@ class BudgetService:
     def import_files(self, paths, archive=True):
         """Imports bank files and learns from Actual exports. Files from Downloads are
         moved into the app's Imported Files folder afterwards."""
+        return self._import_files(paths, archive)
+
+    def _import_files(self, paths, archive=True, chosen=None):
+        """`chosen`: {path: {part index: account id}} for accounts the person picked."""
+        chosen = {str(Path(k)): v for k, v in (chosen or {}).items()}
         downloads = self.settings.downloads_dir().resolve()
         results, learnt, errors, needs_setup = [], None, [], []
         parsed_files = []
@@ -237,8 +261,14 @@ class BudgetService:
                     outcome = importer.learn_from_actual(c, parsed)
                 learnt = {"filename": path.name, **outcome}
                 continue
+            accounts = chosen.get(str(path), {})
+            if parsed.format != "csv":
+                with self.db.read() as c:
+                    if self._accounts_to_ask(c, parsed, accounts):
+                        needs_setup.append({"path": str(path), "filename": path.name, "needs": "new_account"})
+                        continue
             try:
-                file_results = self._import_one(path, parsed, archive and in_downloads)
+                file_results = self._import_one(path, parsed, archive and in_downloads, accounts)
             except importer.NeedsSetup as e:
                 needs_setup.append({"path": str(path), "filename": path.name, "needs": e.what})
                 continue
@@ -247,10 +277,10 @@ class BudgetService:
         return {"results": results, "learnt": learnt, "errors": errors, "needs_setup": needs_setup,
                 "refiled": refiled, "counts": self.counts()}
 
-    def _import_one(self, path, parsed, archive):
+    def _import_one(self, path, parsed, archive, accounts=None):
         sha = importer.sha256_of(path)
         with self.db.write() as c:
-            file_results = importer.import_parsed(c, parsed, path.name, sha)
+            file_results = importer.import_parsed(c, parsed, path.name, sha, accounts=accounts)
             if archive:
                 archived = self._archive(path)
                 for result in file_results:
@@ -328,13 +358,11 @@ class BudgetService:
 
     def pending_files(self):
         """Files in Downloads that look like bank transactions but need setting up (or an
-        account) first, oldest first. Files you said aren't bank files are left out."""
+        account) first, oldest first. Files you said not to import are left out."""
         out = []
         with self.db.read() as c:
             ignored = {r["sha256"] for r in c.execute("SELECT sha256 FROM ignored_files")}
         for path in self._candidates(self.settings.downloads_dir()):
-            if path.suffix.lower() != ".csv":
-                continue
             try:
                 st = path.stat()
             except OSError:
@@ -357,7 +385,7 @@ class BudgetService:
     def _file_needs(self, path):
         try:
             text = importer.read_text(path)
-            if importer.detect(text) != "csv":
+            if importer.detect(text) not in importer.BANK_FORMATS:
                 return None
             with self.db.read() as c:
                 return self._needs(c, path, importer.parse(path, c))
@@ -369,7 +397,64 @@ class BudgetService:
     def _forget_file_status(self):
         """After a layout or account is set up, files waiting in Downloads are looked at again."""
         self._file_status.clear()
-        self._seen_files = {k: v for k, v in self._seen_files.items() if not k.lower().endswith(".csv")}
+        self._seen_files = {}
+
+    # ── bank files for an account the app hasn't seen ──
+
+    @exposed
+    def file_accounts(self, path):
+        """For the "new account?" pop-up: each account in a bank file, whether the app
+        knows it, and the accounts you have that it could be."""
+        path = Path(path)
+        with self.db.read() as c:
+            parsed = importer.parse(path, c)
+            if parsed.format in ("actual", "csv"):
+                raise UserError("That isn't a file the app asks this about.")
+            accounts = [a for a in self._accounts(c) if not a["closed"]]
+            parts = []
+            for i, part in enumerate(parsed.parts):
+                hint = part.account
+                found = importer.find_account(c, hint, part.rows, importer.fingerprints(part.rows))
+                parts.append({
+                    "index": i, "account_id": found, "name": importer.suggested_name(c, hint), "kind": hint.kind,
+                    "kind_label": ledger.KIND_LABELS.get(hint.kind, hint.kind), "bank": hint.bank,
+                    "last4": hint.last4, "rows": len(part.rows), "first_date": part.first_date,
+                    "last_date": part.last_date,
+                    "choices": [{"id": a["id"], "name": a["name"]} for a in accounts
+                                if a["is_debt"] == ledger.is_debt(hint.kind)],
+                })
+        return {"path": str(path), "filename": path.name, "parts": parts}
+
+    @exposed
+    def set_file_accounts(self, path, choices):
+        """Which account each new account in a bank file is, then imports it. `choices`:
+        [{'index', 'account_id'}] for one you have (it remembers the file's account number,
+        so the next file goes there on its own) or [{'index', 'name'}] for a new account."""
+        path = Path(path)
+        picked = {}
+        with self.db.write() as c:
+            parsed = importer.parse(path, c)
+            for choice in choices or []:
+                i = int(choice["index"])
+                if not 0 <= i < len(parsed.parts):
+                    continue
+                hint = parsed.parts[i].account
+                if choice.get("account_id"):
+                    acct = c.execute("SELECT kind FROM accounts WHERE id = ?", (int(choice["account_id"]),)).fetchone()
+                    if acct is None:
+                        raise UserError("That account no longer exists.")
+                    if ledger.is_debt(acct["kind"]) != ledger.is_debt(hint.kind):
+                        raise UserError("A card's transactions can't go into a bank account, or the other way round.")
+                    picked[i] = int(choice["account_id"])
+                else:
+                    typed = str(choice.get("name") or "").strip()
+                    name = _clean_name(typed) if typed else importer.suggested_name(c, hint)
+                    if c.execute("SELECT 1 FROM accounts WHERE name = ? COLLATE NOCASE", (name,)).fetchone():
+                        raise UserError(f"There's already an account called {name}.")
+                    picked[i] = importer.create_account_for(c, hint, name)
+        self._forget_file_status()
+        downloads = self.settings.downloads_dir().resolve()
+        return self._import_files([str(path)], archive=path.resolve().parent == downloads, chosen={str(path): picked})
 
     @exposed
     def csv_setup(self, path):
@@ -435,7 +520,7 @@ class BudgetService:
 
     @exposed
     def ignore_file(self, path):
-        """Not a bank file: never ask about it again."""
+        """Not a bank file (or not one to import): never ask about it again."""
         path = Path(path)
         with self.db.write() as c:
             c.execute("INSERT OR IGNORE INTO ignored_files (sha256, filename) VALUES (?, ?)",
@@ -695,7 +780,8 @@ class BudgetService:
         assigned = {(r["month"], r["category_id"]): r["assigned"] for r in c.execute(
             "SELECT month, category_id, assigned FROM budget WHERE month BETWEEN ? AND ?", (start, end))}
         opening, _ = ledger.opening_cash(c, start)
-        return budget_math.compute(start, end, self._roles(c), lines, payments, assigned, opening), start
+        return budget_math.compute(start, end, self._roles(c), lines, payments, assigned, opening,
+                                   carry_overspending=self.settings.get()["carry_overspending"]), start
 
     def _coverage_start(self, c):
         """The first month every account has data for (for averages)."""
@@ -782,6 +868,7 @@ class BudgetService:
             "summary": {k: v for k, v in (month_figures or {}).items() if k != "categories"} or None,
             "groups": groups, "average_months": avg_months, "missing_balances": missing,
             "to_review": review, "future_short": future_short,
+            "carry_overspending": self.settings.get()["carry_overspending"],
         }
 
     def _assigned(self, c, month, category_id):
@@ -814,7 +901,9 @@ class BudgetService:
     @exposed
     def assign_plan(self, month, amount=None):
         """How to share out money (a paycheque, or everything ready to assign): fills each
-        category up to its monthly amount, in budget order (bills first if they're first)."""
+        category up to its monthly amount, in budget order (bills first if they're first).
+        What's already in a category counts: what it carried into the month (below zero
+        when overspending carries over) plus what's been assigned this month."""
         view = self.month(month)
         available = view["summary"]["ready_to_assign"] if view["summary"] else 0
         amount = available if amount in (None, "") else int(amount)
@@ -827,11 +916,12 @@ class BudgetService:
                 target = cat["monthly_budget"]
                 if target is None:
                     continue
-                need = max(0, target - cat["assigned"])
+                has = cat["carried"] + cat["assigned"]
+                need = max(0, target - has)
                 give = min(need, remaining)
                 remaining -= give
                 plan.append({"category_id": cat["id"], "name": cat["name"], "group": g["name"], "need": need,
-                             "monthly_budget": target, "assigned": cat["assigned"], "amount": give})
+                             "monthly_budget": target, "assigned": cat["assigned"], "has": has, "amount": give})
         return {"month": month, "amount": amount, "ready_to_assign": available, "plan": plan, "left_over": remaining,
                 "without_monthly_amount": [cat["name"] for g in view["groups"] for cat in g["categories"]
                                            if cat["monthly_budget"] is None and not cat["hidden"]
@@ -916,25 +1006,6 @@ class BudgetService:
         with self.db.write() as c:
             c.execute("UPDATE categories SET note = ? WHERE id = ?", (note, category_id))
         return True
-
-    @exposed
-    def fill_monthly_from_averages(self, months=3, only_empty=True):
-        """Sets each category's monthly amount to what it actually needed on average."""
-        current = self.current_month()
-        changed = 0
-        with self.db.write("Fill monthly amounts") as c:
-            coverage = self._coverage_start(c)
-            spending = self._spending_by_month(c)
-            ms = budget_math.complete_months_before(current, coverage, int(months))
-            for cat in c.execute("SELECT c.id, c.monthly_budget FROM categories c JOIN category_groups g "
-                                 "ON g.id = c.group_id WHERE g.role = 'normal' AND c.hidden = 0").fetchall():
-                if only_empty and cat["monthly_budget"] is not None:
-                    continue
-                avg = budget_math.average_spending(spending.get(cat["id"], {}), ms)
-                if avg > 0:
-                    c.execute("UPDATE categories SET monthly_budget = ? WHERE id = ?", (avg, cat["id"]))
-                    changed += 1
-        return {"changed": changed}
 
     # ── inbox ──
 
@@ -1090,19 +1161,23 @@ class BudgetService:
 
     @exposed
     def subscription_from_transaction(self, txn_id, name, category_id=None, cadence="monthly", kind="subscription",
-                                      pricing="fixed", ends_on=None):
-        """This charge is a new subscription: track it from here on."""
+                                      pricing="fixed", ends_on=None, amount=None, note=""):
+        """This charge is a new subscription: track it from here on (at its price, unless
+        `amount` says otherwise)."""
         name = _clean_name(name)
         with self.db.write(f"Track {name}") as c:
             txn = c.execute("SELECT * FROM transactions WHERE id = ?", (txn_id,)).fetchone()
             if txn is None or txn["amount"] >= 0 or txn["payee_id"] is None:
                 raise UserError("Only a charge can start a subscription.")
             category_id = int(category_id) if category_id else txn["category_id"]
-            sub_id = subscriptions.create(c, txn["payee_id"], name, -txn["amount"], cadence, kind, category_id, pricing,
+            price = abs(int(amount)) if amount else -txn["amount"]
+            sub_id = subscriptions.create(c, txn["payee_id"], name, price, cadence, kind, category_id, pricing,
                                           _end_date(ends_on))
+            if note:
+                c.execute("UPDATE subscriptions SET note = ? WHERE id = ?", (str(note).strip(), sub_id))
             c.execute("UPDATE transactions SET subscription_id = ? WHERE id = ?", (sub_id, txn_id))
             subscriptions.file_pending(c, sub_id)
-        return self.counts()
+        return {"subscription_id": sub_id, "counts": self.counts()}
 
     @exposed
     def not_a_subscription(self, txn_id):
@@ -1560,7 +1635,8 @@ class BudgetService:
 
     @exposed
     def window_action(self, action, argument=None):
-        """reveal_data, reveal_imports, reveal_log, check_updates, install_update, set_github_token"""
+        """open_data, open_imports, open_log, open_release_notes, check_updates, install_update,
+        set_github_token"""
         hook = self.hooks.get(action)
         if hook is None:
             raise UserError("That only works in the app, not in the preview.")

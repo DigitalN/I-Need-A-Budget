@@ -15,6 +15,12 @@ def test_changes_persist(tmp_path):
     assert (again["theme"], again["auto_import"], again["average_months"]) == ("dark", False, 6)
 
 
+def test_overspending_does_not_carry_over_unless_switched_on(tmp_path):
+    assert DEFAULTS["carry_overspending"] is False
+    assert validate({"carry_overspending": "yes"})["carry_overspending"] is False
+    assert validate({"carry_overspending": True})["carry_overspending"] is True
+
+
 def test_corrupt_file_uses_defaults(tmp_path):
     (tmp_path / "settings.json").write_text("{not json")
     assert Settings(tmp_path / "settings.json").get() == DEFAULTS

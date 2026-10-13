@@ -158,11 +158,14 @@ is up to date (1.0.0 and 1.0.1 also said that when the token couldn't see the re
 `Application Files/updater.py`, ported from Pythonflow's, changed for a private
 repository and a windowed app:
 
-- **Access:** the repository is private, so every request carries a token: the one saved
-  in the Keychain from Settings (service "I Need A Budget", account "GitHub"), else the
-  GitHub CLI's (`gh auth token`). A fine-grained token with read-only *Contents* access to
-  this one repository is enough; that's what a second Mac or a second person uses. The token
-  reaches curl on stdin (`--config -`), never the command line.
+- **Access:** a request carries a token when there is one: the one saved in the Keychain
+  from Settings (service "I Need A Budget", account "GitHub"), else the GitHub CLI's
+  (`gh auth token`). Without one it asks anonymously, which works once the repository is
+  public. While it's private, a copy without access gets "the app's repository is
+  private" and Settings shows the GitHub access row (hidden otherwise). A fine-grained
+  token with read-only *Contents* access to this one repository is enough; that's what a
+  second Mac or a second person uses. The token reaches curl on stdin (`--config -`),
+  never the command line.
 - **When:** once, a few seconds after each launch (Settings → "Check for updates at
   launch" turns that off), and when you press Check now. Never on a timer while the app
   is open: the maintainer's choice.

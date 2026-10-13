@@ -10,13 +10,17 @@ itself.
 
 ## Install
 
-Double-click **First Time Setup.command** once. It installs what's needed, switches on
-the privacy guard for git, builds the app into Applications and opens it. After that the
-app updates itself from GitHub releases, and **Build I Need A Budget.command** rebuilds
-from your own copy of the code.
+1. Download the `.dmg` from the [latest release](https://github.com/DigitalN/I-Need-A-Budget/releases/latest).
+2. Open it and drag **I Need A Budget** into **Applications**.
+3. Open it. The first time, macOS says it can't check the app for malware (it isn't
+   notarized by Apple). Click **Done**, then in **System Settings → Privacy & Security**
+   scroll down and click **Open Anyway**. That's only needed once.
 
-The code is private, so updates need GitHub access on that Mac: the GitHub CLI signed in
-(`gh auth login`), or a read-only token pasted in Settings → GitHub access.
+From then on it updates itself: it looks for a new version each time it opens and
+installs it when you quit. **Release notes** in Settings shows what changed. (While the
+repository is private, updates need a GitHub token: Settings asks for one if it needs it.)
+
+Building it yourself is in [DEVELOPMENT.md](DEVELOPMENT.md).
 
 The first time it opens, it walks you through four steps:
 
@@ -37,12 +41,14 @@ Tangerine's and RBC's CSVs as they are, and any other bank's CSV once you've sho
 which column is which (it remembers, so the next file from that bank imports on its
 own). Files that land in Downloads are imported automatically and moved into the app's
 own folder; a CSV that needs setting up waits at the top of the Inbox. You can also
-drop files on the window or use **Import files…**. Nothing is ever imported twice, even
-when the same account comes in as a CSV one day and a Quicken file the next.
+drop files on the window. Nothing is ever imported twice, even when the same account
+comes in as a CSV one day and a Quicken file the next.
 
 **Accounts** each have a bank (type any bank or credit union; well-known ones are
-suggested). If an account ever ends up in the app twice, it says so and **Merge into…**
-puts them back together.
+suggested). A file for an account the app hasn't seen asks first: a new account, or one
+you already have (a replaced card has a new number)? Pick it once and that account's
+files go there from then on. If an account ever ends up in the app twice anyway, it says
+so and **Merge into…** puts them back together.
 
 **Inbox.** Only what the app isn't sure about shows up here, with its best guesses.
 Click one (or press 1–4, Return for the first) and it's filed. ⌘Z undoes anything.
@@ -57,11 +63,16 @@ Click one (or press 1–4, Return for the first) and it's filed. ⌘Z undoes any
   Refunds and e-transfers that pay you back go back to the envelope the money left from.
 - "SAFEWAY #6432" and "SAVEWAY 1532" both become Safeway.
 
-**Budget.** Each month: what each category has, spent and got. **Assign money…** shares
-out a paycheque, filling categories up to their monthly amount in order. Click a
-category to set its monthly amount (or use **Last month** or **Last 3 months avg** of what
-it actually spent), see what it needed in past months, move money, and keep notes. It
-all saves as you type.
+**Budget.** Each month: what each category has, spent and got. A category's **Each
+month** amount is the plan; money is only in it once it's assigned. **Assign money…**
+shares out a paycheque, topping each category up to its monthly amount in order (what's
+already in it counts). Click a category to set its monthly amount (or use **Last month**
+or **Last 3 months avg** of what it actually spent), see what it needed in past months,
+move money, and keep notes. It all saves as you type.
+
+Overspending a category comes out of next month's Ready to assign, like YNAB. Or turn on
+**Overspending carries over** in Settings: the category starts next month below zero,
+and the next money assigned to it covers that first.
 
 **Credit cards** work like YNAB: money for card purchases moves into the card's payment
 envelope, so the payment is covered when it's due. To pay down a balance, assign extra
@@ -80,7 +91,8 @@ envelope and price type:
 
 Give one an end date, or mark it cancelled, and you're warned in the Inbox if it charges
 you after that. Filing a charge under Subscriptions asks "What's this for?" so it can be
-tracked by name.
+tracked by name. Any charge you open on the Transactions page can start one too: **Track
+as subscription…**.
 
 ## Privacy
 
@@ -88,3 +100,11 @@ Your data lives in `~/Library/Application Support/I Need A Budget` (backed up da
 days kept, and before any upgrade) and never in this repository. Bank files and
 databases can't be committed: a git hook refuses them, along with card numbers and
 anything in your local `.git-denylist`.
+
+## License
+
+[GNU GPL v3](LICENSE): use it, change it and share it. Anything you share that's built
+from it must be under the GPL too, with its full source, so it can't become a closed
+product. Keep the [NOTICE](NOTICE) file with it so the original project stays credited.
+GitHub's **Cite this repository** button (from [CITATION.cff](CITATION.cff)) gives the
+reference to use.
