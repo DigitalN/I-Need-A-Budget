@@ -92,9 +92,9 @@ All in `Application Files/`:
 - `subscriptions.py`: detection (steady rhythm; same price, or a once-a-month bill that
   varies), tracking with a name, category, price type and optional end date, price-change
   questions, "charged you again" alerts (after cancelling or after the end date).
-- `budget.py`: pure envelope math, credit cards included, and the "overspending carries
-  over" setting. Its docstring states the rules and the invariant `tests/test_budget.py`
-  checks on random histories (both ways).
+- `budget.py`: pure envelope math, credit cards included, and the three ways overspending
+  is paid for (the Overspending setting). Its docstring states the rules and the
+  invariant `tests/test_budget.py` checks on random histories (all three ways).
 - `updater.py`, `launch.py`: updates from the repo's GitHub releases (with a token if
   there is one, else anonymously, for when it's public); moving into Applications;
   relaunching.
@@ -152,8 +152,16 @@ All in `Application Files/`:
 ## Budget rules (summary; budget.py has the detail)
 
 Ready to assign starts as the cash in chequing/savings when the budget starts; income
-adds, assigning takes. Overspending resets the category and comes out of next month's
-Ready to assign (or, with the setting on, stays in the category below zero). Card spending from a funded category moves that money to the card's
+adds, assigning takes. Overspending is paid for the way the **Overspending** setting says:
+**This month** (the default) takes it out of Ready to assign in the month it happens, so
+Ready to assign is always money really there (the maintainer saw Ready to assign at about
+twice what was in the bank under YNAB's rule and asked for this); **Next month** is
+YNAB's and Actual's rule; **Carry over** leaves it in the category below zero next month.
+The first two reset the category next month. Ready to assign + Σ positive Available −
+overspending not taken yet == cash, and the Budget page shows that line under it ("= $X
+in Chequing − $Y in categories", flagged if it's ever off). With This month, covering
+overspending costs nothing (Assign money… counts it as `covered`) and covering it from
+another category gives Ready to assign that much back. Card spending from a funded category moves that money to the card's
 payment envelope; uncovered card spending is new debt instead. Paying the card from
 chequing spends the payment envelope; old debt is paid down by assigning to it. Refunds
 and reimbursements go back into the category they came from. "Needs ~$X" on the Budget
@@ -282,12 +290,13 @@ Don't undo these without asking:
   needs a read-only token in Settings; once it's public, nothing. People install from
   the release's `.dmg` (README), never by building.
 - Budget can start months back; past months are caught up with one click ("Catch up").
-- **Overspending carries over** is a setting, off by default (a friend coming from YNAB
-  asked for it): an overspent category starts next month below zero instead of the
-  amount coming out of Ready to assign. Only cash overspending; card overspending is
-  debt on the card either way.
+- **Overspending** is a setting with three choices (the maintainer wanted to choose how
+  the rollover works): This month (default), Next month (YNAB), Carry over (a friend
+  coming from YNAB asked for it; it was an on/off switch in 1.0.3–1.0.4, and `settings.py`
+  turns that switch into Carry over). Only cash overspending; card overspending is debt
+  on the card whichever is chosen.
 - **Settings is kept short** (the maintainer's mock-up): Appearance, Import from
-  Downloads, Overspending carries over, Learn from Actual; updates, Release notes,
+  Downloads, Overspending, Learn from Actual; updates, Release notes,
   Check now (GitHub access only when needed); Open buttons for the data, imported
   files and log folders. Budget start, the "needs" look-back and "fill monthly amounts"
   were removed from it on purpose.

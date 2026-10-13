@@ -72,9 +72,13 @@ money, keep notes, and set its monthly amount (or use **Last month** or **Last 3
 avg** of what it actually spent). It all saves as you type. A group's Spent lists the
 whole group.
 
-Overspending a category comes out of next month's Ready to assign, like YNAB. Or turn on
-**Overspending carries over** in Settings: the category starts next month below zero,
-and the next money assigned to it covers that first.
+**Ready to assign** is money you really have: overspending a category comes out of it
+straight away, since that money has already left the bank. Under it, a line ties it to
+your balances: "= $X in Chequing − $Y in categories". **Overspending** in Settings
+chooses how that works: **This month** (that), **Next month** (it comes out of next
+month's Ready to assign, like YNAB), or **Carry over** (the category starts next month
+below zero, Ready to assign is left alone, and the next money assigned to it covers that
+first).
 
 **Credit cards** work like YNAB: money for card purchases moves into the card's payment
 envelope, so the payment is covered when it's due. To pay down a balance, assign extra

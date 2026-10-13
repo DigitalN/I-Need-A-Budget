@@ -15,10 +15,21 @@ def test_changes_persist(tmp_path):
     assert (again["theme"], again["auto_import"], again["average_months"]) == ("dark", False, 6)
 
 
-def test_overspending_does_not_carry_over_unless_switched_on(tmp_path):
-    assert DEFAULTS["carry_overspending"] is False
-    assert validate({"carry_overspending": "yes"})["carry_overspending"] is False
-    assert validate({"carry_overspending": True})["carry_overspending"] is True
+def test_overspending_comes_out_this_month_unless_chosen_otherwise(tmp_path):
+    assert DEFAULTS["overspending"] == "this_month"
+    assert validate({"overspending": "sometime"})["overspending"] == "this_month"
+    for rule in ("this_month", "next_month", "carry_over"):
+        assert validate({"overspending": rule})["overspending"] == rule
+
+
+def test_the_old_carry_over_switch_is_kept(tmp_path):
+    """1.0.3 and 1.0.4 had an on/off switch: on means carry over, off the default."""
+    (tmp_path / "settings.json").write_text('{"carry_overspending": true}')
+    store = Settings(tmp_path / "settings.json")
+    assert store.get()["overspending"] == "carry_over" and "carry_overspending" not in store.get()
+    assert validate({"carry_overspending": False})["overspending"] == "this_month"
+    store.update({"overspending": "next_month"})
+    assert Settings(tmp_path / "settings.json").get()["overspending"] == "next_month"
 
 
 def test_corrupt_file_uses_defaults(tmp_path):

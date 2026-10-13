@@ -154,7 +154,8 @@ th.r, td.r { text-align: right; }
 .months .year { font-size: 10px; color: var(--faint); padding: 0 2px; font-weight: 600; }
 .hero { display: flex; flex-wrap: wrap; gap: 18px 34px; align-items: center; }
 .hero > :first-child { min-width: 230px; }
-.hero .breakdown { flex: 1; min-width: 260px; }
+.hero .figures { flex: 1; min-width: 260px; }
+.hero .check { margin-top: 8px; }
 .breakdown span:nth-child(even) { white-space: nowrap; }
 .rta-label { color: var(--muted); font-weight: 500; }
 .rta { font-size: 38px; font-weight: 650; letter-spacing: -.02em; line-height: 1.1; }
@@ -561,13 +562,15 @@ async function renderBudget() {
       [money(s.carried_rta), view.month === view.budget_start ? 'Cash when the budget started' : `Left over from ${monthOnly(prev)}`],
       [money(s.income, { sign: true }), `Income in ${monthOnly(view.month)}`],
     ];
-    if (s.overspent_last_month) lines.push([money(-s.overspent_last_month), `Overspent in ${monthOnly(prev)}`]);
     if (s.uncategorized) lines.push([money(s.uncategorized, { sign: true }), 'Not in a category yet']);
+    if (view.overspending === 'this_month' && s.overspent) lines.push([money(-s.overspent), `Overspent in ${monthOnly(view.month)}`]);
+    if (s.overspent_last_month) lines.push([money(-s.overspent_last_month), `Overspent in ${monthOnly(prev)}`]);
     lines.push([money(-s.assigned), `Assigned in ${monthOnly(view.month)}`]);
     hero = `<div class="card hero">
       <div><div class="rta-label">Ready to assign</div><div class="rta num ${rtaClass}">${money(s.ready_to_assign)}</div>
         ${s.new_debt ? `<div class="small warn">${money(s.new_debt)} of card spending wasn't covered by a category: it's new debt.</div>` : ''}</div>
-      <div class="breakdown">${lines.map(([a, b]) => `<span>${a}</span><span class="muted">${esc(b)}</span>`).join('')}</div>
+      <div class="figures"><div class="breakdown">${lines.map(([a, b]) => `<span>${a}</span><span class="muted">${esc(b)}</span>`).join('')}</div>
+        ${cashCheck(s, view)}</div>
       <div class="hero-actions">
         <button class="btn primary" data-act="assign">Assign money…</button>
         ${view.is_past ? `<button class="btn" data-act="catch-up" title="Assign exactly what was spent, so nothing ends the month overspent">Catch up this month</button>` : ''}
@@ -599,7 +602,7 @@ async function renderBudget() {
         monthly = `<span class="monthly faint" data-cat="${c.id}">—</span>`;
       }
       const overNote = c.overspent_credit ? ` title="${esc(money(c.overspent_credit))} of this was on a card without money in the category: it became debt"` :
-        (c.overspent_cash ? ` title="${esc(money(c.overspent_cash))} overspent: ${view.carry_overspending ? 'the category starts next month that far below zero' : 'it comes out of next month\'s Ready to assign'}"` : '');
+        (c.overspent_cash ? ` title="${esc(money(c.overspent_cash))} overspent: ${OVERSPENT_NOTE[view.overspending]}"` : '');
       rows.push(`<tr class="cat ${c.hidden ? 'hidden-cat' : ''}">
         <td><span class="name" data-cat="${c.id}">${esc(c.name)}</span></td>
         <td class="r">${monthly}</td>
@@ -627,6 +630,30 @@ async function renderBudget() {
     </div>`);
   const cur = $('#months button[aria-current="true"]');
   if (cur) cur.scrollIntoView({ inline: 'center', block: 'nearest' });
+}
+
+// The Overspending setting (budget.py): what happens to a category's overspending.
+const OVERSPENDING = {
+  this_month: ['This month', 'Comes out of Ready to assign straight away, so it\'s always money you have.'],
+  next_month: ['Next month', 'Comes out of next month\'s Ready to assign, like YNAB.'],
+  carry_over: ['Carry over', 'The category starts next month below zero. Ready to assign is left alone.'],
+};
+const OVERSPENT_NOTE = { this_month: 'it came out of Ready to assign', next_month: 'it comes out of next month\'s Ready to assign',
+                         carry_over: 'the category starts next month that far below zero' };
+
+// Ready to assign tied to the accounts' own balances: what's in them at the end of the
+// month, less what's in categories, plus overspending not out of it yet (budget.py's
+// invariant). Off means something's missing.
+function cashCheck(s, view) {
+  if (!s.cash) return '';
+  const names = s.cash.accounts;
+  const parts = [`= ${money(s.cash.total)} in ${esc(names.length && names.length <= 2 ? names.join(' and ') : 'your accounts')}`];
+  if (s.in_categories) parts.push(`− ${money(s.in_categories)} in categories`);
+  if (s.overspent_pending) parts.push(view.overspending === 'next_month'
+    ? `+ ${money(s.overspent_pending)} overspent, out of ${monthOnly(addMonths(view.month, 1))}`
+    : `+ ${money(s.overspent_pending)} categories still owe`);
+  const off = s.ready_to_assign - (s.cash.total - s.in_categories + s.overspent_pending);
+  return `<div class="check small ${off ? 'warn' : 'muted'}">${parts.join(' ')}${off ? ` · ${money(Math.abs(off))} off: a transfer's other half or a balance may be missing` : ''}</div>`;
 }
 
 async function saveAssigned(input) {
@@ -802,7 +829,7 @@ async function openGroupSpent(groupId) {
 
 async function openAssign(amount) {
   const plan = await call('assign_plan', { month: state.month, amount: amount ?? null });
-  const rows = plan.plan.map((p, i) => `<tr><td>${esc(p.name)} <span class="faint small">${esc(p.group)}</span></td>
+  const rows = plan.plan.map((p, i) => `<tr><td>${esc(p.name)} <span class="faint small">${esc(p.group)}</span>${p.covered ? ` <span class="tag warn" title="Already spent, so it came out of Ready to assign: assigning up to this costs nothing">overspent ${money(p.covered)}</span>` : ''}</td>
       <td class="r num muted">${money(p.monthly_budget)}</td>
       <td class="r num ${p.has < 0 ? 'neg' : 'muted'}">${money(p.has)}</td>
       <td class="r"><input class="money-input" style="box-shadow: inset 0 0 0 1px var(--line-strong) !important" data-i="${i}" value="${moneyPlain(p.amount)}"></td></tr>`).join('');
@@ -821,7 +848,10 @@ async function openAssign(amount) {
     onOpen: d => {
       const left = () => {
         const total = parseMoney($('#assign-amount', d).value) || 0;
-        const used = $$('[data-i]', d).reduce((s, el) => s + (parseMoney(el.value) || 0), 0);
+        const used = $$('[data-i]', d).reduce((s, el) => {  // covering overspending is already paid for
+          const v = parseMoney(el.value) || 0;
+          return s + (v > 0 ? Math.max(0, v - plan.plan[Number(el.dataset.i)].covered) : v);
+        }, 0);
         const el = $('#assign-left', d); if (el) el.innerHTML = `Left over: <b class="${total - used < 0 ? 'neg' : ''}">${money(total - used)}</b>`;
       };
       $$('[data-i]', d).forEach(el => el.addEventListener('input', left));
@@ -1922,7 +1952,7 @@ async function renderSettings() {
       <div class="card">
         ${row('Appearance', '', `<div class="seg" id="theme">${['system', 'light', 'dark'].map(t => `<button data-theme-set="${t}" aria-pressed="${settings.theme === t}">${t[0].toUpperCase() + t.slice(1)}</button>`).join('')}</div>`)}
         ${row('Import from Downloads', 'Automatically import files from your Downloads folder.', toggle('auto_import'))}
-        ${row('Overspending carries over', 'An overspent category starts next month below zero. Off: it comes out of Ready to assign.', toggle('carry_overspending'))}
+        ${row('Overspending', OVERSPENDING[settings.overspending][1], `<div class="seg">${Object.entries(OVERSPENDING).map(([k, [label]]) => `<button data-overspending="${k}" aria-pressed="${settings.overspending === k}">${label}</button>`).join('')}</div>`)}
         ${row('Learn from an Actual Budget export', 'Its categories and which payees went where.', '<button class="btn" data-act="learn-actual">Choose file…</button>')}
       </div>
       <div class="card">
@@ -2157,6 +2187,8 @@ document.addEventListener('change', async e => {
 document.addEventListener('click', async e => {
   const t = e.target.closest('[data-theme-set]');
   if (t) { const s = await call('save_settings', [{ theme: t.dataset.themeSet }]); applyTheme(s.theme); renderSettings(); }
+  const o = e.target.closest('[data-overspending]');
+  if (o) { await call('save_settings', [{ overspending: o.dataset.overspending }]); renderSettings(); }
 });
 document.addEventListener('keydown', e => {
   if (e.target.dataset && e.target.dataset.assign !== undefined && e.key === 'Enter') {
