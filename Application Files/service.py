@@ -23,8 +23,8 @@ import importer
 import ledger
 import subscriptions
 import transfers
-from learn import analyze
-from payees import BANK_ENTRY_HINTS, describe
+from learn import analyze, category_for
+from payees import TRANSFER_OR_BANK_ENTRY_HINTS, describe
 from util import add_months, first_day, last_day, month_of, months_between, parse_date, today
 
 log = logging.getLogger("inab")
@@ -1198,7 +1198,7 @@ class BudgetService:
         for txn_id in txn_ids:
             r = c.execute("SELECT t.*, p.name AS payee_name, cat.name AS category_name "
                           "FROM transactions t JOIN payees p ON p.id = t.payee_id "
-                          f"LEFT JOIN categories cat ON cat.id = t.category_id WHERE t.id = ? AND {subscriptions.CAN_RECUR}",
+                          f"LEFT JOIN categories cat ON cat.id = t.category_id WHERE t.id = ? AND {subscriptions.CAN_RECUR_SQL}",
                           (txn_id,)).fetchone()
             if r and r["amount"] < 0 and not r["transfer_account_id"] and not r["subscription_id"] and r["category_id"]:
                 rows.append(r)
@@ -1248,7 +1248,7 @@ class BudgetService:
                 txn = c.execute("SELECT * FROM transactions WHERE id = ?", (txn_id,)).fetchone()
                 s = analyze(c, txn)
                 c.execute("UPDATE transactions SET category_id = ?, reason = ? WHERE id = ?",
-                          (s.options[0] if s.options else txn["category_id"], s.reason, txn_id))
+                          (category_for(txn, s) or txn["category_id"], s.reason, txn_id))
             c.execute("UPDATE transactions SET similar_payee_id = NULL WHERE similar_payee_id = ? AND payee_id = ?",
                       (txn["similar_payee_id"], txn["payee_id"]))
         return self.counts()
@@ -1353,7 +1353,7 @@ class BudgetService:
                                    "subscription_id", "subscription_name", "import_id")}
             d["manual"] = r["fingerprint"] is None and r["fitid"] is None
             # Bank entries are never asked about, and a transfer isn't categorized.
-            d["can_always_ask"] = bool(r["payee_id"]) and r["hint"] not in ("transfer", *BANK_ENTRY_HINTS)
+            d["can_always_ask"] = bool(r["payee_id"]) and r["hint"] not in TRANSFER_OR_BANK_ENTRY_HINTS
             if r["is_split"]:
                 d["splits"] = _rows(c.execute(
                     "SELECT s.id, s.category_id, s.amount, s.note, cat.name AS category_name FROM splits s "

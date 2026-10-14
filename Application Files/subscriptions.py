@@ -18,7 +18,7 @@ either about the same amount each time, and the *only* thing that payee charges 
 amount in that stretch (a coffee shop you visit every few weeks isn't a subscription), or,
 for bills that vary, a payee that charges once a month and nothing else. Transfers and
 bank entries are never recurring charges, and neither is an e-transfer while its payee
-has Always ask on (`CAN_RECUR`): switch it off and rent e-transferred to a landlord is
+has Always ask on (`CAN_RECUR_SQL`): switch it off and rent e-transferred to a landlord is
 found like any bill.
 
 Found ones are suggestions until you track them or dismiss them. Once tracked, every new
@@ -33,17 +33,18 @@ Apple Music under the same "APPLE.COM/BILL". Each tracked subscription has its o
 that category without asking.
 """
 
-from payees import describe
+from payees import TRANSFER_OR_BANK_ENTRY_HINTS, describe
 from util import add_days, days_between, same_day_next_month
 
 TOLERANCE = 0.06      # how far a currency-billed price wobbles and still counts as the same
 CADENCES = {"weekly": (6, 8, 7), "monthly": (25, 38, 30.44), "yearly": (350, 380, 365.25)}
 PRICINGS = ("fixed", "currency", "varies")
 RECENT_CHARGES = 6    # how many recent charges the typical amount of a varying bill is taken from
-# SQL (transactions t, payees p): a transaction that can be a recurring charge. Not a
-# transfer or a bank entry (payees.BANK_ENTRY_HINTS), and not an e-transfer while its
-# payee has Always ask on (docs/adr/0001).
-CAN_RECUR = "t.hint NOT IN ('transfer', 'interest', 'income', 'fee') AND NOT (t.hint = 'etransfer' AND p.always_ask = 1)"
+# SQL condition on `transactions t JOIN payees p`: a transaction that can be a recurring
+# charge. Not a transfer or a bank entry, and not an e-transfer while its payee has Always
+# ask on (docs/adr/0001).
+CAN_RECUR_SQL = (f"t.hint NOT IN ({', '.join(repr(h) for h in TRANSFER_OR_BANK_ENTRY_HINTS)}) "
+                 "AND NOT (t.hint = 'etransfer' AND p.always_ask = 1)")
 
 
 def close(a, b, tolerance=TOLERANCE, floor=50):
@@ -146,7 +147,7 @@ def detect(conn, today):
         SELECT t.id, t.payee_id, p.name, t.date, -t.amount AS amt, t.account_id, t.category_id,
                t.subscription_id, t.bank_category
           FROM transactions t JOIN payees p ON p.id = t.payee_id
-         WHERE t.amount < 0 AND t.transfer_account_id IS NULL AND {CAN_RECUR}
+         WHERE t.amount < 0 AND t.transfer_account_id IS NULL AND {CAN_RECUR_SQL}
          ORDER BY t.payee_id, t.date, t.id
         """).fetchall()
     known = conn.execute("SELECT payee_id, amount, pricing FROM subscriptions").fetchall()

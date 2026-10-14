@@ -43,8 +43,8 @@ class Suggestion:
     reason: str = ""
     refund_of: int = None
     mixed: bool = False   # this payee goes to different categories, so never filed without asking
-    group: str = ""       # inbox items with the same group share one card (see analyze())
-    individual: bool = False  # this one needs its own card (a refund, an unusual amount, Always ask...)
+    group: str = ""       # inbox items with the same group are shown as one (see analyze())
+    individual: bool = False  # this one is its own inbox item (a refund, an unusual amount, Always ask...)
 
 
 def _amount_similarity(a, b):
@@ -258,9 +258,24 @@ def analyze(conn, txn):
                       mixed=mixed, group=group, individual=individual)
 
 
+def category_for(txn, suggestion):
+    """The category a transaction gets from a suggestion: the top one, for good when sure,
+    else provisionally so the budget is roughly right. Never a provisional one for an
+    e-transfer, whatever its payee's Always ask."""
+    if not suggestion.options or (txn["hint"] == "etransfer" and not suggestion.sure):
+        return None
+    return suggestion.options[0]
+
+
 def _always_ask(conn, txn):
     payee = conn.execute("SELECT always_ask FROM payees WHERE id = ?", (txn["payee_id"],)).fetchone()
     return bool(payee and payee["always_ask"])
+
+
+# Where each kind of bank entry (payees.BANK_ENTRY_HINTS) starts, and why.
+_BANK_ENTRY_START = {"interest": (interest_category, "Interest charged on the card"),
+                     "fee": (interest_category, "A bank fee"),
+                     "income": (income_category, "Money from the bank: income")}
 
 
 def _bank_entry(conn, txn, names, allowed):
@@ -272,11 +287,10 @@ def _bank_entry(conn, txn, names, allowed):
         "SELECT category_id FROM transactions WHERE payee_id = ? AND id != ? AND status = 'done' AND is_split = 0 "
         "AND category_id IS NOT NULL AND transfer_account_id IS NULL ORDER BY date DESC, id DESC LIMIT 1",
         (txn["payee_id"], txn["id"])).fetchone()
-    start = income_category(conn) if txn["hint"] == "income" else interest_category(conn)
+    category, reason = _BANK_ENTRY_START[txn["hint"]]
+    start = category(conn)
     if last and last["category_id"] != start and last["category_id"] in allowed:
         return Suggestion([last["category_id"]], True, f"Where the last one went: {names.get(last['category_id'], '?')}")
-    reason = {"interest": "Interest charged on the card", "fee": "A bank fee",
-              "income": "Money from the bank: income"}[txn["hint"]]
     return Suggestion([start], True, reason)
 
 

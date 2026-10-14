@@ -232,6 +232,8 @@ class Description:
 
 # The bank's own entries (interest, fees, rewards): never asked about (learn.py).
 BANK_ENTRY_HINTS = ("interest", "income", "fee")
+# Never a recurring charge, and no Always ask: a bank entry, or a transfer between your own accounts.
+TRANSFER_OR_BANK_ENTRY_HINTS = ("transfer",) + BANK_ENTRY_HINTS
 
 
 def transaction_hint(desc):

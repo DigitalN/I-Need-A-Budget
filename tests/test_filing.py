@@ -234,6 +234,20 @@ def test_an_e_transfer_payee_asks_until_always_ask_is_switched_off(app):
     assert (landlord["amount"], landlord["kind"]) == (123400, "bill")
 
 
+def test_an_e_transfer_matched_to_a_similar_name_still_gets_no_provisional_category(app):
+    ids = categories(app, CATS)
+    sent = lambda date, who: (date, f"INTERAC e-Transfer To: {who}"[:32], f"INTERAC e-Transfer To: {who}", "-45.00")
+    imp(app, "Chequing.CSV", bank_csv([sent("07/10/2026", "ZACH SAMPLE")]))
+    call(app, "approve", txn_id=call(app, "inbox")["items"][0]["id"], category_id=ids["Food"])
+    imp(app, "Chequing.CSV", bank_csv([sent("07/10/2026", "ZACH SAMPLE"), sent("08/10/2026", "ZACHARY SAMPLE")]))
+    [item] = call(app, "inbox")["items"]
+    assert item["similar_payee"]["name"] == "Zach Sample"
+    call(app, "same_payee", item["id"], True)
+    [item] = call(app, "inbox")["items"]
+    assert (item["payee_name"], item["category_id"]) == ("Zach Sample", None)
+    assert item["suggestions"][0]["name"] == "Food"  # suggested, not assumed
+
+
 def test_one_at_a_time_never_files_the_others(app):
     ids = categories(app, CATS)
     imp(app, "Chequing.CSV", bank_csv([

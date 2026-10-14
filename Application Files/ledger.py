@@ -7,7 +7,7 @@ commits. Amounts are cents.
 """
 
 import transfers
-from payees import find_similar, merchant_key
+from payees import find_similar, merchant_key, transaction_hint
 from util import day_before
 
 CASH_KINDS = ("chequing", "savings", "cash")
@@ -300,7 +300,7 @@ def resolve_payee(conn, desc):
         payee_id, name = match[0], match[1]
         add_payee_key(conn, desc.key, payee_id, "similar")
         return payee_id, f"Matched to {name} (similar name)", None
-    payee_id = get_or_create_payee(conn, desc.name, desc.kind, always_ask=desc.kind == "person")
+    payee_id = get_or_create_payee(conn, desc.name, desc.kind, always_ask=transaction_hint(desc) == "etransfer")
     add_payee_key(conn, desc.key, payee_id, "exact")
     return payee_id, "", (match[0] if match else None)
 
