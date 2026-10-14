@@ -235,7 +235,9 @@ Don't undo these without asking:
   have?" (a replaced card has a new number) once the budget is set up and there's an
   open account of the same sort (card or bank) it could be. Dropped files ask straight
   away; files from Downloads wait at the top of the Inbox ("Don't import" ignores them).
-  The answer is remembered by the file's account number. During onboarding every
+  The answer is remembered by the file's account number. Its drop-down offers every
+  open account, the file's sort first: what a file says it is can be wrong (Tangerine's
+  card QFX once read as chequing and the card wasn't offered). During onboarding every
   account is simply created.
 - **Any bank, not just Tangerine.** Quicken/Money/QuickBooks files are suggested
   wherever the app explains downloads (they need no setup and carry the balance). Other
@@ -377,7 +379,9 @@ Don't undo these without asking:
 
 ## Known gaps
 
-- Real Tangerine QFX/OFX files have been tried (that's how the SAVINGS label was found).
+- Real Tangerine QFX/OFX files have been tried (that's how the SAVINGS label was found,
+  and that its Mastercard's QFX is a bank statement: `CREDITLINE` with the full card
+  number, so a credit line whose number passes the Luhn check is a card).
   RBC's CSV, other banks' OFX and the payee wording for RBC/TD/BMO e-transfers, payroll
   and bill payments are built from public descriptions and made-up files: check them
   against a real file when one turns up.

@@ -6,6 +6,8 @@ Formats (detected from the content, not the file name):
   the balance, and it says which bank (<ORG>) and account it's for. The best kind of file.
   Tangerine calls every bank account SAVINGS in these, chequing included, so for Tangerine
   the file name (the account's nickname, as with its CSVs) decides which account it is.
+  Its Mastercard comes as a bank statement too (CREDITLINE, the full card number): a
+  credit line whose number is a card number is a card, from any bank.
 - Tangerine credit card CSV: `Transaction date,Transaction,Name,Memo,Amount`. The file
   is named after the masked card number (four digits, x's, then the card's last four), which tells us
   which card. Memo holds the card's own category ("Rewards earned: 0.20 ~ Category: Restaurant").
@@ -318,12 +320,15 @@ def _ofx_statement(text, bank, filename):
         if m:
             row.bank_category = m.group(1)
         rows.append(row)
-    is_card = re.search(r"<CCACCTFROM>", text, re.IGNORECASE) is not None
     acct_block = re.search(r"<(?:CC|BANK)ACCTFROM>(.*?)</(?:CC|BANK)ACCTFROM>", text, re.IGNORECASE | re.DOTALL)
     acct_id = _ofx_value(acct_block.group(1) if acct_block else text, "ACCTID") or ""
-    acct_type = (_ofx_value(acct_block.group(1), "ACCTTYPE") if acct_block else None) or ""
+    acct_type = ((_ofx_value(acct_block.group(1), "ACCTTYPE") if acct_block else None) or "").upper()
     digits = re.sub(r"\D", "", acct_id)
     last4 = digits[-4:] if len(digits) >= 4 else None
+    # Tangerine sends its Mastercard as a bank statement: a credit line whose number is a
+    # card number. Any bank could, so it's the card number that decides.
+    is_card = re.search(r"<CCACCTFROM>", text, re.IGNORECASE) is not None or \
+        (acct_type == "CREDITLINE" and _is_card_number(digits))
     tangerine = bank == "Tangerine"
     number_keys = [account_number_key(bank, last4)] if last4 else []
     if is_card:
@@ -331,11 +336,13 @@ def _ofx_statement(text, bank, filename):
         hint = AccountHint(keys, "credit_card", "Tangerine Mastercard" if tangerine else f"{bank} card" if bank else "Credit card",
                            last4, bank=bank)
     else:
-        kind = "savings" if acct_type.upper() in ("SAVINGS", "MONEYMRKT") else \
-            "line_of_credit" if acct_type.upper() == "CREDITLINE" else "chequing"
+        kind = "savings" if acct_type in ("SAVINGS", "MONEYMRKT") else \
+            "line_of_credit" if acct_type == "CREDITLINE" else "chequing"
         legacy = [f"ofx:{kind}:{last4}"] if last4 else []  # how version 1.0 keyed OFX accounts
         if tangerine and filename:
-            key, kind, name = _tangerine_bank_account(filename)
+            # The file name only tells chequing from savings (both say SAVINGS).
+            key, named, name = _tangerine_bank_account(filename)
+            kind = kind if kind == "line_of_credit" else named
             hint = AccountHint(number_keys + [key], kind, name, last4, legacy, bank=bank)
         else:
             label = kind.replace("_", " ").title()
@@ -350,6 +357,14 @@ def _ofx_statement(text, bank, filename):
         except ValueError:
             balance = None
     return Part(hint, rows, balance)
+
+
+def _is_card_number(digits):
+    """A whole card number (13 to 19 digits passing the Luhn check), not an account number."""
+    if not 13 <= len(digits) <= 19:
+        return False
+    total = sum(int(c) if i % 2 == 0 else sum(divmod(int(c) * 2, 10)) for i, c in enumerate(reversed(digits)))
+    return total % 10 == 0
 
 
 def _ofx_bank(text):

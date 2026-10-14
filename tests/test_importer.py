@@ -1,7 +1,7 @@
 """Reading Tangerine exports and importing them without duplicates."""
 
 import importer
-from helpers import CARD_FILE, bank_csv, call, card_csv, categories, txns, write
+from helpers import CARD_FILE, bank_csv, call, card_csv, card_number, categories, txns, write
 
 
 def test_formats_are_detected_from_the_content(tmp_path):
@@ -167,6 +167,55 @@ def test_tangerine_quicken_and_money_files_go_into_the_chequing_account(app):
     assert len(txns(app)) == 5
 
 
+def test_tangerine_card_quicken_file_goes_into_the_card(app):
+    """Tangerine sends its Mastercard's QFX as a bank statement (BANKACCTFROM, ACCTTYPE
+    CREDITLINE, the full card number), named after the masked card number like its CSV.
+    It used to read as chequing, so the "new account?" pop-up didn't offer the card."""
+    call(app, "import_files", [str(write(app.test_downloads, "Chequing.CSV", bank_csv(CHEQUING_ROWS)))])
+    call(app, "import_files", [str(write(app.test_downloads, CARD_FILE,
+                                         card_csv([("09/02/2026", "SAMPLE CAFE CALGARY AB", "-7.01", "Restaurant")])))])
+    app.db.set_meta("onboarded", "1")
+    rows = [("20260902", "-7.01", "SAMPLE CAFE CALGARY AB", "", "M1"), ("20260905", "-12.00", "SAMPLE SHOP", "", "M2")]
+    qfx = write(app.test_downloads, CARD_FILE.replace(".CSV", ".QFX"), ofx_file(
+        "Tangerine", rows, acct="CREDITLINE", acct_id=card_number("1234"), bankid="0614", balance="-19.01"))
+    parsed = importer.parse(qfx)
+    assert (parsed.parts[0].account.kind, parsed.parts[0].account.last4) == ("credit_card", "1234")
+    out = call(app, "import_files", [str(qfx)])
+    assert out["needs_setup"] == []
+    [result] = out["results"]
+    assert (result["account_name"], result["new_account"], result["added"], result["duplicates"]) == \
+        ("Tangerine Mastercard", False, 1, 1)
+    card = next(a for a in call(app, "accounts") if a["name"] == "Tangerine Mastercard")
+    assert card["balance"] == -1901
+    assert len(call(app, "accounts")) == 2
+
+
+def test_a_tangerine_line_of_credit_file_is_debt_whatever_its_nickname(app):
+    """Tangerine's file name only tells chequing from savings (both say SAVINGS):
+    CREDITLINE is a line of credit even when its nickname doesn't say "credit"."""
+    call(app, "import_files", [str(write(app.test_downloads, "Chequing.CSV", bank_csv(CHEQUING_ROWS)))])
+    call(app, "import_files", [str(write(app.test_downloads, CARD_FILE,
+                                         card_csv([("09/02/2026", "SAMPLE CAFE CALGARY AB", "-7.01", "Restaurant")])))])
+    app.db.set_meta("onboarded", "1")
+    loc = write(app.test_downloads, "Home Reno.QFX", ofx_file(
+        "Tangerine", [("20260910", "-250.00", "SAMPLE LUMBER", "", "L1")], acct="CREDITLINE", acct_id="0001234567"))
+    part = importer.parse(loc).parts[0]
+    assert (part.account.kind, part.account.name) == ("line_of_credit", "Home Reno")
+    [asked] = call(app, "file_accounts", str(loc))["parts"]
+    assert [c["name"] for c in asked["choices"]] == ["Tangerine Mastercard", "Chequing"]  # debt accounts first
+
+
+def test_another_banks_card_sent_as_a_bank_statement_is_a_card(app):
+    card = write(app.test_downloads, "Card.QFX", ofx_file(
+        "Sample Credit Union", [("20260911", "-8.00", "SAMPLE DINER", "", "C1")], acct="CREDITLINE",
+        acct_id=card_number("9876")))
+    part = importer.parse(card).parts[0]
+    assert (part.account.kind, part.account.name, part.account.last4) == ("credit_card", "Sample Credit Union card", "9876")
+    loc = write(app.test_downloads, "Loc.QFX", ofx_file(
+        "Sample Credit Union", [("20260911", "-8.00", "SAMPLE DINER", "", "C1")], acct="CREDITLINE", acct_id="0005678"))
+    assert importer.parse(loc).parts[0].account.kind == "line_of_credit"
+
+
 def test_a_renamed_download_finds_its_account_by_its_transactions(app):
     call(app, "import_files", [str(write(app.test_downloads, "Chequing.CSV", bank_csv(CHEQUING_ROWS)))])
     renamed = write(app.test_downloads, "download.qfx", ofx_file("Tangerine", as_ofx_rows(CHEQUING_ROWS)))
@@ -282,6 +331,28 @@ def test_a_file_for_an_unseen_account_asks_new_or_one_you_have(app):
     assert len(call(app, "accounts")) == 1
 
 
+def test_any_open_account_can_be_picked_when_the_file_looks_like_another_sort(app):
+    """What a file says it is can be wrong (Tangerine's card QFX read as chequing): the
+    pop-up offers every open account, the file's sort first, and your pick wins."""
+    call(app, "import_files", [str(write(app.test_downloads, "Chequing.CSV", bank_csv(CHEQUING_ROWS)))])
+    call(app, "import_files", [str(write(app.test_downloads, CARD_FILE,
+                                         card_csv([("09/02/2026", "SAMPLE CAFE CALGARY AB", "-7.01", "Restaurant")])))])
+    app.db.set_meta("onboarded", "1")
+    other = write(app.test_downloads, "Statement.QFX", ofx_file(
+        "Sample Credit Union", [("20260910", "-12.00", "SAMPLE SHOP", "", "B1")], acct="CHECKING", acct_id="0005678"))
+    [part] = call(app, "file_accounts", str(other))["parts"]
+    assert [c["name"] for c in part["choices"]] == ["Chequing", "Tangerine Mastercard"]
+    card = part["choices"][1]["id"]
+    [result] = call(app, "set_file_accounts", str(other), [{"index": 0, "account_id": card}])["results"]
+    assert (result["account_name"], result["added"]) == ("Tangerine Mastercard", 1)
+    # Remembered by the number: the next file from it goes to the card on its own.
+    later = write(app.test_downloads, "Statement-2.QFX", ofx_file(
+        "Sample Credit Union", [("20261001", "-5.00", "SAMPLE CAFE", "", "B2")], acct="CHECKING", acct_id="0005678"))
+    [result] = call(app, "import_files", [str(later)])["results"]
+    assert (result["account_name"], result["added"]) == ("Tangerine Mastercard", 1)
+    assert len(call(app, "accounts")) == 2
+
+
 def test_a_new_account_from_downloads_waits_for_its_name(app):
     import os
     import time
@@ -299,9 +370,6 @@ def test_a_new_account_from_downloads_waits_for_its_name(app):
     waiting = app.watch_downloads()  # found in Downloads: waits in the Inbox
     assert waiting["results"] == [] and [f["needs"] for f in waiting["needs_setup"]] == ["new_account"]
     assert [(f["filename"], f["needs"]) for f in call(app, "inbox")["files"]] == [("Savings.QFX", "new_account")]
-    accounts = {a["name"]: a["id"] for a in call(app, "accounts")}
-    wrong = app.dispatch("set_file_accounts", [str(savings), [{"index": 0, "account_id": accounts["Sample Credit Union card"]}]])
-    assert not wrong["ok"] and "card" in wrong["error"]
     taken = app.dispatch("set_file_accounts", [str(savings), [{"index": 0, "name": "chequing"}]])
     assert not taken["ok"] and "already" in taken["error"]
     [result] = call(app, "set_file_accounts", str(savings), [{"index": 0, "name": "Rainy Day"}])["results"]
