@@ -8,6 +8,13 @@ categorizes what it recognises, and asks you only about the rest.
 Everything stays on your Mac. The only thing it ever connects to is GitHub, to update
 itself.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/dashboard-dark.png">
+  <img alt="The Dashboard: Ready to assign, the Inbox, what's overspent, cash, and charts of net worth and income against spending" src="docs/screenshots/dashboard-light.png">
+</picture>
+
+<sub>Screenshots use made-up data (`scripts/demo_data.py`).</sub>
+
 ## Install
 
 1. Download the `.dmg` from the [latest release](https://github.com/DigitalN/I-Need-A-Budget/releases/latest).
@@ -59,6 +66,11 @@ least $25 and 25% over its average) is marked ↑. Click any figure to see the t
 behind it. Pick 3, 6 or 12 months, or all, at the top: the whole page follows, and the
 app remembers it. The window opens the size and place you last left it.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/inbox-dark.png">
+  <img alt="The Inbox: a refund, a new payee and an e-transfer, each with its suggested category" src="docs/screenshots/inbox-light.png">
+</picture>
+
 **Inbox.** Only what the app isn't sure about shows up here, with its best guesses.
 Nothing in it counts in a category until you categorize it.
 Click one (or press 1–4, Return for the first) and it's categorized. ⌘Z undoes anything.
@@ -75,6 +87,11 @@ Click one (or press 1–4, Return for the first) and it's categorized. ⌘Z undo
 - Card payments are matched with the chequing withdrawal and marked as transfers.
   Refunds and e-transfers that pay you back go back to the category the money left from.
 - "SAFEWAY #6432" and "SAVEWAY 1532" both become Safeway.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/budget-dark.png">
+  <img alt="The Budget page: Ready to assign and each category's Budgeted, Assigned, Spent and Available" src="docs/screenshots/budget-light.png">
+</picture>
 
 **Budget.** Each month: what each category has, spent and got. A category's
 **Budgeted** amount is the plan; money is only in it once it's assigned. Next to its
@@ -95,10 +112,20 @@ month's Ready to assign, like YNAB), or **Carry over** (the category starts next
 below zero, Ready to assign is left alone, and the next money assigned to it covers that
 first).
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/accounts-dark.png">
+  <img alt="The Accounts page: chequing, a credit card, and paying down what's owed on it" src="docs/screenshots/accounts-light.png">
+</picture>
+
 **Credit cards** work like YNAB: money for card purchases moves into the card's payment
 category, so the payment is covered when it's due. To pay down a balance, assign extra
 to the payment category. The Accounts page shows what you owe, what's set aside, the
 interest you've paid, and when it'll be paid off.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/subscriptions-dark.png">
+  <img alt="The Subscriptions page: subscriptions and bills with their price, next charge and cost a month" src="docs/screenshots/subscriptions-light.png">
+</picture>
 
 **Subscriptions and bills** are found automatically. Track each one with its own name,
 category and price type:

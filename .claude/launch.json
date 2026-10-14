@@ -4,8 +4,26 @@
     {
       "name": "preview",
       "runtimeExecutable": "python3",
-      "runtimeArgs": ["scripts/preview.py", "--port", "8765"],
+      "runtimeArgs": [
+        "scripts/preview.py",
+        "--port",
+        "8765"
+      ],
       "port": 8765
+    },
+    {
+      "name": "demo",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": [
+        "scripts/preview.py",
+        "--port",
+        "8766",
+        "--data",
+        "~/Library/Caches/I Need A Budget-demo",
+        "--today",
+        "2026-10-14"
+      ],
+      "port": 8766
     }
   ]
 }
