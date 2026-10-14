@@ -50,7 +50,7 @@ import ledger
 import subscriptions
 import transfers
 from learn import analyze
-from payees import describe
+from payees import describe, transaction_hint
 from util import parse_date, to_cents
 
 log = logging.getLogger("inab")
@@ -605,7 +605,7 @@ def _import_part(conn, fmt, part, filename, sha, archived_path, account_id=None)
             "bank_category, hint, fingerprint, fitid, import_id, reason, similar_payee_id) "
             "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (account_id, row.date, row.amount, payee_id, row.name, row.memo, row.bank_type, row.bank_category,
-             desc.hint, fp, row.fitid, import_id, note, similar)).lastrowid)
+             transaction_hint(desc), fp, row.fitid, import_id, note, similar)).lastrowid)
     result.added = len(new_ids)
     conn.execute("UPDATE imports SET rows_new = ? WHERE id = ?", (result.added, import_id))
 
@@ -660,8 +660,9 @@ def file_transactions(conn, ids):
         if question:
             # A subscription payee at a new price: always ask (price rise? new? one-off?).
             guess = analyze(conn, txn)
+            provisional = guess.options[0] if guess.options and txn["hint"] != "etransfer" else None
             conn.execute("UPDATE transactions SET category_id = ?, status = 'review', reason = ? WHERE id = ?",
-                         (guess.options[0] if guess.options else None, question, txn["id"]))
+                         (provisional, question, txn["id"]))
             review += 1
             continue
         matched = re.match(r"Matched to .*? \(similar name\)", txn["reason"] or "")
@@ -674,9 +675,8 @@ def file_transactions(conn, ids):
         if category is not None and txn["amount"] > 0 and suggestion.options == [ledger.income_category(conn)] \
                 and not suggestion.sure:
             category = None  # unknown money in: don't guess "income" until asked
-        kind = conn.execute("SELECT kind FROM payees WHERE id = ?", (txn["payee_id"],)).fetchone()
-        if kind and kind["kind"] == "person" and not suggestion.sure:
-            category = None  # transfers with people are never assumed, not even provisionally
+        if txn["hint"] == "etransfer" and not suggestion.sure:
+            category = None  # an e-transfer is never assumed, not even provisionally
         conn.execute("UPDATE transactions SET category_id = ?, status = ?, reason = ?, refund_of = ? WHERE id = ?",
                      (category, status, reason, suggestion.refund_of if suggestion.sure else None, txn["id"]))
         if status == "done":

@@ -1091,7 +1091,7 @@ function itemCard(t, i) {
       <button class="chip" data-act="other" data-id="${t.id}">Other…</button><span class="sep"></span>
       <button class="btn small ghost" data-act="transfer" data-id="${t.id}">Transfer</button>
       <button class="btn small ghost" data-act="split" data-id="${t.id}">Split</button>
-      ${t.payee_kind !== 'bank' && t.payee_id ? `<button class="btn small ghost" data-act="always-ask" data-payee="${t.payee_id}" data-on="${t.always_ask ? 0 : 1}" title="${t.always_ask ? 'Let the app categorize this payee on its own again' : 'Never categorize this payee without asking'}">${t.always_ask ? 'Stop always asking' : 'Always ask'}</button>` : ''}
+      ${t.can_always_ask ? `<button class="btn small ghost" data-act="always-ask" data-payee="${t.payee_id}" data-on="${t.always_ask ? 0 : 1}" title="${t.always_ask ? 'Let the app categorize this payee on its own again' : 'Never categorize this payee without asking'}">${t.always_ask ? 'Stop always asking' : 'Always ask'}</button>` : ''}
     </div>
   </div>`;
 }
@@ -1338,8 +1338,9 @@ async function inboxAction(btn, e) {
     toast('New price saved', { action: undoAction }); await renderInbox();
   } else if (act === 'sub-new') { if (await newSubscriptionDialog(id)) await renderInbox(); }
   else if (act === 'always-ask') {
-    await call('set_always_ask', [Number(btn.dataset.payee), btn.dataset.on === '1']);
-    toast(btn.dataset.on === '1' ? 'Each one is asked about on its own now, and none are categorized without asking' : 'Grouped together again', { action: undoAction });
+    const categorized = await call('set_always_ask', [Number(btn.dataset.payee), btn.dataset.on === '1']);
+    toast(btn.dataset.on === '1' ? 'Each one is asked about on its own now, and none are categorized without asking'
+      : categorized ? `${plural(categorized, 'transaction')} categorized without asking` : 'Grouped together again', { action: undoAction });
     await renderInbox();
   } else if (act === 'accept-all') await acceptAll();
   else if (act === 'save-balance') await saveBalanceFrom(btn);

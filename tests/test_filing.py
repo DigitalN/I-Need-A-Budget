@@ -100,6 +100,27 @@ def test_e_transfers_that_are_shares_of_a_bill(app):
     assert len({i["group"] for i in items}) == 1  # filed together
 
 
+def test_a_share_matches_even_with_always_ask_off(app):
+    ids = categories(app, CATS)
+    imp(app, "Chequing.CSV", bank_csv([
+        ("06/05/2026", "INTERAC e-Transfer From: ALEX", "INTERAC e-Transfer From: ALEX SAMPLE", "40.00")]))
+    [earlier] = call(app, "inbox")["items"]
+    call(app, "approve", txn_id=earlier["id"], category_id=ids["Food"])
+    call(app, "set_always_ask", earlier["payee_id"], False)  # Alex is learnt now: Food, every time so far
+    imp(app, CARD_FILE, card_csv([("08/11/2026", "SAMPLE SPORTS CLUB CALGARY AB", "-100.00", "Fitness")]))
+    call(app, "approve", txn_id=call(app, "inbox")["items"][0]["id"], category_id=ids["Fun Money"])
+    imp(app, "Chequing.CSV", bank_csv([
+        ("06/05/2026", "INTERAC e-Transfer From: ALEX", "INTERAC e-Transfer From: ALEX SAMPLE", "40.00"),
+        ("08/05/2026", "INTERAC e-Transfer From: ALEX", "INTERAC e-Transfer From: ALEX SAMPLE", "25.00"),
+        ("08/06/2026", "INTERAC e-Transfer From: BLAIR", "INTERAC e-Transfer From: BLAIR SAMPLE", "25.00"),
+        ("08/07/2026", "INTERAC e-Transfer From: CASEY", "INTERAC e-Transfer From: CASEY SAMPLE", "25.00"),
+    ]))
+    items = call(app, "inbox")["items"]
+    assert len(items) == 3  # Alex's share isn't categorized as Food without asking
+    assert all(i["suggestions"][0]["name"] == "Fun Money" and "1/4 share" in i["reason"] for i in items)
+    assert len({i["group"] for i in items}) == 1 and all(i["category_id"] is None for i in items)
+
+
 def test_similar_names_are_matched_or_asked_about(app):
     ids = categories(app, CATS)
     imp(app, CARD_FILE, card_csv([("07/01/2026", "SAFEWAY #6432 CALGARY AB", "-50.00", "Groceries")]))
@@ -125,6 +146,32 @@ def test_interest_and_rewards_file_themselves(app):
                                   ("07/02/2026", "MONEY-BACK REWARD", "15.20", "")]))
     names = {t["payee_name"]: (t["category_name"], t["status"]) for t in txns(app)}
     assert names == {"Interest charge": ("Interest & Fees", "done"), "Money-Back Reward": ("Income", "done")}
+
+
+def test_interest_earned_follows_the_category_you_move_one_to(app):
+    ids = categories(app, {**CATS, "Savings": ["Emergency Fund"]})
+    interest = lambda date, amount: (date, "Interest Paid", "Interest Paid", amount)
+    imp(app, "Savings.CSV", bank_csv([interest("08/31/2026", "3.12")]))
+    [august] = txns(app)
+    assert (august["payee_name"], august["category_name"], august["status"]) == ("Interest earned", "Income", "done")
+    assert not august["can_always_ask"]
+    call(app, "update_transaction", august["id"], {"category_id": ids["Emergency Fund"]})
+    imp(app, "Savings.CSV", bank_csv([interest("08/31/2026", "3.12"), interest("09/30/2026", "3.20")]))
+    september = txns(app, month="2026-09")[0]
+    assert (september["category_name"], september["status"]) == ("Emergency Fund", "done")
+    assert call(app, "inbox")["items"] == []  # never asked about
+
+
+def test_a_cash_withdrawal_has_always_ask_and_is_learnt(app):
+    ids = categories(app, CATS)
+    cash = lambda date: (date, "Withdrawal - Scotiabank ABM", "Withdrawal - Scotiabank ABM", "-100.00")
+    imp(app, "Chequing.CSV", bank_csv([cash("07/03/2026")]))
+    [item] = call(app, "inbox")["items"]
+    assert item["can_always_ask"] and not item["always_ask"]
+    call(app, "approve", txn_id=item["id"], category_id=ids["Food"])
+    imp(app, "Chequing.CSV", bank_csv([cash("07/03/2026"), cash("08/03/2026")]))
+    august = txns(app, month="2026-08")[0]
+    assert (august["payee_name"], august["category_name"], august["status"]) == ("Cash withdrawal", "Food", "done")
 
 
 def test_renaming_a_payee_sticks_for_future_imports(app):
@@ -166,6 +213,27 @@ def test_transfers_with_people_are_never_assumed(app):
     assert other["suggestions"][0]["name"] == "Food"  # suggested, not assumed
 
 
+def test_an_e_transfer_payee_asks_until_always_ask_is_switched_off(app):
+    ids = categories(app, {**CATS, "Home": ["Rent"]})
+    rent = lambda month: (f"{month:02d}/01/2026", "INTERAC e-Transfer To: SAMPLE LA",
+                          "INTERAC e-Transfer To: SAMPLE LANDLORD", "-1234.00")
+    imp(app, "Chequing.CSV", bank_csv([rent(7), rent(8)]))
+    items = call(app, "inbox")["items"]
+    assert len(items) == 2 and all(i["always_ask"] and i["group"] == "" and i["category_id"] is None for i in items)
+    call(app, "approve", txn_id=items[0]["id"], category_id=ids["Rent"])
+    [left] = call(app, "inbox")["items"]  # still asked: Always ask is on
+    assert left["suggestions"][0]["name"] == "Rent"
+    assert not any(s["name"] == "Sample Landlord" for s in call(app, "subscriptions")["suggested"])
+
+    call(app, "set_always_ask", left["payee_id"], False)
+    assert call(app, "inbox")["items"] == []  # learnt, so categorized without asking
+    imp(app, "Chequing.CSV", bank_csv([rent(7), rent(8), rent(9)]))
+    september = txns(app, month="2026-09")[0]
+    assert (september["category_name"], september["status"]) == ("Rent", "done")
+    [landlord] = [s for s in call(app, "subscriptions")["suggested"] if s["name"] == "Sample Landlord"]
+    assert (landlord["amount"], landlord["kind"]) == (123400, "bill")
+
+
 def test_one_at_a_time_never_files_the_others(app):
     ids = categories(app, CATS)
     imp(app, "Chequing.CSV", bank_csv([
@@ -186,6 +254,7 @@ def test_filing_into_subscriptions_asks_what_it_is(app):
     result = call(app, "approve_many", items=[{"id": i["id"], "category_id": ids["Subscriptions"]} for i in items])
     prompt = result["subscription_prompt"]
     assert prompt and prompt["amount"] == 3850 and prompt["count"] == 3 and prompt["cadence"] == "monthly"
+    assert prompt["kind"] == "bill"  # paid from chequing by EFT
     out = call(app, "subscription_from_transaction", txn_id=prompt["txn_id"], name="Couch",
                category_id=ids["Subscriptions"], cadence="monthly", kind="bill", note="Ends after 12 payments")
     assert {t["subscription_name"] for t in txns(app)} == {"Couch"}

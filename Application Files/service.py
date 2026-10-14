@@ -24,7 +24,7 @@ import ledger
 import subscriptions
 import transfers
 from learn import analyze
-from payees import describe
+from payees import BANK_ENTRY_HINTS, describe
 from util import add_months, first_day, last_day, month_of, months_between, parse_date, today
 
 log = logging.getLogger("inab")
@@ -1196,11 +1196,11 @@ class BudgetService:
         question to ask: what's it for? None otherwise."""
         rows = []
         for txn_id in txn_ids:
-            r = c.execute("SELECT t.*, p.name AS payee_name, p.kind AS payee_kind, cat.name AS category_name "
+            r = c.execute("SELECT t.*, p.name AS payee_name, cat.name AS category_name "
                           "FROM transactions t JOIN payees p ON p.id = t.payee_id "
-                          "LEFT JOIN categories cat ON cat.id = t.category_id WHERE t.id = ?", (txn_id,)).fetchone()
-            if r and r["amount"] < 0 and not r["transfer_account_id"] and not r["subscription_id"] \
-                    and r["category_id"] and r["payee_kind"] in ("merchant", "organization"):
+                          f"LEFT JOIN categories cat ON cat.id = t.category_id WHERE t.id = ? AND {subscriptions.CAN_RECUR}",
+                          (txn_id,)).fetchone()
+            if r and r["amount"] < 0 and not r["transfer_account_id"] and not r["subscription_id"] and r["category_id"]:
                 rows.append(r)
         if not rows:
             return None
@@ -1299,9 +1299,11 @@ class BudgetService:
 
     @exposed
     def set_always_ask(self, payee_id, always_ask):
+        """Switches a payee's Always ask on or off. Switched off, its waiting transactions
+        the app is now sure about are categorized. Returns how many."""
         with self.db.write("Change payee setting") as c:
             c.execute("UPDATE payees SET always_ask = ? WHERE id = ?", (1 if always_ask else 0, payee_id))
-        return True
+            return 0 if always_ask else self._refile(c, [payee_id])
 
     # ── transactions ──
 
@@ -1330,7 +1332,7 @@ class BudgetService:
             params += [q, q, q, q, q, q]
         rows = c.execute(
             f"""
-            SELECT t.*, p.name AS payee_name, p.kind AS payee_kind, p.always_ask, a.name AS account_name,
+            SELECT t.*, p.name AS payee_name, p.always_ask, a.name AS account_name,
                    a.kind AS account_kind, cat.name AS category_name, ta.name AS transfer_account_name,
                    sub.name AS subscription_name
               FROM transactions t
@@ -1345,11 +1347,13 @@ class BudgetService:
         out = []
         for r in rows:
             d = {k: r[k] for k in ("id", "date", "amount", "account_id", "account_name", "account_kind", "payee_id",
-                                   "payee_name", "payee_kind", "always_ask", "category_id", "category_name", "status",
+                                   "payee_name", "always_ask", "category_id", "category_name", "status",
                                    "reason", "note", "is_split", "transfer_account_id", "transfer_account_name",
                                    "transfer_id", "raw_name", "raw_memo", "bank_category", "refund_of",
                                    "subscription_id", "subscription_name", "import_id")}
             d["manual"] = r["fingerprint"] is None and r["fitid"] is None
+            # Bank entries are never asked about, and a transfer isn't categorized.
+            d["can_always_ask"] = bool(r["payee_id"]) and r["hint"] not in ("transfer", *BANK_ENTRY_HINTS)
             if r["is_split"]:
                 d["splits"] = _rows(c.execute(
                     "SELECT s.id, s.category_id, s.amount, s.note, cat.name AS category_name FROM splits s "
@@ -1379,7 +1383,7 @@ class BudgetService:
         if old and not exists and others == 0:
             return ledger.rename_payee(c, old, name)  # its only transaction: just rename it
         target = exists["id"] if exists else ledger.get_or_create_payee(
-            c, name, old_row["kind"] if old_row else "merchant")
+            c, name, old_row["kind"] if old_row else "merchant", always_ask=txn["hint"] == "etransfer")
         key = describe(txn["raw_name"], txn["raw_memo"], txn["kind"]).key if txn["raw_name"] else None
         if key:
             ledger.add_payee_key(c, key, target, "user")
@@ -1402,7 +1406,7 @@ class BudgetService:
     @exposed
     def payees(self):
         with self.db.read() as c:
-            return _rows(c.execute("SELECT id, name, kind, always_ask FROM payees ORDER BY name COLLATE NOCASE"))
+            return _rows(c.execute("SELECT id, name, always_ask FROM payees ORDER BY name COLLATE NOCASE"))
 
     @exposed
     def update_transaction(self, txn_id, changes):

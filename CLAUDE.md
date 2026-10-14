@@ -65,7 +65,7 @@ All in `Application Files/`:
   The preview and most tests drive this same class.
 - `db.py`: schema, upgrades, the shared connection behind a lock, **undo** (triggers record
   inverse SQL; `db.write("Label")` makes one undoable step; updates only record changed
-  columns), daily backups. Schema is at version 3. To change it: raise `SCHEMA_VERSION`,
+  columns), daily backups. Schema is at version 4. To change it: raise `SCHEMA_VERSION`,
   add the column to `SCHEMA` *and* an `ALTER TABLE` step in `_migrate` for existing
   databases. Upgrades copy the database to `Backups/budget-before-upgrade-…` first. The
   user's real database has real data in it: test every upgrade on a copy of it first.
@@ -248,12 +248,19 @@ Don't undo these without asking:
   payee, **except**:
   - **"One at a time"** on a group means exactly that: categorizing one never
     categorizes the others (`approve(..., refile=False)`).
-  - **E-transfers are never assumed**: e-transfers to or from anyone are never
-    categorized automatically, never grouped by payee, never pre-filled with a guess,
-    and never treated as refunds. The last choice is only suggested. (The user hit this
-    with several e-transfers to one person, each for something different.) Decided but
-    not built yet: [ADR 0001](docs/adr/0001-payee-is-just-a-name.md) turns this into
-    Always ask, on from the start for anyone you e-transfer with and switchable off.
+  - **A payee is just a name; e-transfers start with Always ask on**
+    ([ADR 0001](docs/adr/0001-payee-is-just-a-name.md)). Anyone you e-transfer with
+    gets Always ask when first seen, so their e-transfers are never categorized without
+    asking and never grouped; the last choice is only suggested. (The user hit this with
+    several e-transfers to one person, each for something different.) Switched off, the
+    payee is learnt like any other and found as a recurring charge (rent e-transferred to
+    a landlord). Whatever the switch, an e-transfer (`hint = 'etransfer'`, on the
+    transaction) never gets a provisional category, and money in is matched to shares
+    of a shared expense, never to refunds.
+  - **Bank entries** (interest, fees, rewards: `payees.BANK_ENTRY_HINTS`) are never
+    asked about and have no Always ask: each kind (its payee) goes where the newest one
+    went, at first Interest & Fees or Income. Cash withdrawals and deposits aren't bank
+    entries: they're learnt like any payee.
 - **Categorizing a charge into a subscriptions category** (or one that charges on a
   steady rhythm) asks "What's this for?": name it to track it as a subscription or bill,
   or "Not recurring" to stop asking about that payee at that price.
@@ -261,9 +268,8 @@ Don't undo these without asking:
   re-categorized under the current rules at every launch.
 - **Inbox grouping is controlled by the payee's "Always ask" switch**: off, a payee's
   items are one group (even a mixed payee like Amazon, split with "One at a time");
-  on, each is its own inbox item and never categorized without asking. E-transfers,
-  refunds and unusually big charges are always their own item. `learn.analyze()` sets
-  the group key.
+  on, each is its own inbox item and never categorized without asking. Refunds and
+  unusually big charges are always their own item. `learn.analyze()` sets the group key.
 - The inbox has a finder (search + a button per payee with counts) so nothing gets lost
   in a long list.
 - **Payee clean-up with fuzzy matching** (store numbers, typos, truncation).

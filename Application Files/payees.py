@@ -1,8 +1,8 @@
 """Turning what the bank wrote into a payee: "SQ *CORNER BAKERY ROAS CALGARY" → "Corner Bakery Roas".
 
 Pure functions, no database. `describe()` reads one bank row and returns a clean
-display name, a stable matching key, what kind of payee it is, and a hint about what
-the row is (a card payment, interest, a reward...). `find_similar()` matches a new
+display name, a stable matching key, how the money moved, and a hint about what the
+row is (a card payment, interest, a reward...). `find_similar()` matches a new
 key against known ones, so "SAFEWAY #6432" and a misspelt "SAVEWAY 1532" both end up
 as Safeway.
 
@@ -224,9 +224,21 @@ _MORE_FEES = re.compile(
 class Description:
     name: str        # what to call the payee
     key: str         # stable key for matching; see merchant_key()
-    kind: str        # merchant | person | organization | bank
+    kind: str        # how the money moved: merchant (a purchase), organization (a bill payment,
+                     # EFT or pay), person (an e-transfer), bank (the bank's own wording)
     hint: str = ""   # transfer | interest | income | cash | fee | ''
     brand: bool = False
+
+
+# The bank's own entries (interest, fees, rewards): never asked about (learn.py).
+BANK_ENTRY_HINTS = ("interest", "income", "fee")
+
+
+def transaction_hint(desc):
+    """The hint a transaction keeps: describe()'s, or "etransfer" for money sent to or
+    received from someone. Being an e-transfer belongs to the transaction, not the payee
+    (docs/adr/0001)."""
+    return desc.hint or ("etransfer" if desc.kind == "person" else "")
 
 
 def merchant_key(name):
