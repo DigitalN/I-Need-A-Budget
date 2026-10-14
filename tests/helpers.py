@@ -5,6 +5,17 @@
 CARD_FILE = "0000 " + "x" * 4 + "  " + "x" * 4 + " 1234.CSV"
 
 
+def card_number(last4):
+    """A made-up 16-digit card number ending in `last4` that passes the Luhn check, built
+    here for the same reason as CARD_FILE."""
+    for d in "0123456789":
+        number = "5" + "0" * 10 + d + last4
+        total = sum(int(c) if i % 2 == 0 else sum(divmod(int(c) * 2, 10)) for i, c in enumerate(reversed(number)))
+        if total % 10 == 0:
+            return number
+    raise AssertionError("no check digit")
+
+
 def call(service, request, *args, **kwargs):
     result = service.dispatch(request, kwargs if kwargs else list(args))
     assert result["ok"], result.get("error")

@@ -405,7 +405,8 @@ class BudgetService:
     @exposed
     def file_accounts(self, path):
         """For the "new account?" pop-up: each account in a bank file, whether the app
-        knows it, and the accounts you have that it could be."""
+        knows it, and the accounts you have that it could be: every open one, the file's
+        sort (card or bank account) first, since what a file says it is can be wrong."""
         path = Path(path)
         with self.db.read() as c:
             parsed = importer.parse(path, c)
@@ -421,8 +422,8 @@ class BudgetService:
                     "kind_label": ledger.KIND_LABELS.get(hint.kind, hint.kind), "bank": hint.bank,
                     "last4": hint.last4, "rows": len(part.rows), "first_date": part.first_date,
                     "last_date": part.last_date,
-                    "choices": [{"id": a["id"], "name": a["name"]} for a in accounts
-                                if a["is_debt"] == ledger.is_debt(hint.kind)],
+                    "choices": [{"id": a["id"], "name": a["name"]} for a in sorted(
+                        accounts, key=lambda a: a["is_debt"] != ledger.is_debt(hint.kind))],
                 })
         return {"path": str(path), "filename": path.name, "parts": parts}
 
@@ -441,11 +442,8 @@ class BudgetService:
                     continue
                 hint = parsed.parts[i].account
                 if choice.get("account_id"):
-                    acct = c.execute("SELECT kind FROM accounts WHERE id = ?", (int(choice["account_id"]),)).fetchone()
-                    if acct is None:
+                    if not c.execute("SELECT 1 FROM accounts WHERE id = ?", (int(choice["account_id"]),)).fetchone():
                         raise UserError("That account no longer exists.")
-                    if ledger.is_debt(acct["kind"]) != ledger.is_debt(hint.kind):
-                        raise UserError("A card's transactions can't go into a bank account, or the other way round.")
                     picked[i] = int(choice["account_id"])
                 else:
                     typed = str(choice.get("name") or "").strip()
