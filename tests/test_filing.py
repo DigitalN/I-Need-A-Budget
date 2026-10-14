@@ -204,7 +204,7 @@ def test_transfers_with_people_are_never_assumed(app):
     ]))
     items = call(app, "inbox")["items"]
     assert len(items) == 3
-    assert all(i["group"] == "" and i["category_id"] is None for i in items)  # no grouping, no pre-filled guess
+    assert all(i["group"] == "" and i["category_id"] is None and i["guess"] is None for i in items)  # never guessed
     assert all("refund" not in i["reason"].lower() for i in items)           # a person isn't a store
     first = next(i for i in items if i["date"] == "2026-09-30")
     assert call(app, "approve", txn_id=first["id"], category_id=ids["Food"])["also_filed"] == 0
@@ -219,7 +219,7 @@ def test_an_e_transfer_payee_asks_until_always_ask_is_switched_off(app):
                           "INTERAC e-Transfer To: SAMPLE LANDLORD", "-1234.00")
     imp(app, "Chequing.CSV", bank_csv([rent(7), rent(8)]))
     items = call(app, "inbox")["items"]
-    assert len(items) == 2 and all(i["always_ask"] and i["group"] == "" and i["category_id"] is None for i in items)
+    assert len(items) == 2 and all(i["always_ask"] and i["group"] == "" and i["guess"] is None for i in items)
     call(app, "approve", txn_id=items[0]["id"], category_id=ids["Rent"])
     [left] = call(app, "inbox")["items"]  # still asked: Always ask is on
     assert left["suggestions"][0]["name"] == "Rent"
@@ -234,7 +234,7 @@ def test_an_e_transfer_payee_asks_until_always_ask_is_switched_off(app):
     assert (landlord["amount"], landlord["kind"]) == (123400, "bill")
 
 
-def test_an_e_transfer_matched_to_a_similar_name_still_gets_no_provisional_category(app):
+def test_an_e_transfer_matched_to_a_similar_name_is_still_never_guessed(app):
     ids = categories(app, CATS)
     sent = lambda date, who: (date, f"INTERAC e-Transfer To: {who}"[:32], f"INTERAC e-Transfer To: {who}", "-45.00")
     imp(app, "Chequing.CSV", bank_csv([sent("07/10/2026", "ZACH SAMPLE")]))
@@ -244,7 +244,7 @@ def test_an_e_transfer_matched_to_a_similar_name_still_gets_no_provisional_categ
     assert item["similar_payee"]["name"] == "Zach Sample"
     call(app, "same_payee", item["id"], True)
     [item] = call(app, "inbox")["items"]
-    assert (item["payee_name"], item["category_id"]) == ("Zach Sample", None)
+    assert (item["payee_name"], item["category_id"], item["guess"]) == ("Zach Sample", None, None)
     assert item["suggestions"][0]["name"] == "Food"  # suggested, not assumed
 
 

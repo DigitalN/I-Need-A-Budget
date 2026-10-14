@@ -24,7 +24,7 @@ from pathlib import Path
 
 log = logging.getLogger("inab")
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 BACKUPS_KEPT = 14
 
 SCHEMA = """
@@ -283,7 +283,11 @@ class Database:
                 self.conn.execute("UPDATE transactions SET hint = 'etransfer' WHERE hint = '' AND payee_id IN "
                                   "(SELECT id FROM payees WHERE kind = 'person')")
                 self.conn.execute("UPDATE payees SET always_ask = 1 WHERE kind = 'person'")
-            # Next upgrade: `if version is not None and version < 5: ...`, then raise SCHEMA_VERSION.
+            if version is not None and version < 5:
+                # An inbox item counts in no category until it's categorized (docs/adr/0002):
+                # the tentative category (its top suggestion) it used to carry goes.
+                self.conn.execute("UPDATE transactions SET category_id = NULL WHERE status = 'review' AND is_split = 0")
+            # Next upgrade: `if version is not None and version < 6: ...`, then raise SCHEMA_VERSION.
             self.conn.execute("INSERT INTO meta (key, value) VALUES ('schema_version', ?) "
                               "ON CONFLICT(key) DO UPDATE SET value = excluded.value", (str(SCHEMA_VERSION),))
             if version is not None and version < SCHEMA_VERSION:

@@ -2,7 +2,7 @@
 
 import random
 
-from budget import average_spending, complete_months_before, compute
+from budget import average_spending, complete_months_before, compute, usual_spending
 from helpers import CARD_FILE, bank_csv, call, card_csv, categories, txns, write
 
 FOOD, BILLS, INCOME, CARD_PAY = 1, 2, 3, 4
@@ -121,14 +121,16 @@ def test_balance_transfer_between_debts_moves_no_money():
 
 
 def test_money_always_adds_up_on_random_histories():
-    """Ready to assign + money in categories − overspending not out of it yet == cash in
-    cash accounts, every month, whichever way overspending is paid for."""
+    """Ready to assign + money in categories − overspending not out of it yet + money in
+    waiting in the inbox == cash in cash accounts, every month, whichever way overspending
+    is paid for."""
     rng = random.Random(7)
     months = ["2026-07", "2026-08", "2026-09", "2026-10"]
     for _ in range(60):
         opening = rng.randint(0, 500_000)
         lines, payments, assigned = [], [], {}
         cash = {m: 0 for m in months}
+        waiting = {m: 0 for m in months}
         for m in months:
             for _ in range(rng.randint(0, 25)):
                 on_card = rng.random() < 0.5
@@ -137,6 +139,8 @@ def test_money_always_adds_up_on_random_histories():
                 lines.append((m, CARD if on_card else 1, on_card, cat, amount))
                 if not on_card:
                     cash[m] += amount
+                    if cat is None and amount > 0:
+                        waiting[m] += amount
             for _ in range(rng.randint(0, 2)):
                 paid = -rng.randint(0, 200_000)
                 payments.append((m, CARD, paid))
@@ -146,20 +150,45 @@ def test_money_always_adds_up_on_random_histories():
                     assigned[(m, cat)] = rng.randint(-5_000, 150_000)
         for overspending in ("this_month", "next_month", "carry_over"):
             result = compute(months[0], months[-1], CATS, lines, payments, assigned, opening, overspending=overspending)
-            running = opening
+            running, waited = opening, 0
             for m in months:
                 running += cash[m]
+                waited += waiting[m]
                 f = result[m]
                 in_categories = sum(max(c["available"], 0) for c in f["categories"].values())
                 assert f["in_categories"] == in_categories
                 assert f["overspent_pending"] == (0 if overspending == "this_month" else f["overspent"])
-                assert f["ready_to_assign"] + in_categories - f["overspent_pending"] == running, (m, overspending)
+                assert f["waiting"] == waited
+                assert f["ready_to_assign"] + in_categories - f["overspent_pending"] + waited == running, \
+                    (m, overspending)
 
+
+def test_money_waiting_in_the_inbox():
+    """docs/adr/0002: money out without a category has left the bank, so it comes off
+    Ready to assign (on a card, it's set aside to pay the card); money in waits."""
+    cash = run([("2026-07", 1, False, None, -2000), ("2026-07", 1, False, None, 5000)], opening=10000)
+    assert [(m["ready_to_assign"], m["waiting"]) for m in cash.values()] == [(8000, 5000), (8000, 5000)]
+    card = run([("2026-07", CARD, True, None, -3000), ("2026-07", CARD, True, None, 1000)])["2026-07"]
+    assert card["categories"][CARD_PAY]["available"] == 3000
+    assert (card["ready_to_assign"], card["waiting"]) == (-3000, 0)  # a refund on the card isn't cash
 
 def test_averages_use_whole_months_only():
     assert complete_months_before("2026-10", "2026-07", 3) == ["2026-09", "2026-08", "2026-07"]
     assert complete_months_before("2026-10", "2026-09", 6) == ["2026-09"]
     assert average_spending({"2026-07": -600, "2026-08": -300, "2026-09": 0}, ["2026-07", "2026-08", "2026-09"]) == 300
+
+
+def test_usual_starts_with_a_categorys_first_spending():
+    """A bill that started last month isn't averaged with the months before it existed."""
+    bill = {"2026-08": -34000, "2026-09": -34000}
+    assert usual_spending(bill, "2026-09", "2026-06", 3) == 34000
+    assert usual_spending(bill, "2026-10", "2026-06", 3) == 34000
+    assert usual_spending(bill, "2026-08", "2026-06", 3) is None     # nothing before it
+    assert usual_spending({}, "2026-10", "2026-06", 3) is None
+    gifts = {"2026-06": -20000}                                        # months with nothing still count
+    assert usual_spending(gifts, "2026-10", "2026-06", 3) == 0
+    assert usual_spending(gifts, "2026-09", "2026-06", 3) == round(20000 / 3)
+    assert usual_spending({"2026-01": -900}, "2026-10", "2026-07", 3) == 0  # only months every account has
 
 
 def test_catch_up_and_assigning_a_paycheque(app):
@@ -345,3 +374,90 @@ def test_payment_estimate_averages_the_last_three_whole_months(app):
                              ("09/20/2026", "300.00"), ("10/02/2026", "600.00"))])))])
     [card] = call(app, "debt")["accounts"]
     assert card["estimate_payment"] == 30000  # July to September; not June, nor October so far
+
+
+def test_an_inbox_item_counts_in_no_category_until_its_categorized(app):
+    """docs/adr/0002: an inbox item's suggestion is only offered. Its money out comes off
+    Ready to assign, its money in waits, and neither is in a category's Spent or Usual."""
+    ids = categories(app, {"Everyday": ["Food", "Household"]})
+    call(app, "import_files", [str(write(app.test_downloads, "Chequing.CSV", bank_csv([
+        ("09/02/2026", "SAMPLE MART CALGARY AB", "SAMPLE MART CALGARY AB", "-3.99"),
+        ("09/03/2026", "SAMPLE MART CALGARY AB", "SAMPLE MART CALGARY AB", "-980.00"),
+        ("10/05/2026", "SAMPLE MART CALGARY AB", "SAMPLE MART CALGARY AB", "-4.99"),
+        ("10/06/2026", "INTERAC e-Transfer From: RILEY", "INTERAC e-Transfer From: RILEY EXAMPLE", "50.00"),
+    ])))])
+    for t in txns(app, month="2026-09"):
+        call(app, "approve", txn_id=t["id"], category_id=ids["Food" if t["amount"] == -399 else "Household"],
+             refile=False)
+    items = {i["amount"]: i for i in call(app, "inbox")["items"]}
+    assert set(items) == {-499, 5000}
+    assert (items[-499]["category_id"], items[-499]["guess"]) == (None, ids["Food"])  # Accept all would use it
+    assert (items[5000]["category_id"], items[5000]["guess"]) == (None, None)
+    call(app, "finish_onboarding", "2026-09")
+    call(app, "set_balance", {a["name"]: a["id"] for a in call(app, "accounts")}["Chequing"], 100000, "2026-10-12")
+
+    def october():
+        view = call(app, "month", "2026-10")
+        food = next(c for g in view["groups"] for c in g["categories"] if c["id"] == ids["Food"])
+        s = view["summary"]
+        assert s["ready_to_assign"] + s["in_categories"] - s["overspent_pending"] + s["waiting"] == s["cash"]["total"]
+        return s, food
+
+    s, food = october()
+    assert (s["uncategorized"], s["waiting"], food["activity"]) == (-499, 5000, 0)
+    assert call(app, "spent_detail", "2026-10", ids["Food"])["total"] == 0
+    assert [h["spent"] for h in call(app, "category_detail", ids["Food"])["history"] if h["month"] == "2026-10"] == [0]
+    rta = s["ready_to_assign"]
+    call(app, "approve", txn_id=items[-499]["id"], category_id=ids["Food"], refile=False)
+    call(app, "approve", txn_id=items[5000]["id"], category_id=ids["Food"], refile=False)  # Riley paid half back
+    s, food = october()
+    assert (s["uncategorized"], s["waiting"], food["activity"]) == (0, 0, 5000 - 499)
+    assert s["ready_to_assign"] == rta + 499  # the 4.99 is Food's now, and Riley's 50 covers it
+
+
+def test_the_dashboard(app):
+    """Four figures, then what each category spent month by month: a whole month at least
+    $25 and 25% above its Usual (the whole months before it) is marked; this month so far,
+    a category with nothing before, and small changes aren't. Inbox items aren't counted."""
+    ids = categories(app, {"Everyday": ["Food", "Fun", "Books", "Phone", "Old"]})
+    rows = [(f"{m:02d}/05/2026", "SAMPLE GROCER CALGARY AB", "SAMPLE GROCER CALGARY AB", amount)
+            for m, amount in ((6, "-100.00"), (7, "-100.00"), (8, "-100.00"), (9, "-200.00"), (10, "-300.00"))]
+    rows += [(f"{m:02d}/06/2026", "SAMPLE ARCADE CALGARY AB", "SAMPLE ARCADE CALGARY AB", amount)
+             for m, amount in ((6, "-4.00"), (7, "-4.00"), (8, "-4.00"), (9, "-6.00"))]
+    rows += [(f"{m:02d}/08/2026", "SAMPLE PHONE CO", "SAMPLE PHONE CO", "-60.00") for m in (8, 9)]
+    rows += [("09/07/2026", "SAMPLE BOOKSHOP CALGARY AB", "SAMPLE BOOKSHOP CALGARY AB", "-100.00"),
+             ("09/15/2026", "EFT Deposit from SAMPLE EMPLOYER", "EFT Deposit from SAMPLE EMPLOYER", "2000.00"),
+             ("09/20/2026", "SAMPLE MYSTERY SHOP CALGARY AB", "SAMPLE MYSTERY SHOP CALGARY AB", "-50.00")]
+    call(app, "import_files", [str(write(app.test_downloads, "Chequing.CSV", bank_csv(rows)))])
+    ids = {c["name"]: c["id"] for g in call(app, "categories") for c in g["categories"]}  # Income too now
+    where = {"GROCER": "Food", "ARCADE": "Fun", "BOOKSHOP": "Books", "PHONE": "Phone", "EMPLOYER": "Income"}
+    for t in call(app, "inbox")["items"]:
+        name = next((cat for word, cat in where.items() if word in t["raw_name"]), None)
+        if name:
+            call(app, "approve", txn_id=t["id"], category_id=ids[name], refile=False)
+    call(app, "set_category_hidden", ids["Old"], True)
+    call(app, "finish_onboarding", "2026-09")
+    call(app, "set_balance", {a["name"]: a["id"] for a in call(app, "accounts")}["Chequing"], 100000, "2026-10-12")
+
+    d = call(app, "dashboard", 6)
+    sp = d["spending"]
+    assert [m["month"] for m in sp["months"]] == ["2026-06", "2026-07", "2026-08", "2026-09", "2026-10"]
+    assert [m["so_far"] for m in sp["months"]] == [False] * 4 + [True]
+    [everyday] = sp["groups"]
+    rows = {c["name"]: c for c in everyday["categories"]}
+    assert "Old" not in rows  # hidden, and nothing spent
+    assert rows["Food"]["spent"] == [10000, 10000, 10000, 20000, 30000]
+    assert rows["Food"]["usual"][3] == 10000
+    assert rows["Food"]["above"] == [False, False, False, True, False]  # October is only so far
+    assert rows["Fun"]["above"] == [False] * 5    # 50% more, but only $2
+    assert rows["Books"]["above"] == [False] * 5  # nothing before September to compare with
+    assert rows["Phone"]["usual"][3] == 6000 and rows["Phone"]["above"] == [False] * 5  # started in August
+    assert everyday["above"] == [False, False, False, True, False]
+    assert sp["total"] == [10400, 10400, 16400, 36600, 30000]  # the mystery shop is still in the inbox
+    assert sp["income"][3] == 200000 and sp["income_group"]
+    assert (d["inbox"], d["cash"], d["has_debt"]) == (1, 100000, False)
+    assert [o["name"] for o in d["overspent"]] == ["Food"]  # nothing assigned in October
+    assert d["summary"]["ready_to_assign"] + d["summary"]["in_categories"] == d["cash"]
+    assert [m["month"] for m in call(app, "dashboard", 3)["spending"]["months"]][0] == "2026-07"
+    assert call(app, "dashboard", "all")["spending"]["months"][0]["month"] == "2026-06"
+    assert not app.dispatch("dashboard", [5])["ok"]

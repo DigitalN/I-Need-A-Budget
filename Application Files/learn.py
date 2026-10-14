@@ -16,12 +16,13 @@ Actual Budget export), nothing is hard-coded per merchant:
   Always ask on, because money sent to one name goes to different things each time:
   each e-transfer is its own question, with what you chose last time suggested first.
   Switch it off (rent e-transferred to a landlord) and the payee is learnt like any
-  other. Whatever the switch, an e-transfer is never given a provisional category.
+  other. Whatever the switch, "Accept all" in the inbox never includes an e-transfer.
 - **Bank entries** (interest, fees, rewards) are never asked about: each kind (its
   payee) goes where you last put one, at first Interest & Fees or Income.
 
 `analyze()` returns a Suggestion: up to four categories, best first, whether it's
-sure (the importer then files it without asking), and the reason to show.
+sure (the importer then files it without asking), and the reason to show. A transaction
+left in the inbox gets no category from it (docs/adr/0002): suggestions are only offered.
 """
 
 import math
@@ -258,11 +259,13 @@ def analyze(conn, txn):
                       mixed=mixed, group=group, individual=individual)
 
 
-def category_for(txn, suggestion):
-    """The category a transaction gets from a suggestion: the top one, for good when sure,
-    else provisionally so the budget is roughly right. Never a provisional one for an
-    e-transfer, whatever its payee's Always ask."""
-    if not suggestion.options or (txn["hint"] == "etransfer" and not suggestion.sure):
+def guess(txn, suggestion, income_id):
+    """The category "Accept all" in the inbox gives an inbox item: its top suggestion.
+    None for an e-transfer, whatever its payee's Always ask (each is its own question),
+    and for money in the app can only call Income (unknown money in is asked about)."""
+    if not suggestion.options or txn["hint"] == "etransfer":
+        return None
+    if txn["amount"] > 0 and suggestion.options == [income_id]:
         return None
     return suggestion.options[0]
 

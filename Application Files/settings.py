@@ -21,7 +21,7 @@ DEFAULTS = {
     "auto_import": True,          # import bank files that land in Downloads
     "downloads_dir": "",          # '' means ~/Downloads
     "update_automatically": True,
-    "average_months": 3,          # how many months "needed per month" looks back over
+    "average_months": 3,          # how many whole months a category's Usual looks back over
     "overspending": "this_month",  # how overspending is paid for: one of OVERSPENDING (see budget.py)
 }
 

@@ -1,6 +1,6 @@
 """Undo, and keeping only the changes it should."""
 
-from db import Database
+from db import SCHEMA_VERSION, Database
 
 
 def make(tmp_path):
@@ -100,9 +100,9 @@ def test_an_older_database_is_backed_up_then_upgraded(tmp_path):
     db = Database(path)
     columns = [r["name"] for r in db.conn.execute("PRAGMA table_info(categories)")]
     assert "note" in columns
-    assert db.get_meta("schema_version") == "4"
+    assert db.get_meta("schema_version") == str(SCHEMA_VERSION)
     assert db.conn.execute("SELECT name, note FROM categories").fetchone()[:] == ("Rent", "")
-    backups = list((tmp_path / "Backups").glob("budget-before-upgrade-v1-to-v4-*.db"))
+    backups = list((tmp_path / "Backups").glob(f"budget-before-upgrade-v1-to-v{SCHEMA_VERSION}-*.db"))
     assert len(backups) == 1
     with db.write("Edit") as c:  # undo still works on the new column
         c.execute("UPDATE categories SET note = 'renews in March' WHERE id = 1")
@@ -122,10 +122,10 @@ def test_version_2_accounts_from_files_become_tangerine_accounts(tmp_path):
     db.conn.execute("ALTER TABLE accounts DROP COLUMN bank")
     db.close()
     db = Database(tmp_path / "budget.db")
-    assert db.get_meta("schema_version") == "4"
+    assert db.get_meta("schema_version") == str(SCHEMA_VERSION)
     assert [tuple(r) for r in db.conn.execute("SELECT name, bank FROM accounts ORDER BY id")] == [("Chequing", "Tangerine"),
                                                                                               ("Cash", None)]
-    assert len(list((tmp_path / "Backups").glob("budget-before-upgrade-v2-to-v4-*.db"))) == 1
+    assert len(list((tmp_path / "Backups").glob(f"budget-before-upgrade-v2-to-v{SCHEMA_VERSION}-*.db"))) == 1
 
 
 def test_version_3_e_transfer_payees_start_with_always_ask_on(tmp_path):
@@ -143,8 +143,29 @@ def test_version_3_e_transfer_payees_start_with_always_ask_on(tmp_path):
         c.execute("UPDATE meta SET value = '3' WHERE key = 'schema_version'")
     db.close()
     db = Database(tmp_path / "budget.db")
-    assert db.get_meta("schema_version") == "4"
+    assert db.get_meta("schema_version") == str(SCHEMA_VERSION)
     assert [tuple(r) for r in db.conn.execute("SELECT name, always_ask FROM payees ORDER BY id")] == [
         ("Riley Example", 1), ("Sample Cafe", 0), ("Sample Bookshop", 1), ("Cash withdrawal", 0), ("Sample Utility", 0)]
     assert [r[0] for r in db.conn.execute("SELECT hint FROM transactions ORDER BY id")] == ["etransfer", "", "cash", ""]
-    assert len(list((tmp_path / "Backups").glob("budget-before-upgrade-v3-to-v4-*.db"))) == 1
+    assert len(list((tmp_path / "Backups").glob(f"budget-before-upgrade-v3-to-v{SCHEMA_VERSION}-*.db"))) == 1
+
+
+def test_version_4_inbox_items_lose_their_tentative_category(tmp_path):
+    """An inbox item counts in no category until it's categorized (docs/adr/0002): the
+    top suggestion it used to carry goes; what you categorized and splits stay."""
+    db = Database(tmp_path / "budget.db")
+    with db.write() as c:
+        c.execute("INSERT INTO accounts (id, name, kind) VALUES (1, 'Chequing', 'chequing')")
+        c.execute("INSERT INTO category_groups (id, name) VALUES (1, 'Everyday')")
+        c.execute("INSERT INTO categories (id, group_id, name) VALUES (1, 1, 'Food'), (2, 1, 'Fun')")
+        c.execute("INSERT INTO transactions (id, account_id, date, amount, category_id, status, is_split) VALUES "
+                  "(1, 1, '2026-07-01', -650, 1, 'review', 0), (2, 1, '2026-07-02', -900, 1, 'done', 0), "
+                  "(3, 1, '2026-07-03', -2000, NULL, 'review', 1)")
+        c.execute("INSERT INTO splits (transaction_id, category_id, amount) VALUES (3, 1, -1500), (3, 2, -500)")
+        c.execute("UPDATE meta SET value = '4' WHERE key = 'schema_version'")
+    db.close()
+    db = Database(tmp_path / "budget.db")
+    assert db.get_meta("schema_version") == str(SCHEMA_VERSION)
+    assert [r[0] for r in db.conn.execute("SELECT category_id FROM transactions ORDER BY id")] == [None, 1, None]
+    assert db.conn.execute("SELECT COUNT(*) FROM splits").fetchone()[0] == 2
+    assert len(list((tmp_path / "Backups").glob(f"budget-before-upgrade-v4-to-v{SCHEMA_VERSION}-*.db"))) == 1
