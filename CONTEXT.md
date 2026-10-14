@@ -152,6 +152,11 @@ towards Usual.
 **Cash**:
 The money in cash accounts. Ready to assign is checked against it.
 
+**Net worth**:
+Cash minus what you owe on debt accounts, for the accounts in the app. A house, a
+mortgage or investments aren't accounts, so they aren't in it.
+_Avoid_: total, balance
+
 **Category**:
 A named pot of money for one purpose, like Food or Rent: the envelope of the envelope
 method.
