@@ -23,7 +23,9 @@ DEFAULTS = {
     "update_automatically": True,
     "average_months": 3,          # how many whole months a category's Usual looks back over
     "overspending": "this_month",  # how overspending is paid for: one of OVERSPENDING (see budget.py)
+    "dashboard_months": 6,        # the Dashboard's months: one of DASHBOARD_MONTHS
 }
+DASHBOARD_MONTHS = (3, 6, 12, "all")
 
 
 def validate(raw):
@@ -44,6 +46,8 @@ def validate(raw):
         s["downloads_dir"] = raw["downloads_dir"].strip()
     if raw.get("average_months") in (3, 6, 12):
         s["average_months"] = raw["average_months"]
+    if raw.get("dashboard_months") in DASHBOARD_MONTHS and not isinstance(raw["dashboard_months"], bool):
+        s["dashboard_months"] = raw["dashboard_months"]
     return s
 
 

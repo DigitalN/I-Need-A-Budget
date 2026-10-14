@@ -22,7 +22,7 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 APP_NAME = "I Need A Budget"
-VERSION = "1.1.0"  # the build reads it from here; see the release checklist in DEVELOPMENT.md
+VERSION = "1.1.1"  # the build reads it from here; see the release checklist in DEVELOPMENT.md
 if os.environ.get("INAB_DATA_DIR"):  # for development/testing against a throwaway folder
     DATA_DIR = Path(os.environ["INAB_DATA_DIR"]).expanduser()
     LOG_DIR = DATA_DIR / "Logs"
@@ -31,10 +31,25 @@ else:
     LOG_DIR = Path.home() / "Library" / "Logs" / APP_NAME
 LOG_PATH = LOG_DIR / "app.log"
 WATCH_EVERY = 4  # seconds between looks in Downloads
-WINDOW_SIZE = (1240, 860)
 MIN_SIZE = (1000, 660)
+WINDOW_SHARE = 0.85            # the first time, the window takes this much of the screen
+WINDOW_FRAME_NAME = "Main window"  # macOS remembers the window's size and place under this name
 
 log = logging.getLogger("inab")
+
+
+def _first_window_size():
+    """How big the window opens the first time on a Mac: most of the space between the
+    menu bar and the Dock, and never below the minimum unless the screen is smaller. From
+    then on it opens the size and place it was left (BudgetApp._restore_frame)."""
+    import AppKit
+
+    screen = AppKit.NSScreen.mainScreen()
+    if screen is None:
+        return MIN_SIZE
+    area = screen.visibleFrame().size
+    return (int(min(area.width, max(MIN_SIZE[0], area.width * WINDOW_SHARE))),
+            int(min(area.height, max(MIN_SIZE[1], area.height * WINDOW_SHARE))))
 
 
 def _app_files_dir():
@@ -281,6 +296,36 @@ class BudgetApp:
             log.exception("Installing the update on quit failed")
         log.info("Quitting")
 
+    def _restore_frame(self):
+        """Just before the window first shows (on the main thread): puts it back the size and
+        place it was left, which macOS saves under WINDOW_FRAME_NAME from then on, and keeps
+        it on a screen: a place that no longer fits (a laptop without its monitor) is moved
+        and shrunk to fit."""
+        import AppKit
+
+        try:
+            window = self._window.native
+            window.setFrameUsingName_(WINDOW_FRAME_NAME)
+            window.setFrameAutosaveName_(WINDOW_FRAME_NAME)
+            frame, screens = window.frame(), AppKit.NSScreen.screens()
+            if not screens:
+                return
+
+            def overlap(screen):
+                both = AppKit.NSIntersectionRect(frame, screen.visibleFrame())
+                return both.size.width * both.size.height
+
+            screen = max(screens, key=overlap)
+            area = (screen if overlap(screen) else AppKit.NSScreen.mainScreen()).visibleFrame()
+            width, height = min(frame.size.width, area.size.width), min(frame.size.height, area.size.height)
+            x = min(max(frame.origin.x, area.origin.x), area.origin.x + area.size.width - width)
+            y = min(max(frame.origin.y, area.origin.y), area.origin.y + area.size.height - height)
+            if (x, y, width, height) != (frame.origin.x, frame.origin.y, frame.size.width, frame.size.height):
+                window.setFrame_display_(AppKit.NSMakeRect(x, y, width, height), True)
+            log.info("Window %d×%d", width, height)
+        except Exception:
+            log.exception("Couldn't put the window back where it was")
+
     def _quit_now(self):
         import AppKit
 
@@ -313,9 +358,11 @@ class BudgetApp:
                 return
         self._install_quit_handler()
         html = (_app_files_dir() / "index.html").read_text(encoding="utf-8")
+        width, height = _first_window_size()
         self._window = webview.create_window(
-            APP_NAME, html=html, js_api=Api(self), width=WINDOW_SIZE[0], height=WINDOW_SIZE[1],
+            APP_NAME, html=html, js_api=Api(self), width=width, height=height,
             min_size=MIN_SIZE, background_color=self._background_color(), text_select=True)
+        self._window.events.before_show += self._restore_frame
         self._window.events.closing += self._on_closing
         self._window.events.loaded += self._on_loaded
         threading.Thread(target=self._watch, name="downloads-watcher", daemon=True).start()

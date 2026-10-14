@@ -42,3 +42,12 @@ def test_downloads_folder(tmp_path):
     assert store.downloads_dir().name == "Downloads"
     store.update({"downloads_dir": str(tmp_path)})
     assert store.downloads_dir() == tmp_path
+
+
+def test_the_dashboards_months_are_remembered(tmp_path):
+    assert DEFAULTS["dashboard_months"] == 6
+    for junk in (5, True, "12", None):
+        assert validate({"dashboard_months": junk})["dashboard_months"] == 6
+    store = Settings(tmp_path / "settings.json")
+    store.update({"dashboard_months": "all"})
+    assert Settings(tmp_path / "settings.json").get()["dashboard_months"] == "all"

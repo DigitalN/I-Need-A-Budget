@@ -25,6 +25,7 @@ import subscriptions
 import transfers
 from learn import analyze, guess
 from payees import TRANSFER_OR_BANK_ENTRY_HINTS, describe
+from settings import DASHBOARD_MONTHS
 from util import add_months, first_day, last_day, month_of, months_between, parse_date, today
 
 log = logging.getLogger("inab")
@@ -1114,13 +1115,15 @@ class BudgetService:
     # ── dashboard ──
 
     @exposed
-    def dashboard(self, months=6):
+    def dashboard(self, months=None):
         """The page the app opens on: Ready to assign, the inbox, this month's overspent
-        categories, cash and what's owed, then what each category spent (the same figures as
-        Spent) in the last `months` whole months (3, 6, 12 or "all") and this month so far.
+        categories, cash and what's owed; net worth at the end of each month; then what each
+        category spent (the same figures as Spent). All over the last `months` whole months
+        (3, 6, 12 or "all"; by default the Dashboard's saved choice) and this month so far.
         Each whole month is compared with the category's Usual for it (the whole months
         before it) and marked when it's above usual: at least $25 and 25% more."""
-        if months not in (3, 6, 12, "all"):
+        months = self.settings.get()["dashboard_months"] if months is None else months
+        if months not in DASHBOARD_MONTHS or isinstance(months, bool):
             raise UserError("Pick 3, 6 or 12 months, or All.")
         current = self.current_month()
         view = self.month(current)
@@ -1131,9 +1134,10 @@ class BudgetService:
             spending = self._spending_by_month(c)
             coverage = self._coverage_start(c)
             first = c.execute("SELECT MIN(date) FROM transactions").fetchone()[0]
-        first_month = month_of(first) if first else current
-        cols = months_between(first_month if months == "all" else max(first_month, add_months(current, -months)),
-                              current)
+            first_month = month_of(first) if first else current
+            cols = months_between(first_month if months == "all" else max(first_month, add_months(current, -months)),
+                                  current)
+            worth = self._net_worth(c, [m for m in cols if m >= coverage], accounts)
         n = self.settings.get()["average_months"]
 
         def above(spent, usual_amount, month):
@@ -1178,11 +1182,26 @@ class BudgetService:
             "month": current, "summary": summary, "overspending": view["overspending"],
             "inbox": inbox, "waiting": summary["waiting"] if summary else 0, "overspent": overspent,
             "cash": cash, "owed": owed, "has_debt": any(a["is_debt"] for a in live),
-            "missing_balances": view["missing_balances"],
+            "missing_balances": view["missing_balances"], "net_worth": worth,
             "spending": {"range": months, "usual_months": n, "income": income, "total": total, "groups": groups,
                          "income_group": next((g["id"] for g in tree if g["role"] == "income"), None),
                          "months": [{"month": m, "so_far": m == current, "complete": m >= coverage} for m in cols]},
         }
+
+    def _net_worth(self, c, months, accounts):
+        """Cash, what's owed and net worth (cash − owed) at the end of each month (this
+        month: so far), from every account that has a balance, closed ones included."""
+        known = [a for a in accounts if a["anchor_date"]]
+        today = self.today()
+        out = {"months": months, "cash": [], "owed": [], "net": []}
+        for m in months:
+            day = min(last_day(m), today)
+            cash = sum(ledger.account_balance(c, a["id"], day) for a in known if not a["is_debt"])
+            owed = -sum(ledger.account_balance(c, a["id"], day) for a in known if a["is_debt"])
+            out["cash"].append(cash)
+            out["owed"].append(owed)
+            out["net"].append(cash - owed)
+        return out
 
     # ── inbox ──
 

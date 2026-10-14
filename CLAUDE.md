@@ -330,6 +330,10 @@ Don't undo these without asking:
   spouse or a friend (separate data, same updates). The repo is public, so that copy
   needs no token. People install from
   the release's `.dmg` (README), never by building.
+- **The window** opens at 85% of the screen the first time on a Mac, then the size and
+  place it was left: AppKit's frame autosave (`main.WINDOW_FRAME_NAME`, kept in the app's
+  macOS defaults, saved on every change), moved and shrunk onto a screen if it no longer
+  fits one. The log says `Window <w>×<h>` at launch.
 - Budget can start months back; past months are caught up with one click ("Catch up").
 - **Overspending** is a setting with three choices (the maintainer wanted to choose how
   the rollover works): This month (default), Next month (YNAB), Carry over (a friend
@@ -346,10 +350,17 @@ Don't undo these without asking:
 - **The Dashboard** is the page the app opens on (always, after onboarding too), at the
   top of the sidebar. It absorbed "spending reports". Four figures, each opening its page:
   Ready to assign (with the check line), Inbox (count and money in waiting), Overspent in
-  this month, Cash and what's owed. Then **Spending**: Income, total spending, and the
-  category groups in Budget page order (closed every time the page opens; hidden
-  categories only if they spent), months as columns (last 6 whole months + this month
-  "so far"; 3 / 6 / 12 / All). Figures are Spent's. A whole month at least **$25 and 25%**
+  this month, Cash and what's owed. The months choice (3 / 6 / 12 / All, last whole
+  months + this month "so far") sits above everything, scopes the whole page and is
+  remembered (setting `dashboard_months`, not shown on the Settings page; the maintainer
+  disliked it resetting). Two charts, drawn as SVG in the page (no library; colours
+  `--series-1`/`--series-2`, checked for colour blindness on the card in both themes):
+  **Net worth** (a bar per month-end: cash above zero, owed below, the net worth line;
+  YNAB's style, the maintainer's pick over a daily line; from the first month every
+  account has data; this month's figure in the header) and **In and out** (Income and
+  Spending bars per month, the table's figures). Then **Spending**: Income, total
+  spending, and the category groups in Budget page order (closed every time the page
+  opens; hidden categories only if they spent), months as columns. Figures are Spent's. A whole month at least **$25 and 25%**
   above the category's Usual for it is marked "above usual" (↑), never "overspent" (that's
   below zero); a closed group shows it on its total. Not marked: this month, months
   without data for every account, income. Clicking a figure opens its transactions. No

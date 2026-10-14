@@ -18,6 +18,7 @@
   --neg: #d70015; --neg-soft: rgba(215,0,21,.10); --warn: #b25e00; --warn-soft: rgba(255,149,0,.15);
   --shadow: 0 1px 2px rgba(0,0,0,.05), 0 0 0 .5px rgba(0,0,0,.06); --pop: 0 10px 30px rgba(0,0,0,.18), 0 0 0 .5px rgba(0,0,0,.1);
   --seg-bg: rgba(0,0,0,.06); --seg-on: #ffffff; --input: #ffffff;
+  --series-1: #2a78d6; --series-2: #eb6834;  /* chart series, checked for colour blindness on --card */
   color-scheme: light;
 }
 @media (prefers-color-scheme: dark) {
@@ -28,6 +29,7 @@
     --neg: #ff6961; --neg-soft: rgba(255,105,97,.16); --warn: #ffb340; --warn-soft: rgba(255,179,64,.16);
     --shadow: 0 0 0 .5px rgba(255,255,255,.08); --pop: 0 10px 30px rgba(0,0,0,.5), 0 0 0 .5px rgba(255,255,255,.12);
     --seg-bg: rgba(255,255,255,.08); --seg-on: #636366; --input: #1c1c1e;
+    --series-1: #3987e5; --series-2: #d95926;
     color-scheme: dark;
   }
 }
@@ -38,6 +40,7 @@
   --neg: #ff6961; --neg-soft: rgba(255,105,97,.16); --warn: #ffb340; --warn-soft: rgba(255,179,64,.16);
   --shadow: 0 0 0 .5px rgba(255,255,255,.08); --pop: 0 10px 30px rgba(0,0,0,.5), 0 0 0 .5px rgba(255,255,255,.12);
   --seg-bg: rgba(255,255,255,.08); --seg-on: #636366; --input: #1c1c1e;
+  --series-1: #3987e5; --series-2: #d95926;
   color-scheme: dark;
 }
 * { box-sizing: border-box; }
@@ -193,6 +196,28 @@ th.r, td.r { text-align: right; }
 .tile .label { color: var(--muted); font-weight: 500; font-size: 12px; }
 .tile .big { font-size: 24px; font-weight: 650; letter-spacing: -.01em; font-variant-numeric: tabular-nums; }
 .tile .check { margin-top: 0; }
+.charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 10px; margin-bottom: 14px; }
+.chart-card { padding: 12px 16px 10px; }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: var(--muted); }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+.legend i.line { width: 14px; height: 2px; border-radius: 1px; vertical-align: 3px; background: var(--text); }
+.chart { position: relative; height: 190px; margin-top: 6px; }
+.chart svg { display: block; width: 100%; height: 100%; overflow: visible; }
+.chart .grid { stroke: var(--line); stroke-width: 1; shape-rendering: crispEdges; }
+.chart .zero { stroke: var(--line-strong); }
+.chart text { fill: var(--muted); font-size: 10.5px; font-variant-numeric: tabular-nums; }
+.s1 { fill: var(--series-1); background: var(--series-1); } .s2 { fill: var(--series-2); background: var(--series-2); }
+.chart .net { fill: none; stroke: var(--text); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.chart .dot { fill: var(--text); stroke: var(--card); stroke-width: 2; }
+.chart .faded { opacity: .45; }
+.chart .band { fill: transparent; }
+.chart .band.on { fill: var(--hover); }
+.chart .hit { fill: transparent; outline: none; cursor: default; }
+.chart-tip { position: fixed; z-index: 60; pointer-events: none; background: var(--card); box-shadow: var(--pop); border-radius: 8px; padding: 7px 10px; font-size: 12px; min-width: 160px; }
+.chart-tip .tip-row { display: flex; align-items: center; gap: 7px; padding: 1px 0; }
+.chart-tip .tip-row b { font-variant-numeric: tabular-nums; margin-left: auto; }
+.chart-tip .tip-row i { display: inline-block; width: 12px; height: 2px; border-radius: 1px; }
+.chart-tip .tip-row i.ink { background: var(--text); }
 .spend-wrap { overflow-x: auto; margin: 0 -8px; }
 .spend { width: auto; min-width: 100%; }
 .spend th, .spend td { white-space: nowrap; padding: 5px 8px; }
@@ -532,7 +557,7 @@ function pickCategory(anchor, { income = true, title = '' } = {}) {
 const state = {
   page: 'budget', month: null, boot: null, categories: [], accounts: [], counts: {},
   inboxSel: 0, txFilters: { month: null }, expanded: new Set(), update: null, inboxFind: { text: '', payee: null },
-  dash: null, dashRange: 6, dashOpen: new Set(),
+  dash: null, dashOpen: new Set(),
 };
 
 function setCounts(c) {
@@ -1022,7 +1047,7 @@ async function openCategoryEditor() {
 // the category's Usual for it is marked; groups start closed every time the page opens.
 async function renderDashboard() {
   if (!state.categories.length) await loadCategories();
-  state.dash = await call('dashboard', [state.dashRange]);
+  state.dash = await call('dashboard', []);
   drawDashboard();
 }
 
@@ -1071,12 +1096,26 @@ function drawDashboard() {
     }
   }
   const ranges = [[3, '3 months'], [6, '6 months'], [12, '12 months'], ['all', 'All']];
+  const legend = items => `<div class="legend">${items.map(([cls, label]) => `<span><i class="${cls}"></i>${label}</span>`).join('')}</div>`;
+  const nw = d.net_worth;
   frame(`
-    <div class="page-head"><h1>Dashboard</h1></div>
+    <div class="page-head"><h1>Dashboard</h1><span class="spacer"></span>
+      <div class="seg">${ranges.map(([v, label]) => `<button data-act="dash-range" data-what="${v}" aria-pressed="${sp.range === v}">${label}</button>`).join('')}</div></div>
     <div class="tiles">${tiles}</div>
+    <div class="charts">
+      <div class="card chart-card">
+        <div class="row wrap"><h2 style="margin:0">Net worth</h2>${nw.months.length ? `<b class="${nw.net[nw.net.length - 1] < 0 ? 'neg' : ''}">${money(nw.net[nw.net.length - 1])}</b>` : ''}
+          <span class="spacer"></span>${legend([['line', 'Net worth'], ['s1', 'Cash'], ['s2', 'Owed']])}</div>
+        ${nw.months.length ? '<div class="chart" id="chart-worth"></div>' : '<p class="small faint">Not enough history yet.</p>'}
+        ${d.missing_balances.length ? `<p class="small muted" style="margin:4px 0 0">Leaves out ${esc(d.missing_balances.join(' and '))}: no balance yet.</p>` : ''}
+      </div>
+      <div class="card chart-card">
+        <div class="row wrap"><h2 style="margin:0">In and out</h2><span class="spacer"></span>${legend([['s1', 'Income'], ['s2', 'Spending']])}</div>
+        ${sp.months.length ? '<div class="chart" id="chart-flow"></div>' : ''}
+      </div>
+    </div>
     <div class="card" style="padding:12px 16px">
-      <div class="row" style="margin-bottom:6px"><h2 style="margin:0">Spending</h2><span class="spacer"></span>
-        <div class="seg">${ranges.map(([v, label]) => `<button data-act="dash-range" data-what="${v}" aria-pressed="${sp.range === v}">${label}</button>`).join('')}</div></div>
+      <div class="row" style="margin-bottom:6px"><h2 style="margin:0">Spending</h2></div>
       ${sp.groups.length || sp.income.some(Boolean) ? `<div class="spend-wrap"><table class="spend"><thead><tr><th></th>${head}</tr></thead><tbody>${rows.join('')}</tbody></table></div>
         <p class="small muted" style="margin:8px 0 0">↑ Above usual: at least $25 and 25% more than its average in the ${plural(sp.usual_months, 'whole month')} before.</p>`
         : '<div class="empty"><b>No spending yet</b>Categorized transactions show here, month by month.</div>'}
@@ -1084,7 +1123,137 @@ function drawDashboard() {
   main.scrollTop = scrolled;
   if (across !== null && $('.spend-wrap')) $('.spend-wrap').scrollLeft = across;
   else if ($('.spend-wrap')) $('.spend-wrap').scrollLeft = $('.spend-wrap').scrollWidth;  // the latest months first
+  drawCharts();
 }
+
+// Month-by-month charts, drawn as SVG in the page (it loads nothing from anywhere). Bars
+// are at most 24px wide, rounded at the end away from zero and square at it; every series
+// is named in a legend above the chart; pointing at (or tabbing to) a month shows all its
+// figures in one tooltip.
+const moneyShort = c => {
+  const d = Math.abs(c) / 100, sign = c < 0 ? '−' : '';
+  return d >= 1000 ? `${sign}$${(d / 1000).toFixed(d >= 10000 || d % 1000 === 0 ? 0 : 1)}k` : `${sign}$${Math.round(d)}`;
+};
+
+function niceTicks(lo, hi, count = 4) {
+  if (hi - lo < 100) hi = lo + 100;
+  const raw = (hi - lo) / count, mag = 10 ** Math.floor(Math.log10(raw));
+  const step = [1, 2, 2.5, 5, 10].map(f => f * mag).find(s => s >= raw);
+  const ticks = [];
+  for (let v = Math.floor(lo / step) * step; v < hi + step; v += step) { ticks.push(Math.round(v)); if (v >= hi) break; }
+  return ticks;
+}
+
+// A bar from the baseline y0 to its end y1: the end rounded (4px), the baseline square.
+function barPath(x, w, y0, y1) {
+  const h = Math.abs(y1 - y0);
+  if (h < 0.5) return '';
+  const r = Math.min(4, h, w / 2), top = Math.min(y0, y1), bottom = Math.max(y0, y1);
+  return y1 < y0
+    ? `M${x},${bottom}V${top + r}Q${x},${top} ${x + r},${top}H${x + w - r}Q${x + w},${top} ${x + w},${top + r}V${bottom}Z`
+    : `M${x},${top}V${bottom - r}Q${x},${bottom} ${x + r},${bottom}H${x + w - r}Q${x + w},${bottom} ${x + w},${bottom - r}V${top}Z`;
+}
+
+// opts: months (YYYY-MM), series [{cls, values}] (bars: side by side, or on one stack
+// when `stacked`, negatives below zero), line {values} (optional), faded(i), tip(i) → html.
+// The latest value goes in the card's header, not on the line, where it hit the marks.
+function monthChart(el, opts) {
+  const n = opts.months.length, W = el.clientWidth, H = el.clientHeight;
+  const pad = { l: 46, r: 8, t: 10, b: 20 }, plotW = W - pad.l - pad.r, plotH = H - pad.t - pad.b;
+  const highs = [], lows = [];
+  for (let i = 0; i < n; i++) {
+    const vs = opts.series.map(s => s.values[i]);
+    if (opts.stacked) { highs.push(vs.filter(v => v > 0).reduce((a, b) => a + b, 0)); lows.push(vs.filter(v => v < 0).reduce((a, b) => a + b, 0)); }
+    else { highs.push(...vs); lows.push(...vs); }
+    if (opts.line) { highs.push(opts.line.values[i]); lows.push(opts.line.values[i]); }
+  }
+  const ticks = niceTicks(Math.min(0, ...lows), Math.max(0, ...highs));
+  const tmin = ticks[0], tmax = ticks[ticks.length - 1];
+  const y = v => pad.t + (tmax - v) / (tmax - tmin) * plotH;
+  const band = plotW / n, mid = i => pad.l + band * (i + .5);
+  const parts = [];
+  for (const t of ticks) {
+    parts.push(`<line class="grid ${t === 0 ? 'zero' : ''}" x1="${pad.l}" x2="${W - pad.r}" y1="${y(t)}" y2="${y(t)}"/>`,
+      `<text x="${pad.l - 6}" y="${y(t) + 3.5}" text-anchor="end">${moneyShort(t)}</text>`);
+  }
+  const every = Math.ceil(n / Math.max(1, Math.floor(plotW / 44)));
+  for (let i = 0; i < n; i++) {
+    parts.push(`<rect class="band" data-i="${i}" x="${pad.l + band * i}" y="${pad.t}" width="${band}" height="${plotH}"/>`);
+    const m = opts.months[i];
+    if (i % every === 0 || i === n - 1) {
+      parts.push(`<text x="${mid(i)}" y="${H - 5}" text-anchor="middle">${monthShort(m)}${i === 0 || m.endsWith('-01') ? ` ${m.slice(2, 4)}` : ''}</text>`);
+    }
+  }
+  const k = opts.stacked ? 1 : opts.series.length;
+  const w = Math.max(2, Math.min(24, (band * .7 - 2 * (k - 1)) / k)), group = k * w + 2 * (k - 1);
+  for (let i = 0; i < n; i++) {
+    const fade = opts.faded && opts.faded(i) ? ' faded' : '';
+    let up = 0, down = 0;
+    opts.series.forEach((s, j) => {
+      const v = s.values[i];
+      const x = opts.stacked ? mid(i) - w / 2 : mid(i) - group / 2 + j * (w + 2);
+      let from = 0;
+      if (opts.stacked) { from = v >= 0 ? up : down; if (v >= 0) up += v; else down += v; }
+      const y0 = y(from) + (opts.stacked && from !== 0 ? (v >= 0 ? -2 : 2) : 0);  // 2px between stacked parts
+      parts.push(`<path class="${s.cls}${fade}" d="${barPath(x, w, y0, y(from + v))}"/>`);
+    });
+  }
+  if (opts.line) {
+    const pts = opts.line.values.map((v, i) => [mid(i), y(v)]);
+    parts.push(`<path class="net" d="M${pts.map(p => p.join(',')).join('L')}"/>`);
+    for (const [px, py] of pts) parts.push(`<circle class="dot" cx="${px}" cy="${py}" r="4"/>`);
+  }
+  for (let i = 0; i < n; i++) {
+    parts.push(`<rect class="hit" data-i="${i}" tabindex="0" x="${pad.l + band * i}" y="0" width="${band}" height="${H}"/>`);
+  }
+  el.innerHTML = `<svg width="${W}" height="${H}" role="img">${parts.join('')}</svg>`;
+  const tip = document.querySelector('.chart-tip') || document.body.appendChild(Object.assign(document.createElement('div'), { className: 'chart-tip', hidden: true }));
+  const show = (rect, at) => {
+    const i = Number(rect.dataset.i);
+    $$('.band', el).forEach(b => b.classList.toggle('on', Number(b.dataset.i) === i));
+    tip.innerHTML = opts.tip(i);
+    tip.hidden = false;
+    const box = at || rect.getBoundingClientRect(), x = at ? at.x : box.left + box.width / 2, top = at ? at.y : box.top + 20;
+    tip.style.left = `${Math.min(window.innerWidth - tip.offsetWidth - 8, x + 14)}px`;
+    tip.style.top = `${Math.max(8, top - tip.offsetHeight - 10)}px`;
+  };
+  const hide = () => { tip.hidden = true; $$('.band', el).forEach(b => b.classList.remove('on')); };
+  for (const rect of $$('.hit', el)) {
+    rect.addEventListener('pointermove', e => show(rect, { x: e.clientX, y: e.clientY }));
+    rect.addEventListener('focus', () => show(rect));
+    rect.addEventListener('pointerleave', hide);
+    rect.addEventListener('blur', hide);
+  }
+}
+const tipRow = (cls, label, amount) => `<div class="tip-row"><i class="${cls}"></i><span class="muted">${label}</span><b>${money(amount)}</b></div>`;
+const monthName = (m, soFar) => `${monthLong(m)}${soFar ? ' so far' : ''}`;
+
+function drawCharts() {
+  const d = state.dash;
+  if (!d) return;
+  const tip = document.querySelector('.chart-tip');
+  if (tip) tip.hidden = true;
+  const nw = d.net_worth, worthEl = $('#chart-worth');
+  if (worthEl && nw.months.length) {
+    const current = i => nw.months[i] === d.month;
+    monthChart(worthEl, {
+      months: nw.months, stacked: true,
+      series: [{ cls: 's1', values: nw.cash }, { cls: 's2', values: nw.owed.map(v => -v) }],
+      line: { values: nw.net },
+      tip: i => `<b>${monthName(nw.months[i], current(i))}</b>${tipRow('ink', 'Net worth', nw.net[i])}${tipRow('s1', 'Cash', nw.cash[i])}${tipRow('s2', 'Owed', nw.owed[i])}`,
+    });
+  }
+  const sp = d.spending, flowEl = $('#chart-flow');
+  if (flowEl && sp.months.length) {
+    monthChart(flowEl, {
+      months: sp.months.map(m => m.month),
+      series: [{ cls: 's1', values: sp.income }, { cls: 's2', values: sp.total }],
+      faded: i => sp.months[i].so_far || !sp.months[i].complete,
+      tip: i => `<b>${monthName(sp.months[i].month, sp.months[i].so_far)}</b>${tipRow('s1', 'Income', sp.income[i])}${tipRow('s2', 'Spending', sp.total[i])}${tipRow('', 'Difference', sp.income[i] - sp.total[i])}${sp.months[i].complete ? '' : '<div class="small faint">Not every account has data</div>'}`,
+    });
+  }
+}
+window.addEventListener('resize', debounce(() => { if (state.page === 'dashboard') drawCharts(); }, 150));
 
 async function dashboardAction(btn) {
   const act = btn.dataset.act;
@@ -1092,8 +1261,8 @@ async function dashboardAction(btn) {
     if (btn.dataset.what === 'budget') state.month = state.dash.month;
     return navigate(btn.dataset.what);
   }
-  if (act === 'dash-range') {
-    state.dashRange = btn.dataset.what === 'all' ? 'all' : Number(btn.dataset.what);
+  if (act === 'dash-range') {  // remembered: the Dashboard opens with it next time too
+    await call('save_settings', [{ dashboard_months: btn.dataset.what === 'all' ? 'all' : Number(btn.dataset.what) }]);
     return renderDashboard();
   }
   if (act === 'dash-group') {

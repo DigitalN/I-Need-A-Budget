@@ -51,10 +51,13 @@ so and **Merge into…** puts them back together.
 
 **Dashboard.** Where the app opens: Ready to assign, what's in the Inbox, what's
 overspent this month, and your cash and what you owe, each a click from its page. Under
-them, what each category group spent month by month (the last 3, 6 or 12 months, or
-all), with income on top. Open a group to see its categories; a month that cost clearly
-more than usual (at least $25 and 25% over its average) is marked ↑. Click any figure to
-see the transactions behind it.
+them, two charts: **Net worth** (cash, what you owe, and the difference at the end of
+each month) and **In and out** (income against spending, month by month); point at a
+month for its figures. Then what each category group spent month by month, with income
+on top. Open a group to see its categories; a month that cost clearly more than usual (at
+least $25 and 25% over its average) is marked ↑. Click any figure to see the transactions
+behind it. Pick 3, 6 or 12 months, or all, at the top: the whole page follows, and the
+app remembers it. The window opens the size and place you last left it.
 
 **Inbox.** Only what the app isn't sure about shows up here, with its best guesses.
 Nothing in it counts in a category until you categorize it.

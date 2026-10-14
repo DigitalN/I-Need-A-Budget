@@ -458,6 +458,12 @@ def test_the_dashboard(app):
     assert (d["inbox"], d["cash"], d["has_debt"]) == (1, 100000, False)
     assert [o["name"] for o in d["overspent"]] == ["Food"]  # nothing assigned in October
     assert d["summary"]["ready_to_assign"] + d["summary"]["in_categories"] == d["cash"]
+    nw = d["net_worth"]  # Chequing's balance at the end of each month (October: so far)
+    assert nw["months"] == ["2026-06", "2026-07", "2026-08", "2026-09", "2026-10"]
+    assert nw["cash"] == [-1600, -12000, -28400, 130000, 100000] and nw["owed"] == [0] * 5
+    assert nw["net"] == nw["cash"]
     assert [m["month"] for m in call(app, "dashboard", 3)["spending"]["months"]][0] == "2026-07"
     assert call(app, "dashboard", "all")["spending"]["months"][0]["month"] == "2026-06"
     assert not app.dispatch("dashboard", [5])["ok"]
+    call(app, "save_settings", {"dashboard_months": 3})  # the months you chose come back
+    assert [m["month"] for m in call(app, "dashboard")["spending"]["months"]][0] == "2026-07"
