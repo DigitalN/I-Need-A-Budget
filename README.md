@@ -17,8 +17,7 @@ itself.
    scroll down and click **Open Anyway**. That's only needed once.
 
 From then on it updates itself: it looks for a new version each time it opens and
-installs it when you quit. **Release notes** in Settings shows what changed. (While the
-repository is private, updates need a GitHub token: Settings asks for one if it needs it.)
+installs it when you quit. **Release notes** in Settings shows what changed.
 
 Building it yourself is in [DEVELOPMENT.md](DEVELOPMENT.md).
 
