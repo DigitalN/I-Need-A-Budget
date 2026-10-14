@@ -13,7 +13,8 @@ times before: losing history or having to rebuild is the thing to avoid.
 
 ## Privacy: the first rule
 
-**No private financial data may ever reach GitHub.** That covers bank files, the
+**No private financial data may ever reach GitHub.** The repository is public: code,
+commits, issues, PRs and release notes can all be read by anyone. That covers bank files, the
 database, account or card digits, people's names (e-transfers), employers, payees
 that are local businesses, category names that reveal finances, and real amounts.
 
@@ -95,8 +96,8 @@ All in `Application Files/`:
 - `budget.py`: pure envelope math, credit cards included, and the three ways overspending
   is paid for (the Overspending setting). Its docstring states the rules and the
   invariant `tests/test_budget.py` checks on random histories (all three ways).
-- `updater.py`, `launch.py`: updates from the repo's GitHub releases (with a token if
-  there is one, else anonymously, for when it's public); moving into Applications;
+- `updater.py`, `launch.py`: updates from the repo's GitHub releases (anonymously, or
+  with a token if there is one); moving into Applications;
   relaunching.
 - `settings.py`: JSON settings, validated on every load and save.
 - `util.py`: money in cents, months and dates.
@@ -177,13 +178,14 @@ page is the average of what a category actually spent in the last 3/6/12 whole m
 - Merging to `main` is not a release, but it's the go-ahead for one: Claude then runs
   `scripts/release.sh NOTES.md` (notes outside the repo). The maintainer never builds. Installed copies only update when a release is
   published on GitHub.
-- The repository is **private** for now (the maintainer may make it public). It's
+- The repository is **public** (it was private at first). It's
   **GPL-3.0-only**, the maintainer's choice, made knowing the GPL allows selling: what
   they want is that nobody builds a closed product from it. NOTICE is a section 7(b)
-  attribution term; CITATION.cff gives GitHub's "Cite this repository". The updater uses a token
-  saved in the Keychain from Settings, or the GitHub CLI's login (`gh auth token`), and
-  asks anonymously without one. Settings shows the token field only when GitHub refused
-  this copy (`needs_access`).
+  attribution term; CITATION.cff gives GitHub's "Cite this repository". The updater asks
+  GitHub anonymously, or with a token when there is one (saved in the Keychain from
+  Settings, or the GitHub CLI's login, `gh auth token`). Settings shows the token field
+  only when GitHub refused this copy (`needs_access`): it would if the repository went
+  private again.
 - Ask once before anything on GitHub (pushing, opening a PR, publishing a release), then
   do all of it. Check each step's result before the next one that can't be undone.
 - Releases are signed with the maintainer's Apple Development certificate (team
@@ -303,8 +305,8 @@ Don't undo these without asking:
 - **Update checks only at launch and on Check now**, never on a timer while the app is
   open (the maintainer's choice).
 - **Auto-updates via GitHub releases.** The user may later give a separate copy to their
-  spouse or a friend (separate data, same updates). While the repo is private that copy
-  needs a read-only token in Settings; once it's public, nothing. People install from
+  spouse or a friend (separate data, same updates). The repo is public, so that copy
+  needs no token. People install from
   the release's `.dmg` (README), never by building.
 - Budget can start months back; past months are caught up with one click ("Catch up").
 - **Overspending** is a setting with three choices (the maintainer wanted to choose how
@@ -367,3 +369,20 @@ Don't undo these without asking:
 
 `python3 -m pytest` (tests/, all synthetic data). `tests/test_privacy.py` fails if the
 working tree has anything from `.git-denylist` or a card-number shape.
+
+## Agent skills
+
+### Issue tracker
+
+GitHub Issues in `DigitalN/I-Need-A-Budget`, through `gh`. The repo is public, so issues
+follow the privacy rule above. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The five defaults: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`,
+`wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: `CONTEXT.md` and `docs/adr/` at the repo root, created when first needed.
+See `docs/agents/domain.md`.
