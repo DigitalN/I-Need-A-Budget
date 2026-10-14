@@ -182,8 +182,33 @@ th.r, td.r { text-align: right; }
 .money-input:focus { background: var(--input) !important; box-shadow: inset 0 0 0 1px var(--accent), 0 0 0 3px var(--accent-soft) !important; }
 .monthly { color: var(--muted); font-size: 12px; cursor: pointer; }
 .monthly:hover { color: var(--accent); }
-.needs { color: var(--warn); font-size: 11px; }
+.usual { color: var(--warn); font-size: 11px; }
 .sub-note { font-size: 11px; color: var(--muted); }
+
+/* ── dashboard ──────────────────────────────── */
+.tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 14px; }
+@media (max-width: 1080px) { .tiles { grid-template-columns: repeat(2, 1fr); } }
+.tile { border: 0; text-align: left; cursor: default; display: flex; flex-direction: column; gap: 3px; }
+.tile:hover { box-shadow: inset 0 0 0 1px var(--line-strong), var(--shadow); }
+.tile .label { color: var(--muted); font-weight: 500; font-size: 12px; }
+.tile .big { font-size: 24px; font-weight: 650; letter-spacing: -.01em; font-variant-numeric: tabular-nums; }
+.tile .check { margin-top: 0; }
+.spend-wrap { overflow-x: auto; margin: 0 -8px; }
+.spend { width: auto; min-width: 100%; }
+.spend th, .spend td { white-space: nowrap; padding: 5px 8px; }
+.spend th:first-child, .spend td:first-child { position: sticky; left: 0; z-index: 1; background: var(--card); min-width: 170px; }
+.spend .group td, .spend .group td:first-child { background: var(--card-2); font-weight: 600; }
+.spend .total td { font-weight: 600; }
+.spend .cat td:first-child { padding-left: 28px; }
+.spend .cat.hidden-cat { opacity: .5; }
+.spend .glink { border: 0; background: none; padding: 0; font-weight: 600; cursor: default; }
+.spend .caret { display: inline-block; width: 12px; color: var(--muted); transition: transform .12s; }
+.spend .group.collapsed .caret { transform: rotate(-90deg); }
+.spend .fig { border: 0; background: none; padding: 1px 4px; margin: -1px -4px; border-radius: 4px; cursor: pointer; font-variant-numeric: tabular-nums; }
+.spend .fig:hover { color: var(--accent); background: var(--hover); }
+.spend .above .fig { background: var(--warn-soft); color: var(--warn); font-weight: 600; }
+.spend .so-far { color: var(--muted); }
+.spend .partial { color: var(--faint); }
 
 /* ── inbox ──────────────────────────────────── */
 .items { display: flex; flex-direction: column; gap: 8px; }
@@ -296,6 +321,7 @@ body.dragging .drop-hint { display: flex; }
       <span>I Need A Budget</span>
     </div>
     <nav id="nav">
+      <button data-nav="dashboard"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><rect x="3" y="3" width="6" height="6" rx="1.5"/><rect x="11" y="3" width="6" height="6" rx="1.5"/><rect x="3" y="11" width="6" height="6" rx="1.5"/><rect x="11" y="11" width="6" height="6" rx="1.5"/></svg>Dashboard</button>
       <button data-nav="budget"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="2" y="4" width="16" height="12" rx="2.5"/><path d="M3 6l7 5 7-5" stroke-linejoin="round"/></svg>Budget</button>
       <button data-nav="inbox"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 11l2-7h10l2 7v4a1 1 0 01-1 1H4a1 1 0 01-1-1z" stroke-linejoin="round"/><path d="M3 11h4l1 2h4l1-2h4" stroke-linejoin="round"/></svg>Inbox<span class="badge" id="inbox-badge"></span></button>
       <button data-nav="transactions"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 5h12M4 10h12M4 15h12"/></svg>Transactions</button>
@@ -506,6 +532,7 @@ function pickCategory(anchor, { income = true, title = '' } = {}) {
 const state = {
   page: 'budget', month: null, boot: null, categories: [], accounts: [], counts: {},
   inboxSel: 0, txFilters: { month: null }, expanded: new Set(), update: null, inboxFind: { text: '', payee: null },
+  dash: null, dashRange: 6, dashOpen: new Set(),
 };
 
 function setCounts(c) {
@@ -520,6 +547,7 @@ const catName = id => { for (const g of state.categories) for (const c of g.cate
 const incomeIds = () => state.categories.filter(g => g.role === 'income').flatMap(g => g.categories.map(c => c.id));
 
 function navigate(page, opts = {}) {
+  if (page === 'dashboard' && state.page !== 'dashboard') state.dashOpen = new Set();  // its groups start closed
   state.page = page;
   if (opts.month) state.month = opts.month;
   $$('#nav button').forEach(b => b.setAttribute('aria-current', b.dataset.nav === page ? 'page' : 'false'));
@@ -528,7 +556,7 @@ function navigate(page, opts = {}) {
 }
 
 async function refresh() {
-  const pages = { budget: renderBudget, inbox: renderInbox, transactions: renderTransactions,
+  const pages = { dashboard: renderDashboard, budget: renderBudget, inbox: renderInbox, transactions: renderTransactions,
                   accounts: renderAccounts, subscriptions: renderSubscriptions, settings: renderSettings };
   try {
     await (pages[state.page] || renderBudget)();
@@ -603,8 +631,8 @@ async function renderBudget() {
         monthly = c.owing ? `<span class="sub-note">owe ${money(c.owing)}${c.not_covered ? ` · <span class="warn">${money(c.not_covered)} not set aside</span>` : ''}</span>` : '';
       } else if (c.monthly_budget !== null) {
         monthly = `<span class="monthly num" data-cat="${c.id}">${money(c.monthly_budget)}</span>`;
-      } else if (c.needed) {
-        monthly = `<span class="needs" data-cat="${c.id}" style="cursor:pointer" title="Average actual spending over the last ${view.average_months.length} months">needs ~${money(c.needed)}</span>`;
+      } else if (c.usual) {
+        monthly = `<span class="usual" data-cat="${c.id}" style="cursor:pointer" title="What it actually spent on average in recent whole months">usually ~${money(c.usual)}</span>`;
       } else {
         monthly = `<span class="monthly faint" data-cat="${c.id}">—</span>`;
       }
@@ -640,7 +668,7 @@ async function renderBudget() {
           <thead><tr><th>Category</th><th class="r">Budgeted</th><th class="r">Assigned</th><th class="r">Spent</th><th class="r">Available</th></tr></thead>
           <tbody>${rows.join('')}</tbody></table>
       </div>
-      ${view.groups.length ? `<p class="kbd-help">Click a category or what it spent to see this month's transactions and what it needed in past months. Type in Assigned and press Return; Tab moves to the next one.</p>` : ''}
+      ${view.groups.length ? `<p class="kbd-help">Click a category or what it spent to see this month's transactions and what it spent in past months. Type in Assigned and press Return; Tab moves to the next one.</p>` : ''}
     </div>`); } finally { redrawing = false; }
   main.scrollTop = scrolled;
   if (keep) {
@@ -664,17 +692,18 @@ const OVERSPENT_NOTE = { this_month: 'it came out of Ready to assign', next_mont
                          carry_over: 'the category starts next month that far below zero' };
 
 // Ready to assign tied to the accounts' own balances: what's in them at the end of the
-// month, less what's in categories, plus overspending not out of it yet (budget.py's
-// invariant). Off means something's missing.
+// month, less what's in categories and money in still waiting in the inbox, plus
+// overspending not out of it yet (budget.py's invariant). Off means something's missing.
 function cashCheck(s, view) {
   if (!s.cash) return '';
   const names = s.cash.accounts;
   const parts = [`= ${money(s.cash.total)} in ${esc(names.length && names.length <= 2 ? names.join(' and ') : 'your accounts')}`];
   if (s.in_categories) parts.push(`− ${money(s.in_categories)} in categories`);
+  if (s.waiting) parts.push(`− ${money(s.waiting)} waiting in the Inbox`);
   if (s.overspent_pending) parts.push(view.overspending === 'next_month'
     ? `+ ${money(s.overspent_pending)} overspent, out of ${monthOnly(addMonths(view.month, 1))}`
     : `+ ${money(s.overspent_pending)} categories still owe`);
-  const off = s.ready_to_assign - (s.cash.total - s.in_categories + s.overspent_pending);
+  const off = s.ready_to_assign - (s.cash.total - s.in_categories - (s.waiting || 0) + s.overspent_pending);
   return `<div class="check small ${off ? 'warn' : 'muted'}">${parts.join(' ')}${off ? ` · ${money(Math.abs(off))} off: a transfer's other half or a balance may be missing` : ''}</div>`;
 }
 
@@ -862,12 +891,14 @@ async function openCategory(id) {
   });
 }
 
-async function openGroupSpent(groupId) {
-  const d = await call('spent_detail', { month: state.month, group_id: groupId });
+// What makes up one Spent figure (a group's, or a category's on the Dashboard), in a
+// pop-over; `which` is spent_detail's {month, group_id or category_id}.
+async function openSpent(which, { total = 'Spent' } = {}) {
+  const d = await call('spent_detail', which);
   const bg = document.createElement('div'); bg.className = 'drawer-bg';
   const dr = document.createElement('div'); dr.className = 'drawer';
   dr.innerHTML = `<div class="row"><h3 style="margin:0">${esc(d.name)}</h3><span class="spacer"></span><button class="icon-btn" data-close>✕</button></div>
-    ${spentCard(d, d.month, { group: true })}`;
+    ${spentCard(d, d.month, { group: d.group, total })}`;
   document.body.append(bg, dr);
   const close = async () => { document.removeEventListener('keydown', onKey); bg.remove(); dr.remove(); };
   const onKey = e => { if (e.key === 'Escape' && !$('#dlg').open && !$('.popover')) close(); };
@@ -876,7 +907,7 @@ async function openGroupSpent(groupId) {
   dr.addEventListener('click', e => {
     if (e.target.closest('[data-close]')) return close();
     const line = e.target.closest('[data-line-tx]');
-    if (line) editFromDrawer(Number(line.dataset.lineTx), close, () => openGroupSpent(groupId));
+    if (line) editFromDrawer(Number(line.dataset.lineTx), close, () => openSpent(which, { total }));
   });
 }
 
@@ -985,6 +1016,99 @@ async function openCategoryEditor() {
   await renderBudget();
 }
 
+// ── dashboard ───────────────────────────────────────────
+// The page the app opens on: four figures, each opening its page, then what each
+// category spent month by month (the same figures as Spent). A whole month that's above
+// the category's Usual for it is marked; groups start closed every time the page opens.
+async function renderDashboard() {
+  if (!state.categories.length) await loadCategories();
+  state.dash = await call('dashboard', [state.dashRange]);
+  drawDashboard();
+}
+
+function drawDashboard() {
+  const d = state.dash, s = d.summary, sp = d.spending, cols = sp.months;
+  const main = $('#main'), wrap = $('.spend-wrap');
+  const scrolled = main.scrollTop, across = wrap ? wrap.scrollLeft : null;
+  const tile = (what, label, big, sub, cls = '') => `<button class="card tile" data-act="dash-go" data-what="${what}">
+      <span class="label">${label}</span><span class="big ${cls}">${big}</span>${sub}</button>`;
+  const overspent = d.overspent.reduce((t, o) => t + o.amount, 0);
+  const tiles = [
+    tile('budget', 'Ready to assign', s ? money(s.ready_to_assign) : '—',
+      s ? cashCheck(s, { overspending: d.overspending, month: d.month }) : '<span class="small faint">The budget hasn\'t started</span>',
+      s && s.ready_to_assign < 0 ? 'neg' : ''),
+    tile('inbox', 'Inbox', String(d.inbox),
+      `<span class="small muted">${d.inbox ? 'to look at' : 'Nothing to look at'}${d.waiting ? ` · ${money(d.waiting)} waiting` : ''}</span>`),
+    tile('budget', `Overspent in ${monthOnly(d.month)}`, d.overspent.length ? money(overspent) : 'None',
+      `<span class="small muted">${d.overspent.slice(0, 3).map(o => `${esc(o.name)} ${money(o.amount)}`).join(' · ')}${d.overspent.length > 3 ? ` and ${d.overspent.length - 3} more` : ''}</span>`,
+      d.overspent.length ? 'neg' : ''),
+    tile('accounts', 'Cash', money(d.cash),
+      `<span class="small muted">${d.missing_balances.length ? `Set the balance of ${esc(d.missing_balances.join(' and '))}`
+        : d.has_debt ? `You owe ${money(d.owed)}` : ''}</span>`),
+  ].join('');
+
+  const head = cols.map((m, i) => `<th class="r ${m.so_far ? 'so-far' : ''} ${m.complete ? '' : 'partial'}"${m.complete ? '' : ' title="Not every account has data for this month"'}>
+      ${monthShort(m.month)}${i === 0 || m.month.endsWith('-01') ? ` ${m.month.slice(0, 4)}` : ''}${m.so_far ? '<div class="tiny">so far</div>' : ''}</th>`).join('');
+  const cells = (amounts, attrs, { above = [], usual = [], click = true } = {}) => amounts.map((a, i) => {
+    const m = cols[i];
+    const tip = above[i] ? (usual[i] !== undefined ? `${money(a - usual[i])} above usual (${money(usual[i])})` : 'Above usual in here')
+      : (usual[i] && !m.so_far ? `Usually ${money(usual[i])}` : '');
+    const text = `${above[i] ? '↑ ' : ''}${money(a)}`;
+    return `<td class="r num ${m.so_far ? 'so-far' : ''} ${m.complete ? '' : 'partial'} ${above[i] ? 'above' : ''}">${!a ? '<span class="faint">—</span>'
+      : click ? `<button class="fig" data-act="dash-spent" data-index="${i}" ${attrs}${tip ? ` title="${esc(tip)}"` : ''}>${text}</button>` : text}</td>`;
+  }).join('');
+  const rows = [];
+  rows.push(`<tr><td>Income</td>${cells(sp.income, `data-group="${sp.income_group}"`, { click: !!sp.income_group })}</tr>`);
+  rows.push(`<tr class="total"><td>Spending</td>${cells(sp.total, '', { click: false })}</tr>`);
+  for (const g of sp.groups) {
+    const open = state.dashOpen.has(g.id);
+    rows.push(`<tr class="group ${open ? '' : 'collapsed'}"><td><button class="glink" data-act="dash-group" data-group="${g.id}"><span class="caret">▾</span> ${esc(g.name)}</button></td>
+      ${cells(g.spent, `data-group="${g.id}"`, { above: open ? [] : g.above })}</tr>`);
+    if (!open) continue;
+    for (const c of g.categories) {
+      rows.push(`<tr class="cat ${c.hidden ? 'hidden-cat' : ''}"><td>${esc(c.name)}</td>
+        ${cells(c.spent, `data-cat="${c.id}"`, { above: c.above, usual: c.usual })}</tr>`);
+    }
+  }
+  const ranges = [[3, '3 months'], [6, '6 months'], [12, '12 months'], ['all', 'All']];
+  frame(`
+    <div class="page-head"><h1>Dashboard</h1></div>
+    <div class="tiles">${tiles}</div>
+    <div class="card" style="padding:12px 16px">
+      <div class="row" style="margin-bottom:6px"><h2 style="margin:0">Spending</h2><span class="spacer"></span>
+        <div class="seg">${ranges.map(([v, label]) => `<button data-act="dash-range" data-what="${v}" aria-pressed="${sp.range === v}">${label}</button>`).join('')}</div></div>
+      ${sp.groups.length || sp.income.some(Boolean) ? `<div class="spend-wrap"><table class="spend"><thead><tr><th></th>${head}</tr></thead><tbody>${rows.join('')}</tbody></table></div>
+        <p class="small muted" style="margin:8px 0 0">↑ Above usual: at least $25 and 25% more than its average in the ${plural(sp.usual_months, 'whole month')} before.</p>`
+        : '<div class="empty"><b>No spending yet</b>Categorized transactions show here, month by month.</div>'}
+    </div>`);
+  main.scrollTop = scrolled;
+  if (across !== null && $('.spend-wrap')) $('.spend-wrap').scrollLeft = across;
+  else if ($('.spend-wrap')) $('.spend-wrap').scrollLeft = $('.spend-wrap').scrollWidth;  // the latest months first
+}
+
+async function dashboardAction(btn) {
+  const act = btn.dataset.act;
+  if (act === 'dash-go') {
+    if (btn.dataset.what === 'budget') state.month = state.dash.month;
+    return navigate(btn.dataset.what);
+  }
+  if (act === 'dash-range') {
+    state.dashRange = btn.dataset.what === 'all' ? 'all' : Number(btn.dataset.what);
+    return renderDashboard();
+  }
+  if (act === 'dash-group') {
+    const id = Number(btn.dataset.group);
+    if (state.dashOpen.has(id)) state.dashOpen.delete(id); else state.dashOpen.add(id);
+    return drawDashboard();
+  }
+  if (act === 'dash-spent') {
+    const month = state.dash.spending.months[Number(btn.dataset.index)].month;
+    const income = Number(btn.dataset.group) === state.dash.spending.income_group;
+    return openSpent(btn.dataset.cat ? { month, category_id: Number(btn.dataset.cat) } : { month, group_id: Number(btn.dataset.group) },
+      { total: income ? 'Came in' : 'Spent' });
+  }
+}
+
 // ── inbox ───────────────────────────────────────────────
 async function renderInbox() {
   if (!state.categories.length) await loadCategories();
@@ -1038,7 +1162,7 @@ function drawInbox() {
   const filedRows = data.filed.map(t => `<tr><td class="muted nowrap">${day(t.date)}</td><td>${esc(t.payee_name || t.raw_name)}${t.subscription_name ? ` <span class="tag info">${esc(t.subscription_name)}</span>` : ''}</td>
       <td>${t.transfer_account_name ? `<span class="tag">Transfer</span>` : `<button class="link" data-act="recat" data-id="${t.id}">${esc(t.category_name || (t.is_split ? 'Split' : 'No category'))}</button>`}</td>
       <td class="muted small">${esc(t.reason)}</td><td class="r num ${t.amount > 0 ? 'pos' : ''}">${money(t.amount)}</td></tr>`).join('');
-  const withGuess = shown.filter(i => i.category_id && !i.subscription_choices && !i.similar_payee).length;
+  const withGuess = shown.filter(i => i.guess && !i.subscription_choices && !i.similar_payee).length;
   frame(`
     <div class="page-head"><h1>Inbox</h1><span class="muted">${data.items.length ? plural(data.items.length, 'transaction') + ' to look at' : ''}</span><span class="spacer"></span>
       ${withGuess ? `<button class="btn" data-act="accept-all">Accept all ${withGuess} suggestions${shown.length < data.items.length ? ' shown' : ''}</button>` : ''}</div>
@@ -1062,11 +1186,8 @@ function drawInbox() {
   markSelected(false);
 }
 
-function chipsHtml(suggestions, current, offset = 0) {
-  const ids = suggestions.map(s => s.id);
-  const list = [...suggestions];
-  if (current && !ids.includes(current)) list.unshift({ id: current, name: catName(current) || '?' });
-  return list.slice(0, 4).map((s, i) => `<button class="chip ${i === 0 ? 'first' : ''}" data-pick="${s.id}"><kbd>${i + 1 + offset}</kbd>${esc(s.name)}</button>`).join('');
+function chipsHtml(suggestions) {
+  return suggestions.slice(0, 4).map((s, i) => `<button class="chip ${i === 0 ? 'first' : ''}" data-pick="${s.id}"><kbd>${i + 1}</kbd>${esc(s.name)}</button>`).join('');
 }
 
 function itemCard(t, i) {
@@ -1087,7 +1208,7 @@ function itemCard(t, i) {
     </div>
     <div class="amount ${t.amount > 0 ? 'pos' : ''}">${money(t.amount, { sign: t.amount > 0 })}</div>
     ${question}${sub}
-    <div class="chips">${chipsHtml(t.suggestions || [], t.category_id)}
+    <div class="chips">${chipsHtml(t.suggestions || [])}
       <button class="chip" data-act="other" data-id="${t.id}">Other…</button><span class="sep"></span>
       <button class="btn small ghost" data-act="transfer" data-id="${t.id}">Transfer</button>
       <button class="btn small ghost" data-act="split" data-id="${t.id}">Split</button>
@@ -1111,7 +1232,7 @@ function groupCard(b, i) {
     <div class="amount ${total > 0 ? 'pos' : ''}">${money(total, { sign: total > 0 })}</div>
     <div class="sublist">${b.items.slice(0, 6).map(t => `<div><span class="muted">${day(t.date)}</span><span>${esc(t.payee_name || t.raw_name)}</span><span class="spacer"></span><span class="num">${money(t.amount)}</span></div>`).join('')}
       ${b.items.length > 6 ? `<div class="faint">and ${b.items.length - 6} more</div>` : ''}</div>
-    <div class="chips">${chipsHtml(first.suggestions || [], first.category_id)}
+    <div class="chips">${chipsHtml(first.suggestions || [])}
       <button class="chip" data-act="other-group" data-index="${i}">Other…</button><span class="sep"></span>
       <button class="btn small ghost" data-act="expand" data-group="${esc(b.group)}">One at a time</button>
       ${b.group.startsWith('payee:') && first.payee_id ? `<button class="btn small ghost" data-act="always-ask" data-payee="${first.payee_id}" data-on="1" title="Ask about each of this payee's transactions on its own, and never categorize them without asking">Always ask</button>` : ''}
@@ -1180,7 +1301,7 @@ async function subscriptionPrompt(q) {
 }
 
 async function acceptAll() {
-  const items = (state.inboxShown || state.inbox.items).filter(i => i.category_id && !i.subscription_choices && !i.similar_payee).map(i => ({ id: i.id, category_id: i.category_id }));
+  const items = (state.inboxShown || state.inbox.items).filter(i => i.guess && !i.subscription_choices && !i.similar_payee).map(i => ({ id: i.id, category_id: i.guess }));
   if (!items.length) return;
   if (!await confirmBox('Accept all suggestions?', `Puts ${plural(items.length, 'transaction')} in the category the app suggested. You can change any of them later.`, 'Accept all')) return;
   const r = await call('approve_many', [items]);
@@ -2088,7 +2209,7 @@ async function renderOnboarding() {
     const os = await call('onboarding_state');
     ob.start = ob.start || os.suggested_start;
     body = `<h3>4. When should the budget start?</h3>
-      <p class="muted">Pick the first month to budget. Everything before it stays as history: it's what the app learns from and what it uses to tell you what each category actually needs. Starting a few months back means you can catch up those months in one click instead of starting from scratch.</p>
+      <p class="muted">Pick the first month to budget. Everything before it stays as history: it's what the app learns from and how it knows what each category usually costs. Starting a few months back means you can catch up those months in one click instead of starting from scratch.</p>
       <div class="card"><div class="settings-row"><div class="what"><b>Start in</b><span>Suggested: ${monthLong(os.suggested_start)}, the first month every account has complete data for.</span></div>
         <select id="ob-start">${os.months.map(m => `<option value="${m}" ${m === ob.start ? 'selected' : ''}>${monthLong(m)}</option>`).join('')}</select></div></div>
       <div class="row" style="margin-top:16px"><button class="btn" data-ob="back">Back</button><span class="spacer"></span><button class="btn primary" data-ob="finish">Start budgeting</button></div>`;
@@ -2136,7 +2257,7 @@ async function onboardingAction(btn) {
     state.boot = await call('finish_onboarding', [$('#ob-start').value]);
     $('#onboard').hidden = true;
     await loadCategories();
-    return navigate(state.counts.inbox ? 'inbox' : 'budget');
+    return navigate('dashboard');
   }
   await renderOnboarding();
 }
@@ -2194,7 +2315,7 @@ document.addEventListener('click', async e => {
   const m = e.target.closest('#main [data-month]');
   if (m) { state.month = m.dataset.month; return renderBudget(); }
   const spentGroup = e.target.closest('.btable [data-spent-group]');
-  if (spentGroup) return openGroupSpent(Number(spentGroup.dataset.spentGroup));
+  if (spentGroup) return openSpent({ month: state.month, group_id: Number(spentGroup.dataset.spentGroup) });
   const spent = e.target.closest('.btable [data-spent]');
   if (spent) return openCategory(Number(spent.dataset.spent));
   const copy = e.target.closest('.btable [data-copy-budget]');
@@ -2226,6 +2347,7 @@ document.addEventListener('click', async e => {
       const cid = await pickCategory(btn);
       if (cid) { await call('update_transaction', [Number(btn.dataset.id), { category_id: cid }]); toast(`Changed to ${catName(cid)}`, { action: undoAction }); await renderTransactions(); }
     } else if (act === 'add-tx') await addTransaction();
+    else if (state.page === 'dashboard') await dashboardAction(btn);
     else if (state.page === 'inbox') await inboxAction(btn, e);
     else if (state.page === 'accounts') await accountAction(btn);
     else if (state.page === 'subscriptions') await subscriptionAction(btn);
@@ -2293,7 +2415,7 @@ async function start() {
   state.update = state.boot.app && state.boot.app.updates;
   if (!state.boot.onboarded) return showOnboarding();
   await loadCategories();
-  await navigate(state.counts.inbox ? 'inbox' : 'budget');
+  await navigate('dashboard');
 }
 if (window.pywebview && window.pywebview.api) start();
 else window.addEventListener('pywebviewready', start);

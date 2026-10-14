@@ -126,8 +126,8 @@ Several inbox items from one payee, or the shares of one shared expense, shown a
 categorized as one.
 
 **Suggestion**:
-A category the app offers for an inbox item, best first. The top one counts in the
-budget until the item is categorized, but the app never learns from it.
+A category the app offers for an inbox item, best first. It's only an offer: an inbox
+item counts in no category until it's categorized.
 
 **Always ask**:
 A payee setting: each of its transactions is its own inbox item and is never categorized
@@ -140,9 +140,14 @@ Everything one copy of the app keeps: accounts, categories, payees and the money
 assigned. Starting over means starting a new budget. The Budget page shows its
 categories month by month.
 
+**Dashboard**:
+The page the app opens on: Ready to assign, the inbox, overspent categories, cash and
+what's owed, and what each category spent month by month.
+_Avoid_: Reports, home page
+
 **Budget start**:
 The first month the budget counts. Months before it still teach the app and count
-towards Needs.
+towards Usual.
 
 **Cash**:
 The money in cash accounts. Ready to assign is checked against it.
@@ -164,7 +169,8 @@ The category money coming in goes to. It adds to Ready to assign instead of bein
 The category for interest and bank fees charged on any account.
 
 **Ready to assign**:
-Cash that hasn't been given to a category yet.
+Cash that hasn't been given to a category yet. Money in that's still in the inbox isn't
+counted until it's categorized; money out already is.
 _Avoid_: To be budgeted, unassigned
 
 **Assigned**:
@@ -179,13 +185,19 @@ spent.
 What a category's transactions came to in a month, refunds and reimbursements included.
 
 **Budgeted**:
-What a category is planned to need each month. A plan, not money: nothing moves until
+What you plan a category to cost each month. A plan, not money: nothing moves until
 it's assigned.
 _Avoid_: Each month, monthly amount, target, goal
 
-**Needs**:
-What a category actually spent on average over the last 3, 6 or 12 whole months.
-_Avoid_: average, estimate
+**Usual**:
+What a category actually spent on average in the 3, 6 or 12 whole months before a month,
+counting from its first spending. Not a plan: that's Budgeted.
+_Avoid_: Needs, average, estimate
+
+**Above usual**:
+A month in which a category spent clearly more than its Usual. It can still have money
+left: that isn't overspending.
+_Avoid_: overspent, over budget
 
 **Overspending**:
 A category below zero because cash spending went past what was in it. Card spending past

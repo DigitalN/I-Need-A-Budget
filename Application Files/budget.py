@@ -4,7 +4,11 @@
 
 - **Ready to assign** starts as the cash in your chequing/savings accounts when the
   budget starts. Income adds to it, assigning money to categories takes from it.
-  Transactions without a category yet count against it too, so the totals always add up.
+- A transaction still in the inbox counts in no category (docs/adr/0002). Money out
+  without a category has left the bank, so it comes off Ready to assign (on a card, it's
+  set aside in the card's payment envelope, as covered card spending). Money in without
+  one **waits**: it may be a reimbursement that belongs to a category, so it isn't Ready
+  to assign until it's categorized. Money in on a card changes nothing until then.
 - A category's **available** = what carried over + assigned this month + its activity
   (spending is negative, refunds and reimbursements positive).
 - **Overspending** (available below zero) is paid for one of three ways, a setting
@@ -42,10 +46,10 @@ Credit cards and lines of credit (the debt accounts) work like YNAB:
 - A balance transfer between two debt accounts moves debt, not money: no envelope changes.
 
 With these rules, at the end of every month:
-  Ready to assign + Σ max(available, 0) − overspent_pending == cash in cash accounts
+  Ready to assign + Σ max(available, 0) − overspent_pending + waiting == cash in cash accounts
 where `overspent_pending` is cash overspending not taken from Ready to assign (yet): none
 with `this_month`, this month's with `next_month`, what the categories still owe with
-`carry_over`. `tests/test_budget.py` checks that on random histories for all three. The
+`carry_over`; and `waiting` is money in on cash accounts that isn't categorized yet. `tests/test_budget.py` checks that on random histories for all three. The
 Budget page shows it under Ready to assign, from the accounts' own balances, as a check.
 """
 
@@ -80,7 +84,7 @@ def compute(start, end, categories, lines, payments, assigned, opening_cash, ove
     carry = {c["id"]: 0 for c in categories if c["role"] != "income"}
     if overspending not in OVERSPENDING:
         raise ValueError(f"Unknown overspending rule: {overspending}")
-    previous_rta, previous_over = opening_cash, 0
+    previous_rta, previous_over, waiting = opening_cash, 0, 0
     for month in months_between(start, end):
         activity = {cid: 0 for cid in carry}
         card_spend = {}         # category → {debt account → net spent on it (positive = spent)}
@@ -90,7 +94,11 @@ def compute(start, end, categories, lines, payments, assigned, opening_cash, ove
 
         for _, account_id, is_debt, category_id, amount in by_month.get(month, ()):
             role = roles.get(category_id)
-            if role is None:  # uncategorized (or a category that was deleted)
+            if role is None:  # still in the inbox (or a category that was deleted)
+                if amount > 0:
+                    if not is_debt:
+                        waiting += amount  # money in waits until it's categorized
+                    continue
                 uncategorized += amount
                 if is_debt and account_id in payment_for:
                     _move(moved, moved_from, payment_for[account_id], None, -amount)
@@ -142,7 +150,7 @@ def compute(start, end, categories, lines, payments, assigned, opening_cash, ove
             rta -= cash_over_total
         results[month] = {
             "month": month, "carried_rta": previous_rta, "overspent_last_month": previous_over,
-            "income": income, "uncategorized": uncategorized, "assigned": assigned_total,
+            "income": income, "uncategorized": uncategorized, "waiting": waiting, "assigned": assigned_total,
             "overspent": cash_over_total, "ready_to_assign": rta, "new_debt": credit_over_total,
             "in_categories": sum(max(cat["available"], 0) for cat in cats.values()),
             "overspent_pending": 0 if overspending == "this_month" else cash_over_total,
@@ -184,6 +192,18 @@ def average_spending(month_totals, months):
     if not months:
         return 0
     return round(sum(-month_totals.get(m, 0) for m in months) / len(months))
+
+
+def usual_spending(month_totals, month, earliest, count):
+    """A category's Usual for `month`: what it actually spent on average in up to `count`
+    whole months before it, from `earliest` (the first month every account has data for)
+    and from its own first spending, so a bill that started last month isn't averaged
+    with months it didn't exist. None when there's no such month."""
+    spent = [m for m, total in month_totals.items() if total]
+    if not spent:
+        return None
+    months = complete_months_before(month, max(earliest, min(spent)), count)
+    return average_spending(month_totals, months) if months else None
 
 
 def complete_months_before(month, earliest, count):

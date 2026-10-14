@@ -65,7 +65,7 @@ All in `Application Files/`:
   The preview and most tests drive this same class.
 - `db.py`: schema, upgrades, the shared connection behind a lock, **undo** (triggers record
   inverse SQL; `db.write("Label")` makes one undoable step; updates only record changed
-  columns), daily backups. Schema is at version 4. To change it: raise `SCHEMA_VERSION`,
+  columns), daily backups. Schema is at version 5. To change it: raise `SCHEMA_VERSION`,
   add the column to `SCHEMA` *and* an `ALTER TABLE` step in `_migrate` for existing
   databases. Upgrades copy the database to `Backups/budget-before-upgrade-…` first. The
   user's real database has real data in it: test every upgrade on a copy of it first.
@@ -104,8 +104,9 @@ All in `Application Files/`:
   relaunching.
 - `settings.py`: JSON settings, validated on every load and save.
 - `util.py`: money in cents, months and dates.
-- `index.html`: the whole interface, vanilla JS, no external resources. Pages: Budget,
-  Inbox, Transactions, Accounts, Subscriptions, Settings, plus first-run onboarding.
+- `index.html`: the whole interface, vanilla JS, no external resources. Pages: Dashboard
+  (where it opens), Budget, Inbox, Transactions, Accounts, Subscriptions, Settings, plus
+  first-run onboarding.
 
 ## Key rules
 
@@ -127,8 +128,10 @@ All in `Application Files/`:
 - **A file's own balance (OFX LEDGERBAL) replaces any balance as old or older**: a
   balance typed in during the day misses what the bank adds later that day.
 - **Learning only uses `status = 'done'` transactions** (plus Actual examples). Rows waiting
-  in the inbox may carry a tentative category so the budget is roughly right, but they
-  never teach the app anything.
+  in the inbox never teach the app anything, and count in no category: no tentative
+  category, Spent/Usual/the budget only count `status = 'done'`
+  ([ADR 0002](docs/adr/0002-inbox-items-count-in-no-category.md)). The inbox's "Accept
+  all" uses each item's `guess` (`learn.guess()`: never an e-transfer).
 - **Subscriptions have a price type** (`subscriptions.pricing`; shown to the user as "Same Price",
   "Same Price, Different Currency" and "Fluctuates Every Time", their wording): `fixed` (exact price ±2¢;
   any other price from that payee is a question: "new price for X, a new subscription, or
@@ -162,15 +165,20 @@ Ready to assign is always money really there (the maintainer saw Ready to assign
 twice what was in the bank under YNAB's rule and asked for this); **Next month** is
 YNAB's and Actual's rule; **Carry over** leaves it in the category below zero next month.
 The first two reset the category next month. Ready to assign + Σ positive Available −
-overspending not taken yet == cash, and the Budget page shows that line under it ("= $X
-in Chequing − $Y in categories", flagged if it's ever off). With This month, covering
+overspending not taken yet + money in waiting in the inbox == cash, and the Budget page
+shows that line under it ("= $X in Chequing − $Y in categories − $Z waiting in the
+Inbox", flagged if it's ever off). Money out waiting in the inbox has already come off
+Ready to assign; money in waits until it's categorized (it may be a reimbursement). With This month, covering
 overspending costs nothing (Assign money… counts it as `covered`) and covering it from
 another category gives Ready to assign that much back. Card spending from a funded category moves that money to the card's
 payment category; uncovered card spending is new debt instead. Paying the card from
 chequing spends the payment category; old debt is paid down by assigning to it. Refunds
-and reimbursements go back into the category they came from. "Needs ~$X" on the Budget
-page is the average of what a category actually spent in the last 3/6/12 whole months
-(from every month with data for all accounts, before the budget start too).
+and reimbursements go back into the category they came from. **Usual** ("usually ~$X"
+on the Budget page; it was "Needs", which the maintainer read as the budgeted amount) is
+the average of what a category actually spent in the 3/6/12 whole months before a month
+(`budget.usual_spending`: from every month with data for all accounts, before the budget
+start too, and from the category's own first spending, so a new bill isn't averaged
+with months it didn't exist).
 
 ## Releasing
 
@@ -255,7 +263,7 @@ Don't undo these without asking:
     several e-transfers to one person, each for something different.) Switched off, the
     payee is learnt like any other and found as a recurring charge (rent e-transferred to
     a landlord). Whatever the switch, an e-transfer (`hint = 'etransfer'`, on the
-    transaction) never gets a provisional category, and money in is matched to shares
+    transaction) is never in the inbox's "Accept all", and money in is matched to shares
     of a shared expense, never to refunds.
   - **Bank entries** (interest, fees, rewards: `payees.BANK_ENTRY_HINTS`) are never
     asked about and have no Always ask: each kind (its payee) goes where the newest one
@@ -274,7 +282,7 @@ Don't undo these without asking:
   in a long list.
 - **Payee clean-up with fuzzy matching** (store numbers, typos, truncation).
 - **A budgeted amount per category** (`monthly_budget`), shown as **Budgeted**: the
-  maintainer's word for it (never "Each month", which they disliked). "Needs ~$X" from
+  maintainer's word for it (never "Each month", which they disliked). Usual ("Needs ~$X") from
   *actual* spending shows when none is set, so it's right even when the user forgot to
   budget a month. Budgeted is a plan, not money: Assign money… tops a category up to it,
   counting what's already in it (carried in plus assigned this month). The maintainer
@@ -331,8 +339,21 @@ Don't undo these without asking:
 - **Settings is kept short** (the maintainer's mock-up): Appearance, Import from
   Downloads, Overspending, Learn from Actual; updates, Release notes,
   Check now (GitHub access only when needed); Open buttons for the data, imported
-  files and log folders. Budget start, the "needs" look-back and "fill monthly amounts"
+  files and log folders. Budget start, the Usual ("needs") look-back and "fill monthly amounts"
   were removed from it on purpose.
+- **No bill due dates, paydays or safe-to-spend**, ever: that isn't the envelope method
+  (the maintainer's call). Money is in a category or it's Ready to assign.
+- **The Dashboard** is the page the app opens on (always, after onboarding too), at the
+  top of the sidebar. It absorbed "spending reports". Four figures, each opening its page:
+  Ready to assign (with the check line), Inbox (count and money in waiting), Overspent in
+  this month, Cash and what's owed. Then **Spending**: Income, total spending, and the
+  category groups in Budget page order (closed every time the page opens; hidden
+  categories only if they spent), months as columns (last 6 whole months + this month
+  "so far"; 3 / 6 / 12 / All). Figures are Spent's. A whole month at least **$25 and 25%**
+  above the category's Usual for it is marked "above usual" (↑), never "overspent" (that's
+  below zero); a closed group shows it on its total. Not marked: this month, months
+  without data for every account, income. Clicking a figure opens its transactions. No
+  by-payee report (the maintainer dropped it: e-transfer payees mix unrelated things).
 
 ## Roadmap (future chats)
 
@@ -340,13 +361,8 @@ Don't undo these without asking:
   the user signs in themselves (PIN, 2FA), then the app reads transactions through that
   session. It must be **entirely our own code**: no third-party Tangerine libraries (the
   user's explicit requirement), no stored password. The CSV/OFX import stays as fallback.
-- "Fund bills" one-click, bill due dates, safe-to-spend until payday.
 - A line of credit account: any bank's CSV can be set up now. Balance transfers between
   debt accounts already work (no category changes).
-- Spending reports (month over month, by payee).
-- A **Dashboard** home page (the user asked where it was; offered, not yet decided):
-  ready to assign, balances and what's owed, inbox count, overspent or low categories,
-  bills due before the next paycheque, spending against what each category needs.
 
 ## Known gaps
 

@@ -49,7 +49,7 @@ import csvlayout
 import ledger
 import subscriptions
 import transfers
-from learn import analyze, category_for
+from learn import analyze
 from payees import describe, transaction_hint
 from util import parse_date, to_cents
 
@@ -635,7 +635,8 @@ def _import_part(conn, fmt, part, filename, sha, archived_path, account_id=None)
 def file_transactions(conn, ids):
     """For each transaction, oldest first: is it a transfer? A charge for a tracked
     subscription (filed in that subscription's category)? Otherwise refunds and learnt
-    categories. Returns (filed without asking, left for review)."""
+    categories. What's left for review has no category until it's categorized
+    (docs/adr/0002). Returns (filed without asking, left for review)."""
     filed = review = 0
     rows = conn.execute(
         f"SELECT * FROM transactions WHERE id IN ({','.join('?' * len(ids))}) ORDER BY date, id", ids).fetchall() \
@@ -647,8 +648,8 @@ def file_transactions(conn, ids):
             continue
         sub, alert = subscriptions.link_transaction(conn, txn["id"])
         if alert:
-            conn.execute("UPDATE transactions SET category_id = COALESCE(?, category_id), status = 'review', "
-                         "reason = ? WHERE id = ?", (sub["category_id"], alert, txn["id"]))
+            conn.execute("UPDATE transactions SET category_id = NULL, status = 'review', reason = ? WHERE id = ?",
+                         (alert, txn["id"]))
             review += 1
             continue
         if sub is not None and sub["category_id"] and sub["status"] == "active" and not txn["is_split"]:
@@ -659,21 +660,17 @@ def file_transactions(conn, ids):
         question = subscriptions.unmatched_question(conn, txn) if sub is None else None
         if question:
             # A subscription payee at a new price: always ask (price rise? new? one-off?).
-            guess = analyze(conn, txn)
-            conn.execute("UPDATE transactions SET category_id = ?, status = 'review', reason = ? WHERE id = ?",
-                         (category_for(txn, guess), question, txn["id"]))
+            conn.execute("UPDATE transactions SET category_id = NULL, status = 'review', reason = ? WHERE id = ?",
+                         (question, txn["id"]))
             review += 1
             continue
         matched = re.match(r"Matched to .*? \(similar name\)", txn["reason"] or "")
         suggestion = analyze(conn, txn)
         reason = suggestion.reason
-        status = "done" if suggestion.sure and not txn["similar_payee_id"] else "review"
+        status = "done" if suggestion.sure and suggestion.options and not txn["similar_payee_id"] else "review"
         if matched:
             reason = f"{matched.group(0)}. {reason}"
-        category = category_for(txn, suggestion)
-        if category is not None and txn["amount"] > 0 and suggestion.options == [ledger.income_category(conn)] \
-                and not suggestion.sure:
-            category = None  # unknown money in: don't guess "income" until asked
+        category = suggestion.options[0] if status == "done" else None
         conn.execute("UPDATE transactions SET category_id = ?, status = ?, reason = ?, refund_of = ? WHERE id = ?",
                      (category, status, reason, suggestion.refund_of if suggestion.sure else None, txn["id"]))
         if status == "done":

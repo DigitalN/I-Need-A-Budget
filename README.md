@@ -49,7 +49,15 @@ you already have (a replaced card has a new number)? Pick it once and that accou
 files go there from then on. If an account ever ends up in the app twice anyway, it says
 so and **Merge into…** puts them back together.
 
+**Dashboard.** Where the app opens: Ready to assign, what's in the Inbox, what's
+overspent this month, and your cash and what you owe, each a click from its page. Under
+them, what each category group spent month by month (the last 3, 6 or 12 months, or
+all), with income on top. Open a group to see its categories; a month that cost clearly
+more than usual (at least $25 and 25% over its average) is marked ↑. Click any figure to
+see the transactions behind it.
+
 **Inbox.** Only what the app isn't sure about shows up here, with its best guesses.
+Nothing in it counts in a category until you categorize it.
 Click one (or press 1–4, Return for the first) and it's categorized. ⌘Z undoes anything.
 
 - A payee's transactions are grouped; categorize them together, or **One at a time**.
@@ -77,7 +85,8 @@ group's Spent lists the whole group.
 
 **Ready to assign** is money you really have: overspending a category comes out of it
 straight away, since that money has already left the bank. Under it, a line ties it to
-your balances: "= $X in Chequing − $Y in categories". **Overspending** in Settings
+your balances: "= $X in Chequing − $Y in categories", and money that came in but is
+still waiting in the Inbox. **Overspending** in Settings
 chooses how that works: **This month** (that), **Next month** (it comes out of next
 month's Ready to assign, like YNAB), or **Carry over** (the category starts next month
 below zero, Ready to assign is left alone, and the next money assigned to it covers that

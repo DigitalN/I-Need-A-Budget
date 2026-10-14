@@ -10,7 +10,9 @@ lets the app learn it and track it as a bill, with no special feature for that.
 
 ## Consequences
 
-- What was person-only belongs to the e-transfer itself: no provisional category, and
+- What was person-only belongs to the e-transfer itself: no provisional category (since
+  [ADR 0002](0002-inbox-items-count-in-no-category.md) no inbox item has one; an
+  e-transfer is also never in the inbox's "Accept all"), and
   money in is matched to shares of a shared expense rather than to refunds.
 - Bank entries (interest, fees, rewards) are the one exception: they're never asked
   about and have no Always ask switch. Each kind starts in Income or Interest & Fees and

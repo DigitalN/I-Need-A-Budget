@@ -23,7 +23,7 @@ import importer
 import ledger
 import subscriptions
 import transfers
-from learn import analyze, category_for
+from learn import analyze, guess
 from payees import TRANSFER_OR_BANK_ENTRY_HINTS, describe
 from util import add_months, first_day, last_day, month_of, months_between, parse_date, today
 
@@ -762,11 +762,12 @@ class BudgetService:
         lines = [(month_of(r["date"]), r["account_id"], ledger.is_debt(r["kind"]), r["category_id"], r["amount"])
                  for r in c.execute(
                      """
-                     SELECT t.date, t.account_id, a.kind, t.category_id, t.amount FROM transactions t
+                     SELECT t.date, t.account_id, a.kind, CASE WHEN t.status = 'done' THEN t.category_id END AS category_id,
+                            t.amount FROM transactions t
                        JOIN accounts a ON a.id = t.account_id
                       WHERE t.transfer_account_id IS NULL AND t.is_split = 0 AND t.date BETWEEN ? AND ?
                      UNION ALL
-                     SELECT t.date, t.account_id, a.kind, s.category_id, s.amount FROM splits s
+                     SELECT t.date, t.account_id, a.kind, CASE WHEN t.status = 'done' THEN s.category_id END, s.amount FROM splits s
                        JOIN transactions t ON t.id = s.transaction_id JOIN accounts a ON a.id = t.account_id
                       WHERE t.transfer_account_id IS NULL AND t.is_split = 1 AND t.date BETWEEN ? AND ?
                      """, (first_day(start), last_day(end), first_day(start), last_day(end)))]
@@ -789,7 +790,8 @@ class BudgetService:
         return max(month_of(d) for d in firsts) if firsts else self.current_month()
 
     def _spending_by_month(self, c, category_id=None):
-        """{category_id: {month: net amount}} from every transaction, budget or not."""
+        """{category_id: {month: net amount}} from every categorized transaction, budget or
+        not (an inbox item counts in no category: docs/adr/0002)."""
         out = {}
         where = "AND t.category_id = ?" if category_id else ""
         where_split = "AND s.category_id = ?" if category_id else ""
@@ -797,12 +799,14 @@ class BudgetService:
         for r in c.execute(
                 f"""
                 SELECT t.category_id AS cid, substr(t.date, 1, 7) AS m, SUM(t.amount) AS total FROM transactions t
-                 WHERE t.transfer_account_id IS NULL AND t.is_split = 0 AND t.category_id IS NOT NULL {where}
+                 WHERE t.transfer_account_id IS NULL AND t.is_split = 0 AND t.category_id IS NOT NULL
+                   AND t.status = 'done' {where}
                  GROUP BY cid, m
                 UNION ALL
                 SELECT s.category_id, substr(t.date, 1, 7), SUM(s.amount) FROM splits s
                   JOIN transactions t ON t.id = s.transaction_id
-                 WHERE t.transfer_account_id IS NULL AND t.is_split = 1 AND s.category_id IS NOT NULL {where_split}
+                 WHERE t.transfer_account_id IS NULL AND t.is_split = 1 AND s.category_id IS NOT NULL
+                   AND t.status = 'done' {where_split}
                  GROUP BY s.category_id, substr(t.date, 1, 7)
                 """, params):
             months = out.setdefault(r["cid"], {})
@@ -821,7 +825,6 @@ class BudgetService:
             coverage = self._coverage_start(c)
             spending = self._spending_by_month(c)
             n = self.settings.get()["average_months"]
-            avg_months = budget_math.complete_months_before(current, coverage, n)
             accounts = {a["id"]: a for a in self._accounts(c)}
             missing = [a["name"] for a in accounts.values() if a["balance"] is None and not a["closed"]]
             review = c.execute("SELECT COUNT(*) FROM transactions WHERE status = 'review' AND substr(date,1,7) = ?",
@@ -846,7 +849,7 @@ class BudgetService:
                     "carried": f["carried"] if f else 0,
                     "overspent_cash": f["overspent_cash"] if f else 0,
                     "overspent_credit": f["overspent_credit"] if f else 0,
-                    "needed": budget_math.average_spending(history, avg_months) if not cat["debt_account_id"] else None,
+                    "usual": budget_math.usual_spending(history, current, coverage, n) if not cat["debt_account_id"] else None,
                     "debt_account_id": cat["debt_account_id"],
                 }
                 if cat["debt_account_id"] and cat["debt_account_id"] in accounts:
@@ -868,7 +871,7 @@ class BudgetService:
             "months": months_between(nav_from, max(nav_to, month)),
             "summary": {**{k: v for k, v in month_figures.items() if k != "categories"}, "cash": cash}
                        if month_figures else None,
-            "groups": groups, "average_months": avg_months, "missing_balances": missing,
+            "groups": groups, "missing_balances": missing,
             "to_review": review, "future_short": future_short,
             "overspending": self.settings.get()["overspending"],
         }
@@ -1053,11 +1056,11 @@ class BudgetService:
             f"""
             SELECT t.id, t.date, t.amount, 0 AS split, t.category_id FROM transactions t
              WHERE t.transfer_account_id IS NULL AND t.is_split = 0 AND t.category_id IN ({marks})
-               AND t.date BETWEEN ? AND ?
+               AND t.status = 'done' AND t.date BETWEEN ? AND ?
             UNION ALL
             SELECT t.id, t.date, s.amount, 1, s.category_id FROM splits s JOIN transactions t ON t.id = s.transaction_id
              WHERE t.transfer_account_id IS NULL AND t.is_split = 1 AND s.category_id IN ({marks})
-               AND t.date BETWEEN ? AND ?
+               AND t.status = 'done' AND t.date BETWEEN ? AND ?
             """, (*category_ids, *span, *category_ids, *span))]
         debt = {r["id"]: r["debt_account_id"] for r in c.execute(
             f"SELECT id, debt_account_id FROM categories WHERE id IN ({marks}) AND debt_account_id IS NOT NULL",
@@ -1108,6 +1111,79 @@ class BudgetService:
             c.execute("UPDATE categories SET note = ? WHERE id = ?", (note, category_id))
         return True
 
+    # ── dashboard ──
+
+    @exposed
+    def dashboard(self, months=6):
+        """The page the app opens on: Ready to assign, the inbox, this month's overspent
+        categories, cash and what's owed, then what each category spent (the same figures as
+        Spent) in the last `months` whole months (3, 6, 12 or "all") and this month so far.
+        Each whole month is compared with the category's Usual for it (the whole months
+        before it) and marked when it's above usual: at least $25 and 25% more."""
+        if months not in (3, 6, 12, "all"):
+            raise UserError("Pick 3, 6 or 12 months, or All.")
+        current = self.current_month()
+        view = self.month(current)
+        inbox = self.counts()["inbox"]
+        with self.db.read() as c:
+            accounts = self._accounts(c)
+            tree = self._category_tree(c)
+            spending = self._spending_by_month(c)
+            coverage = self._coverage_start(c)
+            first = c.execute("SELECT MIN(date) FROM transactions").fetchone()[0]
+        first_month = month_of(first) if first else current
+        cols = months_between(first_month if months == "all" else max(first_month, add_months(current, -months)),
+                              current)
+        n = self.settings.get()["average_months"]
+
+        def above(spent, usual_amount, month):
+            return (coverage <= month < current and bool(usual_amount) and spent >= usual_amount + 2500
+                    and spent * 4 >= usual_amount * 5)
+
+        income, total, groups = [0] * len(cols), [0] * len(cols), []
+        for g in tree:
+            if g["role"] == "income":
+                for cat in g["categories"]:
+                    history = spending.get(cat["id"], {})
+                    income = [x + history.get(m, 0) for x, m in zip(income, cols)]
+                continue
+            cats = []
+            for cat in g["categories"]:
+                if cat["debt_account_id"]:
+                    continue  # a payment category's money is card spending, counted where it came from
+                history = spending.get(cat["id"], {})
+                spent = [-history.get(m, 0) for m in cols]
+                if cat["hidden"] and not any(spent):
+                    continue
+                usuals = [budget_math.usual_spending(history, m, coverage, n) for m in cols]
+                cats.append({"id": cat["id"], "name": cat["name"], "hidden": bool(cat["hidden"]), "spent": spent,
+                             "usual": usuals,
+                             "above": [above(s, u, m) for s, u, m in zip(spent, usuals, cols)]})
+            if not cats:
+                continue
+            spent = [sum(x["spent"][i] for x in cats) for i in range(len(cols))]
+            total = [x + y for x, y in zip(total, spent)]
+            groups.append({"id": g["id"], "name": g["name"], "spent": spent, "categories": cats,
+                           "above": [any(x["above"][i] for x in cats) for i in range(len(cols))]})
+
+        live = [a for a in accounts if not a["closed"] or a["balance"]]
+        cash = None if any(a["balance"] is None for a in live if not a["is_debt"]) else \
+            sum(a["balance"] for a in live if not a["is_debt"])
+        owed = -sum(a["balance"] or 0 for a in live if a["is_debt"])
+        overspent = sorted(({"id": x["id"], "name": x["name"], "amount": -x["available"]}
+                            for g in view["groups"] for x in g["categories"] if (x["available"] or 0) < 0),
+                           key=lambda x: -x["amount"])
+        summary = view["summary"]
+        return {
+            "month": current, "summary": summary, "overspending": view["overspending"],
+            "inbox": inbox, "waiting": summary["waiting"] if summary else 0, "overspent": overspent,
+            "cash": cash, "owed": owed, "has_debt": any(a["is_debt"] for a in live),
+            "missing_balances": view["missing_balances"],
+            "spending": {"range": months, "usual_months": n, "income": income, "total": total, "groups": groups,
+                         "income_group": next((g["id"] for g in tree if g["role"] == "income"), None),
+                         "months": [{"month": m, "so_far": m == current, "complete": m >= coverage} for m in cols]},
+        }
+
     # ── inbox ──
 
     @exposed
@@ -1115,10 +1191,12 @@ class BudgetService:
         with self.db.read() as c:
             items = self._transactions(c, {"status": "review"}, limit=1000, order="t.date DESC, t.id DESC")
             names = ledger.category_names(c)
+            income_id = ledger.income_category(c)
             for item in items:
                 txn = c.execute("SELECT * FROM transactions WHERE id = ?", (item["id"],)).fetchone()
                 s = analyze(c, txn)
                 item["suggestions"] = [{"id": cid, "name": names.get(cid, "?")} for cid in s.options]
+                item["guess"] = guess(txn, s, income_id)
                 item["mixed"] = s.mixed
                 item["group"] = s.group
                 # Today's reasoning, not what was thought at import (the rules and what the app
@@ -1246,9 +1324,7 @@ class BudgetService:
                 target = c.execute("SELECT name FROM payees WHERE id = ?", (txn["similar_payee_id"],)).fetchone()
                 self._set_payee(c, txn_id, target["name"])
                 txn = c.execute("SELECT * FROM transactions WHERE id = ?", (txn_id,)).fetchone()
-                s = analyze(c, txn)
-                c.execute("UPDATE transactions SET category_id = ?, reason = ? WHERE id = ?",
-                          (category_for(txn, s) or txn["category_id"], s.reason, txn_id))
+                c.execute("UPDATE transactions SET reason = ? WHERE id = ?", (analyze(c, txn).reason, txn_id))
             c.execute("UPDATE transactions SET similar_payee_id = NULL WHERE similar_payee_id = ? AND payee_id = ?",
                       (txn["similar_payee_id"], txn["payee_id"]))
         return self.counts()
