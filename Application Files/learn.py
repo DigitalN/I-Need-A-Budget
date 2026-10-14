@@ -100,7 +100,7 @@ def _from_history(conn, txn, names, allowed):
         else:
             reason = (f"Last time: {names.get(top, '?')}" if n == 1 else
                       f"Usually {names.get(top, '?')} ({counts[top]} of {n})")
-        reason += ". Transfers with people are always asked"
+        reason += ". E-transfers are always asked"
         return Suggestion(ranked[:4], False, reason, mixed=True, individual=True)
     if unusual and not mixed:
         reason = (f"Much bigger than usual for this payee ({_money(-abs(txn['amount']))} vs at most "
@@ -108,7 +108,7 @@ def _from_history(conn, txn, names, allowed):
         return Suggestion(ranked[:4], False, reason, mixed=True, individual=True)
     if mixed:
         parts = " · ".join(f"{names.get(c, '?')} {counts[c]}×" for c in sorted(counts, key=lambda c: -counts[c])[:3])
-        reason = f"Goes to more than one envelope ({parts}); closest by amount first"
+        reason = f"Goes to more than one category ({parts}); closest by amount first"
     elif always_ask:
         reason = f"You asked to always check this payee (usually {names.get(top, '?')})"
     elif from_actual:
@@ -135,8 +135,8 @@ def _from_bank_category(conn, txn, names, allowed):
     if not rows or total < 3 or rows[0]["n"] / total < 0.6:
         return None  # too few, or too vague ("Other" covers everything)
     top = rows[0]
-    reason = (f"New payee. The card calls it “{txn['bank_category']}”, which you usually file "
-              f"under {names.get(top['category_id'], '?')}")
+    reason = (f"New payee. The card calls it “{txn['bank_category']}”, which you usually categorize "
+              f"as {names.get(top['category_id'], '?')}")
     return Suggestion([r["category_id"] for r in rows[:4]], False, reason)
 
 
@@ -211,7 +211,7 @@ def match_reimbursement(conn, txn, names):
     group = f"share:{r['id']}"
     if r["category_id"] is None:
         return Suggestion([], False, f"Looks like a 1/{people} share of {where} ({_money(r['amount'])} on "
-                                     f"{r['date']}). File it where that goes.", group=group)
+                                     f"{r['date']}). Put it in that one's category.", group=group)
     return Suggestion([r["category_id"]], False,
                       f"Looks like a 1/{people} share of {where} ({_money(r['amount'])} on {r['date']}). "
                       f"Back to {names.get(r['category_id'], '?')}?", group=group)
@@ -247,16 +247,17 @@ def analyze(conn, txn):
     if txn["amount"] > 0 and income_category(conn) not in options:
         options.append(income_category(conn))
     if hint == "cash" and not reasons:
-        reasons.append("Cash: which envelope did it come out of?")
+        reasons.append("Cash: which category did it come out of?")
     if not reasons:
         reasons.append("New payee")
     payee = conn.execute("SELECT kind, always_ask FROM payees WHERE id = ?", (txn["payee_id"],)).fetchone()
     person = bool(payee and payee["kind"] == "person")
     always_ask = bool(payee and payee["always_ask"])
     mixed = bool(learnt and learnt.mixed) or bool(refund) or person
-    # One card per payee in the inbox (even a mixed one like Amazon: "File one at a time"
-    # splits it), except people, payees marked "Always ask", and items that are their own
-    # question (a refund, an unusual amount). Shares of one bill keep their own group.
+    # One group per payee in the inbox (even a mixed one like Amazon: "One at a time"
+    # splits it), except e-transfers, payees marked "Always ask", and items that are their
+    # own question (a refund, an unusual amount). Shares of one shared expense keep their
+    # own group.
     individual = person or always_ask or any(c.individual for c in (refund, learnt) if c)
     if not group.startswith("share:"):
         group = "" if individual or not txn["payee_id"] else \

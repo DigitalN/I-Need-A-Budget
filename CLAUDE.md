@@ -3,7 +3,9 @@
 An envelope budget (like YNAB or Actual Budget) built around the files banks let you
 download, as a Mac app: Python + pywebview, one window, SQLite. Building, the release checklist, how
 updates work and the dev preview are in @DEVELOPMENT.md. What it does for the user is in
-README.md.
+README.md. The words for things (categorize, file, transfer vs e-transfer, payment
+category, recurring charge...) are in `CONTEXT.md`: use them in the page, docs, comments
+and issues.
 
 The maintainer banks with Tangerine: a chequing account and a Mastercard, maybe a line
 of credit later. Other people's copies will use other banks (RBC, ATB, credit unions),
@@ -70,8 +72,8 @@ All in `Application Files/`:
 - `importer.py`: detects and parses OFX/QFX/QBO from any bank, Tangerine card and bank
   CSVs, RBC's CSV (every account in one file, so a file has `parts`), CSVs set up once
   (`csvlayout.py`), and Actual Budget's export (learnt from, never imported as
-  transactions). Account matching, fingerprint dedup, then `file_transactions()` files
-  what it can. Its docstring has the rules.
+  transactions). Account matching, fingerprint dedup, then `file_transactions()`
+  categorizes what it can. Its docstring has the rules.
 - `csvlayout.py`: pure. Any bank's CSV: spots a table of dates and amounts (skipping a
   preamble), guesses which column is which, names the layout by its header, reads rows.
 - `banks.py`: bank names. Free text on accounts; `canonical()` turns what files call a
@@ -84,10 +86,11 @@ All in `Application Files/`:
   Tangerine's rules didn't match. `find_similar()` is the fuzzy match (rapidfuzz):
   "SAVEWAY 1532" → Safeway.
 - `ledger.py`: accounts and balances (worked out from one anchor balance), the special
-  categories (Income, a payment envelope per debt account, Interest & Fees),
+  categories (Income, a payment category per debt account, Interest & Fees),
   resolving/renaming/merging payees, spotting and merging an account imported twice.
 - `learn.py`: category guesses from history (amount- and recency-weighted votes), mixed
-  payees, unusually big charges, refunds, e-transfer shares of a bill, card-category hints.
+  payees, unusually big charges, refunds, e-transfer shares of a shared expense,
+  card-category hints.
   `analyze()` returns options, whether it's sure, a reason, and an inbox group key.
 - `transfers.py`: pairing the two halves of a transfer between own accounts.
 - `subscriptions.py`: detection (steady rhythm; same price, or a once-a-month bill that
@@ -136,7 +139,7 @@ All in `Application Files/`:
   suggests `varies` for a once-a-month payee whose amount moved at least twice.
 - **Optional end date** on a subscription: a charge after it (or after it was marked
   cancelled) goes to the inbox with a warning containing "charged you again" (the inbox
-  and re-filing keep reasons with that phrase).
+  and re-categorizing keep reasons with that phrase).
 - A charge more than 3× the payee's biggest past charge always asks.
 - **The updater is the only network access.** No HTTP server in the app (the dev preview
   is a separate script), no analytics, no CDNs or remote fonts. (Settings → Release notes
@@ -163,8 +166,8 @@ overspending not taken yet == cash, and the Budget page shows that line under it
 in Chequing − $Y in categories", flagged if it's ever off). With This month, covering
 overspending costs nothing (Assign money… counts it as `covered`) and covering it from
 another category gives Ready to assign that much back. Card spending from a funded category moves that money to the card's
-payment envelope; uncovered card spending is new debt instead. Paying the card from
-chequing spends the payment envelope; old debt is paid down by assigning to it. Refunds
+payment category; uncovered card spending is new debt instead. Paying the card from
+chequing spends the payment category; old debt is paid down by assigning to it. Refunds
 and reimbursements go back into the category they came from. "Needs ~$X" on the Budget
 page is the average of what a category actually spent in the last 3/6/12 whole months
 (from every month with data for all accounts, before the budget start too).
@@ -237,26 +240,30 @@ Don't undo these without asking:
   never a fixed list: there are too many credit unions. New accounts are named "Bank +
   type" (editable, and Edit… changes name and bank any time); existing ones keep theirs.
 - **An account imported twice** is flagged (Inbox and Accounts) and fixed with Merge
-  into…: copies dropped (keeping your filing, notes, splits, transfers, bank IDs), the
+  into…: copies dropped (keeping your categories, notes, splits, transfers, bank IDs), the
   rest moved, undoable.
 - **Review inbox** instead of a register: only what the app isn't sure about, with one
-  click / keypress per decision, same-payee items and bill shares grouped into one card.
-  Filing one teaches the app and re-files the rest of that payee, **except**:
-  - **"File one at a time"** on a group means exactly that: filing one never files the
-    others (`approve(..., refile=False)`).
-  - **Transfers with people are never assumed**: e-transfers to or from a person are
-    never filed automatically, never grouped by person, never pre-filled with a guess,
+  click / keypress per decision, same-payee items and shares of one shared expense
+  grouped together. Categorizing one teaches the app and re-categorizes the rest of that
+  payee, **except**:
+  - **"One at a time"** on a group means exactly that: categorizing one never
+    categorizes the others (`approve(..., refile=False)`).
+  - **E-transfers are never assumed**: e-transfers to or from anyone are never
+    categorized automatically, never grouped by payee, never pre-filled with a guess,
     and never treated as refunds. The last choice is only suggested. (The user hit this
-    with several transfers to one person, each for something different.)
-- **Filing a charge into a subscriptions category** (or one that charges on a steady
-  rhythm) asks "What's this for?": name it to track it as a subscription or bill, or
-  "Not recurring" to stop asking about that payee at that price.
+    with several e-transfers to one person, each for something different.) Decided but
+    not built yet: [ADR 0001](docs/adr/0001-payee-is-just-a-name.md) turns this into
+    Always ask, on from the start for anyone you e-transfer with and switchable off.
+- **Categorizing a charge into a subscriptions category** (or one that charges on a
+  steady rhythm) asks "What's this for?": name it to track it as a subscription or bill,
+  or "Not recurring" to stop asking about that payee at that price.
 - The inbox shows today's reasoning (re-analysed on each load), and pending items are
-  re-filed under the current rules at every launch.
+  re-categorized under the current rules at every launch.
 - **Inbox grouping is controlled by the payee's "Always ask" switch**: off, a payee's
-  items share one card (even a mixed payee like Amazon, split with "File one at a time");
-  on, one card each and never filed without asking. People, refunds and unusually big
-  charges always get their own card. `learn.analyze()` sets the group key.
+  items are one group (even a mixed payee like Amazon, split with "One at a time");
+  on, each is its own inbox item and never categorized without asking. E-transfers,
+  refunds and unusually big charges are always their own item. `learn.analyze()` sets
+  the group key.
 - The inbox has a finder (search + a button per payee with counts) so nothing gets lost
   in a long list.
 - **Payee clean-up with fuzzy matching** (store numbers, typos, truncation).
@@ -276,14 +283,14 @@ Don't undo these without asking:
   it mid-typing. Redrawing the Budget page keeps the scroll position and the box you're
   in (it used to jump to the top after every save: `scrollIntoView` on the month strip
   scrolled the page too).
-- **A card's payment envelope is money set aside, not paid**: it stays in the bank until
+- **A card's payment category is money set aside, not paid**: it stays in the bank until
   a payment, so what you owe doesn't change. Its pop-over shows You owe / Set aside / Not
   set aside yet, its lines say "Set aside for card spending in Food" and "Paid to the card
   from Chequing", and its total says "This month", never "Spent" (the maintainer read
   "Spent" as money already paid to the card).
 - **The category pop-over** (click a category's name or its Spent figure) is wide and in
   the maintainer's order: this month's transactions (adding up to Spent: a split counts
-  only its line; a card's payment envelope lists payments and the card spending moved in,
+  only its line; a card's payment category lists payments and the card spending moved in,
   from `budget.compute`'s `moved_from`), **Monthly Budgeted Amount**, Move money, Notes.
   Monthly Budgeted Amount is one section: the bars of what it actually spent, Last month,
   then Last 3/6/12 months (each with Use), and the Budgeted field, saved as it's typed (no
@@ -292,10 +299,11 @@ Don't undo these without asking:
   reopens with the change.
 - Budgeting is **as each paycheque lands** (Assign money… fills categories up to their
   budgeted amount, in order), not a lump at the start of the month.
-- **Credit cards YNAB-style** (payment envelopes, paying down a balance), with room for a
+- **Credit cards YNAB-style** (payment categories, paying down a balance), with room for a
   line of credit as a third, debt account.
 - **Refunds and reimbursements go back to the category the money left from.**
-- **Subscriptions page** that treats subscriptions as their own thing: named per price,
+- **Subscriptions page** that treats recurring charges (subscriptions and bills) as their
+  own thing: named per price,
   own category, price changes, late/cancelled tracking, "charged again" alerts. New prices
   from a subscription payee always ask (see Key rules). A charge opened on the
   Transactions page has a Subscription line: Track as subscription… or Edit….
@@ -328,10 +336,10 @@ Don't undo these without asking:
   user's explicit requirement), no stored password. The CSV/OFX import stays as fallback.
 - "Fund bills" one-click, bill due dates, safe-to-spend until payday.
 - A line of credit account: any bank's CSV can be set up now. Balance transfers between
-  debt accounts already work (no envelope change).
+  debt accounts already work (no category changes).
 - Spending reports (month over month, by payee).
 - A **Dashboard** home page (the user asked where it was; offered, not yet decided):
-  ready to assign, balances and what's owed, inbox count, overspent or low envelopes,
+  ready to assign, balances and what's owed, inbox count, overspent or low categories,
   bills due before the next paycheque, spending against what each category needs.
 
 ## Known gaps
@@ -384,5 +392,5 @@ The five defaults: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-h
 
 ### Domain docs
 
-Single-context: `CONTEXT.md` and `docs/adr/` at the repo root, created when first needed.
+Single-context: `CONTEXT.md` (the glossary) and `docs/adr/` (decisions) at the repo root.
 See `docs/agents/domain.md`.

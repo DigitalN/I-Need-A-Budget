@@ -1048,8 +1048,8 @@ function drawInbox() {
       ${data.items.length && !shown.length ? `<div class="card empty"><b>Nothing matches</b>Try another search, or show everything.</div>` : ''}
       ${shown.length ? `<div class="items" id="items">${cards}</div>
         <p class="kbd-help">↑ ↓ to move · Return takes the highlighted suggestion · 1–4 picks one · / any category · T transfer · S split · ⌘Z undo</p>`
-        : (data.items.length || (data.files || []).length ? '' : `<div class="card empty"><b>All caught up</b>Everything is filed. New bank downloads show up here when there's something to decide.</div>`)}
-      ${data.filed.length ? `<details class="card" style="padding:10px 14px"><summary style="cursor:default;font-weight:600">Filed automatically from recent imports (${data.filed.length})</summary>
+        : (data.items.length || (data.files || []).length ? '' : `<div class="card empty"><b>All caught up</b>Everything is categorized. New bank downloads show up here when there's something to decide.</div>`)}
+      ${data.filed.length ? `<details class="card" style="padding:10px 14px"><summary style="cursor:default;font-weight:600">Categorized automatically from recent imports (${data.filed.length})</summary>
         <p class="small muted">Click a category to change it. The app learns from every change.</p>
         <table class="filed-list"><tbody>${filedRows}</tbody></table></details>` : ''}
     </div>`);
@@ -1091,7 +1091,7 @@ function itemCard(t, i) {
       <button class="chip" data-act="other" data-id="${t.id}">Other…</button><span class="sep"></span>
       <button class="btn small ghost" data-act="transfer" data-id="${t.id}">Transfer</button>
       <button class="btn small ghost" data-act="split" data-id="${t.id}">Split</button>
-      ${t.payee_kind !== 'bank' && t.payee_id ? `<button class="btn small ghost" data-act="always-ask" data-payee="${t.payee_id}" data-on="${t.always_ask ? 0 : 1}" title="${t.always_ask ? 'Let the app file this payee on its own again' : 'Never file this payee without asking'}">${t.always_ask ? 'Stop always asking' : 'Always ask'}</button>` : ''}
+      ${t.payee_kind !== 'bank' && t.payee_id ? `<button class="btn small ghost" data-act="always-ask" data-payee="${t.payee_id}" data-on="${t.always_ask ? 0 : 1}" title="${t.always_ask ? 'Let the app categorize this payee on its own again' : 'Never categorize this payee without asking'}">${t.always_ask ? 'Stop always asking' : 'Always ask'}</button>` : ''}
     </div>
   </div>`;
 }
@@ -1101,7 +1101,7 @@ function groupCard(b, i) {
   const total = b.items.reduce((s, t) => s + t.amount, 0);
   const dates = b.items.map(t => t.date).sort();
   const share = first.reason && first.reason.startsWith('Looks like a');
-  const title = share ? `${b.items.length} e-transfers that look like shares of one bill` : `${esc(first.payee_name || first.raw_name)} · ${b.items.length} transactions`;
+  const title = share ? `${b.items.length} e-transfers that look like shares of one expense` : `${esc(first.payee_name || first.raw_name)} · ${b.items.length} transactions`;
   return `<div class="item group-card" data-index="${i}" tabindex="-1">
     <div>
       <div class="who">${title}</div>
@@ -1113,9 +1113,9 @@ function groupCard(b, i) {
       ${b.items.length > 6 ? `<div class="faint">and ${b.items.length - 6} more</div>` : ''}</div>
     <div class="chips">${chipsHtml(first.suggestions || [], first.category_id)}
       <button class="chip" data-act="other-group" data-index="${i}">Other…</button><span class="sep"></span>
-      <button class="btn small ghost" data-act="expand" data-group="${esc(b.group)}">File one at a time</button>
-      ${b.group.startsWith('payee:') && first.payee_id ? `<button class="btn small ghost" data-act="always-ask" data-payee="${first.payee_id}" data-on="1" title="Show each of this payee's transactions on its own card, and never file them without asking">Always ask</button>` : ''}
-      <span class="small muted">Files all ${b.items.length}.</span></div>
+      <button class="btn small ghost" data-act="expand" data-group="${esc(b.group)}">One at a time</button>
+      ${b.group.startsWith('payee:') && first.payee_id ? `<button class="btn small ghost" data-act="always-ask" data-payee="${first.payee_id}" data-on="1" title="Ask about each of this payee's transactions on its own, and never categorize them without asking">Always ask</button>` : ''}
+      <span class="small muted">Categorizes all ${b.items.length}.</span></div>
   </div>`;
 }
 
@@ -1131,14 +1131,14 @@ async function fileBlock(index, categoryId) {
   const el = $(`.item[data-index="${index}"]`);
   if (el) el.classList.add('leaving');
   const ids = b.items.map(t => t.id);
-  // "File one at a time" on a group means exactly that: filing one never files the others.
+  // "One at a time" on a group means exactly that: categorizing one never categorizes the others.
   const oneAtATime = ids.length === 1 && b.items[0].group && state.expanded.has(b.items[0].group);
   const r = ids.length > 1 ? await call('approve_many', { items: ids.map(id => ({ id, category_id: categoryId })) })
                            : await call('approve', { txn_id: ids[0], category_id: categoryId, refile: !oneAtATime });
   const t = b.items[0];
   const name = t.payee_name || t.raw_name;
   let msg = `${ids.length > 1 ? plural(ids.length, 'transaction') : name} → ${catName(categoryId)}`;
-  if (r.also_filed) msg += ` · also filed ${r.also_filed} more like it`;
+  if (r.also_filed) msg += ` · also categorized ${r.also_filed} more like it`;
   const total = b.items.reduce((s, x) => s + x.amount, 0);
   if (incomeIds().includes(categoryId) && total > 0) {
     toast(msg, { action: { label: `Assign ${money(total)}`, run: () => { state.month = t.date.slice(0, 7); navigate('budget').then(() => openAssign(total)); } } });
@@ -1147,12 +1147,12 @@ async function fileBlock(index, categoryId) {
   if (r.subscription_prompt) await subscriptionPrompt(r.subscription_prompt);
 }
 
-// Filed a charge that looks like a subscription or bill that isn't tracked yet: ask what it is.
+// Categorized a charge that looks like a subscription or bill that isn't tracked yet: ask what it is.
 async function subscriptionPrompt(q) {
   const v = await dialog({
     title: `What's this ${esc(q.payee)} charge for?`,
     body: `<p class="muted">${esc(q.payee)} charged <b>${money(q.amount)}</b>${q.count > 1 ? ` (${q.count} times at this price)` : ''}. ${esc(q.why)}.
-        Name it and it's tracked: its charges show as <b>${esc(q.payee)} · name</b>, go to its envelope on their own,
+        Name it and it's tracked: its charges show as <b>${esc(q.payee)} · name</b>, go to its category on their own,
         and you're told when the price changes or it stops.</p>
       <div class="field"><label>What's it for?</label><input id="sp-name" placeholder="e.g. ${esc(q.payee)} — couch, Apple Music, phone plan"></div>
       <div class="grid2">
@@ -1163,7 +1163,7 @@ async function subscriptionPrompt(q) {
         <div class="field"><label>Price</label>${pricingSelect('sp-pricing', q.pricing)}</div>
         <div class="field"><label>Ends on (optional)</label><input type="date" id="sp-ends"></div>
       </div>
-      <div class="field"><label>Envelope</label><button type="button" class="btn" id="sp-cat" data-id="${q.category_id}" style="text-align:left">${esc(q.category)}</button></div>`,
+      <div class="field"><label>Category</label><button type="button" class="btn" id="sp-cat" data-id="${q.category_id}" style="text-align:left">${esc(q.category)}</button></div>`,
     actions: [{ label: 'Not recurring', value: 'no', left: true }, { label: 'Ask me later', value: null },
       { label: 'Track it', value: 'ok', primary: true, check: d => $('#sp-name', d).value.trim() ? null : 'Give it a name, like what it was for.' }],
     onOpen: d => { $('#sp-cat', d).onclick = async e => { const id = await pickCategory(e.currentTarget, { income: false }); if (id) { e.target.dataset.id = id; e.target.textContent = catName(id); } }; },
@@ -1182,9 +1182,9 @@ async function subscriptionPrompt(q) {
 async function acceptAll() {
   const items = (state.inboxShown || state.inbox.items).filter(i => i.category_id && !i.subscription_choices && !i.similar_payee).map(i => ({ id: i.id, category_id: i.category_id }));
   if (!items.length) return;
-  if (!await confirmBox('Accept all suggestions?', `Files ${plural(items.length, 'transaction')} in the category the app suggested. You can change any of them later.`, 'Accept all')) return;
+  if (!await confirmBox('Accept all suggestions?', `Puts ${plural(items.length, 'transaction')} in the category the app suggested. You can change any of them later.`, 'Accept all')) return;
   const r = await call('approve_many', [items]);
-  toast(`Filed ${plural(items.length + (r.also_filed || 0), 'transaction')}`, { action: undoAction });
+  toast(`Categorized ${plural(items.length + (r.also_filed || 0), 'transaction')}`, { action: undoAction });
   await renderInbox();
 }
 
@@ -1339,7 +1339,7 @@ async function inboxAction(btn, e) {
   } else if (act === 'sub-new') { if (await newSubscriptionDialog(id)) await renderInbox(); }
   else if (act === 'always-ask') {
     await call('set_always_ask', [Number(btn.dataset.payee), btn.dataset.on === '1']);
-    toast(btn.dataset.on === '1' ? 'Each one gets its own card now, and none are filed without asking' : 'Grouped on one card again', { action: undoAction });
+    toast(btn.dataset.on === '1' ? 'Each one is asked about on its own now, and none are categorized without asking' : 'Grouped together again', { action: undoAction });
     await renderInbox();
   } else if (act === 'accept-all') await acceptAll();
   else if (act === 'save-balance') await saveBalanceFrom(btn);
@@ -1377,7 +1377,7 @@ async function mergeAccount(fromId, intoId, fromName, intoName, ask = true) {
 
 // ── CSVs from any bank: set up once ──
 const KIND_OPTIONS = [['chequing', 'Chequing'], ['savings', 'Savings'], ['credit_card', 'Credit card'],
-                      ['line_of_credit', 'Line of credit'], ['cash', 'Cash']];
+                      ['line_of_credit', 'Line of credit'], ['cash', 'Wallet']];
 const bankList = names => `<datalist id="bank-list">${names.map(n => `<option value="${esc(n)}">`).join('')}</datalist>`;
 
 // Shows the app a CSV's columns and which account it's for, then imports it. Resolves
@@ -1818,7 +1818,7 @@ async function accountAction(btn) {
       body: `<p class="small muted">Accounts are added on their own when you import their files. Add one here for something else, like a line of credit.</p>
         <div class="grid2"><div class="field"><label>Name</label><input id="na-name" placeholder="Line of credit"></div>
         <div class="field"><label>Bank</label><input id="na-bank" list="bank-list" placeholder="Search or type a name" autocomplete="off">${bankList(banks)}</div></div>
-        <div class="grid2"><div class="field"><label>Type</label><select id="na-kind"><option value="line_of_credit">Line of credit</option><option value="credit_card">Credit card</option><option value="chequing">Chequing</option><option value="savings">Savings</option><option value="cash">Cash</option></select></div>
+        <div class="grid2"><div class="field"><label>Type</label><select id="na-kind"><option value="line_of_credit">Line of credit</option><option value="credit_card">Credit card</option><option value="chequing">Chequing</option><option value="savings">Savings</option><option value="cash">Wallet</option></select></div>
         <div class="field"><label>Balance now (owing, for credit)</label><input id="na-balance" placeholder="0.00" style="text-align:right"></div></div>`,
       actions: [{ label: 'Cancel', value: null }, { label: 'Add', value: 'ok', primary: true, check: d => $('#na-name', d).value.trim() ? null : 'Give it a name.' }],
     });
@@ -2036,7 +2036,7 @@ async function settingsAction(btn) {
   } else if (act === 'open') { await call('window_action', [btn.dataset.what]); return; }
   else if (act === 'learn-actual') {
     const r = await call('learn_actual_file');
-    if (r && r.learnt) toast(`Learnt ${r.learnt.examples} examples${r.refiled ? `, and filed ${r.refiled} waiting transactions` : ''}`);
+    if (r && r.learnt) toast(`Learnt ${r.learnt.examples} examples${r.refiled ? `, and categorized ${r.refiled} waiting transactions` : ''}`);
   }
   await renderSettings();
 }
@@ -2072,7 +2072,7 @@ async function renderOnboarding() {
     await loadCategories();
     const normal = state.categories.filter(g => g.role === 'normal');
     body = `<h3>2. Your categories</h3>
-      <p class="muted">These are your envelopes. Rename, add or remove anything; you can change them any time.</p>
+      <p class="muted">These are your categories. Rename, add or remove anything; you can change them any time.</p>
       ${normal.length ? '' : `<div class="notice info" style="margin-bottom:12px">No categories yet. <span class="spacer"></span><button class="btn small" data-ob="starter">Use a starter set</button></div>`}
       <div class="card" id="ob-cats">${categoryEditorHtml(state.categories)}</div>
       <div class="row" style="margin-top:16px"><button class="btn" data-ob="back">Back</button><span class="spacer"></span><button class="btn primary" data-ob="next">Continue</button></div>`;

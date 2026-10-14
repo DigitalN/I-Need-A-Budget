@@ -3,7 +3,7 @@
 Envelope budgeting (every dollar gets a job, like YNAB or Actual Budget) as a Mac app,
 for any bank or credit union. You download your transactions from your bank's website
 and the app does the rest: imports them without duplicates, cleans up the payee names,
-files what it recognises, and asks you only about the rest.
+categorizes what it recognises, and asks you only about the rest.
 
 Everything stays on your Mac. The only thing it ever connects to is GitHub, to update
 itself.
@@ -25,7 +25,7 @@ The first time it opens, it walks you through four steps:
 
 1. **Files:** it lists the bank downloads (and an Actual Budget export, if you have
    one) in your Downloads folder. Import them. Overlapping files are fine.
-2. **Categories:** your envelopes. Edit them any time.
+2. **Categories:** Food, Rent and the rest. Edit them any time.
 3. **Balances:** what your bank shows for each account right now. Asked once (files
    that include the balance fill it in themselves).
 4. **Start month:** start a few months back and catch those months up in one click, so
@@ -50,16 +50,16 @@ files go there from then on. If an account ever ends up in the app twice anyway,
 so and **Merge into…** puts them back together.
 
 **Inbox.** Only what the app isn't sure about shows up here, with its best guesses.
-Click one (or press 1–4, Return for the first) and it's filed. ⌘Z undoes anything.
+Click one (or press 1–4, Return for the first) and it's categorized. ⌘Z undoes anything.
 
-- A payee's transactions share one card; file them together, or **File one at a time**.
-  **Always ask** gives each its own card and stops the app filing that payee on its own.
-- Filing one teaches the app: the rest from that payee it's now sure about file
-  themselves. Except with **File one at a time**, and except e-transfers with people:
-  those are always asked about one by one, never assumed or grouped.
+- A payee's transactions are grouped; categorize them together, or **One at a time**.
+  **Always ask** shows each on its own and stops the app categorizing that payee by itself.
+- Categorizing one teaches the app: the rest from that payee it's now sure about
+  categorize themselves. Except with **One at a time**, and except e-transfers: those are
+  always asked about one by one, never assumed or grouped.
 - The finder at the top searches the inbox, and has a button per payee to show just theirs.
 - Card payments are matched with the chequing withdrawal and marked as transfers.
-  Refunds and e-transfers that pay you back go back to the envelope the money left from.
+  Refunds and e-transfers that pay you back go back to the category the money left from.
 - "SAFEWAY #6432" and "SAVEWAY 1532" both become Safeway.
 
 **Budget.** Each month: what each category has, spent and got. A category's
@@ -81,12 +81,12 @@ below zero, Ready to assign is left alone, and the next money assigned to it cov
 first).
 
 **Credit cards** work like YNAB: money for card purchases moves into the card's payment
-envelope, so the payment is covered when it's due. To pay down a balance, assign extra
-to the payment envelope. The Accounts page shows what you owe, what's set aside, the
+category, so the payment is covered when it's due. To pay down a balance, assign extra
+to the payment category. The Accounts page shows what you owe, what's set aside, the
 interest you've paid, and when it'll be paid off.
 
 **Subscriptions and bills** are found automatically. Track each one with its own name,
-envelope and price type:
+category and price type:
 
 - **Same Price** (Apple, Netflix): any other price from that payee is a question: a price
   rise, something new, or a one-off? One payee can have several, told apart by price.
@@ -96,7 +96,7 @@ envelope and price type:
   the page shows the typical amount and range.
 
 Give one an end date, or mark it cancelled, and you're warned in the Inbox if it charges
-you after that. Filing a charge under Subscriptions asks "What's this for?" so it can be
+you after that. Putting a charge in Subscriptions asks "What's this for?" so it can be
 tracked by name. Any charge you open on the Transactions page can start one too: **Track
 as subscription…**.
 
