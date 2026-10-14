@@ -30,62 +30,41 @@ Building it yourself is in [DEVELOPMENT.md](DEVELOPMENT.md).
 
 The first time it opens, it walks you through four steps:
 
-1. **Files:** it lists the bank downloads (and an Actual Budget export, if you have
-   one) in your Downloads folder. Import them. Overlapping files are fine.
-2. **Categories:** Food, Rent and the rest. Edit them any time.
-3. **Balances:** what your bank shows for each account right now. Asked once (files
-   that include the balance fill it in themselves).
-4. **Start month:** start a few months back and catch those months up in one click, so
-   your history isn't lost.
+1. **Files:** import the bank downloads (and any Actual Budget export) in your Downloads
+   folder. Overlapping files are fine.
+2. **Categories:** a starting set, editable any time.
+3. **Balances:** each account's balance, asked once (Quicken files fill it in).
+4. **Start month:** start a few months back and catch them up in one click.
 
 ## Using it
 
-**Getting transactions in.** On your bank's website, download an account's transactions.
-**Quicken (QFX), Money (OFX) or QuickBooks (QBO)** files are best: nearly every bank
-offers them, they include the balance, and they need no setting up. The app also reads
-Tangerine's and RBC's CSVs as they are, and any other bank's CSV once you've shown it
-which column is which (it remembers, so the next file from that bank imports on its
-own). Files that land in Downloads are imported automatically and moved into the app's
-own folder; a CSV that needs setting up waits at the top of the Inbox. You can also
-drop files on the window. Nothing is ever imported twice, even when the same account
-comes in as a CSV one day and a Quicken file the next.
+**Getting transactions in.** Download your transactions from your bank's website: the
+app imports them from Downloads on its own, or drop them on the window. **Quicken (QFX),
+Money (OFX) or QuickBooks (QBO)** files are best: nearly every bank offers them, they
+carry the balance and need no setting up. Tangerine's and RBC's CSVs work as they are;
+any other bank's CSV needs its columns shown once. Nothing is imported twice.
 
-**Accounts** each have a bank (type any bank or credit union; well-known ones are
-suggested). A file for an account the app hasn't seen asks first: a new account, or one
-you already have (a replaced card has a new number)? Pick it once and that account's
-files go there from then on. If an account ever ends up in the app twice anyway, it says
-so and **Merge into…** puts them back together.
+**Accounts.** A file from an account the app hasn't seen asks whether it's new or one
+you have (a replaced card has a new number). An account imported twice is fixed with
+**Merge into…**.
 
-**Dashboard.** Where the app opens: Ready to assign, what's in the Inbox, what's
-overspent this month, and your cash and what you owe, each a click from its page. Under
-them, two charts: **Net worth** (cash, what you owe, and the difference at the end of
-each month) and **In and out** (income against spending, month by month); point at a
-month for its figures. Then what each category group spent month by month, with income
-on top. Open a group to see its categories; a month that cost clearly more than usual (at
-least $25 and 25% over its average) is marked ↑. Click any figure to see the transactions
-behind it. Pick 3, 6 or 12 months, or all, at the top: the whole page follows, and the
-app remembers it. The window opens the size and place you last left it.
+**Dashboard.** Ready to assign, the Inbox, what's overspent and your cash at a glance,
+then net worth and income against spending by month, and what each category group
+spent (↑ marks a month well above usual). Click any figure for its transactions.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/inbox-dark.png">
   <img alt="The Inbox: a refund, a new payee and an e-transfer, each with its suggested category" src="docs/screenshots/inbox-light.png">
 </picture>
 
-**Inbox.** Only what the app isn't sure about shows up here, with its best guesses.
-Nothing in it counts in a category until you categorize it.
-Click one (or press 1–4, Return for the first) and it's categorized. ⌘Z undoes anything.
+**Inbox.** Only what the app isn't sure about, with its best guesses. Click one (or
+press 1–4) to categorize it; ⌘Z undoes anything.
 
-- A payee's transactions are grouped; categorize them together, or **One at a time**.
-  **Always ask** shows each on its own and stops the app categorizing that payee by itself.
-- Categorizing one teaches the app: the rest from that payee it's now sure about
-  categorize themselves. Except with **One at a time**, and except anyone you e-transfer
-  with: they start with **Always ask** on. Switch it off for rent e-transferred to a
-  landlord and the app learns it like any payee.
-- Interest, bank fees and rewards are never asked about. Move one to another category
-  and the next ones go there too.
-- The finder at the top searches the inbox, and has a button per payee to show just theirs.
-- Card payments are matched with the chequing withdrawal and marked as transfers.
-  Refunds and e-transfers that pay you back go back to the category the money left from.
+- Categorizing one teaches the app, and the rest from that payee follow. **One at a
+  time** stops that for a group, **Always ask** for a payee. People you e-transfer
+  start with Always ask on.
+- Interest, fees and rewards are never asked about.
+- Card payments become transfers; refunds go back to the category they came from.
 - "SAFEWAY #6432" and "SAVEWAY 1532" both become Safeway.
 
 <picture>
@@ -93,54 +72,38 @@ Click one (or press 1–4, Return for the first) and it's categorized. ⌘Z undo
   <img alt="The Budget page: Ready to assign and each category's Budgeted, Assigned, Spent and Available" src="docs/screenshots/budget-light.png">
 </picture>
 
-**Budget.** Each month: what each category has, spent and got. A category's
-**Budgeted** amount is the plan; money is only in it once it's assigned. Next to its
-Assigned box, **→** assigns the budgeted amount and **←** what it spent, in one click, and **Assign money…**
-shares out a paycheque, topping each category up to its budgeted amount in order (what's
-already in it counts). Click a category, or what it spent, to see every transaction that
-adds up to it this month (click one to change it), its **Monthly Budgeted Amount** (what
-it actually spent in past months, last month and the 3/6/12-month averages, each with
-**Use**, and the amount itself), move money and keep notes. It all saves as you type. A
-group's Spent lists the whole group.
+**Budget.** **Budgeted** is a category's plan; Assigned is the money really in it.
+**Assign money…** shares out a paycheque, topping categories up to their budgeted
+amounts in order; **→** and **←** assign one category its budgeted amount or what it
+spent. Click a category for its transactions, past spending and notes.
 
-**Ready to assign** is money you really have: overspending a category comes out of it
-straight away, since that money has already left the bank. Under it, a line ties it to
-your balances: "= $X in Chequing − $Y in categories", and money that came in but is
-still waiting in the Inbox. **Overspending** in Settings
-chooses how that works: **This month** (that), **Next month** (it comes out of next
-month's Ready to assign, like YNAB), or **Carry over** (the category starts next month
-below zero, Ready to assign is left alone, and the next money assigned to it covers that
-first).
+**Ready to assign** is money you really have. **Overspending** in Settings picks how
+overspending is paid for: **This month** (out of Ready to assign straight away), **Next
+month** (like YNAB) or **Carry over** (the category starts next month below zero).
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/accounts-dark.png">
   <img alt="The Accounts page: chequing, a credit card, and paying down what's owed on it" src="docs/screenshots/accounts-light.png">
 </picture>
 
-**Credit cards** work like YNAB: money for card purchases moves into the card's payment
-category, so the payment is covered when it's due. To pay down a balance, assign extra
-to the payment category. The Accounts page shows what you owe, what's set aside, the
-interest you've paid, and when it'll be paid off.
+**Credit cards** work like YNAB: card spending from a category sets that money aside in
+the card's payment category. Assign extra to it to pay down a balance; Accounts shows
+when it'll be paid off.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/subscriptions-dark.png">
   <img alt="The Subscriptions page: subscriptions and bills with their price, next charge and cost a month" src="docs/screenshots/subscriptions-light.png">
 </picture>
 
-**Subscriptions and bills** are found automatically. Track each one with its own name,
-category and price type:
+**Subscriptions and bills** are found automatically, each with a price type:
 
-- **Same Price** (Apple, Netflix): any other price from that payee is a question: a price
-  rise, something new, or a one-off? One payee can have several, told apart by price.
-- **Same Price, Different Currency** (services billed in US dollars): small exchange-rate
-  changes are ignored; a real price change isn't.
-- **Fluctuates Every Time** (power, utilities): any amount from that payee is the bill;
-  the page shows the typical amount and range.
+- **Same Price** (Netflix): a different price asks: a price rise, something new, or a
+  one-off?
+- **Same Price, Different Currency** (billed in US dollars): exchange-rate wobble is
+  ignored.
+- **Fluctuates Every Time** (power): any amount is the bill.
 
-Give one an end date, or mark it cancelled, and you're warned in the Inbox if it charges
-you after that. Putting a charge in Subscriptions asks "What's this for?" so it can be
-tracked by name. Any charge you open on the Transactions page can start one too: **Track
-as subscription…**.
+Give one an end date or mark it cancelled, and a later charge is flagged in the Inbox.
 
 ## Privacy
 
