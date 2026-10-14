@@ -7,15 +7,18 @@ Actual Budget export), nothing is hard-coded per merchant:
   when the amount is similar (a $4 hot dog vs a $900 Costco run) and when
   they're recent.
 - A payee that has gone to two or more categories is "mixed" and always asks, with the
-  closest match by amount first. So does any payee marked "always ask".
+  closest match by amount first. So does any payee with Always ask on.
 - A payee you've never seen falls back on the card's own category ("Restaurant"),
   translated through what you've done with that card category before.
-- Refunds go back to the category of the purchase they refund; money back from a
-  person (an e-transfer) is matched to a bill it looks like a share of.
-- **People are never assumed.** An e-transfer to or from a person is always its own
-  question: what you chose last time is suggested first, but it's never filed on its
-  own, never grouped with that person's other transfers, and never treated as a refund.
-  (The person asked for this: transfers with the same person are for different things.)
+- Refunds go back to the category of the purchase they refund; money in by e-transfer
+  is matched to a shared expense it looks like a share of, never to a refund.
+- **A payee is just a name** (docs/adr/0001). Anyone you e-transfer with starts with
+  Always ask on, because money sent to one name goes to different things each time:
+  each e-transfer is its own question, with what you chose last time suggested first.
+  Switch it off (rent e-transferred to a landlord) and the payee is learnt like any
+  other. Whatever the switch, an e-transfer is never given a provisional category.
+- **Bank entries** (interest, fees, rewards) are never asked about: each kind (its
+  payee) goes where you last put one, at first Interest & Fees or Income.
 
 `analyze()` returns a Suggestion: up to four categories, best first, whether it's
 sure (the importer then files it without asking), and the reason to show.
@@ -25,6 +28,7 @@ import math
 from dataclasses import dataclass, field
 
 from ledger import assignable_category_ids, category_names, income_category, interest_category
+from payees import BANK_ENTRY_HINTS
 from util import days_between
 
 SURE_SHARE = 0.9      # share of the (weighted) votes the top category needs to be filed without asking
@@ -39,8 +43,8 @@ class Suggestion:
     reason: str = ""
     refund_of: int = None
     mixed: bool = False   # this payee goes to different categories, so never filed without asking
-    group: str = ""       # inbox items with the same group share one card (see analyze())
-    individual: bool = False  # this one needs its own card (a refund, an unusual amount, a person...)
+    group: str = ""       # inbox items with the same group are shown as one (see analyze())
+    individual: bool = False  # this one is its own inbox item (a refund, an unusual amount, Always ask...)
 
 
 def _amount_similarity(a, b):
@@ -83,24 +87,22 @@ def _from_history(conn, txn, names, allowed):
     share = weights[top] / total if total else 0
     n = len(rows)
     mixed = sum(1 for c in counts if counts[c] / n >= MIXED_SHARE) >= 2
-    payee = conn.execute("SELECT always_ask, kind FROM payees WHERE id = ?", (txn["payee_id"],)).fetchone()
-    always_ask = bool(payee and payee["always_ask"])
-    person = bool(payee and payee["kind"] == "person")
+    always_ask = _always_ask(conn, txn)
     from_actual = all(r["source"] == "example" for r in rows)
     biggest = max(abs(r["amount"]) for r in rows)
     # A $576 Apple purchase isn't another $14 subscription, even if Apple always went there.
     unusual = abs(txn["amount"]) > 3 * biggest and abs(txn["amount"]) > 5000
-    sure = same_direction and not mixed and not always_ask and not unusual and not person and share >= SURE_SHARE
-    if person:
+    sure = same_direction and not mixed and not always_ask and not unusual and share >= SURE_SHARE
+    if always_ask and txn["hint"] == "etransfer":
         if not same_direction:
-            reason = ("You've only sent money to this person before" if txn["amount"] > 0
-                      else "This person has only sent you money before")
+            reason = ("You've only sent this payee money before" if txn["amount"] > 0
+                      else "This payee has only sent you money before")
             if txn["amount"] > 0:  # what you paid them for says little about money they send you
                 ranked = [income_category(conn)] + [c for c in ranked if c != income_category(conn)]
         else:
             reason = (f"Last time: {names.get(top, '?')}" if n == 1 else
                       f"Usually {names.get(top, '?')} ({counts[top]} of {n})")
-        reason += ". E-transfers are always asked"
+        reason += ". E-transfers start with Always ask on"
         return Suggestion(ranked[:4], False, reason, mixed=True, individual=True)
     if unusual and not mixed:
         reason = (f"Much bigger than usual for this payee ({_money(-abs(txn['amount']))} vs at most "
@@ -141,12 +143,11 @@ def _from_bank_category(conn, txn, names, allowed):
 
 
 def match_refund(conn, txn, names):
-    """Money back from a merchant: back into the category the purchase came out of."""
+    """Money back from the payee you paid: back into the category the purchase came out of."""
     if txn["amount"] <= 0 or txn["payee_id"] is None:
         return None
-    kind = conn.execute("SELECT kind FROM payees WHERE id = ?", (txn["payee_id"],)).fetchone()
-    if kind is None or kind["kind"] == "person":
-        return None  # money from a person isn't a store refund
+    if txn["hint"] == "etransfer":
+        return None  # an e-transfer in is a share of something (match_reimbursement), not a refund
     rows = conn.execute(
         """
         SELECT t.id, t.date, t.amount, t.category_id FROM transactions t
@@ -173,10 +174,7 @@ def match_refund(conn, txn, names):
 def match_reimbursement(conn, txn, names):
     """An e-transfer in that's a share of something you paid: eight people chipping in
     for a $600 team fee. Suggests the category the bill went to."""
-    if txn["amount"] <= 0:
-        return None
-    kind = conn.execute("SELECT kind FROM payees WHERE id = ?", (txn["payee_id"],)).fetchone()
-    if kind is None or kind["kind"] != "person":
+    if txn["amount"] <= 0 or txn["hint"] != "etransfer":
         return None
     # Several people sending the same amount around the same time: the bill was split
     # at least that many ways.
@@ -222,23 +220,19 @@ def analyze(conn, txn):
     names = category_names(conn)
     allowed = assignable_category_ids(conn) | {income_category(conn)}
     hint = txn["hint"]
-    if hint == "interest":
-        return Suggestion([interest_category(conn)], True, "Interest charged on the card")
-    if hint == "fee":
-        return Suggestion([interest_category(conn)], True, "A bank fee")
-    if hint == "income":
-        return Suggestion([income_category(conn)], True, "Money from the bank: income")
+    if hint in BANK_ENTRY_HINTS:
+        return _bank_entry(conn, txn, names, allowed)
 
     refund = match_refund(conn, txn, names)
     if refund and refund.sure:
         return refund
+    share = match_reimbursement(conn, txn, names)
     learnt = _from_history(conn, txn, names, allowed)
-    if learnt and learnt.sure and not (txn["amount"] > 0 and refund):
+    if learnt and learnt.sure and not (txn["amount"] > 0 and (refund or share)):
         return learnt
 
     options, reasons, group = [], [], ""
-    for candidate in (refund, match_reimbursement(conn, txn, names), learnt,
-                      _from_bank_category(conn, txn, names, allowed)):
+    for candidate in (refund, share, learnt, _from_bank_category(conn, txn, names, allowed)):
         if candidate:
             if not reasons:
                 reasons.append(candidate.reason)
@@ -250,20 +244,54 @@ def analyze(conn, txn):
         reasons.append("Cash: which category did it come out of?")
     if not reasons:
         reasons.append("New payee")
-    payee = conn.execute("SELECT kind, always_ask FROM payees WHERE id = ?", (txn["payee_id"],)).fetchone()
-    person = bool(payee and payee["kind"] == "person")
-    always_ask = bool(payee and payee["always_ask"])
-    mixed = bool(learnt and learnt.mixed) or bool(refund) or person
+    always_ask = _always_ask(conn, txn)
+    mixed = bool(learnt and learnt.mixed) or bool(refund) or (always_ask and hint == "etransfer")
     # One group per payee in the inbox (even a mixed one like Amazon: "One at a time"
-    # splits it), except e-transfers, payees marked "Always ask", and items that are their
-    # own question (a refund, an unusual amount). Shares of one shared expense keep their
-    # own group.
-    individual = person or always_ask or any(c.individual for c in (refund, learnt) if c)
+    # splits it), except payees with Always ask on (anyone you e-transfer with, at first)
+    # and items that are their own question (a refund, an unusual amount). Shares of one
+    # shared expense keep their own group.
+    individual = always_ask or any(c.individual for c in (refund, learnt) if c)
     if not group.startswith("share:"):
         group = "" if individual or not txn["payee_id"] else \
             f"payee:{txn['payee_id']}:{'in' if txn['amount'] > 0 else 'out'}"
     return Suggestion(options[:4], False, reasons[0], refund_of=refund.refund_of if refund else None,
                       mixed=mixed, group=group, individual=individual)
+
+
+def category_for(txn, suggestion):
+    """The category a transaction gets from a suggestion: the top one, for good when sure,
+    else provisionally so the budget is roughly right. Never a provisional one for an
+    e-transfer, whatever its payee's Always ask."""
+    if not suggestion.options or (txn["hint"] == "etransfer" and not suggestion.sure):
+        return None
+    return suggestion.options[0]
+
+
+def _always_ask(conn, txn):
+    payee = conn.execute("SELECT always_ask FROM payees WHERE id = ?", (txn["payee_id"],)).fetchone()
+    return bool(payee and payee["always_ask"])
+
+
+# Where each kind of bank entry (payees.BANK_ENTRY_HINTS) starts, and why.
+_BANK_ENTRY_START = {"interest": (interest_category, "Interest charged on the card"),
+                     "fee": (interest_category, "A bank fee"),
+                     "income": (income_category, "Money from the bank: income")}
+
+
+def _bank_entry(conn, txn, names, allowed):
+    """Interest, a bank fee or a reward: never asked about. Each kind (its payee) goes to
+    the category the newest one went to, so moving one moves the ones after it. Until
+    then interest charged and fees go to Interest & Fees, interest earned and rewards to
+    Income."""
+    last = conn.execute(
+        "SELECT category_id FROM transactions WHERE payee_id = ? AND id != ? AND status = 'done' AND is_split = 0 "
+        "AND category_id IS NOT NULL AND transfer_account_id IS NULL ORDER BY date DESC, id DESC LIMIT 1",
+        (txn["payee_id"], txn["id"])).fetchone()
+    category, reason = _BANK_ENTRY_START[txn["hint"]]
+    start = category(conn)
+    if last and last["category_id"] != start and last["category_id"] in allowed:
+        return Suggestion([last["category_id"]], True, f"Where the last one went: {names.get(last['category_id'], '?')}")
+    return Suggestion([start], True, reason)
 
 
 def _money(cents):

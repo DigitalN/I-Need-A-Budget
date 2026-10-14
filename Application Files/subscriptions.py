@@ -16,7 +16,10 @@ Each tracked one has a **price type**:
 Detection looks for a payee charging on a steady rhythm (weekly, monthly or yearly):
 either about the same amount each time, and the *only* thing that payee charges at that
 amount in that stretch (a coffee shop you visit every few weeks isn't a subscription), or,
-for bills that vary, a payee that charges once a month and nothing else.
+for bills that vary, a payee that charges once a month and nothing else. Transfers and
+bank entries are never recurring charges, and neither is an e-transfer while its payee
+has Always ask on (`CAN_RECUR_SQL`): switch it off and rent e-transferred to a landlord is
+found like any bill.
 
 Found ones are suggestions until you track them or dismiss them. Once tracked, every new
 charge is linked to it, so the page can say when it's next due, when the price changed,
@@ -30,12 +33,18 @@ Apple Music under the same "APPLE.COM/BILL". Each tracked subscription has its o
 that category without asking.
 """
 
+from payees import TRANSFER_OR_BANK_ENTRY_HINTS, describe
 from util import add_days, days_between, same_day_next_month
 
 TOLERANCE = 0.06      # how far a currency-billed price wobbles and still counts as the same
 CADENCES = {"weekly": (6, 8, 7), "monthly": (25, 38, 30.44), "yearly": (350, 380, 365.25)}
 PRICINGS = ("fixed", "currency", "varies")
 RECENT_CHARGES = 6    # how many recent charges the typical amount of a varying bill is taken from
+# SQL condition on `transactions t JOIN payees p`: a transaction that can be a recurring
+# charge. Not a transfer or a bank entry, and not an e-transfer while its payee has Always
+# ask on (docs/adr/0001).
+CAN_RECUR_SQL = (f"t.hint NOT IN ({', '.join(repr(h) for h in TRANSFER_OR_BANK_ENTRY_HINTS)}) "
+                 "AND NOT (t.hint = 'etransfer' AND p.always_ask = 1)")
 
 
 def close(a, b, tolerance=TOLERANCE, floor=50):
@@ -134,11 +143,11 @@ def _typical(amounts):
 def detect(conn, today):
     """Suggested subscriptions and bills: steady charges not yet tracked or dismissed."""
     rows = conn.execute(
-        """
-        SELECT t.id, t.payee_id, p.name, p.kind, t.date, -t.amount AS amt, t.account_id, t.category_id,
+        f"""
+        SELECT t.id, t.payee_id, p.name, t.date, -t.amount AS amt, t.account_id, t.category_id,
                t.subscription_id, t.bank_category
           FROM transactions t JOIN payees p ON p.id = t.payee_id
-         WHERE t.amount < 0 AND t.transfer_account_id IS NULL AND p.kind NOT IN ('person', 'bank')
+         WHERE t.amount < 0 AND t.transfer_account_id IS NULL AND {CAN_RECUR_SQL}
          ORDER BY t.payee_id, t.date, t.id
         """).fetchall()
     known = conn.execute("SELECT payee_id, amount, pricing FROM subscriptions").fetchall()
@@ -201,8 +210,14 @@ def detect(conn, today):
 
 
 def guess_kind(conn, txn):
-    acct = conn.execute("SELECT kind FROM accounts WHERE id = ?", (txn["account_id"],)).fetchone()
-    if txn["amt"] >= 10_000 or (acct and acct["kind"] in ("chequing", "savings") and txn["kind"] == "organization"):
+    """A bill when it's $100 or more, or paid from chequing or savings by bill payment, EFT
+    or e-transfer (how the money moved, from the bank's text); otherwise a subscription."""
+    if txn["amt"] >= 10_000:
+        return "bill"
+    row = conn.execute("SELECT t.raw_name, t.raw_memo, a.kind FROM transactions t JOIN accounts a "
+                       "ON a.id = t.account_id WHERE t.id = ?", (txn["id"],)).fetchone()
+    if row and row["kind"] in ("chequing", "savings") and \
+            describe(row["raw_name"], row["raw_memo"], row["kind"]).kind in ("organization", "person"):
         return "bill"
     return "subscription"
 

@@ -7,7 +7,7 @@ commits. Amounts are cents.
 """
 
 import transfers
-from payees import find_similar, merchant_key
+from payees import find_similar, merchant_key, transaction_hint
 from util import day_before
 
 CASH_KINDS = ("chequing", "savings", "cash")
@@ -265,11 +265,14 @@ def find_category_by_name(conn, name):
 
 # ── payees ───────────────────────────────────────────────────
 
-def get_or_create_payee(conn, name, kind="merchant"):
+def get_or_create_payee(conn, name, kind="merchant", always_ask=False):
+    """The payee with this name, or a new one. `always_ask` only applies to a new payee:
+    anyone you e-transfer with starts with Always ask on (docs/adr/0001)."""
     row = conn.execute("SELECT id FROM payees WHERE name = ? COLLATE NOCASE", (name,)).fetchone()
     if row:
         return row["id"]
-    return conn.execute("INSERT INTO payees (name, kind) VALUES (?, ?)", (name, kind)).lastrowid
+    return conn.execute("INSERT INTO payees (name, kind, always_ask) VALUES (?, ?, ?)",
+                        (name, kind, 1 if always_ask else 0)).lastrowid
 
 
 def add_payee_key(conn, key, payee_id, how):
@@ -297,7 +300,7 @@ def resolve_payee(conn, desc):
         payee_id, name = match[0], match[1]
         add_payee_key(conn, desc.key, payee_id, "similar")
         return payee_id, f"Matched to {name} (similar name)", None
-    payee_id = get_or_create_payee(conn, desc.name, desc.kind)
+    payee_id = get_or_create_payee(conn, desc.name, desc.kind, always_ask=transaction_hint(desc) == "etransfer")
     add_payee_key(conn, desc.key, payee_id, "exact")
     return payee_id, "", (match[0] if match else None)
 

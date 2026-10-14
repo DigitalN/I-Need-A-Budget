@@ -24,7 +24,7 @@ from pathlib import Path
 
 log = logging.getLogger("inab")
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 BACKUPS_KEPT = 14
 
 SCHEMA = """
@@ -100,7 +100,9 @@ CREATE TABLE IF NOT EXISTS categories (
 CREATE TABLE IF NOT EXISTS payees (
     id INTEGER PRIMARY KEY,
     name TEXT NOT NULL UNIQUE COLLATE NOCASE,
-    kind TEXT NOT NULL DEFAULT 'merchant', -- merchant | person | organization | bank
+    kind TEXT NOT NULL DEFAULT 'merchant', -- what the bank's text first said (payees.Description.kind). A payee
+                                           -- is just a name (docs/adr/0001): this only keeps bank wording
+                                           -- out of similar-name matching
     always_ask INTEGER NOT NULL DEFAULT 0
 );
 
@@ -151,7 +153,7 @@ CREATE TABLE IF NOT EXISTS transactions (
     raw_memo TEXT NOT NULL DEFAULT '',
     bank_type TEXT NOT NULL DEFAULT '',  -- DEBIT / CREDIT / OTHER / ATM ...
     bank_category TEXT NOT NULL DEFAULT '',  -- the card's own category ("Restaurant")
-    hint TEXT NOT NULL DEFAULT '',       -- transfer | interest | income | cash | fee
+    hint TEXT NOT NULL DEFAULT '',       -- transfer | interest | income | cash | fee | etransfer
     category_id INTEGER REFERENCES categories(id) ON DELETE SET NULL,
     is_split INTEGER NOT NULL DEFAULT 0,
     transfer_account_id INTEGER REFERENCES accounts(id) ON DELETE SET NULL,
@@ -274,7 +276,14 @@ class Database:
                 # from a file is a Tangerine account.
                 self.conn.execute("UPDATE accounts SET bank = 'Tangerine' WHERE bank IS NULL AND id IN "
                                   "(SELECT account_id FROM account_sources)")
-            # Next upgrade: `if version is not None and version < 4: ...`, then raise SCHEMA_VERSION.
+            if version is not None and version < 4:
+                # A payee is just a name (docs/adr/0001): being an e-transfer moves from the payee
+                # (kind 'person') to its transactions, and anyone you e-transfer with gets Always ask,
+                # which keeps what the app did before.
+                self.conn.execute("UPDATE transactions SET hint = 'etransfer' WHERE hint = '' AND payee_id IN "
+                                  "(SELECT id FROM payees WHERE kind = 'person')")
+                self.conn.execute("UPDATE payees SET always_ask = 1 WHERE kind = 'person'")
+            # Next upgrade: `if version is not None and version < 5: ...`, then raise SCHEMA_VERSION.
             self.conn.execute("INSERT INTO meta (key, value) VALUES ('schema_version', ?) "
                               "ON CONFLICT(key) DO UPDATE SET value = excluded.value", (str(SCHEMA_VERSION),))
             if version is not None and version < SCHEMA_VERSION:

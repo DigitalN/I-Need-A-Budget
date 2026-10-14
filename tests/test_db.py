@@ -100,9 +100,9 @@ def test_an_older_database_is_backed_up_then_upgraded(tmp_path):
     db = Database(path)
     columns = [r["name"] for r in db.conn.execute("PRAGMA table_info(categories)")]
     assert "note" in columns
-    assert db.get_meta("schema_version") == "3"
+    assert db.get_meta("schema_version") == "4"
     assert db.conn.execute("SELECT name, note FROM categories").fetchone()[:] == ("Rent", "")
-    backups = list((tmp_path / "Backups").glob("budget-before-upgrade-v1-to-v3-*.db"))
+    backups = list((tmp_path / "Backups").glob("budget-before-upgrade-v1-to-v4-*.db"))
     assert len(backups) == 1
     with db.write("Edit") as c:  # undo still works on the new column
         c.execute("UPDATE categories SET note = 'renews in March' WHERE id = 1")
@@ -122,7 +122,29 @@ def test_version_2_accounts_from_files_become_tangerine_accounts(tmp_path):
     db.conn.execute("ALTER TABLE accounts DROP COLUMN bank")
     db.close()
     db = Database(tmp_path / "budget.db")
-    assert db.get_meta("schema_version") == "3"
+    assert db.get_meta("schema_version") == "4"
     assert [tuple(r) for r in db.conn.execute("SELECT name, bank FROM accounts ORDER BY id")] == [("Chequing", "Tangerine"),
                                                                                               ("Cash", None)]
-    assert len(list((tmp_path / "Backups").glob("budget-before-upgrade-v2-to-v3-*.db"))) == 1
+    assert len(list((tmp_path / "Backups").glob("budget-before-upgrade-v2-to-v4-*.db"))) == 1
+
+
+def test_version_3_e_transfer_payees_start_with_always_ask_on(tmp_path):
+    """A payee is just a name (docs/adr/0001): anyone you e-transfer with gets Always ask,
+    and being an e-transfer moves from the payee to its transactions."""
+    db = Database(tmp_path / "budget.db")
+    with db.write() as c:
+        c.execute("INSERT INTO accounts (id, name, kind) VALUES (1, 'Chequing', 'chequing')")
+        c.execute("INSERT INTO payees (id, name, kind, always_ask) VALUES (1, 'Riley Example', 'person', 0), "
+                  "(2, 'Sample Cafe', 'merchant', 0), (3, 'Sample Bookshop', 'merchant', 1), "
+                  "(4, 'Cash withdrawal', 'bank', 0), (5, 'Sample Utility', 'organization', 0)")
+        c.execute("INSERT INTO transactions (id, account_id, date, amount, payee_id, hint) VALUES "
+                  "(1, 1, '2026-07-01', -6000, 1, ''), (2, 1, '2026-07-02', -650, 2, ''), "
+                  "(3, 1, '2026-07-03', -10000, 4, 'cash'), (4, 1, '2026-07-04', -4210, 5, '')")
+        c.execute("UPDATE meta SET value = '3' WHERE key = 'schema_version'")
+    db.close()
+    db = Database(tmp_path / "budget.db")
+    assert db.get_meta("schema_version") == "4"
+    assert [tuple(r) for r in db.conn.execute("SELECT name, always_ask FROM payees ORDER BY id")] == [
+        ("Riley Example", 1), ("Sample Cafe", 0), ("Sample Bookshop", 1), ("Cash withdrawal", 0), ("Sample Utility", 0)]
+    assert [r[0] for r in db.conn.execute("SELECT hint FROM transactions ORDER BY id")] == ["etransfer", "", "cash", ""]
+    assert len(list((tmp_path / "Backups").glob("budget-before-upgrade-v3-to-v4-*.db"))) == 1

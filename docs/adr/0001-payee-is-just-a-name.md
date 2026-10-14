@@ -16,4 +16,7 @@ lets the app learn it and track it as a bill, with no special feature for that.
   about and have no Always ask switch. Each kind starts in Income or Interest & Fees and
   then goes wherever you last moved one of its kind. Cash withdrawals and deposits are
   ordinary transactions, not bank entries.
-- Decided 2026-10-13; the code still has payee kinds until this is built.
+- Decided 2026-10-13, built in 1.0.9. Being an e-transfer is kept on the transaction
+  (`hint = 'etransfer'`); the upgrade marked the transactions of payees that were people
+  and switched Always ask on for those payees. The old `payees.kind` column stays, only
+  to keep bank wording out of similar-name matching.

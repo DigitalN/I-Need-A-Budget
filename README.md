@@ -55,8 +55,11 @@ Click one (or press 1–4, Return for the first) and it's categorized. ⌘Z undo
 - A payee's transactions are grouped; categorize them together, or **One at a time**.
   **Always ask** shows each on its own and stops the app categorizing that payee by itself.
 - Categorizing one teaches the app: the rest from that payee it's now sure about
-  categorize themselves. Except with **One at a time**, and except e-transfers: those are
-  always asked about one by one, never assumed or grouped.
+  categorize themselves. Except with **One at a time**, and except anyone you e-transfer
+  with: they start with **Always ask** on. Switch it off for rent e-transferred to a
+  landlord and the app learns it like any payee.
+- Interest, bank fees and rewards are never asked about. Move one to another category
+  and the next ones go there too.
 - The finder at the top searches the inbox, and has a button per payee to show just theirs.
 - Card payments are matched with the chequing withdrawal and marked as transfers.
   Refunds and e-transfers that pay you back go back to the category the money left from.
