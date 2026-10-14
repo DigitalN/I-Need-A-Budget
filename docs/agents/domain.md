@@ -2,9 +2,10 @@
 
 How the engineering skills should consume this repo's domain documentation when exploring the codebase.
 
-This repo is single-context. Until `CONTEXT.md` and `docs/adr/` exist, CLAUDE.md's
-Architecture, Key rules and "Decisions already made" sections play their part: flag a
-conflict with one of those decisions the same way as an ADR conflict.
+This repo is single-context. `CONTEXT.md` is the glossary and `docs/adr/` holds the
+decisions recorded since it started; CLAUDE.md's Architecture, Key rules and "Decisions
+already made" sections hold the older ones: flag a conflict with one of those the same
+way as an ADR conflict.
 
 ## Before exploring, read these
 

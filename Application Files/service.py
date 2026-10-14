@@ -702,7 +702,7 @@ class BudgetService:
             if row is None:
                 return False
             if row["debt_account_id"]:
-                raise UserError("A card's payment envelope goes away when you delete the account.")
+                raise UserError("A card's payment category goes away when you delete the account.")
             if category_id == ledger.income_category(c) or category_id == ledger.interest_category(c):
                 raise UserError("This category is needed by the app and can't be deleted.")
             if move_to:
@@ -1172,7 +1172,7 @@ class BudgetService:
             s = analyze(c, txn)
             if s.refund_of and s.options and s.options[0] == int(category_id):
                 refund_of = s.refund_of
-        c.execute("UPDATE transactions SET category_id = ?, status = 'done', reason = 'Filed by you', "
+        c.execute("UPDATE transactions SET category_id = ?, status = 'done', reason = 'Categorized by you', "
                   "similar_payee_id = NULL, refund_of = ? WHERE id = ?", (int(category_id), refund_of, txn_id))
         if txn["subscription_id"]:
             # A subscription without a category learns it from the first charge you file.
@@ -1230,7 +1230,7 @@ class BudgetService:
         elif candidate:
             why = f"It looks like it charges {cadence}"
         else:
-            why = f"You filed it under {first['category_name']}"
+            why = f"You put it in {first['category_name']}"
         return {"txn_id": first["id"], "payee": first["payee_name"], "amount": price, "count": count,
                 "category_id": first["category_id"], "category": first["category_name"], "cadence": cadence,
                 "kind": candidate["kind"] if candidate else "subscription", "candidate": candidate,
@@ -1420,7 +1420,7 @@ class BudgetService:
                     transfers.unlink(c, txn_id)
                 c.execute("DELETE FROM splits WHERE transaction_id = ?", (txn_id,))
                 c.execute("UPDATE transactions SET category_id = ?, is_split = 0, status = ?, reason = ? WHERE id = ?",
-                          (cid or None, "done" if cid else "review", "Filed by you" if cid else "", txn_id))
+                          (cid or None, "done" if cid else "review", "Categorized by you" if cid else "", txn_id))
             if "note" in changes:
                 c.execute("UPDATE transactions SET note = ? WHERE id = ?", (str(changes["note"] or ""), txn_id))
             if manual:

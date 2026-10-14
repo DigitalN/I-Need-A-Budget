@@ -13,7 +13,7 @@ from util import day_before
 CASH_KINDS = ("chequing", "savings", "cash")
 DEBT_KINDS = ("credit_card", "line_of_credit")
 ACCOUNT_KINDS = CASH_KINDS + DEBT_KINDS
-KIND_LABELS = {"chequing": "Chequing", "savings": "Savings", "cash": "Cash",
+KIND_LABELS = {"chequing": "Chequing", "savings": "Savings", "cash": "Wallet",
                "credit_card": "Credit card", "line_of_credit": "Line of credit"}
 
 DEBT_GROUP_NAME = "Debt Payments"
@@ -158,8 +158,9 @@ def merge_accounts(conn, from_id, into_id):
 
 def _drop_copy(conn, copy, twin):
     """Deletes `copy`, a second copy of `twin`, moving onto `twin` what only the copy has:
-    your filing, a split, a note, its subscription, its transfer, its bank ID."""
-    if twin["status"] == "review" and copy["reason"] in ("Filed by you", "Split by you"):
+    your category, a split, a note, its subscription, its transfer, its bank ID."""
+    # "Filed by you" is what versions before 1.0.8 wrote.
+    if twin["status"] == "review" and copy["reason"] in ("Categorized by you", "Filed by you", "Split by you"):
         conn.execute("UPDATE transactions SET category_id = ?, is_split = ?, status = 'done', reason = ?, refund_of = ? "
                      "WHERE id = ?", (copy["category_id"], copy["is_split"], copy["reason"], copy["refund_of"], twin["id"]))
         if copy["is_split"]:
