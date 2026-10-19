@@ -728,7 +728,7 @@ function cashCheck(s, view) {
   if (s.overspent_pending) parts.push(view.overspending === 'next_month'
     ? `+ ${money(s.overspent_pending)} overspent, out of ${monthOnly(addMonths(view.month, 1))}`
     : `+ ${money(s.overspent_pending)} categories still owe`);
-  const off = s.ready_to_assign - (s.cash.total - s.in_categories - (s.waiting || 0) + s.overspent_pending);
+  const off = s.off;
   return `<div class="check small ${off ? 'warn' : 'muted'}">${parts.join(' ')}${off ? ` · ${money(Math.abs(off))} off: a transfer's other half or a balance may be missing` : ''}</div>`;
 }
 
@@ -803,7 +803,7 @@ async function editFromDrawer(txId, close, reopen) {
 function envelopeSummary(c) {
   if (!c || c.owing === undefined) return '';
   const line = (label, amount, cls = '') => `<div class="row" style="padding:3px 0"><span class="muted">${label}</span><span class="spacer"></span><b class="num ${cls}">${money(amount)}</b></div>`;
-  return `<div class="card" style="margin-top:12px">${line('You owe on the card', c.owing)}${line('Set aside here to pay it', Math.max(c.available || 0, 0))}${line('Not set aside yet', c.not_covered, c.not_covered ? 'warn' : '')}</div>`;
+  return `<div class="card" style="margin-top:12px">${line('You owe on the card', c.owing)}${line('Set aside here to pay it', c.set_aside)}${line('Not set aside yet', c.not_covered, c.not_covered ? 'warn' : '')}</div>`;
 }
 
 async function openCategory(id) {
@@ -1057,14 +1057,13 @@ function drawDashboard() {
   const scrolled = main.scrollTop, across = wrap ? wrap.scrollLeft : null;
   const tile = (what, label, big, sub, cls = '') => `<button class="card tile" data-act="dash-go" data-what="${what}">
       <span class="label">${label}</span><span class="big ${cls}">${big}</span>${sub}</button>`;
-  const overspent = d.overspent.reduce((t, o) => t + o.amount, 0);
   const tiles = [
     tile('budget', 'Ready to assign', s ? money(s.ready_to_assign) : '—',
       s ? cashCheck(s, { overspending: d.overspending, month: d.month }) : '<span class="small faint">The budget hasn\'t started</span>',
       s && s.ready_to_assign < 0 ? 'neg' : ''),
     tile('inbox', 'Inbox', String(d.inbox),
       `<span class="small muted">${d.inbox ? 'to look at' : 'Nothing to look at'}${d.waiting ? ` · ${money(d.waiting)} waiting` : ''}</span>`),
-    tile('budget', `Overspent in ${monthOnly(d.month)}`, d.overspent.length ? money(overspent) : 'None',
+    tile('budget', `Overspent in ${monthOnly(d.month)}`, d.overspent.length ? money(d.overspent_total) : 'None',
       `<span class="small muted">${d.overspent.slice(0, 3).map(o => `${esc(o.name)} ${money(o.amount)}`).join(' · ')}${d.overspent.length > 3 ? ` and ${d.overspent.length - 3} more` : ''}</span>`,
       d.overspent.length ? 'neg' : ''),
     tile('accounts', 'Cash', money(d.cash),
@@ -2020,7 +2019,7 @@ async function renderAccounts() {
           <div class="small muted">Set aside to pay it: <b>${money(d.set_aside)}</b></div></div>
         <div><div class="muted small">Interest & fees, last 6 months</div>
           <div class="mini-bars" title="${esc(d.interest.map(i => monthShort(i.month) + ' ' + money(i.amount)).join(', '))}">${d.interest.map(i => `<div style="height:${i.amount / maxI * 100}%"></div>`).join('')}</div>
-          <div class="small muted">${money(d.interest.reduce((s, i) => s + i.amount, 0))} total</div></div>
+          <div class="small muted">${money(d.interest_total)} total</div></div>
       </div>
       <div class="row wrap" style="margin-top:12px">
         <label class="small muted">Interest rate</label><input style="width:70px;text-align:right" data-apr="${d.account_id}" value="${d.apr ?? ''}" placeholder="20.99">%
