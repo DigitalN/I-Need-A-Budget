@@ -99,6 +99,12 @@ All in `Application Files/`:
 - `budget.py`: pure envelope math, credit cards included, and the three ways overspending
   is paid for (the Overspending setting). Its docstring states the rules and the
   invariant `tests/test_budget.py` checks on random histories (all three ways).
+- `figures.py`: every money figure the pages show (Budget page, Dashboard, category
+  pop-over and Spent list, Debt page, Assign money…, Catch up), from one reading of the
+  database per request, with `budget.compute` as its core. It only reads: `service.py`
+  makes the changes and arranges the figures for the page. Working one of these figures
+  out anywhere else (service.py, index.html) is a bug. `tests/test_figures.py` checks
+  it on random databases.
 - `updater.py`, `launch.py`: updates from the repo's GitHub releases (anonymously, or
   with a token if there is one); moving into Applications;
   relaunching.

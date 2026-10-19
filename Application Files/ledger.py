@@ -247,6 +247,17 @@ def category_names(conn):
     return {r["id"]: r["name"] for r in conn.execute("SELECT id, name FROM categories")}
 
 
+def category_tree(conn):
+    """Category groups in budget order, each with its categories in order."""
+    groups = []
+    for g in conn.execute("SELECT * FROM category_groups ORDER BY sort, id").fetchall():
+        cats = [dict(r) for r in conn.execute(
+            "SELECT id, name, hidden, monthly_budget, debt_account_id, sort FROM categories "
+            "WHERE group_id = ? ORDER BY sort, id", (g["id"],))]
+        groups.append({**dict(g), "categories": cats})
+    return groups
+
+
 def assignable_category_ids(conn):
     """Categories a transaction can be filed under: not hidden, not a payment envelope."""
     return {r["id"] for r in conn.execute(
