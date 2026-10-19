@@ -330,11 +330,12 @@ class Figures:
             "SELECT account_id, date, amount FROM transactions WHERE hint IN ('interest', 'fee')")]
 
     def debts(self):
-        """Each open card and line of credit: what's owed, what's set aside for it, what
-        isn't yet, interest and fees and what was owed over the last six months, an
-        estimated monthly payment (the planned one, else the average paid to it from cash
-        accounts over the last three whole months: a balance transfer from another card
-        isn't a payment) and how long paying it off would take."""
+        """Each card and line of credit in use (open ones, and closed ones still owing):
+        what's owed, what's set aside for it, what isn't yet, interest and fees and what
+        was owed over the last six months, an estimated monthly payment (the planned one,
+        else the average paid to it from cash accounts over the last three whole months: a
+        balance transfer from another card isn't a payment) and how long paying it off
+        would take."""
         current = self.current
         f = self._budget(current).get(current, {}).get("categories", {})
         payment_cats = ledger.payment_categories(self.conn)
@@ -342,7 +343,7 @@ class Figures:
         paid_from, paid_to = first_day(add_months(current, -3)), last_day(add_months(current, -1))
         out = []
         for a in self._accounts:
-            if not ledger.is_debt(a["kind"]) or a["closed"]:
+            if not ledger.is_debt(a["kind"]) or (a["closed"] and not self._balance(a["id"])):
                 continue
             owing = -(self._balance(a["id"]) or 0)
             set_aside = max(0, f.get(payment_cats.get(a["id"]), {}).get("available", 0))

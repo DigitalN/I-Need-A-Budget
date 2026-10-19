@@ -38,11 +38,12 @@ def find_counterpart(conn, txn, window=PAIR_WINDOW_DAYS):
               "target": txn["transfer_account_id"] or 0}).fetchone()
 
 
-def link(conn, a, b, accounts=None):
-    accounts = accounts or _accounts(conn)
+def link(conn, a, b):
+    # Named from every account: a closed account keeps its history, transfers included.
+    names = {r["id"]: r["name"] for r in conn.execute("SELECT id, name FROM accounts")}
     for this, other in ((a, b), (b, a)):
         verb = "from" if this["amount"] > 0 else "to"
-        other_name = accounts[other["account_id"]]["name"] if other["account_id"] in accounts else "another account"
+        other_name = names.get(other["account_id"], "another account")
         conn.execute(
             "UPDATE transactions SET transfer_id = ?, transfer_account_id = ?, category_id = NULL, is_split = 0, "
             "status = 'done', reason = ? WHERE id = ?",
@@ -84,7 +85,7 @@ def pair(conn, txn):
         return True
     other = find_counterpart(conn, txn)
     if other is not None:
-        link(conn, txn, other, accounts)
+        link(conn, txn, other)
         return True
     if txn["hint"] != "transfer" and not txn["transfer_account_id"]:
         return False

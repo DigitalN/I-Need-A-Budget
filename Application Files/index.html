@@ -982,6 +982,9 @@ async function openAssign(amount) {
 }
 
 // ── categories editor (budget + onboarding) ─────────────
+// Only an empty group or a category never used has a ✕; the others get this blank in its
+// place so the buttons stay in line.
+const NO_DELETE = '<button type="button" class="icon-btn" style="visibility:hidden" tabindex="-1" aria-hidden="true">✕</button>';
 function categoryEditorHtml(groups) {
   return `<div class="cat-editor">${groups.map(g => `
     <div class="grp" data-group="${g.id}">
@@ -989,13 +992,13 @@ function categoryEditorHtml(groups) {
         <input value="${esc(g.name)}" data-rename-group="${g.id}" ${g.role !== 'normal' ? 'disabled' : ''}>
         ${g.role === 'normal' ? `<button type="button" class="icon-btn" data-move-group="${g.id}" data-dir="-1" title="Move up">↑</button>
         <button type="button" class="icon-btn" data-move-group="${g.id}" data-dir="1" title="Move down">↓</button>
-        <button type="button" class="icon-btn danger" data-delete-group="${g.id}" title="Delete group">✕</button>` : `<span class="tag">${g.role === 'income' ? 'Income' : 'Cards'}</span>`}
+        ${g.categories.length ? NO_DELETE : `<button type="button" class="icon-btn danger" data-delete-group="${g.id}" title="Delete group">✕</button>`}` : `<span class="tag">${g.role === 'income' ? 'Income' : 'Cards'}</span>`}
       </div>
       ${g.categories.map(c => `<div class="cat-row">
         <input value="${esc(c.name)}" data-rename-cat="${c.id}" ${c.debt_account_id ? 'disabled' : ''}>
         ${c.debt_account_id ? '<span class="tag">Card payment</span>' : `
         <button type="button" class="icon-btn" data-hide-cat="${c.id}" data-hidden="${c.hidden}" title="${c.hidden ? 'Show' : 'Hide'}">${c.hidden ? 'Show' : 'Hide'}</button>
-        <button type="button" class="icon-btn danger" data-delete-cat="${c.id}" title="Delete">✕</button>`}
+        ${c.used ? NO_DELETE : `<button type="button" class="icon-btn danger" data-delete-cat="${c.id}" title="Delete">✕</button>`}`}
       </div>`).join('')}
       ${g.role !== 'debt' ? `<div class="cat-row"><input placeholder="Add a category…" data-add-cat="${g.id}"></div>` : ''}
     </div>`).join('')}
@@ -1023,7 +1026,7 @@ function bindCategoryEditor(root, rerender) {
     if (b.dataset.moveGroup) run(() => call('move_group', [Number(b.dataset.moveGroup), Number(b.dataset.dir)]));
     else if (b.dataset.hideCat) run(() => call('set_category_hidden', [Number(b.dataset.hideCat), b.dataset.hidden !== '1']));
     else if (b.dataset.deleteCat) {
-      run(() => call('delete_category', [Number(b.dataset.deleteCat)]), 'Category deleted; its transactions went back to the Inbox');
+      run(() => call('delete_category', [Number(b.dataset.deleteCat)]), 'Category deleted');
     } else if (b.dataset.deleteGroup) {
       run(() => call('delete_group', [Number(b.dataset.deleteGroup)]), 'Group deleted');
     }
@@ -1480,7 +1483,7 @@ async function acceptAll() {
 async function transferDialog(txId, fromAccountName) {
   await loadAccounts();
   const t = findTx(txId);
-  const options = state.accounts.filter(a => a.id !== (t ? t.account_id : null) && !a.closed);
+  const options = state.accounts.filter(a => a.id !== (t ? t.account_id : null) && (!a.closed || (t && t.transfer_account_id === a.id)));
   const v = await dialog({
     title: 'Transfer between your accounts',
     body: `<p class="muted">Money moving between your own accounts isn't spending, so it has no category. ${options.length ? '' : 'Add the other account on the Accounts page first.'}</p>
@@ -1709,7 +1712,7 @@ async function setupFile(path) {
         </div>
       </div>
       ${info.saved ? `<p class="small muted" style="margin-top:0">The app already knows files like this one. <button type="button" class="link" id="su-show-columns">Change columns…</button></p>` : ''}
-      <div class="field"><label>Account</label><select id="su-account"><option value="">New account…</option>${accounts.filter(a => !a.closed).map(a => `<option value="${a.id}" ${info.account_id === a.id ? 'selected' : ''}>${esc(a.name)}</option>`).join('')}</select></div>
+      <div class="field"><label>Account</label><select id="su-account"><option value="">New account…</option>${accounts.filter(a => !a.closed || a.id === info.account_id).map(a => `<option value="${a.id}" ${info.account_id === a.id ? 'selected' : ''}>${esc(a.name)}</option>`).join('')}</select></div>
       <div class="grid3" id="su-new">
         <div class="field"><label>Bank</label><input id="su-bank" list="bank-list" placeholder="Search or type a name" autocomplete="off">${bankList(banks)}</div>
         <div class="field"><label>Type</label><select id="su-kind">${KIND_OPTIONS.map(([v, t]) => `<option value="${v}" ${v === kindGuess ? 'selected' : ''}>${t}</option>`).join('')}</select></div>
@@ -2005,9 +2008,13 @@ async function renderAccounts() {
         <button class="btn small" data-act="edit-account" data-account="${a.id}">Edit…</button>
         ${mergeTargets(accounts, a).length ? `<button class="btn small" data-act="merge-pick" data-account="${a.id}">Merge into…</button>` : ''}
         <span class="spacer"></span>
-        <button class="icon-btn danger" data-act="delete-account" data-account="${a.id}" title="Delete account">✕</button>
+        ${a.used ? '' : `<button class="icon-btn danger" data-act="delete-account" data-account="${a.id}" title="Delete account">✕</button>`}
       </div></div>`;
   }).join('');
+  const closedRows = accounts.filter(a => a.closed).map(a => `<tr><td><b>${esc(a.name)}</b> <span class="faint small">${esc(a.kind_label)}</span></td>
+      <td class="small muted">${plural(a.transactions, 'transaction')}${a.last_date ? ` · up to ${dayYear(a.last_date)}` : ''}</td>
+      <td class="r num">${a.balance ? (a.is_debt ? `${money(-a.balance)} owing` : money(a.balance)) : ''}</td>
+      <td class="r"><button class="btn small" data-act="edit-account" data-account="${a.id}">Edit…</button></td></tr>`).join('');
   const debtCards = debt.accounts.map(d => {
     const maxI = Math.max(1, ...d.interest.map(i => i.amount));
     const payoff = d.payoff ? (d.payoff.months === 0 ? 'Paid off.' : `At ${money(d.estimate_payment)} a month it's paid off in about ${plural(d.payoff.months, 'month')}${d.apr ? `, costing ${money(d.payoff.interest)} in interest` : ' (enter the interest rate to include interest)'}.`)
@@ -2037,6 +2044,8 @@ async function renderAccounts() {
     <div class="stack">
       <div class="acct-grid">${cards || '<div class="card empty"><b>No accounts yet</b>Import a bank file and its account appears here.</div>'}</div>
       ${debtCards ? `<h2 style="margin-top:12px">Paying down debt</h2>${debtCards}` : ''}
+      ${closedRows ? `<details class="card"><summary style="cursor:default;font-weight:600">Closed accounts</summary>
+        <table><tbody>${closedRows}</tbody></table></details>` : ''}
       ${importRows ? `<details class="card"><summary style="cursor:default;font-weight:600">Imported files</summary>
         <p class="small muted">Removing an import deletes the transactions it added (not ones another file also had).</p>
         <table><tbody>${importRows}</tbody></table></details>` : ''}
@@ -2082,7 +2091,13 @@ async function accountAction(btn) {
     const banks = await call('bank_names');
     const v = await dialog({ title: `Edit ${a.name}`, body: `<div class="field"><label>Name</label><input id="acct-name" value="${esc(a.name)}"></div>
         <div class="field"><label>Bank</label><input id="acct-bank" list="bank-list" value="${esc(a.bank || '')}" placeholder="Search or type a name" autocomplete="off">${bankList(banks)}</div>`,
-      actions: [{ label: 'Cancel', value: null }, { label: 'Save', value: 'ok', primary: true }] });
+      actions: [a.closed ? { label: 'Reopen account', value: 'reopen', left: true } : { label: 'Close account', value: 'close', left: true },
+        { label: 'Cancel', value: null }, { label: 'Save', value: 'ok', primary: true }] });
+    if (v === 'close' || v === 'reopen') {
+      await call('update_account', [id, { closed: v === 'close' }]);
+      toast(v === 'close' ? `${a.name} closed` : `${a.name} reopened`, { action: undoAction });
+      return renderAccounts();
+    }
     if (v !== 'ok') return;
     const changes = {};
     if ($('#acct-name').value.trim() !== a.name) changes.name = $('#acct-name').value;
@@ -2092,7 +2107,7 @@ async function accountAction(btn) {
     await loadCategories();
     toast('Saved', { action: undoAction });
   } else if (act === 'delete-account') {
-    if (!await confirmBox(`Delete ${a.name}?`, `This deletes the account and its ${plural(a.transactions, 'transaction')}. You can undo it right after.`, 'Delete', true)) return;
+    if (!await confirmBox(`Delete ${a.name}?`, 'You can undo it right after.', 'Delete', true)) return;
     await call('delete_account', [id]);
     await loadCategories();
     toast('Account deleted', { action: undoAction });

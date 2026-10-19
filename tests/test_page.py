@@ -52,3 +52,13 @@ def test_amount_boxes_start_empty_and_redraws_keep_your_place():
     assert 'value="${moneyOrBlank(c.assigned)}" placeholder="0.00"' in PAGE
     assert "scrollIntoView({ inline: 'center'" not in PAGE  # it scrolled the page to the top
     assert "main.scrollTop = scrolled" in PAGE and "keepSelected" in PAGE
+
+
+def test_used_categories_and_accounts_are_hidden_or_closed_not_deleted():
+    """A ✕ shows only for a category or account never used, and for an empty group;
+    Edit… closes or reopens an account."""
+    assert "${c.used ? NO_DELETE : `<button type=\"button\" class=\"icon-btn danger\" data-delete-cat=" in PAGE
+    assert "${g.categories.length ? NO_DELETE : `<button type=\"button\" class=\"icon-btn danger\" data-delete-group=" in PAGE
+    assert "${a.used ? '' : `<button class=\"icon-btn danger\" data-act=\"delete-account\"" in PAGE
+    assert "label: 'Close account', value: 'close'" in PAGE and "label: 'Reopen account', value: 'reopen'" in PAGE
+    assert "went back to the Inbox" not in PAGE

@@ -596,8 +596,14 @@ class BudgetService:
 
     @exposed
     def categories(self):
+        """The category tree; `used` on each category: it can only be hidden, not deleted
+        (the app's own Income and Interest & Fees count as used)."""
         with self.db.read() as c:
-            return ledger.category_tree(c)
+            tree, used = ledger.category_tree(c), ledger.used_category_ids(c) | ledger.own_category_ids(c)
+        for g in tree:
+            for cat in g["categories"]:
+                cat["used"] = cat["id"] in used
+        return tree
 
     def _next_sort(self, c, table, where="", params=()):
         return c.execute(f"SELECT COALESCE(MAX(sort), 0) + 1 FROM {table} {where}", params).fetchone()[0]
@@ -628,8 +634,8 @@ class BudgetService:
                 return False
             if g["role"] != "normal":
                 raise UserError("This group is needed by the app and can't be deleted.")
-            for cat in c.execute("SELECT id FROM categories WHERE group_id = ?", (group_id,)).fetchall():
-                self._uncategorize(c, cat["id"])
+            if c.execute("SELECT 1 FROM categories WHERE group_id = ?", (group_id,)).fetchone():
+                raise UserError("Only an empty group can be deleted.")
             c.execute("DELETE FROM category_groups WHERE id = ?", (group_id,))
         return True
 
@@ -678,33 +684,20 @@ class BudgetService:
             c.execute("UPDATE categories SET name = ?, old_names = ? WHERE id = ?", (name, "|".join(old), category_id))
         return True
 
-    def _uncategorize(self, c, category_id):
-        c.execute("UPDATE transactions SET category_id = NULL, status = 'review', reason = 'Its category was deleted' "
-                  "WHERE category_id = ?", (category_id,))
-        c.execute("UPDATE splits SET category_id = NULL WHERE category_id = ?", (category_id,))
-        c.execute("UPDATE transactions SET status = 'review', reason = 'A category in its split was deleted' "
-                  "WHERE id IN (SELECT transaction_id FROM splits WHERE category_id IS NULL)")
-
     @exposed
-    def delete_category(self, category_id, move_to=None):
+    def delete_category(self, category_id):
+        """Only a category never used (a typo just made): a used one can only be hidden
+        (ledger.used_category_ids)."""
         with self.db.write("Delete category") as c:
-            row = c.execute("SELECT debt_account_id FROM categories WHERE id = ?", (category_id,)).fetchone()
+            row = c.execute("SELECT name, debt_account_id FROM categories WHERE id = ?", (category_id,)).fetchone()
             if row is None:
                 return False
             if row["debt_account_id"]:
-                raise UserError("A card's payment category goes away when you delete the account.")
-            if category_id == ledger.income_category(c) or category_id == ledger.interest_category(c):
+                raise UserError("A card's payment category can't be deleted.")
+            if int(category_id) in ledger.own_category_ids(c):
                 raise UserError("This category is needed by the app and can't be deleted.")
-            if move_to:
-                c.execute("UPDATE transactions SET category_id = ? WHERE category_id = ?", (move_to, category_id))
-                c.execute("UPDATE splits SET category_id = ? WHERE category_id = ?", (move_to, category_id))
-                c.execute("UPDATE examples SET category_id = ? WHERE category_id = ?", (move_to, category_id))
-                for b in c.execute("SELECT month, assigned FROM budget WHERE category_id = ?", (category_id,)).fetchall():
-                    c.execute("INSERT INTO budget (month, category_id, assigned) VALUES (?, ?, ?) "
-                              "ON CONFLICT(month, category_id) DO UPDATE SET assigned = assigned + excluded.assigned",
-                              (b["month"], move_to, b["assigned"]))
-            else:
-                self._uncategorize(c, category_id)
+            if int(category_id) in ledger.used_category_ids(c):
+                raise UserError(f"{row['name']} has been used, so it can only be hidden.")
             c.execute("DELETE FROM categories WHERE id = ?", (category_id,))
         return True
 
@@ -1344,6 +1337,11 @@ class BudgetService:
         if amount == 0:
             raise UserError("Enter an amount.")
         with self.db.write("Add transaction") as c:
+            acct = c.execute("SELECT name, closed FROM accounts WHERE id = ?", (int(account_id),)).fetchone()
+            if acct is None:
+                raise UserError("That account no longer exists.")
+            if acct["closed"]:
+                raise UserError(f"{acct['name']} is closed.")
             payee_id = ledger.get_or_create_payee(c, _clean_name(payee)) if payee else None
             txn_id = c.execute(
                 "INSERT INTO transactions (account_id, date, amount, payee_id, category_id, status, reason, note) "
@@ -1364,6 +1362,7 @@ class BudgetService:
     def _accounts(self, c):
         out = []
         duplicates = {d["account_id"]: d for d in ledger.duplicate_accounts(c)}
+        used = ledger.used_account_ids(c)
         for a in c.execute("SELECT * FROM accounts ORDER BY closed, sort, id").fetchall():
             stats = c.execute("SELECT MIN(date) AS first, MAX(date) AS last, COUNT(*) AS n FROM transactions "
                               "WHERE account_id = ?", (a["id"],)).fetchone()
@@ -1371,7 +1370,7 @@ class BudgetService:
             out.append({**dict(a), "balance": ledger.account_balance(c, a["id"]), "is_debt": ledger.is_debt(a["kind"]),
                         "kind_label": ledger.KIND_LABELS.get(a["kind"], a["kind"]), "first_date": stats["first"],
                         "last_date": stats["last"], "transactions": stats["n"], "last_import": last_import,
-                        "duplicate_of": duplicates.get(a["id"])})
+                        "duplicate_of": duplicates.get(a["id"]), "used": a["id"] in used})
         return out
 
     @exposed
@@ -1402,7 +1401,10 @@ class BudgetService:
     @exposed
     def update_account(self, account_id, changes):
         changes = dict(changes or {})
-        with self.db.write("Edit account") as c:
+        label = "Edit account"
+        if set(changes) == {"closed"}:
+            label = "Close account" if changes["closed"] else "Reopen account"
+        with self.db.write(label) as c:
             if "name" in changes:
                 name = _clean_name(changes["name"])
                 if c.execute("SELECT 1 FROM accounts WHERE name = ? COLLATE NOCASE AND id != ?",
@@ -1469,12 +1471,13 @@ class BudgetService:
 
     @exposed
     def delete_account(self, account_id):
+        """Only an account never used: a used one can only be closed (ledger.used_account_ids)."""
         with self.db.write("Delete account") as c:
-            for t in c.execute("SELECT id FROM transactions WHERE account_id = ? AND transfer_id IS NOT NULL",
-                               (account_id,)).fetchall():
-                transfers.unlink(c, t["id"])
-            c.execute("UPDATE transactions SET transfer_account_id = NULL, status = 'review' "
-                      "WHERE transfer_account_id = ?", (account_id,))
+            row = c.execute("SELECT name FROM accounts WHERE id = ?", (account_id,)).fetchone()
+            if row is None:
+                return False
+            if int(account_id) in ledger.used_account_ids(c):
+                raise UserError(f"{row['name']} has been used, so it can only be closed.")
             c.execute("DELETE FROM accounts WHERE id = ?", (account_id,))
         return True
 
