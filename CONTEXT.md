@@ -113,8 +113,8 @@ One person's part of a shared expense, usually sent by e-transfer.
 ## Inbox
 
 **Inbox**:
-The transactions the app isn't sure about, each waiting to be categorized, split or
-marked as a transfer.
+The transactions the app isn't sure about, and any you sent back, each waiting to be
+categorized, split or marked as a transfer.
 _Avoid_: register, review queue
 
 **Inbox item**:
@@ -132,6 +132,17 @@ item counts in no category until it's categorized.
 **Always ask**:
 A payee setting: each of its transactions is its own inbox item and is never categorized
 without asking. It's on from the start for anyone you e-transfer with.
+
+**Send back**:
+To put a transaction back in the inbox yourself: clear its category, unsplit it, or say
+it isn't a transfer. It waits there until you categorize it.
+_Avoid_: uncategorize, reopen
+
+**Re-check**:
+The app looking again at everything waiting in the inbox (at launch, after an import,
+after you categorize) and categorizing what it's now sure of. It never changes what you
+decided.
+_Avoid_: refile
 
 ## Budget
 
