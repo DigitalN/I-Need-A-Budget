@@ -42,6 +42,18 @@ def create_account(conn, name, kind, keys=(), last4=None, anchor_date=None, anch
     return account_id
 
 
+def used_account_ids(conn):
+    """Accounts that have been used: transactions in them or transfers to them, or money
+    assigned to a card's payment category. A used account can only be closed, never
+    deleted: deleting it would take its history with it and send the other halves of its
+    transfers back to the inbox."""
+    return {r[0] for r in conn.execute(
+        "SELECT account_id FROM transactions "
+        "UNION SELECT transfer_account_id FROM transactions WHERE transfer_account_id IS NOT NULL "
+        "UNION SELECT c.debt_account_id FROM categories c JOIN budget b ON b.category_id = c.id "
+        "WHERE c.debt_account_id IS NOT NULL AND b.assigned != 0")}
+
+
 def account_by_key(conn, keys):
     for key in keys:
         row = conn.execute("SELECT account_id FROM account_sources WHERE key = ?", (key,)).fetchone()
@@ -256,6 +268,28 @@ def category_tree(conn):
             "WHERE group_id = ? ORDER BY sort, id", (g["id"],))]
         groups.append({**dict(g), "categories": cats})
     return groups
+
+
+def used_category_ids(conn):
+    """Categories that have been used: a transaction or a split line in them, an example
+    learnt from Actual, money assigned in any month, or a recurring charge filed there. A
+    used category can only be hidden, never deleted: deleting it would send its
+    transactions back to the inbox and take its money out of every month."""
+    return {r[0] for r in conn.execute(
+        "SELECT category_id FROM transactions WHERE category_id IS NOT NULL "
+        "UNION SELECT category_id FROM splits WHERE category_id IS NOT NULL "
+        "UNION SELECT category_id FROM examples "
+        "UNION SELECT category_id FROM budget WHERE assigned != 0 "
+        "UNION SELECT category_id FROM subscriptions WHERE category_id IS NOT NULL")}
+
+
+def own_category_ids(conn):
+    """Income and Interest & Fees, which the app needs: never deleted. Only looks (unlike
+    income_category() and interest_category(), which make them when they're missing)."""
+    income = conn.execute("SELECT c.id FROM categories c JOIN category_groups g ON g.id = c.group_id "
+                          "WHERE g.role = 'income' ORDER BY g.sort, g.id, c.sort, c.id LIMIT 1").fetchone()
+    interest = conn.execute("SELECT value FROM meta WHERE key = 'interest_category_id'").fetchone()
+    return {int(r[0]) for r in (income, interest) if r}
 
 
 def assignable_category_ids(conn):

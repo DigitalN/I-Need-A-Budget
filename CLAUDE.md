@@ -258,6 +258,13 @@ Don't undo these without asking:
 - **An account imported twice** is flagged (Inbox and Accounts) and fixed with Merge
   into…: copies dropped (keeping your categories, notes, splits, transfers, bank IDs), the
   rest moved, undoable.
+- **A used category or account can only be hidden or closed**, never deleted (deleting
+  one sent its transactions back to the inbox and took its assigned money with it). The
+  ✕ is only for one never used, like a typo just made (`ledger.used_category_ids()`,
+  `used_account_ids()`), and for an empty group. A closed account keeps its history,
+  stays in Net worth and in Cash while it has money, and isn't offered for imports,
+  transfers or new transactions; Close account / Reopen account are in Edit…, and closed
+  accounts are listed under Closed accounts on the Accounts page.
 - **Review inbox** instead of a register: only what the app isn't sure about, with one
   click / keypress per decision, same-payee items and shares of one shared expense
   grouped together. Categorizing one teaches the app and re-categorizes the rest of that

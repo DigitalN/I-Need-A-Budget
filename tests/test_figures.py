@@ -242,6 +242,18 @@ def test_a_balance_transfer_isnt_a_payment(tmp_path):
         assert debts[card_a]["estimate_payment"] is None
 
 
+def test_a_closed_card_is_in_debts_while_it_still_owes(tmp_path):
+    db, chequing, food, bills = simple_budget(tmp_path / "b.db")
+    with db.write() as c:
+        owing = ledger.create_account(c, "Card A", "credit_card", anchor_date="2026-06-30", anchor_balance=-40_000)
+        paid = ledger.create_account(c, "Card B", "credit_card", anchor_date="2026-06-30", anchor_balance=0)
+        c.execute("UPDATE accounts SET closed = 1 WHERE id IN (?, ?)", (owing, paid))
+    with db.read() as c:
+        f = Figures(c, TODAY)
+        assert [d["account_id"] for d in f.debts()] == [owing]
+        assert f.balances()["owed"] == 40_000
+
+
 def test_cash(tmp_path):
     """Cash counts open cash accounts and closed ones with money left. A closed account
     that never had a balance doesn't matter; an open one without a balance makes Cash

@@ -52,6 +52,11 @@ its transactions.
 One real account that ended up as two accounts in the app. It's fixed by merging one
 into the other.
 
+**Closed account**:
+An account you no longer use, kept with all its history. It isn't offered for imports or
+new transactions.
+_Avoid_: archived, deleted
+
 ## Transactions and payees
 
 **Transaction**:
@@ -163,6 +168,11 @@ _Avoid_: total, balance
 A named pot of money for one purpose, like Food or Rent: the envelope of the envelope
 method.
 _Avoid_: envelope
+
+**Hidden category**:
+A category you no longer use. It keeps its history and money but isn't offered for new
+transactions.
+_Avoid_: archived, deleted
 
 **Payment category**:
 The category each debt account gets, holding money set aside to pay it. Card spending
