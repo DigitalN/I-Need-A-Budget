@@ -152,33 +152,38 @@ class Figures:
         total, _ = ledger.opening_cash(self.conn, self.start)
         return total
 
-    def _cash(self, month):
-        """What's in the cash accounts at the end of `month`, from their own balances (so
-        Ready to assign plus the money in categories can be checked against it), or None
-        while one of them has no balance."""
+    def _cash(self, as_of=None):
+        """Cash at the end of `as_of` (default: after everything imported): the money in
+        open cash accounts, and in closed ones that still have money in them, from their
+        own balances. {'total', 'accounts': their names}, or None while an open one has
+        no balance."""
         total, names = 0, []
         for a in self.conn.execute("SELECT id, name, closed FROM accounts WHERE kind IN (?, ?, ?) ORDER BY sort, id",
                                    ledger.CASH_KINDS).fetchall():
-            balance = self._balance(a["id"], last_day(month))
+            balance = self._balance(a["id"], as_of)
+            if a["closed"] and not balance:
+                continue
             if balance is None:
                 return None
             total += balance
-            if balance or not a["closed"]:
-                names.append(a["name"])
+            names.append(a["name"])
         return {"total": total, "accounts": names}
 
     # ── what the pages ask ──
 
     def month(self, month):
         """A month on the Budget page. `summary`: Ready to assign and what it's checked
-        against (None before the budget starts). `categories` and `groups`: Assigned,
-        Spent ('activity'), Available and the rest, by id (before the budget starts only
-        Spent). `overspent`: (category, amount) for each one below zero, in budget order.
+        against: Cash, and `off` when the two don't agree (None before the budget starts).
+        `categories` and `groups`: Assigned, Spent ('activity'), Available and the rest, by
+        id (before the budget starts only Spent); Usual is from the whole months before
+        `month` (before this month, for this month and later ones). `overspent`:
+        (category, amount) for each one below zero, in budget order, and their total.
         `short_later`: later months whose Ready to assign is below zero."""
         end = max(month, self.current)
         months = self._budget(end)
         figures = months.get(month)
         accounts = {a["id"] for a in self._accounts}
+        usual_for = min(month, self.current)
         categories, groups, overspent = {}, {}, []
         for g in self.tree:
             if g["role"] == "income":
@@ -194,13 +199,14 @@ class Figures:
                     "carried": f["carried"] if f else 0,
                     "overspent_cash": f["overspent_cash"] if f else 0,
                     "overspent_credit": f["overspent_credit"] if f else 0,
-                    "usual": budget.usual_spending(history, self.current, self.coverage, self.usual_months)
+                    "usual": budget.usual_spending(history, usual_for, self.coverage, self.usual_months)
                     if not cat["debt_account_id"] else None,
                 }
                 if cat["debt_account_id"] in accounts:
                     owing = -(self._balance(cat["debt_account_id"]) or 0)
                     row["owing"] = owing
-                    row["not_covered"] = max(0, owing - max(row["available"] or 0, 0))
+                    row["set_aside"] = max(row["available"] or 0, 0)
+                    row["not_covered"] = max(0, owing - row["set_aside"])
                 if (row["available"] or 0) < 0:
                     overspent.append((cat["id"], -row["available"]))
                 categories[cat["id"]] = row
@@ -209,8 +215,12 @@ class Figures:
                                "available": sum((x["available"] or 0) for x in rows)}
         summary = None
         if figures:
-            summary = {**{k: v for k, v in figures.items() if k != "categories"}, "cash": self._cash(month)}
+            cash = self._cash(last_day(month))
+            summary = {**{k: v for k, v in figures.items() if k != "categories"}, "cash": cash,
+                       "off": figures["ready_to_assign"] - (cash["total"] - figures["in_categories"] - figures["waiting"]
+                                                            + figures["overspent_pending"]) if cash else None}
         return {"summary": summary, "categories": categories, "groups": groups, "overspent": overspent,
+                "overspent_total": sum(amount for _, amount in overspent),
                 "short_later": [m for m, f in months.items() if month < m <= end and f["ready_to_assign"] < 0]}
 
     def spent(self, category_ids, month):
@@ -242,11 +252,12 @@ class Figures:
     def history(self, category_id):
         """What a category spent each month from the oldest transaction to this one (and
         whether each is a whole month with data for every account), last month, and its
-        average over the last 3, 6 and 12 whole months."""
+        average over the last 3, 6 and 12 whole months, counted like Usual: from its own
+        first spending."""
         history = self._spending.get(category_id, {})
         averages = {}
         for n in (3, 6, 12):
-            months = budget.complete_months_before(self.current, self.coverage, n)
+            months = budget.usual_months(history, self.current, self.coverage, n)
             if months and (n == 3 or len(months) == n):
                 averages[n] = {"months": len(months), "amount": budget.average_spending(history, months)}
         last = add_months(self.current, -1)
@@ -292,13 +303,12 @@ class Figures:
         return {"income": income, "total": total, "groups": groups}
 
     def balances(self):
-        """Cash (None while an account in use has no balance) and what's owed, now, from
+        """Cash now (None while an open cash account has no balance) and what's owed, from
         the accounts in use: open ones, and closed ones with money left."""
-        live = [a for a in self._accounts if not a["closed"] or self._balance(a["id"])]
-        cash = None if any(self._balance(a["id"]) is None for a in live if not ledger.is_debt(a["kind"])) else \
-            sum(self._balance(a["id"]) for a in live if not ledger.is_debt(a["kind"]))
-        owed = -sum(self._balance(a["id"]) or 0 for a in live if ledger.is_debt(a["kind"]))
-        return {"cash": cash, "owed": owed, "has_debt": any(ledger.is_debt(a["kind"]) for a in live)}
+        live = [a for a in self._accounts if ledger.is_debt(a["kind"]) and (not a["closed"] or self._balance(a["id"]))]
+        cash = self._cash()
+        return {"cash": cash["total"] if cash else None, "owed": -sum(self._balance(a["id"]) or 0 for a in live),
+                "has_debt": bool(live)}
 
     def worth(self, months):
         """Cash, what's owed and net worth (cash − owed) at the end of each month (this
@@ -319,16 +329,12 @@ class Figures:
         return [dict(r) for r in self.conn.execute(
             "SELECT account_id, date, amount FROM transactions WHERE hint IN ('interest', 'fee')")]
 
-    @cached_property
-    def _money_in_from_transfers(self):
-        return [dict(r) for r in self.conn.execute(
-            "SELECT account_id, date, amount FROM transactions WHERE transfer_account_id IS NOT NULL AND amount > 0")]
-
     def debts(self):
         """Each open card and line of credit: what's owed, what's set aside for it, what
         isn't yet, interest and fees and what was owed over the last six months, an
-        estimated monthly payment (the planned one, else the last three whole months'
-        average) and how long paying it off would take."""
+        estimated monthly payment (the planned one, else the average paid to it from cash
+        accounts over the last three whole months: a balance transfer from another card
+        isn't a payment) and how long paying it off would take."""
         current = self.current
         f = self._budget(current).get(current, {}).get("categories", {})
         payment_cats = ledger.payment_categories(self.conn)
@@ -343,12 +349,13 @@ class Figures:
             interest = [{"month": m, "amount": -sum(t["amount"] for t in self._interest if t["account_id"] == a["id"]
                                                       and first_day(m) <= t["date"] <= last_day(m))} for m in months]
             balances = [{"month": m, "owing": -(self._balance(a["id"], last_day(m)) or 0)} for m in months]
-            paid = sum(t["amount"] for t in self._money_in_from_transfers
-                       if t["account_id"] == a["id"] and paid_from <= t["date"] <= paid_to)
+            paid = -sum(p["amount"] for p in self._payments
+                        if p["debt_account_id"] == a["id"] and paid_from <= p["date"] <= paid_to)
             payment = a["planned_payment"] or (round(paid / 3) if paid else None)
             out.append({"account_id": a["id"], "owing": owing, "set_aside": set_aside,
                         "not_covered": max(0, owing - set_aside), "estimate_payment": payment,
-                        "interest": interest, "balances": balances, "has_balance": self._balance(a["id"]) is not None,
+                        "interest": interest, "interest_total": sum(i["amount"] for i in interest),
+                        "balances": balances, "has_balance": self._balance(a["id"]) is not None,
                         "payoff": payoff(owing, a["apr"], payment)})
         return out
 

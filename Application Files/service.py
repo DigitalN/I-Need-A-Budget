@@ -965,6 +965,7 @@ class BudgetService:
         return {
             "month": current, "summary": summary, "overspending": f.overspending,
             "inbox": inbox, "waiting": summary["waiting"] if summary else 0, "overspent": overspent,
+            "overspent_total": figures["overspent_total"],
             "cash": now["cash"], "owed": now["owed"], "has_debt": now["has_debt"],
             "missing_balances": missing, "net_worth": worth,
             "spending": {"range": months, "usual_months": f.usual_months, "income": spending["income"],

@@ -96,7 +96,31 @@ def test_money_adds_up_on_random_databases(tmp_path):
                     s = f.month(m)["summary"]
                     assert s["ready_to_assign"] + s["in_categories"] - s["overspent_pending"] + s["waiting"] \
                         == s["cash"]["total"], (seed, rule, m)
+                    assert s["off"] == 0
         db.close()
+
+
+def simple_budget(path, balance=100_000):
+    """Chequing with a balance, Food and Bills, the budget starting in July."""
+    db = Database(path)
+    with db.write() as c:
+        chequing = ledger.create_account(c, "Chequing", "chequing", anchor_date="2026-06-30", anchor_balance=balance)
+        group = c.execute("INSERT INTO category_groups (name, sort) VALUES ('Everyday', 1)").lastrowid
+        food = c.execute("INSERT INTO categories (group_id, name) VALUES (?, 'Food')", (group,)).lastrowid
+        bills = c.execute("INSERT INTO categories (group_id, name) VALUES (?, 'Bills')", (group,)).lastrowid
+        c.execute("INSERT INTO meta (key, value) VALUES ('budget_start', ?)", (START,))
+    return db, chequing, food, bills
+
+
+def test_the_check_line_says_how_far_off_it_is(tmp_path):
+    """Half of a transfer missing (the savings side wasn't imported): Cash is short of
+    what Ready to assign and the categories account for, by that much."""
+    db, chequing, food, bills = simple_budget(tmp_path / "b.db")
+    with db.write() as c:
+        savings = ledger.create_account(c, "Savings", "savings", anchor_date="2026-06-30", anchor_balance=0)
+        add(c, chequing, "2026-09-10", -10_000, transfer=savings)
+    with db.read() as c:
+        assert Figures(c, TODAY).month("2026-09")["summary"]["off"] == 10_000
 
 
 def test_an_inbox_item_counts_in_no_category(tmp_path):
@@ -174,3 +198,67 @@ def test_assign_plan_shares_out_exactly_the_amount(tmp_path):
                     assert used + plan["left_over"] == amount, (seed, rule, amount)
                     assert all(p["amount"] <= p["need"] for p in plan["plan"])
         db.close()
+
+
+def test_last_months_count_from_a_categorys_first_spending(tmp_path):
+    """A $50 phone bill that started in August: in October its Usual is $50, and the
+    pop-over's "Last 3 months" agrees (two months, not July's $0 as well)."""
+    db, chequing, food, bills = simple_budget(tmp_path / "b.db")
+    with db.write() as c:
+        add(c, chequing, "2026-06-12", -2000, food)
+        for m in ("2026-08", "2026-09", "2026-10"):
+            add(c, chequing, f"{m}-05", -5000, bills)
+    with db.read() as c:
+        f = Figures(c, TODAY)
+        assert f.history(bills)["averages"] == {3: {"months": 2, "amount": 5000}}
+        assert f.month("2026-10")["categories"][bills]["usual"] == 5000
+
+
+def test_a_past_months_usual_comes_from_the_months_before_it(tmp_path):
+    db, chequing, food, bills = simple_budget(tmp_path / "b.db")
+    with db.write() as c:
+        for i, m in enumerate(months_between("2026-03", "2026-09"), start=1):
+            add(c, chequing, f"{m}-15", -10_000 * i, food)
+    with db.read() as c:
+        f = Figures(c, TODAY)
+        assert f.month("2026-06")["categories"][food]["usual"] == 20_000   # March to May
+        assert f.month("2026-10")["categories"][food]["usual"] == 60_000   # July to September
+        assert f.month("2026-11")["categories"][food]["usual"] == 60_000   # not October: it isn't over
+
+
+def test_a_balance_transfer_isnt_a_payment(tmp_path):
+    """Paying Card B $300 a month from chequing, plus $1,500 moved over from Card A in
+    August: the estimated payment is $300."""
+    db, chequing, food, bills = simple_budget(tmp_path / "b.db")
+    with db.write() as c:
+        card_a = ledger.create_account(c, "Card A", "credit_card", anchor_date="2026-06-30", anchor_balance=-300_000)
+        card_b = ledger.create_account(c, "Card B", "credit_card", anchor_date="2026-06-30", anchor_balance=-100_000)
+        for m in ("2026-07", "2026-08", "2026-09"):
+            transfer(c, chequing, card_b, f"{m}-20", 30_000)
+        transfer(c, card_a, card_b, "2026-08-02", 150_000)
+    with db.read() as c:
+        debts = {d["account_id"]: d for d in Figures(c, TODAY).debts()}
+        assert debts[card_b]["estimate_payment"] == 30_000
+        assert debts[card_a]["estimate_payment"] is None
+
+
+def test_cash(tmp_path):
+    """Cash counts open cash accounts and closed ones with money left. A closed account
+    that never had a balance doesn't matter; an open one without a balance makes Cash
+    unknown."""
+    db, chequing, food, bills = simple_budget(tmp_path / "b.db")
+    with db.write() as c:
+        old = ledger.create_account(c, "Old Savings", "savings")
+        kept = ledger.create_account(c, "Closed With Money", "savings", anchor_date="2026-06-30", anchor_balance=2500)
+        c.execute("UPDATE accounts SET closed = 1 WHERE id IN (?, ?)", (old, kept))
+    with db.read() as c:
+        f = Figures(c, TODAY)
+        assert f.month("2026-10")["summary"]["cash"] == {"total": 102_500, "accounts": ["Chequing", "Closed With Money"]}
+        assert f.balances()["cash"] == 102_500
+    with db.write() as c:
+        ledger.create_account(c, "New Savings", "savings")
+    with db.read() as c:
+        f = Figures(c, TODAY)
+        assert f.month("2026-10")["summary"]["cash"] is None and f.month("2026-10")["summary"]["off"] is None
+        assert f.balances()["cash"] is None
+        assert f.without_balance == ["New Savings"]

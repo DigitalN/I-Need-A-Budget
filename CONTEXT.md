@@ -150,7 +150,9 @@ The first month the budget counts. Months before it still teach the app and coun
 towards Usual.
 
 **Cash**:
-The money in cash accounts. Ready to assign is checked against it.
+The money in your open cash accounts, and in any closed one that still has money in it.
+It isn't known until every open cash account has a balance. Ready to assign is checked
+against it.
 
 **Net worth**:
 Cash minus what you owe on debt accounts, for the accounts in the app. A house, a
