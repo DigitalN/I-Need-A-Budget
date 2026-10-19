@@ -36,6 +36,9 @@ already imported would stop matching and every overlapping file would import twi
 OFX rows are also matched on FITID. A bank's CSV and its Quicken file can describe the
 same transaction differently, so a row is also the same as one from a *different kind*
 of file in that account with the same date and amount (each matched once).
+
+New rows are only added here: each Result's `new_ids` then arrive in the inbox
+(inbox.Inbox.arrive), which categorizes what it can.
 """
 
 import csv
@@ -49,9 +52,6 @@ from pathlib import Path
 import banks
 import csvlayout
 import ledger
-import subscriptions
-import transfers
-from learn import analyze
 from payees import describe, transaction_hint
 from util import parse_date, to_cents
 
@@ -476,15 +476,16 @@ class Result:
     total: int = 0
     added: int = 0
     duplicates: int = 0
-    filed: int = 0            # filed without asking
+    categorized: int = 0      # without asking (set once the new rows arrive in the inbox)
     to_review: int = 0
     first_date: str = None
     last_date: str = None
     balance_note: str = ""
     import_id: int = None
+    new_ids: list = field(default_factory=list)  # for the inbox
 
     def as_dict(self):
-        return dict(self.__dict__)
+        return {k: v for k, v in self.__dict__.items() if k != "new_ids"}
 
 
 def find_account(conn, hint, rows=(), fps=()):
@@ -561,9 +562,9 @@ def account_with_rows(conn, kind, rows, fps):
 
 
 def import_parsed(conn, parsed, filename, sha, archived_path=None, accounts=None):
-    """Adds the new rows of a parsed bank file and files what it can, one Result per
-    account in the file. `accounts`: {part index: account id} for parts whose account the
-    person chose. Call inside db.write()."""
+    """Adds the new rows of a parsed bank file, one Result per account in the file; their
+    `new_ids` are for the inbox. `accounts`: {part index: account id} for parts whose
+    account the person chose. Call inside db.write()."""
     if parsed.format == "actual":
         raise ImportError_("Actual Budget exports are learnt from, not imported.")
     accounts = accounts or {}
@@ -595,7 +596,6 @@ def _import_part(conn, fmt, part, filename, sha, archived_path, account_id=None)
                           (account_id, fmt, part.first_date or "", part.last_date or "")):
         others.setdefault((r["date"], r["amount"]), []).append(r["id"])
 
-    new_ids = []
     for row, fp in zip(part.rows, fps):
         same = others.get((row.date, row.amount), [])
         existing = conn.execute("SELECT id, fitid FROM transactions WHERE account_id = ? AND fingerprint = ?",
@@ -614,18 +614,15 @@ def _import_part(conn, fmt, part, filename, sha, archived_path, account_id=None)
             result.duplicates += 1
             continue
         desc = describe(row.name, row.memo, acct["kind"])
-        payee_id, note, similar = ledger.resolve_payee(conn, desc)
-        new_ids.append(conn.execute(
+        payee_id, similar = ledger.resolve_payee(conn, desc)
+        result.new_ids.append(conn.execute(
             "INSERT INTO transactions (account_id, date, amount, payee_id, raw_name, raw_memo, bank_type, "
-            "bank_category, hint, fingerprint, fitid, import_id, reason, similar_payee_id) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "bank_category, hint, fingerprint, fitid, import_id, similar_payee_id) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (account_id, row.date, row.amount, payee_id, row.name, row.memo, row.bank_type, row.bank_category,
-             transaction_hint(desc), fp, row.fitid, import_id, note, similar)).lastrowid)
-    result.added = len(new_ids)
+             transaction_hint(desc), fp, row.fitid, import_id, similar)).lastrowid)
+    result.added = len(result.new_ids)
     conn.execute("UPDATE imports SET rows_new = ? WHERE id = ?", (result.added, import_id))
-
-    filed, review = file_transactions(conn, new_ids)
-    result.filed, result.to_review = filed, review
 
     if part.balance:
         # The bank's own balance beats one typed in by hand: a balance typed during the day
@@ -645,54 +642,6 @@ def _import_part(conn, fmt, part, filename, sha, archived_path, account_id=None)
             result.balance_note = (f"The file says the balance was {balance / 100:,.2f} on {as_of}, "
                                    f"but the app has {ours / 100:,.2f}")
     return result
-
-
-def file_transactions(conn, ids):
-    """For each transaction, oldest first: is it a transfer? A charge for a tracked
-    subscription (filed in that subscription's category)? Otherwise refunds and learnt
-    categories. What's left for review has no category until it's categorized
-    (docs/adr/0002). Returns (filed without asking, left for review)."""
-    filed = review = 0
-    rows = conn.execute(
-        f"SELECT * FROM transactions WHERE id IN ({','.join('?' * len(ids))}) ORDER BY date, id", ids).fetchall() \
-        if ids else []
-    for txn in rows:
-        txn = conn.execute("SELECT * FROM transactions WHERE id = ?", (txn["id"],)).fetchone()
-        if transfers.pair(conn, txn):
-            filed += 1
-            continue
-        sub, alert = subscriptions.link_transaction(conn, txn["id"])
-        if alert:
-            conn.execute("UPDATE transactions SET category_id = NULL, status = 'review', reason = ? WHERE id = ?",
-                         (alert, txn["id"]))
-            review += 1
-            continue
-        if sub is not None and sub["category_id"] and sub["status"] == "active" and not txn["is_split"]:
-            conn.execute("UPDATE transactions SET category_id = ?, status = 'done', reason = ? WHERE id = ?",
-                         (sub["category_id"], f"{sub['name']} subscription", txn["id"]))
-            filed += 1
-            continue
-        question = subscriptions.unmatched_question(conn, txn) if sub is None else None
-        if question:
-            # A subscription payee at a new price: always ask (price rise? new? one-off?).
-            conn.execute("UPDATE transactions SET category_id = NULL, status = 'review', reason = ? WHERE id = ?",
-                         (question, txn["id"]))
-            review += 1
-            continue
-        matched = re.match(r"Matched to .*? \(similar name\)", txn["reason"] or "")
-        suggestion = analyze(conn, txn)
-        reason = suggestion.reason
-        status = "done" if suggestion.sure and suggestion.options and not txn["similar_payee_id"] else "review"
-        if matched:
-            reason = f"{matched.group(0)}. {reason}"
-        category = suggestion.options[0] if status == "done" else None
-        conn.execute("UPDATE transactions SET category_id = ?, status = ?, reason = ?, refund_of = ? WHERE id = ?",
-                     (category, status, reason, suggestion.refund_of if suggestion.sure else None, txn["id"]))
-        if status == "done":
-            filed += 1
-        else:
-            review += 1
-    return filed, review
 
 
 def learn_from_actual(conn, parsed):
@@ -727,7 +676,7 @@ def learn_from_actual(conn, parsed):
                         or "visa" in r["account"].lower() else "chequing")
         if desc.hint == "transfer":
             continue
-        payee_id, _, _ = ledger.resolve_payee(conn, desc)
+        payee_id, _ = ledger.resolve_payee(conn, desc)
         conn.execute("INSERT INTO examples (payee_id, category_id, amount, date, source) VALUES (?, ?, ?, ?, 'actual')",
                      (payee_id, category_id, r["amount"], r["date"]))
         examples += 1

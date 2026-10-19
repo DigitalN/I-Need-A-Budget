@@ -15,10 +15,10 @@ def make(tmp_path):
 
 def test_undo_reverses_one_labelled_change(tmp_path):
     db = make(tmp_path)
-    with db.write("File transaction") as c:
+    with db.write("Categorize transaction") as c:
         c.execute("UPDATE transactions SET category_id = 1, status = 'done' WHERE id = 1")
-    assert db.undo_label() == "File transaction"
-    assert db.undo() == "File transaction"
+    assert db.undo_label() == "Categorize transaction"
+    assert db.undo() == "Categorize transaction"
     row = db.conn.execute("SELECT category_id, status FROM transactions WHERE id = 1").fetchone()
     assert (row["category_id"], row["status"]) == (None, "review")
     assert db.undo() is None
@@ -26,7 +26,7 @@ def test_undo_reverses_one_labelled_change(tmp_path):
 
 def test_undo_leaves_later_unrelated_changes_alone(tmp_path):
     db = make(tmp_path)
-    with db.write("File transaction") as c:
+    with db.write("Categorize transaction") as c:
         c.execute("UPDATE transactions SET category_id = 2 WHERE id = 1")
     with db.write() as c:  # an import pairing a transfer: not undoable, and must survive
         c.execute("UPDATE transactions SET note = 'kept' WHERE id = 1")
@@ -169,3 +169,29 @@ def test_version_4_inbox_items_lose_their_tentative_category(tmp_path):
     assert [r[0] for r in db.conn.execute("SELECT category_id FROM transactions ORDER BY id")] == [None, 1, None]
     assert db.conn.execute("SELECT COUNT(*) FROM splits").fetchone()[0] == 2
     assert len(list((tmp_path / "Backups").glob(f"budget-before-upgrade-v4-to-v{SCHEMA_VERSION}-*.db"))) == 1
+
+
+def test_version_5_what_you_decided_becomes_yours(tmp_path):
+    """What you decided stays decided (docs/adr/0005): the reasons that said so become
+    `by_you`, and so do inbox items you sent back (no reason) or said aren't a transfer.
+    A transfer can't be told apart, so it stays the app's."""
+    db = Database(tmp_path / "budget.db")
+    reasons = ["Categorized by you", "Filed by you", "Split by you", "Added by you", "Always Food (3 times before)",
+               "No longer a transfer", "", "New payee", "Transfer to Mastercard", ""]
+    statuses = ["done"] * 5 + ["review"] * 4 + ["done"]
+    with db.write() as c:
+        c.execute("INSERT INTO accounts (id, name, kind) VALUES (1, 'Chequing', 'chequing')")
+        for i, (reason, status) in enumerate(zip(reasons, statuses), start=1):
+            c.execute("INSERT INTO transactions (id, account_id, date, amount, status, reason) "
+                      "VALUES (?, 1, '2026-07-01', -100, ?, ?)", (i, status, reason))
+        c.execute("UPDATE meta SET value = '5' WHERE key = 'schema_version'")
+    for suffix in ("ins", "upd", "del"):
+        db.conn.execute(f"DROP TRIGGER undo_transactions_{suffix}")  # they name every column
+    db.conn.execute("ALTER TABLE transactions DROP COLUMN by_you")
+    db.close()
+    db = Database(tmp_path / "budget.db")
+    assert db.get_meta("schema_version") == str(SCHEMA_VERSION)
+    rows = [tuple(r) for r in db.conn.execute("SELECT by_you, reason FROM transactions ORDER BY id")]
+    assert [r[0] for r in rows] == [1, 1, 1, 1, 0, 1, 1, 0, 0, 0]
+    assert rows[6] == (1, "You sent this back")
+    assert len(list((tmp_path / "Backups").glob(f"budget-before-upgrade-v5-to-v{SCHEMA_VERSION}-*.db"))) == 1

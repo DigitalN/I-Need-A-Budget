@@ -47,7 +47,7 @@ def test_a_category_never_used_can_be_deleted(app):
 def test_a_used_category_can_only_be_hidden(app):
     ids = categories(app, CATS)
     rows = chequing(app)
-    call(app, "approve", txn_id=rows["Sample Cafe"]["id"], category_id=ids["Food"])       # a transaction
+    call(app, "categorize", txn_ids=[rows["Sample Cafe"]["id"]], category_id=ids["Food"], recheck_payee=True)       # a transaction
     call(app, "split_transaction", rows["Sample Hardware"]["id"], [
         {"category_id": ids["Household"], "amount": -5000}, {"category_id": ids["Food"], "amount": -3000}])  # a split
     call(app, "set_assigned", "2026-10", ids["Utilities"], 20000)                         # money assigned

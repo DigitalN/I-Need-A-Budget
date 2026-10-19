@@ -64,7 +64,7 @@ def test_two_prices_from_one_payee_are_two_subscriptions_with_their_own_names(ap
     assert rise["subscription_choices"][0]["name"] == "Apple One" and rise["subscription_choices"][0]["due_now"]
 
     call(app, "link_subscription", rise["id"], rise["subscription_choices"][0]["id"])  # a price rise
-    call(app, "approve", txn_id=items[-139]["id"], category_id=ids["Fun Money"])      # an app: one-off
+    call(app, "categorize", txn_ids=[items[-139]["id"]], category_id=ids["Fun Money"], recheck_payee=True)      # an app: one-off
     october = {t["amount"]: t for t in txns(app, month="2026-10")}
     assert (october[-4299]["subscription_name"], october[-4299]["category_name"]) == ("Apple One", "Subscriptions")
     assert (october[-139]["subscription_name"], october[-139]["category_name"]) == (None, "Fun Money")
@@ -160,5 +160,5 @@ def test_a_charge_after_the_end_date_is_flagged(app):
     assert "should have ended on 2026-09-30" in item["reason"]
     bill = (call(app, "subscriptions")["bills"] + call(app, "subscriptions")["subscriptions"])[0]
     assert bill["ended"] and bill["charged_after_end"][0]["date"] == "2026-10-24" and bill["next_date"] is None
-    call(app, "refile")  # re-checking the inbox keeps the warning
+    call(app, "recheck")  # re-checking the inbox keeps the warning
     assert "should have ended" in call(app, "inbox")["items"][0]["reason"]

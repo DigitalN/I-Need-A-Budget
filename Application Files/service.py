@@ -23,8 +23,8 @@ import ledger
 import subscriptions
 import transfers
 from figures import Figures
-from learn import analyze, guess
-from payees import TRANSFER_OR_BANK_ENTRY_HINTS, describe
+from inbox import Inbox
+from payees import TRANSFER_OR_BANK_ENTRY_HINTS
 from settings import DASHBOARD_MONTHS
 from util import add_months, first_day, last_day, month_of, months_between, parse_date, today
 
@@ -274,44 +274,37 @@ class BudgetService:
                 needs_setup.append({"path": str(path), "filename": path.name, "needs": e.what})
                 continue
             results += file_results
-        refiled = self.refile() if learnt or results else 0
+        rechecked = self.recheck() if learnt or results else 0
         return {"results": results, "learnt": learnt, "errors": errors, "needs_setup": needs_setup,
-                "refiled": refiled, "counts": self.counts()}
+                "rechecked": rechecked, "counts": self.counts()}
 
     def _import_one(self, path, parsed, archive, accounts=None):
         sha = importer.sha256_of(path)
         with self.db.write() as c:
             file_results = importer.import_parsed(c, parsed, path.name, sha, accounts=accounts)
+            inbox = self._inbox(c)
+            for result in file_results:
+                arrived = inbox.arrive(result.new_ids)
+                result.categorized, result.to_review = arrived.categorized, arrived.waiting
             if archive:
                 archived = self._archive(path)
                 for result in file_results:
                     c.execute("UPDATE imports SET archived_path = ? WHERE id = ?", (archived, result.import_id))
         for result in file_results:
-            log.info("Imported %s into %s: %d new, %d already there, %d filed, %d to review", path.name,
-                     result.account_name, result.added, result.duplicates, result.filed, result.to_review)
+            log.info("Imported %s into %s: %d new, %d already there, %d categorized, %d to review", path.name,
+                     result.account_name, result.added, result.duplicates, result.categorized, result.to_review)
         return [r.as_dict() for r in file_results]
 
-    @exposed
-    def refile(self, payee_ids=None):
-        """Looks at what's waiting for review again (all of it, or just these payees'),
-        filing what the app is now sure about after learning something new."""
-        with self.db.write() as c:
-            return self._refile(c, payee_ids)
+    def _inbox(self, c):
+        """The inbox (inbox.Inbox) on this db.read() or db.write()."""
+        return Inbox(c, self.today())
 
-    def _refile(self, c, payee_ids=None):
-        where = ""
-        params = []
-        if payee_ids is not None:
-            payee_ids = [p for p in payee_ids if p]
-            if not payee_ids:
-                return 0
-            where = f"AND payee_id IN ({','.join('?' * len(payee_ids))})"
-            params = payee_ids
-        ids = [r["id"] for r in c.execute(
-            f"SELECT id FROM transactions WHERE status = 'review' AND similar_payee_id IS NULL "
-            f"AND reason NOT LIKE '%charged you again%' {where} ORDER BY date, id", params)]
-        filed, _ = importer.file_transactions(c, ids)
-        return filed
+    @exposed
+    def recheck(self, payee_ids=None):
+        """The re-check: looks again at what's waiting in the inbox (all of it, or just these
+        payees'), categorizing what the app is now sure of. Never what you decided."""
+        with self.db.write() as c:
+            return self._inbox(c).recheck(payee_ids)
 
     def watch_downloads(self):
         """Called every few seconds by the watcher: imports new bank files from Downloads
@@ -535,12 +528,15 @@ class BudgetService:
 
     @exposed
     def undo_import(self, import_id):
+        """Deletes the transactions an import added. The other halves of their transfers
+        are the app's to decide about again (Inbox.ask_again)."""
         with self.db.write("Remove import") as c:
-            ids = [r["id"] for r in c.execute("SELECT id FROM transactions WHERE import_id = ?", (import_id,))]
-            for txn_id in ids:
-                transfers.unlink(c, txn_id)
+            rows = c.execute("SELECT id, transfer_id FROM transactions WHERE import_id = ?", (import_id,)).fetchall()
+            ids = {r["id"] for r in rows}
+            others = [r["transfer_id"] for r in rows if r["transfer_id"] and r["transfer_id"] not in ids]
             c.execute("DELETE FROM transactions WHERE import_id = ?", (import_id,))
             c.execute("DELETE FROM imports WHERE id = ?", (import_id,))
+            self._inbox(c).ask_again(others, "Its other half was removed with its import")
         return {"removed": len(ids), "counts": self.counts()}
 
     # ── onboarding ──
@@ -971,35 +967,14 @@ class BudgetService:
 
     @exposed
     def inbox(self):
+        """The Inbox page: its items (Inbox.view: suggestions, today's reason, question,
+        group key and guess on each), what was categorized automatically from recent
+        imports, and the notices above them."""
         with self.db.read() as c:
-            items = self._transactions(c, {"status": "review"}, limit=1000, order="t.date DESC, t.id DESC")
-            names = ledger.category_names(c)
-            income_id = ledger.income_category(c)
-            for item in items:
-                txn = c.execute("SELECT * FROM transactions WHERE id = ?", (item["id"],)).fetchone()
-                s = analyze(c, txn)
-                item["suggestions"] = [{"id": cid, "name": names.get(cid, "?")} for cid in s.options]
-                item["guess"] = guess(txn, s, income_id)
-                item["mixed"] = s.mixed
-                item["group"] = s.group
-                # Today's reasoning, not what was thought at import (the rules and what the app
-                # has learnt both change). Only a warning, or a similar-name match, is kept.
-                saved = item["reason"] or ""
-                if "charged you again" not in saved:
-                    matched = re.match(r"Matched to .*? \(similar name\)", saved)
-                    item["reason"] = f"{matched.group(0)}. {s.reason}" if matched else s.reason
-                if txn["similar_payee_id"]:
-                    p = c.execute("SELECT id, name FROM payees WHERE id = ?", (txn["similar_payee_id"],)).fetchone()
-                    item["similar_payee"] = dict(p) if p else None
-                choices = subscriptions.price_change_choices(c, txn)
-                if choices:
-                    item["subscription_choices"] = choices
-                    item["reason"] = subscriptions.unmatched_question(c, txn)
-                    item["group"] = ""  # each one is its own question
-            recent_imports = [r["id"] for r in c.execute("SELECT id FROM imports ORDER BY id DESC LIMIT 10")]
-            filed = self._transactions(
-                c, {"status": "done", "import_ids": recent_imports}, limit=300, order="t.date DESC, t.id DESC") \
-                if recent_imports else []
+            view = self._inbox(c).view()
+            rows = {t["id"]: t for t in self._transactions(c, {"status": "review"}, limit=1000)}
+            items = [{**rows[item["id"]], **item} for item in view["items"] if item["id"] in rows]
+            categorized = self._transactions(c, {"ids": view["categorized"]}, limit=300) if view["categorized"] else []
             alerts = [{"type": "duplicate", **d} for d in ledger.duplicate_accounts(c)]
             copies = {a["account_id"] for a in alerts}
             for a in c.execute("SELECT id, name FROM accounts WHERE anchor_date IS NULL AND closed = 0"):
@@ -1007,116 +982,38 @@ class BudgetService:
                     continue  # merge it rather than give it a balance
                 alerts.append({"type": "balance", "account_id": a["id"],
                                "text": f"What's the balance of {a['name']}? The app needs it once to show balances."})
-        return {"items": items, "filed": filed, "alerts": alerts, "files": self.pending_files(), "counts": self.counts()}
+        return {"items": items, "categorized": categorized, "alerts": alerts, "files": self.pending_files(),
+                "counts": self.counts()}
 
     @exposed
-    def approve(self, txn_id, category_id, refile=True):
-        """Files one transaction. With `refile`, others from the same payee that the app is
-        now sure about are filed too; "One at a time" in the inbox turns that off."""
-        with self.db.write("File transaction") as c:
-            payee = self._approve(c, txn_id, category_id)
-            also = self._refile(c, [payee]) if refile else 0
-            prompt = self._subscription_prompt(c, [txn_id])
-        return {**self.counts(), "also_filed": also, "subscription_prompt": prompt}
-
-    def _approve(self, c, txn_id, category_id):
-        txn = c.execute("SELECT * FROM transactions WHERE id = ?", (txn_id,)).fetchone()
-        if txn is None:
-            raise UserError("That transaction no longer exists.")
-        if txn["is_split"] or txn["transfer_account_id"]:
-            c.execute("UPDATE transactions SET status = 'done', similar_payee_id = NULL WHERE id = ?", (txn_id,))
-            return txn["payee_id"]
-        if category_id in (None, ""):
-            raise UserError("Pick a category first.")
-        refund_of = None
-        if txn["amount"] > 0:
-            s = analyze(c, txn)
-            if s.refund_of and s.options and s.options[0] == int(category_id):
-                refund_of = s.refund_of
-        c.execute("UPDATE transactions SET category_id = ?, status = 'done', reason = 'Categorized by you', "
-                  "similar_payee_id = NULL, refund_of = ? WHERE id = ?", (int(category_id), refund_of, txn_id))
-        if txn["subscription_id"]:
-            # A subscription without a category learns it from the first charge you file.
-            c.execute("UPDATE subscriptions SET category_id = ? WHERE id = ? AND category_id IS NULL",
-                      (int(category_id), txn["subscription_id"]))
-            subscriptions.file_pending(c, txn["subscription_id"])
-        return txn["payee_id"]
+    def categorize(self, txn_ids, category_id, recheck_payee=False):
+        """You put these inbox items (one, or a group) in a category. `recheck_payee`: the
+        rest of their payee that the app is now sure of is categorized too; "One at a time"
+        in the inbox turns that off."""
+        txn_ids = [int(i) for i in txn_ids]
+        label = "Categorize transaction" if len(txn_ids) == 1 else f"Categorize {len(txn_ids)} transactions"
+        with self.db.write(label) as c:
+            out = self._inbox(c).categorize(txn_ids, category_id, recheck_payee)
+        return {**self.counts(), "also_categorized": out.also, "question": out.question}
 
     @exposed
-    def approve_many(self, items, refile=True):
-        with self.db.write(f"File {len(items)} transactions") as c:
-            payees = {self._approve(c, item["id"], item.get("category_id")) for item in items}
-            also = self._refile(c, list(payees)) if refile else 0
-            prompt = self._subscription_prompt(c, [item["id"] for item in items]) if len(
-                {item.get("category_id") for item in items}) == 1 else None
-        return {**self.counts(), "also_filed": also, "subscription_prompt": prompt}
-
-    def _subscription_prompt(self, c, txn_ids):
-        """After filing: when the charges look like a subscription or bill that isn't tracked
-        yet (filed under a subscriptions category, or charging on a steady rhythm), the
-        question to ask: what's it for? None otherwise."""
-        rows = []
-        for txn_id in txn_ids:
-            r = c.execute("SELECT t.*, p.name AS payee_name, cat.name AS category_name "
-                          "FROM transactions t JOIN payees p ON p.id = t.payee_id "
-                          f"LEFT JOIN categories cat ON cat.id = t.category_id WHERE t.id = ? AND {subscriptions.CAN_RECUR_SQL}",
-                          (txn_id,)).fetchone()
-            if r and r["amount"] < 0 and not r["transfer_account_id"] and not r["subscription_id"] and r["category_id"]:
-                rows.append(r)
-        if not rows:
-            return None
-        first = rows[0]
-        price = -first["amount"]
-        dismissed = c.execute("SELECT 1 FROM subscriptions WHERE payee_id = ? AND status = 'ignored' "
-                              "AND abs(amount - ?) <= 2", (first["payee_id"], price)).fetchone()
-        if dismissed:
-            return None
-        in_subscriptions = "subscript" in (first["category_name"] or "").lower() or c.execute(
-            "SELECT 1 FROM subscriptions WHERE category_id = ? AND status != 'ignored'", (first["category_id"],)).fetchone()
-        candidate = next((cand for cand in subscriptions.detect(c, self.today())
-                          if cand["payee_id"] == first["payee_id"] and first["id"] in cand["transaction_ids"]), None)
-        if not in_subscriptions and candidate is None:
-            return None
-        count = sum(1 for t in c.execute("SELECT amount FROM transactions WHERE payee_id = ? AND amount < 0 "
-                                         "AND subscription_id IS NULL AND transfer_account_id IS NULL",
-                                         (first["payee_id"],)) if subscriptions.same_price(-t["amount"], price))
-        cadence = candidate["cadence"] if candidate else "monthly"
-        if candidate:
-            pricing = candidate.get("pricing", "fixed")
-        else:
-            pricing = "currency" if "foreign currency" in (first["bank_category"] or "").lower() else "fixed"
-        if candidate and pricing == "varies":
-            count = candidate["count"]
-            why = "It charges once a month, a different amount each time"
-        elif candidate:
-            why = f"It looks like it charges {cadence}"
-        else:
-            why = f"You put it in {first['category_name']}"
-        return {"txn_id": first["id"], "payee": first["payee_name"], "amount": price, "count": count,
-                "category_id": first["category_id"], "category": first["category_name"], "cadence": cadence,
-                "kind": candidate["kind"] if candidate else "subscription", "candidate": candidate,
-                "pricing": pricing, "why": why}
+    def accept_all(self, txn_ids):
+        """Accept all in the inbox: each of these items goes to its own guess (none: left)."""
+        with self.db.write("Accept all") as c:
+            out = self._inbox(c).accept_all([int(i) for i in txn_ids])
+        return {**self.counts(), "categorized": out.categorized, "also_categorized": out.also}
 
     @exposed
     def same_payee(self, txn_id, same):
         with self.db.write("Payee match") as c:
-            txn = c.execute("SELECT * FROM transactions WHERE id = ?", (txn_id,)).fetchone()
-            if txn is None or not txn["similar_payee_id"]:
-                return self.counts()
-            if same:
-                target = c.execute("SELECT name FROM payees WHERE id = ?", (txn["similar_payee_id"],)).fetchone()
-                self._set_payee(c, txn_id, target["name"])
-                txn = c.execute("SELECT * FROM transactions WHERE id = ?", (txn_id,)).fetchone()
-                c.execute("UPDATE transactions SET reason = ? WHERE id = ?", (analyze(c, txn).reason, txn_id))
-            c.execute("UPDATE transactions SET similar_payee_id = NULL WHERE similar_payee_id = ? AND payee_id = ?",
-                      (txn["similar_payee_id"], txn["payee_id"]))
+            self._inbox(c).same_payee(int(txn_id), same)
         return self.counts()
 
     @exposed
     def link_subscription(self, txn_id, sub_id):
         """This charge is a subscription you track, at a new price."""
         with self.db.write("New subscription price") as c:
-            subscriptions.link_to(c, int(txn_id), int(sub_id))
+            self._inbox(c).new_price(int(txn_id), int(sub_id))
         return self.counts()
 
     @exposed
@@ -1136,7 +1033,7 @@ class BudgetService:
             if note:
                 c.execute("UPDATE subscriptions SET note = ? WHERE id = ?", (str(note).strip(), sub_id))
             c.execute("UPDATE transactions SET subscription_id = ? WHERE id = ?", (sub_id, txn_id))
-            subscriptions.file_pending(c, sub_id)
+            self._inbox(c).recheck([txn["payee_id"]])
         return {"subscription_id": sub_id, "counts": self.counts()}
 
     @exposed
@@ -1161,8 +1058,7 @@ class BudgetService:
         """Switches a payee's Always ask on or off. Switched off, its waiting transactions
         the app is now sure about are categorized. Returns how many."""
         with self.db.write("Change payee setting") as c:
-            c.execute("UPDATE payees SET always_ask = ? WHERE id = ?", (1 if always_ask else 0, payee_id))
-            return 0 if always_ask else self._refile(c, [payee_id])
+            return self._inbox(c).set_always_ask(payee_id, always_ask)
 
     # ── transactions ──
 
@@ -1227,36 +1123,6 @@ class BudgetService:
             items = self._transactions(c, filters or {}, limit=(filters or {}).get("limit", 500))
         return {"items": items, "total": sum(i["amount"] for i in items)}
 
-    def _set_payee(self, c, txn_id, name):
-        """This bank description belongs to payee `name` (an existing one, or a new one)."""
-        name = _clean_name(name)
-        txn = c.execute("SELECT t.*, a.kind FROM transactions t JOIN accounts a ON a.id = t.account_id "
-                        "WHERE t.id = ?", (txn_id,)).fetchone()
-        old = txn["payee_id"]
-        old_row = c.execute("SELECT name, kind FROM payees WHERE id = ?", (old,)).fetchone() if old else None
-        if old_row and old_row["name"].lower() == name.lower():
-            return old
-        others = c.execute("SELECT COUNT(*) FROM transactions WHERE payee_id = ? AND id != ?", (old, txn_id)).fetchone()[0] \
-            if old else 0
-        exists = c.execute("SELECT id FROM payees WHERE name = ? COLLATE NOCASE", (name,)).fetchone()
-        if old and not exists and others == 0:
-            return ledger.rename_payee(c, old, name)  # its only transaction: just rename it
-        target = exists["id"] if exists else ledger.get_or_create_payee(
-            c, name, old_row["kind"] if old_row else "merchant", always_ask=txn["hint"] == "etransfer")
-        key = describe(txn["raw_name"], txn["raw_memo"], txn["kind"]).key if txn["raw_name"] else None
-        if key:
-            ledger.add_payee_key(c, key, target, "user")
-            # Every transaction with the same bank description moves too.
-            for other in c.execute("SELECT t.id, t.raw_name, t.raw_memo, a.kind FROM transactions t JOIN accounts a "
-                                   "ON a.id = t.account_id WHERE t.payee_id = ?", (old,)).fetchall():
-                if describe(other["raw_name"], other["raw_memo"], other["kind"]).key == key:
-                    c.execute("UPDATE transactions SET payee_id = ? WHERE id = ?", (target, other["id"]))
-        c.execute("UPDATE transactions SET payee_id = ? WHERE id = ?", (target, txn_id))
-        if old and not c.execute("SELECT 1 FROM transactions WHERE payee_id = ?", (old,)).fetchone() \
-                and not c.execute("SELECT 1 FROM payee_keys WHERE payee_id = ?", (old,)).fetchone():
-            c.execute("DELETE FROM payees WHERE id = ?", (old,))
-        return target
-
     @exposed
     def rename_payee(self, payee_id, name):
         with self.db.write("Rename payee") as c:
@@ -1269,21 +1135,26 @@ class BudgetService:
 
     @exposed
     def update_transaction(self, txn_id, changes):
+        """Changes a transaction from anywhere but the inbox's suggestions: its payee, its
+        category (only this transaction: its payee isn't re-checked; no category sends it
+        back to the inbox), its note, a transfer or not, and the date and amount of one
+        added by hand. Returns "What's this for?" when the category makes it look like a
+        recurring charge, else None."""
         changes = dict(changes or {})
+        question = None
         with self.db.write("Edit transaction") as c:
             txn = c.execute("SELECT * FROM transactions WHERE id = ?", (txn_id,)).fetchone()
             if txn is None:
                 raise UserError("That transaction no longer exists.")
+            inbox = self._inbox(c)
             manual = txn["fingerprint"] is None and txn["fitid"] is None
             if "payee" in changes and changes["payee"] is not None:
-                self._set_payee(c, txn_id, changes["payee"])
+                ledger.set_payee(c, txn_id, _clean_name(changes["payee"]))
             if "category_id" in changes:
-                cid = changes["category_id"]
-                if txn["transfer_account_id"]:
-                    transfers.unlink(c, txn_id)
-                c.execute("DELETE FROM splits WHERE transaction_id = ?", (txn_id,))
-                c.execute("UPDATE transactions SET category_id = ?, is_split = 0, status = ?, reason = ? WHERE id = ?",
-                          (cid or None, "done" if cid else "review", "Categorized by you" if cid else "", txn_id))
+                if changes["category_id"]:
+                    question = inbox.categorize([txn_id], changes["category_id"]).question
+                else:
+                    inbox.send_back(txn_id)
             if "note" in changes:
                 c.execute("UPDATE transactions SET note = ? WHERE id = ?", (str(changes["note"] or ""), txn_id))
             if manual:
@@ -1292,41 +1163,23 @@ class BudgetService:
                 if changes.get("amount") is not None:
                     c.execute("UPDATE transactions SET amount = ? WHERE id = ?", (int(changes["amount"]), txn_id))
             if "transfer_account_id" in changes:
-                target = changes["transfer_account_id"]
-                if target:
-                    transfers.make_transfer(c, txn_id, int(target))
+                if changes["transfer_account_id"]:
+                    inbox.mark_transfer(txn_id, int(changes["transfer_account_id"]))
                 else:
-                    transfers.unlink(c, txn_id)
-        return True
+                    inbox.not_a_transfer(txn_id)
+        return {"question": question}
 
     @exposed
     def split_transaction(self, txn_id, parts):
         with self.db.write("Split transaction") as c:
-            txn = c.execute("SELECT * FROM transactions WHERE id = ?", (txn_id,)).fetchone()
-            if txn is None:
-                raise UserError("That transaction no longer exists.")
-            parts = [p for p in parts if int(p.get("amount") or 0) != 0]
-            if len(parts) < 2:
-                raise UserError("A split needs at least two parts.")
-            if sum(int(p["amount"]) for p in parts) != txn["amount"]:
-                raise UserError("The parts have to add up to the transaction's amount.")
-            if any(not p.get("category_id") for p in parts):
-                raise UserError("Every part needs a category.")
-            if txn["transfer_account_id"]:
-                transfers.unlink(c, txn_id)
-            c.execute("DELETE FROM splits WHERE transaction_id = ?", (txn_id,))
-            for p in parts:
-                c.execute("INSERT INTO splits (transaction_id, category_id, amount, note) VALUES (?, ?, ?, ?)",
-                          (txn_id, int(p["category_id"]), int(p["amount"]), str(p.get("note") or "")))
-            c.execute("UPDATE transactions SET is_split = 1, category_id = NULL, status = 'done', "
-                      "reason = 'Split by you' WHERE id = ?", (txn_id,))
+            self._inbox(c).split(int(txn_id), parts)
         return True
 
     @exposed
     def unsplit_transaction(self, txn_id):
+        """Unsplitting sends it back to the inbox, to wait for you."""
         with self.db.write("Unsplit transaction") as c:
-            c.execute("DELETE FROM splits WHERE transaction_id = ?", (txn_id,))
-            c.execute("UPDATE transactions SET is_split = 0, status = 'review', reason = '' WHERE id = ?", (txn_id,))
+            self._inbox(c).send_back(int(txn_id))
         return True
 
     @exposed
@@ -1344,17 +1197,20 @@ class BudgetService:
                 raise UserError(f"{acct['name']} is closed.")
             payee_id = ledger.get_or_create_payee(c, _clean_name(payee)) if payee else None
             txn_id = c.execute(
-                "INSERT INTO transactions (account_id, date, amount, payee_id, category_id, status, reason, note) "
-                "VALUES (?, ?, ?, ?, ?, ?, 'Added by you', ?)",
+                "INSERT INTO transactions (account_id, date, amount, payee_id, category_id, status, reason, note, by_you) "
+                "VALUES (?, ?, ?, ?, ?, ?, 'Added by you', ?, 1)",
                 (int(account_id), date, amount, payee_id, category_id or None, "done" if category_id else "review",
                  str(note or ""))).lastrowid
         return txn_id
 
     @exposed
     def delete_transaction(self, txn_id):
+        """Deletes a transaction. Its other half, if it was a transfer, is the app's to
+        decide about again."""
         with self.db.write("Delete transaction") as c:
-            transfers.unlink(c, txn_id)
+            others = transfers.unlink(c, txn_id)[1:]
             c.execute("DELETE FROM transactions WHERE id = ?", (txn_id,))
+            self._inbox(c).ask_again(others, "Its other half was deleted")
         return self.counts()
 
     # ── accounts ──
@@ -1455,9 +1311,10 @@ class BudgetService:
             if diff == 0:
                 return {"adjusted": 0}
             payee = ledger.get_or_create_payee(c, "Balance adjustment", "bank")
-            c.execute("INSERT INTO transactions (account_id, date, amount, payee_id, category_id, status, reason) "
-                      "VALUES (?, ?, ?, ?, NULL, 'review', 'To match the balance the bank shows')",
-                      (account_id, self.today(), diff, payee))
+            txn_id = c.execute("INSERT INTO transactions (account_id, date, amount, payee_id, category_id, status, reason) "
+                               "VALUES (?, ?, ?, ?, NULL, 'review', 'To match the balance the bank shows')",
+                               (account_id, self.today(), diff, payee)).lastrowid
+            self._inbox(c).arrive([txn_id])  # like an import's: the app's to categorize
         return {"adjusted": diff}
 
     @exposed
@@ -1465,7 +1322,8 @@ class BudgetService:
         """`from_id` is the same account as `into_id`: see ledger.merge_accounts()."""
         with self.db.write("Merge accounts") as c:
             name = c.execute("SELECT name FROM accounts WHERE id = ?", (into_id,)).fetchone()
-            moved, dropped = ledger.merge_accounts(c, int(from_id), int(into_id))
+            moved, dropped, unpaired = ledger.merge_accounts(c, int(from_id), int(into_id))
+            self._inbox(c).ask_again(unpaired, f"No longer a transfer: both halves are in {name['name'] if name else 'one account'}")
         log.info("Merged account %s into %s: %d moved, %d duplicates dropped", from_id, into_id, moved, dropped)
         return {"into": name["name"] if name else "", "moved": moved, "dropped": dropped, "counts": self.counts()}
 
@@ -1507,8 +1365,10 @@ class BudgetService:
                            ends_on=None):
         name = _clean_name(name) if name else None
         with self.db.write("Track subscription") as c:
-            return subscriptions.track(c, candidate, kind, name, int(category_id) if category_id else None, pricing,
-                                       _end_date(ends_on))
+            sub_id = subscriptions.track(c, candidate, kind, name, int(category_id) if category_id else None, pricing,
+                                         _end_date(ends_on))
+            self._inbox(c).recheck([candidate["payee_id"]])  # its waiting charges go to its category
+        return sub_id
 
     @exposed
     def add_subscription(self, payee, name, amount, cadence="monthly", kind="subscription", category_id=None,
@@ -1522,8 +1382,10 @@ class BudgetService:
             raise UserError("Pick how often it charges.")
         with self.db.write(f"Add subscription {name}") as c:
             payee_id = payee if isinstance(payee, int) else ledger.get_or_create_payee(c, _clean_name(payee))
-            return subscriptions.create(c, payee_id, name, amount, cadence, kind,
-                                        int(category_id) if category_id else None, pricing, _end_date(ends_on))
+            sub_id = subscriptions.create(c, payee_id, name, amount, cadence, kind,
+                                          int(category_id) if category_id else None, pricing, _end_date(ends_on))
+            self._inbox(c).recheck([payee_id])
+        return sub_id
 
     @exposed
     def dismiss_subscription(self, candidate):
@@ -1549,12 +1411,20 @@ class BudgetService:
             if "category_id" in changes:
                 cid = int(changes["category_id"]) if changes["category_id"] else None
                 c.execute("UPDATE subscriptions SET category_id = ? WHERE id = ?", (cid, sub_id))
-                subscriptions.file_pending(c, sub_id)
             if changes.get("pricing") in subscriptions.PRICINGS:
                 subscriptions.set_pricing(c, sub_id, changes["pricing"])
             if "ends_on" in changes:
                 c.execute("UPDATE subscriptions SET ends_on = ? WHERE id = ?", (_end_date(changes["ends_on"]), sub_id))
+            self._recheck_subscription(c, sub_id)
         return True
+
+    def _recheck_subscription(self, c, sub_id):
+        """After a recurring charge changes (its category, price type, end date, cancelled
+        or not): its payee's waiting charges are re-checked, so they follow it (and a
+        "charged you again" warning it no longer gives goes)."""
+        row = c.execute("SELECT payee_id FROM subscriptions WHERE id = ?", (sub_id,)).fetchone()
+        if row:
+            self._inbox(c).recheck([row["payee_id"]])
 
     @exposed
     def cancel_subscription(self, sub_id, cancelled_on=None):
@@ -1567,6 +1437,7 @@ class BudgetService:
     def reactivate_subscription(self, sub_id):
         with self.db.write("Mark subscription active") as c:
             c.execute("UPDATE subscriptions SET status = 'active', cancelled_on = NULL WHERE id = ?", (sub_id,))
+            self._recheck_subscription(c, sub_id)
         return True
 
     @exposed

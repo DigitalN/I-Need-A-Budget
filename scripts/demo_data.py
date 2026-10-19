@@ -200,7 +200,7 @@ def main():
         if not cid:
             print("No category for", item.get("payee_name"), item.get("description"))
             cid = cats["Household"]
-        call(app, "approve", item["id"], cid)
+        call(app, "categorize", [item["id"]], cid, True)
 
     call(app, "finish_onboarding", "2026-06")
     for name, cents in BUDGETED.items():

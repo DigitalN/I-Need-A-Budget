@@ -65,15 +65,15 @@ All in `Application Files/`:
   The preview and most tests drive this same class.
 - `db.py`: schema, upgrades, the shared connection behind a lock, **undo** (triggers record
   inverse SQL; `db.write("Label")` makes one undoable step; updates only record changed
-  columns), daily backups. Schema is at version 5. To change it: raise `SCHEMA_VERSION`,
+  columns), daily backups. Schema is at version 6. To change it: raise `SCHEMA_VERSION`,
   add the column to `SCHEMA` *and* an `ALTER TABLE` step in `_migrate` for existing
   databases. Upgrades copy the database to `Backups/budget-before-upgrade-…` first. The
   user's real database has real data in it: test every upgrade on a copy of it first.
 - `importer.py`: detects and parses OFX/QFX/QBO from any bank, Tangerine card and bank
   CSVs, RBC's CSV (every account in one file, so a file has `parts`), CSVs set up once
   (`csvlayout.py`), and Actual Budget's export (learnt from, never imported as
-  transactions). Account matching, fingerprint dedup, then `file_transactions()`
-  categorizes what it can. Its docstring has the rules.
+  transactions). Account matching and fingerprint dedup; it only adds rows, whose ids then
+  arrive in the inbox (`Inbox.arrive`). Its docstring has the rules.
 - `csvlayout.py`: pure. Any bank's CSV: spots a table of dates and amounts (skipping a
   preamble), guesses which column is which, names the layout by its header, reads rows.
 - `banks.py`: bank names. Free text on accounts; `canonical()` turns what files call a
@@ -92,10 +92,20 @@ All in `Application Files/`:
   payees, unusually big charges, refunds, e-transfer shares of a shared expense,
   card-category hints.
   `analyze()` returns options, whether it's sure, a reason, and an inbox group key.
-- `transfers.py`: pairing the two halves of a transfer between own accounts.
+- `inbox.py`: an inbox item from arrival until it's categorized, split or a transfer.
+  `Inbox(conn, today)`: `arrive` (an import's new rows), `recheck`, `view` (what the Inbox
+  page shows: suggestions, today's reason, the item's question, its final group key and
+  guess), and every decision: `categorize(txn_ids, category_id, recheck_payee)`,
+  `accept_all`, `split`, `mark_transfer`, `not_a_transfer`, `send_back`, `ask_again`,
+  `same_payee`, `new_price`, `set_always_ask`. **Only it puts a transaction in the inbox or
+  takes it out**, from every page (the Transactions page and the transaction pop-up too).
+  It asks learn.py for suggestions and subscriptions.py for the recurring-charge rules;
+  service.py wraps each call in its undo step. `tests/test_inbox.py` drives it directly.
+- `transfers.py`: pairing the two halves of a transfer between own accounts, for the inbox.
 - `subscriptions.py`: detection (steady rhythm; same price, or a once-a-month bill that
   varies), tracking with a name, category, price type and optional end date, price-change
-  questions, "charged you again" alerts (after cancelling or after the end date).
+  questions, "charged you again" alerts (after cancelling or after the end date). It links
+  charges and keeps prices; what happens to a charge in the inbox is inbox.py's.
 - `budget.py`: pure envelope math, credit cards included, and the three ways overspending
   is paid for (the Overspending setting). Its docstring states the rules and the
   invariant `tests/test_budget.py` checks on random histories (all three ways).
@@ -137,7 +147,22 @@ All in `Application Files/`:
   in the inbox never teach the app anything, and count in no category: no tentative
   category, Spent/Usual/the budget only count `status = 'done'`
   ([ADR 0002](docs/adr/0002-inbox-items-count-in-no-category.md)). The inbox's "Accept
-  all" uses each item's `guess` (`learn.guess()`: never an e-transfer).
+  all" uses each item's `guess` (`Inbox.view`, from `learn.guess()`: never an e-transfer,
+  a question or one you sent back).
+- **What you decided stays decided** ([ADR 0005](docs/adr/0005-what-you-decided-stays-decided.md)).
+  Who decided is a fact: `transactions.by_you`. Yours: what you categorize (one, a group,
+  Accept all), split, mark as a transfer or Not a transfer, send back, or add by hand.
+  The app's: what an import or the re-check categorizes, and what removing an import (or
+  a merge) leaves to decide again (`Inbox.ask_again`). Nothing the app does on its own
+  changes a transaction that's yours: the re-check skips it, and `find_counterpart` never
+  pairs with it (a half arriving for one you categorized waits in the inbox: "Looks like
+  the other half of…"; Transfer pairs them). Not a transfer sends both halves back to
+  wait, never paired again.
+- **`reason` is only text to show; no code reads it back.** "Charged you again",
+  "Matched to X (similar name)" and "You sent this back" are worked out each time
+  (`subscriptions.charged_when_it_shouldnt`, `payee_keys.how = 'similar'`, `by_you`).
+- **A recurring charge's price follows a charge only when it first arrives** or when you
+  choose "New price for…"; the re-check never changes a price.
 - **Subscriptions have a price type** (`subscriptions.pricing`; shown to the user as "Same Price",
   "Same Price, Different Currency" and "Fluctuates Every Time", their wording): `fixed` (exact price ±2¢;
   any other price from that payee is a question: "new price for X, a new subscription, or
@@ -147,8 +172,8 @@ All in `Application Files/`:
   amount from that payee; the page shows the typical amount and range). Detection
   suggests `varies` for a once-a-month payee whose amount moved at least twice.
 - **Optional end date** on a subscription: a charge after it (or after it was marked
-  cancelled) goes to the inbox with a warning containing "charged you again" (the inbox
-  and re-categorizing keep reasons with that phrase).
+  cancelled) goes to the inbox with a "charged you again" warning, worked out each time:
+  reactivating it or moving the end date clears it, and its waiting charges are re-checked.
 - A charge more than 3× the payee's biggest past charge always asks.
 - **The updater is the only network access.** No HTTP server in the app (the dev preview
   is a separate script), no analytics, no CDNs or remote fonts. (Settings → Release notes
@@ -269,10 +294,14 @@ Don't undo these without asking:
   (the maintainer's choice).
 - **Review inbox** instead of a register: only what the app isn't sure about, with one
   click / keypress per decision, same-payee items and shares of one shared expense
-  grouped together. Categorizing one teaches the app and re-categorizes the rest of that
+  grouped together. Categorizing one teaches the app and re-checks the rest of that
   payee, **except**:
   - **"One at a time"** on a group means exactly that: categorizing one never
-    categorizes the others (`approve(..., refile=False)`).
+    categorizes the others (`categorize(..., recheck_payee=False)`).
+  - **Outside the inbox** (the Transactions page, the transaction pop-up, the
+    "Categorized automatically" list) a category change changes only that transaction:
+    no payee re-check (the maintainer's call: a mixed payee like a warehouse store, food
+    one week and household the next, must stay as they put it).
   - **A payee is just a name; e-transfers start with Always ask on**
     ([ADR 0001](docs/adr/0001-payee-is-just-a-name.md)). Anyone you e-transfer with
     gets Always ask when first seen, so their e-transfers are never categorized without
@@ -287,14 +316,21 @@ Don't undo these without asking:
     went, at first Interest & Fees or Income. Cash withdrawals and deposits aren't bank
     entries: they're learnt like any payee.
 - **Categorizing a charge into a subscriptions category** (or one that charges on a
-  steady rhythm) asks "What's this for?": name it to track it as a subscription or bill,
-  or "Not recurring" to stop asking about that payee at that price.
-- The inbox shows today's reasoning (re-analysed on each load), and pending items are
-  re-categorized under the current rules at every launch.
+  steady rhythm) asks "What's this for?", from every page: name it to track it as a
+  subscription or bill, or "Not recurring" to stop asking about that payee at that price.
+- The inbox shows today's reasoning (worked out on each load), and **the re-check** runs
+  at every launch, after imports and after you categorize: it categorizes the waiting
+  items the app is now sure of, never yours.
+- **A transaction you sent back** (cleared category, unsplit, Not a transfer) is its own
+  inbox item, outside its payee's group and outside Accept all, still with suggestions,
+  saying "You sent this back". "Categorized automatically" lists only the app's.
 - **Inbox grouping is controlled by the payee's "Always ask" switch**: off, a payee's
   items are one group (even a mixed payee like Amazon, split with "One at a time");
   on, each is its own inbox item and never categorized without asking. Refunds and
-  unusually big charges are always their own item. `learn.analyze()` sets the group key.
+  unusually big charges are always their own item, and so are questions (same payee?
+  new price?), "charged you again" and anything yours. `learn.analyze()` suggests the
+  group key; `Inbox.view()` gives the final one and the guess, and the page has no
+  exceptions of its own.
 - The inbox has a finder (search + a button per payee with counts) so nothing gets lost
   in a long list.
 - **Payee clean-up with fuzzy matching** (store numbers, typos, truncation).
