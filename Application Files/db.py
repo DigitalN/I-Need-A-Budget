@@ -24,7 +24,7 @@ from pathlib import Path
 
 log = logging.getLogger("inab")
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 BACKUPS_KEPT = 14
 
 SCHEMA = """
@@ -161,8 +161,10 @@ CREATE TABLE IF NOT EXISTS transactions (
     refund_of INTEGER REFERENCES transactions(id) ON DELETE SET NULL,
     subscription_id INTEGER REFERENCES subscriptions(id) ON DELETE SET NULL,
     similar_payee_id INTEGER REFERENCES payees(id) ON DELETE SET NULL,  -- "same as this payee?" to ask
-    status TEXT NOT NULL DEFAULT 'review',   -- review | done
-    reason TEXT NOT NULL DEFAULT '',     -- why it was filed where it was, shown in the inbox
+    status TEXT NOT NULL DEFAULT 'review',   -- review (in the inbox) | done
+    by_you INTEGER NOT NULL DEFAULT 0,   -- you decided it (categorized, split, a transfer or not, sent back, added):
+                                         -- nothing the app does on its own changes it (docs/adr/0005)
+    reason TEXT NOT NULL DEFAULT '',     -- why it's where it is: only text to show, never read back
     note TEXT NOT NULL DEFAULT '',
     fingerprint TEXT,                    -- importer.fingerprint(); never change how it's computed
     fitid TEXT,                          -- OFX's own transaction ID
@@ -287,7 +289,20 @@ class Database:
                 # An inbox item counts in no category until it's categorized (docs/adr/0002):
                 # the tentative category (its top suggestion) it used to carry goes.
                 self.conn.execute("UPDATE transactions SET category_id = NULL WHERE status = 'review' AND is_split = 0")
-            # Next upgrade: `if version is not None and version < 6: ...`, then raise SCHEMA_VERSION.
+            if version is not None and version < 6:
+                # What you decided stays decided (docs/adr/0005): who decided becomes a fact. Until now
+                # the only record was a reason ("Filed by you" is what versions before 1.0.8 wrote), and
+                # sending a transaction back (no reason) or Not a transfer weren't recorded at all. A
+                # transfer marked by hand can't be told from one the app paired: it stays the app's.
+                columns = [r["name"] for r in self.conn.execute("PRAGMA table_info(transactions)")]
+                if "by_you" not in columns:
+                    self.conn.execute("ALTER TABLE transactions ADD COLUMN by_you INTEGER NOT NULL DEFAULT 0")
+                self.conn.execute(
+                    "UPDATE transactions SET by_you = 1 WHERE reason IN ('Categorized by you', 'Filed by you', "
+                    "'Split by you', 'Added by you') OR (status = 'review' AND reason IN ('No longer a transfer', ''))")
+                self.conn.execute("UPDATE transactions SET reason = 'You sent this back' "
+                                  "WHERE status = 'review' AND reason = '' AND by_you = 1")
+            # Next upgrade: `if version is not None and version < 7: ...`, then raise SCHEMA_VERSION.
             self.conn.execute("INSERT INTO meta (key, value) VALUES ('schema_version', ?) "
                               "ON CONFLICT(key) DO UPDATE SET value = excluded.value", (str(SCHEMA_VERSION),))
             if version is not None and version < SCHEMA_VERSION:

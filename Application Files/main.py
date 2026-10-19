@@ -22,7 +22,7 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 APP_NAME = "I Need A Budget"
-VERSION = "1.1.4"  # the build reads it from here; see the release checklist in DEVELOPMENT.md
+VERSION = "1.2.0"  # the build reads it from here; see the release checklist in DEVELOPMENT.md
 if os.environ.get("INAB_DATA_DIR"):  # for development/testing against a throwaway folder
     DATA_DIR = Path(os.environ["INAB_DATA_DIR"]).expanduser()
     LOG_DIR = DATA_DIR / "Logs"
@@ -366,8 +366,9 @@ class BudgetApp:
         self._window.events.closing += self._on_closing
         self._window.events.loaded += self._on_loaded
         threading.Thread(target=self._watch, name="downloads-watcher", daemon=True).start()
-        # What's waiting in the inbox follows the current rules (they can change in an update).
-        threading.Thread(target=self._service.dispatch, args=("refile",), name="refile", daemon=True).start()
+        # The re-check: what's waiting in the inbox follows the current rules (they can change in an
+        # update). Never what you decided (docs/adr/0005).
+        threading.Thread(target=self._service.dispatch, args=("recheck",), name="recheck", daemon=True).start()
         self._updater.start()
         log.info("%s %s started (data in %s)", APP_NAME, VERSION, DATA_DIR)
         webview.start(private_mode=True, debug=bool(os.environ.get("INAB_DEBUG")))

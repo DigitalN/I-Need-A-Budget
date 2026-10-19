@@ -203,7 +203,7 @@ def test_catch_up_and_assigning_a_paycheque(app):
     ids = {c["name"]: c["id"] for g in call(app, "categories") for c in g["categories"]}
     for t in call(app, "inbox")["items"]:
         cid = ids["Rent"] if "LANDLORD" in t["raw_name"] else ids["Food"] if t["amount"] < 0 else ids["Income"]
-        call(app, "approve", txn_id=t["id"], category_id=cid)
+        call(app, "categorize", txn_ids=[t["id"]], category_id=cid, recheck_payee=True)
     accounts = {a["name"]: a["id"] for a in call(app, "accounts")}
     call(app, "set_balance", accounts["Chequing"], 500000, "2026-10-12")
     call(app, "set_balance", accounts["Tangerine Mastercard"], 12000, "2026-10-12")
@@ -242,7 +242,7 @@ def test_the_overspending_setting(app):
     call(app, "import_files", [str(write(app.test_downloads, "Chequing.CSV", bank_csv([
         ("09/03/2026", "SAMPLE GROCER", "SAMPLE GROCER", "-80.00")])))])
     [t] = call(app, "inbox")["items"]
-    call(app, "approve", txn_id=t["id"], category_id=ids["Food"])
+    call(app, "categorize", txn_ids=[t["id"]], category_id=ids["Food"], recheck_payee=True)
     [acct] = call(app, "accounts")
     call(app, "set_balance", acct["id"], 100000, "2026-10-12")
     call(app, "finish_onboarding", "2026-09")
@@ -278,7 +278,7 @@ def test_category_details_have_last_month_the_average_and_a_note(app):
         ("08/03/2026", "SAMPLE GROCER CALGARY AB", "-150.00", "Groceries"),
         ("09/03/2026", "SAMPLE GROCER CALGARY AB", "-450.00", "Groceries")])))])
     for t in call(app, "inbox")["items"]:
-        call(app, "approve", txn_id=t["id"], category_id=ids["Food"], refile=False)
+        call(app, "categorize", txn_ids=[t["id"]], category_id=ids["Food"])
     call(app, "set_category_note", ids["Food"], "Costco run every second week")
     detail = call(app, "category_detail", category_id=ids["Food"])
     assert detail["last_month"] == {"month": "2026-09", "amount": 45000}
@@ -304,7 +304,7 @@ def test_what_makes_up_spent_adds_up_to_it(app):
         name = t["raw_name"]
         cid = ids["Rent"] if "LANDLORD" in name else ids["Income"] if t["amount"] > 0 else \
             ids["Fun"] if "CINEMA" in name else ids["Food"]
-        call(app, "approve", txn_id=t["id"], category_id=cid, refile=False)
+        call(app, "categorize", txn_ids=[t["id"]], category_id=cid)
     grocer = next(t for t in txns(app) if "GROCER" in t["raw_name"])
     call(app, "split_transaction", grocer["id"], [{"category_id": ids["Food"], "amount": -8000},
                                                   {"category_id": ids["Fun"], "amount": -4000}])
@@ -345,7 +345,7 @@ def test_ready_to_assign_adds_up_to_whats_in_the_bank(app):
     ids = {c["name"]: c["id"] for g in call(app, "categories") for c in g["categories"]}
     for t in call(app, "inbox")["items"]:
         cid = ids["Rent"] if "LANDLORD" in t["raw_name"] else ids["Income"] if t["amount"] > 0 else ids["Food"]
-        call(app, "approve", txn_id=t["id"], category_id=cid, refile=False)
+        call(app, "categorize", txn_ids=[t["id"]], category_id=cid)
     accounts = {a["name"]: a["id"] for a in call(app, "accounts")}
     assert call(app, "month", "2026-10")["summary"] is None  # no budget yet
     call(app, "finish_onboarding", "2026-09")
@@ -387,8 +387,7 @@ def test_an_inbox_item_counts_in_no_category_until_its_categorized(app):
         ("10/06/2026", "INTERAC e-Transfer From: RILEY", "INTERAC e-Transfer From: RILEY EXAMPLE", "50.00"),
     ])))])
     for t in txns(app, month="2026-09"):
-        call(app, "approve", txn_id=t["id"], category_id=ids["Food" if t["amount"] == -399 else "Household"],
-             refile=False)
+        call(app, "categorize", txn_ids=[t["id"]], category_id=ids["Food" if t["amount"] == -399 else "Household"])
     items = {i["amount"]: i for i in call(app, "inbox")["items"]}
     assert set(items) == {-499, 5000}
     assert (items[-499]["category_id"], items[-499]["guess"]) == (None, ids["Food"])  # Accept all would use it
@@ -408,8 +407,8 @@ def test_an_inbox_item_counts_in_no_category_until_its_categorized(app):
     assert call(app, "spent_detail", "2026-10", ids["Food"])["total"] == 0
     assert [h["spent"] for h in call(app, "category_detail", ids["Food"])["history"] if h["month"] == "2026-10"] == [0]
     rta = s["ready_to_assign"]
-    call(app, "approve", txn_id=items[-499]["id"], category_id=ids["Food"], refile=False)
-    call(app, "approve", txn_id=items[5000]["id"], category_id=ids["Food"], refile=False)  # Riley paid half back
+    call(app, "categorize", txn_ids=[items[-499]["id"]], category_id=ids["Food"])
+    call(app, "categorize", txn_ids=[items[5000]["id"]], category_id=ids["Food"])  # Riley paid half back
     s, food = october()
     assert (s["uncategorized"], s["waiting"], food["activity"]) == (0, 0, 5000 - 499)
     assert s["ready_to_assign"] == rta + 499  # the 4.99 is Food's now, and Riley's 50 covers it
@@ -434,7 +433,7 @@ def test_the_dashboard(app):
     for t in call(app, "inbox")["items"]:
         name = next((cat for word, cat in where.items() if word in t["raw_name"]), None)
         if name:
-            call(app, "approve", txn_id=t["id"], category_id=ids[name], refile=False)
+            call(app, "categorize", txn_ids=[t["id"]], category_id=ids[name])
     call(app, "set_category_hidden", ids["Old"], True)
     call(app, "finish_onboarding", "2026-09")
     call(app, "set_balance", {a["name"]: a["id"] for a in call(app, "accounts")}["Chequing"], 100000, "2026-10-12")

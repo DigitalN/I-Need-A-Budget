@@ -262,7 +262,7 @@ def test_a_copied_account_is_spotted_and_merged(app):
     copy = _copy_of_chequing(app, ("2026-09-30", -450, "SAMPLE BAKERY"))
     chequing = next(a for a in call(app, "accounts") if a["name"] == "Chequing")
     utility = next(t for t in txns(app, account_id=copy) if t["amount"] == -17125)
-    call(app, "approve", txn_id=utility["id"], category_id=ids["Utilities"], refile=False)
+    call(app, "categorize", txn_ids=[utility["id"]], category_id=ids["Utilities"])
 
     dup = next(a for a in call(app, "accounts") if a["id"] == copy)["duplicate_of"]
     assert (dup["into_id"], dup["shared"], dup["total"]) == (chequing["id"], 4, 5)

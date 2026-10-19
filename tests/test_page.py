@@ -62,3 +62,14 @@ def test_used_categories_and_accounts_are_hidden_or_closed_not_deleted():
     assert "${a.used ? '' : `<button class=\"icon-btn danger\" data-act=\"delete-account\"" in PAGE
     assert "label: 'Close account', value: 'close'" in PAGE and "label: 'Reopen account', value: 'reopen'" in PAGE
     assert "went back to the Inbox" not in PAGE
+
+
+def test_the_inbox_groups_and_accepts_as_the_inbox_module_says():
+    """Inbox.view gives each item its final group key and guess: the page has no
+    exceptions of its own, and its calls are the module's (categorize, accept_all, recheck)."""
+    assert "if (it.group) {" in PAGE and "filter(i => i.guess)" in PAGE
+    assert "startsWith('Looks like a')" not in PAGE and "!i.similar_payee" not in PAGE
+    for old in ("'approve'", "'approve_many'", "'refile'", "also_filed", "subscription_prompt"):
+        assert old not in PAGE, old
+    assert "call('categorize'" in PAGE and "call('accept_all'" in PAGE
+    assert PAGE.count("if (r.question) ") >= 3  # "What's this for?" from the Inbox and the Transactions page

@@ -1313,10 +1313,10 @@ function drawInbox() {
         ${find.text || find.payee ? `<span class="small muted nowrap">Showing ${shown.length} of ${data.items.length}</span><button class="btn small" data-act="inbox-clear">Show all</button>` : ''}</div>
       <div class="row wrap" style="margin-top:8px">${payees.map(p => `<button class="chip ${find.payee === p.id ? 'first' : ''}" data-act="inbox-payee" data-payee="${p.id ?? ''}">${esc(p.name)} <span style="opacity:.6">${p.n}</span></button>`).join('')}</div>
     </div>` : '';
-  // Same payee (and same guess), or shares of one bill: one card for all of them.
+  // The inbox's groups (Inbox.view): one payee's items, or the shares of one shared expense, as one card.
   const blocks = [], byGroup = new Map();
   for (const it of shown) {
-    if (it.group && !it.similar_payee && !it.subscription_choices) {
+    if (it.group) {
       if (byGroup.has(it.group)) { byGroup.get(it.group).items.push(it); continue; }
       const b = { group: it.group, items: [it] };
       byGroup.set(it.group, b); blocks.push(b);
@@ -1330,10 +1330,10 @@ function drawInbox() {
     (data.files || []).map((f, i) => `<div class="notice info"><span><b>${esc(f.filename)}</b> ${f.needs === 'layout' ? 'needs setting up once.' : f.needs === 'new_account' ? 'is for an account the app hasn\'t seen: a new one, or one you have?' : 'is from a bank the app knows: which account is it for?'}</span><span class="spacer"></span>
       <button class="btn small" data-act="ignore-file" data-index="${i}">${f.needs === 'new_account' ? 'Don\'t import' : 'Not a bank file'}</button><button class="btn small primary" data-act="setup-file" data-index="${i}">${f.needs === 'layout' ? 'Set up…' : 'Choose…'}</button></div>`).join('');
   const cards = state.blocks.map((b, i) => b.items.length > 1 ? groupCard(b, i) : itemCard(b.items[0], i)).join('');
-  const filedRows = data.filed.map(t => `<tr><td class="muted nowrap">${day(t.date)}</td><td>${esc(t.payee_name || t.raw_name)}${t.subscription_name ? ` <span class="tag info">${esc(t.subscription_name)}</span>` : ''}</td>
+  const filedRows = data.categorized.map(t => `<tr><td class="muted nowrap">${day(t.date)}</td><td>${esc(t.payee_name || t.raw_name)}${t.subscription_name ? ` <span class="tag info">${esc(t.subscription_name)}</span>` : ''}</td>
       <td>${t.transfer_account_name ? `<span class="tag">Transfer</span>` : `<button class="link" data-act="recat" data-id="${t.id}">${esc(t.category_name || (t.is_split ? 'Split' : 'No category'))}</button>`}</td>
       <td class="muted small">${esc(t.reason)}</td><td class="r num ${t.amount > 0 ? 'pos' : ''}">${money(t.amount)}</td></tr>`).join('');
-  const withGuess = shown.filter(i => i.guess && !i.subscription_choices && !i.similar_payee).length;
+  const withGuess = shown.filter(i => i.guess).length;
   frame(`
     <div class="page-head"><h1>Inbox</h1><span class="muted">${data.items.length ? plural(data.items.length, 'transaction') + ' to look at' : ''}</span><span class="spacer"></span>
       ${withGuess ? `<button class="btn" data-act="accept-all">Accept all ${withGuess} suggestions${shown.length < data.items.length ? ' shown' : ''}</button>` : ''}</div>
@@ -1344,7 +1344,7 @@ function drawInbox() {
       ${shown.length ? `<div class="items" id="items">${cards}</div>
         <p class="kbd-help">↑ ↓ to move · Return takes the highlighted suggestion · 1–4 picks one · / any category · T transfer · S split · ⌘Z undo</p>`
         : (data.items.length || (data.files || []).length ? '' : `<div class="card empty"><b>All caught up</b>Everything is categorized. New bank downloads show up here when there's something to decide.</div>`)}
-      ${data.filed.length ? `<details class="card" style="padding:10px 14px"><summary style="cursor:default;font-weight:600">Categorized automatically from recent imports (${data.filed.length})</summary>
+      ${data.categorized.length ? `<details class="card" style="padding:10px 14px"><summary style="cursor:default;font-weight:600">Categorized automatically from recent imports (${data.categorized.length})</summary>
         <p class="small muted">Click a category to change it. The app learns from every change.</p>
         <table class="filed-list"><tbody>${filedRows}</tbody></table></details>` : ''}
     </div>`);
@@ -1392,7 +1392,7 @@ function groupCard(b, i) {
   const first = b.items[0];
   const total = b.items.reduce((s, t) => s + t.amount, 0);
   const dates = b.items.map(t => t.date).sort();
-  const share = first.reason && first.reason.startsWith('Looks like a');
+  const share = b.group.startsWith('share:');
   const title = share ? `${b.items.length} e-transfers that look like shares of one expense` : `${esc(first.payee_name || first.raw_name)} · ${b.items.length} transactions`;
   return `<div class="item group-card" data-index="${i}" tabindex="-1">
     <div>
@@ -1425,21 +1425,21 @@ async function fileBlock(index, categoryId) {
   const ids = b.items.map(t => t.id);
   // "One at a time" on a group means exactly that: categorizing one never categorizes the others.
   const oneAtATime = ids.length === 1 && b.items[0].group && state.expanded.has(b.items[0].group);
-  const r = ids.length > 1 ? await call('approve_many', { items: ids.map(id => ({ id, category_id: categoryId })) })
-                           : await call('approve', { txn_id: ids[0], category_id: categoryId, refile: !oneAtATime });
+  const r = await call('categorize', { txn_ids: ids, category_id: categoryId, recheck_payee: !oneAtATime });
   const t = b.items[0];
   const name = t.payee_name || t.raw_name;
   let msg = `${ids.length > 1 ? plural(ids.length, 'transaction') : name} → ${catName(categoryId)}`;
-  if (r.also_filed) msg += ` · also categorized ${r.also_filed} more like it`;
+  if (r.also_categorized) msg += ` · also categorized ${r.also_categorized} more like it`;
   const total = b.items.reduce((s, x) => s + x.amount, 0);
   if (incomeIds().includes(categoryId) && total > 0) {
     toast(msg, { action: { label: `Assign ${money(total)}`, run: () => { state.month = t.date.slice(0, 7); navigate('budget').then(() => openAssign(total)); } } });
   } else toast(msg, { action: undoAction });
   await renderInbox();
-  if (r.subscription_prompt) await subscriptionPrompt(r.subscription_prompt);
+  if (r.question) await subscriptionPrompt(r.question);
 }
 
-// Categorized a charge that looks like a subscription or bill that isn't tracked yet: ask what it is.
+// Categorized a charge that looks like a subscription or bill that isn't tracked yet: ask what it is
+// (from any page: the Inbox, the Transactions page, a transaction you opened).
 async function subscriptionPrompt(q) {
   const v = await dialog({
     title: `What's this ${esc(q.payee)} charge for?`,
@@ -1472,11 +1472,11 @@ async function subscriptionPrompt(q) {
 }
 
 async function acceptAll() {
-  const items = (state.inboxShown || state.inbox.items).filter(i => i.guess && !i.subscription_choices && !i.similar_payee).map(i => ({ id: i.id, category_id: i.guess }));
-  if (!items.length) return;
-  if (!await confirmBox('Accept all suggestions?', `Puts ${plural(items.length, 'transaction')} in the category the app suggested. You can change any of them later.`, 'Accept all')) return;
-  const r = await call('approve_many', [items]);
-  toast(`Categorized ${plural(items.length + (r.also_filed || 0), 'transaction')}`, { action: undoAction });
+  const ids = (state.inboxShown || state.inbox.items).filter(i => i.guess).map(i => i.id);
+  if (!ids.length) return;
+  if (!await confirmBox('Accept all suggestions?', `Puts ${plural(ids.length, 'transaction')} in the category the app suggested. You can change any of them later.`, 'Accept all')) return;
+  const r = await call('accept_all', { txn_ids: ids });
+  toast(`Categorized ${plural(r.categorized + (r.also_categorized || 0), 'transaction')}`, { action: undoAction });
   await renderInbox();
 }
 
@@ -1498,7 +1498,7 @@ async function transferDialog(txId, fromAccountName) {
 }
 
 const findTx = id => {
-  for (const src of [state.inbox && state.inbox.items, state.inbox && state.inbox.filed, state.txns && state.txns.items, state.spentTx]) {
+  for (const src of [state.inbox && state.inbox.items, state.inbox && state.inbox.categorized, state.txns && state.txns.items, state.spentTx]) {
     for (const t of src || []) if (t.id === id) return t;
   }
   return null;
@@ -1648,8 +1648,9 @@ async function inboxAction(btn, e) {
   } else if (act === 'recat') {
     const cid = await pickCategory(btn);
     if (!cid) return;
-    await call('update_transaction', [id, { category_id: cid }]);
+    const r = await call('update_transaction', [id, { category_id: cid }]);
     toast(`Changed to ${catName(cid)}`, { action: undoAction }); await renderInbox();
+    if (r.question) await subscriptionPrompt(r.question);
   }
 }
 
@@ -1947,8 +1948,9 @@ async function editTransaction(id) {
       if (!Number.isNaN(a) && a !== null && a !== t.amount) changes.amount = a;
     }
     if (!Object.keys(changes).length) return;  // nothing changed: just close
-    await call('update_transaction', [id, changes]);
+    const r = await call('update_transaction', [id, changes]);
     toast('Saved', { action: undoAction });
+    if (r.question) await subscriptionPrompt(r.question);
   } else if (v === 'delete') {
     const ok = await confirmBox('Delete this transaction?', t.manual ? 'It will be removed.' : 'It will be removed. If you import a file that contains it again, it comes back.', 'Delete', true);
     if (!ok) return;
@@ -2341,7 +2343,7 @@ async function settingsAction(btn) {
   } else if (act === 'open') { await call('window_action', [btn.dataset.what]); return; }
   else if (act === 'learn-actual') {
     const r = await call('learn_actual_file');
-    if (r && r.learnt) toast(`Learnt ${r.learnt.examples} examples${r.refiled ? `, and categorized ${r.refiled} waiting transactions` : ''}`);
+    if (r && r.learnt) toast(`Learnt ${r.learnt.examples} examples${r.rechecked ? `, and categorized ${r.rechecked} waiting transactions` : ''}`);
   }
   await renderSettings();
 }
@@ -2528,7 +2530,11 @@ document.addEventListener('click', async e => {
     } else if (act === 'edit-categories') await openCategoryEditor();
     else if (act === 'tx-cat') {
       const cid = await pickCategory(btn);
-      if (cid) { await call('update_transaction', [Number(btn.dataset.id), { category_id: cid }]); toast(`Changed to ${catName(cid)}`, { action: undoAction }); await renderTransactions(); }
+      if (cid) {
+        const r = await call('update_transaction', [Number(btn.dataset.id), { category_id: cid }]);
+        toast(`Changed to ${catName(cid)}`, { action: undoAction }); await renderTransactions();
+        if (r.question) { await subscriptionPrompt(r.question); await renderTransactions(); }
+      }
     } else if (act === 'add-tx') await addTransaction();
     else if (state.page === 'dashboard') await dashboardAction(btn);
     else if (state.page === 'inbox') await inboxAction(btn, e);
