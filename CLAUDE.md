@@ -264,7 +264,9 @@ Don't undo these without asking:
   `used_account_ids()`), and for an empty group. A closed account keeps its history,
   stays in Net worth and in Cash while it has money, and isn't offered for imports,
   transfers or new transactions; Close account / Reopen account are in Edit…, and closed
-  accounts are listed under Closed accounts on the Accounts page.
+  accounts are listed under Closed accounts on the Accounts page. A file that finds a
+  closed account (by its number or file name) still imports into it, and it stays closed
+  (the maintainer's choice).
 - **Review inbox** instead of a register: only what the app isn't sure about, with one
   click / keypress per decision, same-payee items and shares of one shared expense
   grouped together. Categorizing one teaches the app and re-categorizes the rest of that
