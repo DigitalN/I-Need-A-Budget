@@ -56,7 +56,9 @@ def test_amount_boxes_start_empty_and_redraws_keep_your_place():
     into an amount selects it, and redrawing the Budget page doesn't scroll it back up."""
     assert 'value="${moneyOrBlank(c.assigned)}" placeholder="0.00"' in PAGE
     assert "scrollIntoView({ inline: 'center'" not in PAGE  # it scrolled the page to the top
-    assert "main.scrollTop = scrolled" in PAGE and "keepSelected" in PAGE
+    assert "main.scrollTop = scrolled" in PAGE
+    # selected on mouse-down, also in the box Return moved you to; a second click places the cursor
+    assert "if (el === document.activeElement && el === clickedInto) return;" in PAGE
 
 
 def test_used_categories_and_accounts_are_hidden_or_closed_not_deleted():
