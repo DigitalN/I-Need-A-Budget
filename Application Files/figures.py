@@ -312,9 +312,11 @@ class Figures:
 
     def worth(self, months):
         """Cash, what's owed and net worth (cash − owed) at the end of each month (this
-        month: so far), from every account that has a balance, closed ones included."""
+        month: so far), from every account that has a balance, closed ones included. Before
+        an account's first transaction its balance is the one it started with, so a month
+        before every account has data isn't `complete`."""
         known = [a for a in self._accounts if a["anchor_date"]]
-        out = {"months": months, "cash": [], "owed": [], "net": []}
+        out = {"months": months, "complete": [m >= self.coverage for m in months], "cash": [], "owed": [], "net": []}
         for m in months:
             day = min(last_day(m), self.today)
             cash = sum(self._balance(a["id"], day) for a in known if not ledger.is_debt(a["kind"]))

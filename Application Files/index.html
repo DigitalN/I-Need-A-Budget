@@ -1203,7 +1203,7 @@ function monthChart(el, opts) {
   if (opts.line) {
     const pts = opts.line.values.map((v, i) => [mid(i), y(v)]);
     parts.push(`<path class="net" d="M${pts.map(p => p.join(',')).join('L')}"/>`);
-    for (const [px, py] of pts) parts.push(`<circle class="dot" cx="${px}" cy="${py}" r="4"/>`);
+    pts.forEach(([px, py], i) => parts.push(`<circle class="dot${opts.faded && opts.faded(i) ? ' faded' : ''}" cx="${px}" cy="${py}" r="4"/>`));
   }
   for (let i = 0; i < n; i++) {
     parts.push(`<rect class="hit" data-i="${i}" tabindex="0" x="${pad.l + band * i}" y="0" width="${band}" height="${H}"/>`);
@@ -1242,7 +1242,8 @@ function drawCharts() {
       months: nw.months, stacked: true,
       series: [{ cls: 's1', values: nw.cash }, { cls: 's2', values: nw.owed.map(v => -v) }],
       line: { values: nw.net },
-      tip: i => `<b>${monthName(nw.months[i], current(i))}</b>${tipRow('ink', 'Net worth', nw.net[i])}${tipRow('s1', 'Cash', nw.cash[i])}${tipRow('s2', 'Owed', nw.owed[i])}`,
+      faded: i => !nw.complete[i],
+      tip: i => `<b>${monthName(nw.months[i], current(i))}</b>${tipRow('ink', 'Net worth', nw.net[i])}${tipRow('s1', 'Cash', nw.cash[i])}${tipRow('s2', 'Owed', nw.owed[i])}${nw.complete[i] ? '' : '<div class="small faint">Not every account has data</div>'}`,
     });
   }
   const sp = d.spending, flowEl = $('#chart-flow');

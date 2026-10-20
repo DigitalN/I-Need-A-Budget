@@ -4,6 +4,7 @@ import random
 
 from budget import average_spending, complete_months_before, compute, usual_spending
 from helpers import CARD_FILE, bank_csv, call, card_csv, categories, txns, write
+from util import months_between
 
 FOOD, BILLS, INCOME, CARD_PAY = 1, 2, 3, 4
 CARD, LOC = 10, 11   # debt accounts
@@ -460,9 +461,21 @@ def test_the_dashboard(app):
     nw = d["net_worth"]  # Chequing's balance at the end of each month (October: so far)
     assert nw["months"] == ["2026-06", "2026-07", "2026-08", "2026-09", "2026-10"]
     assert nw["cash"] == [-1600, -12000, -28400, 130000, 100000] and nw["owed"] == [0] * 5
-    assert nw["net"] == nw["cash"]
+    assert nw["net"] == nw["cash"] and nw["complete"] == [True] * 5
     assert [m["month"] for m in call(app, "dashboard", 3)["spending"]["months"]][0] == "2026-07"
     assert call(app, "dashboard", "all")["spending"]["months"][0]["month"] == "2026-06"
     assert not app.dispatch("dashboard", [5])["ok"]
     call(app, "save_settings", {"dashboard_months": 3})  # the months you chose come back
     assert [m["month"] for m in call(app, "dashboard")["spending"]["months"]][0] == "2026-07"
+
+    # A card that only has October: Net worth still follows the months chosen, and the
+    # months before it are marked as not every account having data.
+    call(app, "import_files", [str(write(app.test_downloads, CARD_FILE, card_csv([
+        ("10/03/2026", "SAMPLE GROCER CALGARY AB", "-40.00", "Groceries")])))])
+    card = next(a for a in call(app, "accounts") if a["kind"] == "credit_card")
+    call(app, "set_balance", card["id"], -4000, "2026-10-12")
+    for months, first in ((3, "2026-07"), (6, "2026-06"), ("all", "2026-06")):
+        nw = call(app, "dashboard", months)["net_worth"]
+        assert nw["months"] == months_between(first, "2026-10")
+        assert nw["complete"] == [False] * (len(nw["months"]) - 1) + [True]
+        assert nw["owed"] == [0] * (len(nw["months"]) - 1) + [4000]  # nothing owed before it

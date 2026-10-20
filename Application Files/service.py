@@ -926,7 +926,8 @@ class BudgetService:
         category spent (the same figures as Spent). All over the last `months` whole months
         (3, 6, 12 or "all"; by default the Dashboard's saved choice) and this month so far.
         Each whole month is compared with the category's Usual for it (the whole months
-        before it) and marked when it's above usual: at least $25 and 25% more."""
+        before it) and marked when it's above usual: at least $25 and 25% more. Both charts
+        show the same months; one before every account has data isn't `complete`."""
         months = self.settings.get()["dashboard_months"] if months is None else months
         if months not in DASHBOARD_MONTHS or isinstance(months, bool):
             raise UserError("Pick 3, 6 or 12 months, or All.")
@@ -939,7 +940,7 @@ class BudgetService:
             cols = months_between(first_month if months == "all" else max(first_month, add_months(current, -months)),
                                   current)
             spending = f.spending(cols)
-            worth = f.worth([m for m in cols if m >= coverage])
+            worth = f.worth(cols)
             now = f.balances()
             missing = f.without_balance
         names = {cat["id"]: cat for g in tree for cat in g["categories"]}

@@ -409,9 +409,11 @@ Don't undo these without asking:
   disliked it resetting). Two charts, drawn as SVG in the page (no library; colours
   `--series-1`/`--series-2`, checked for colour blindness on the card in both themes):
   **Net worth** (a bar per month-end: cash above zero, owed below, the net worth line;
-  YNAB's style, the maintainer's pick over a daily line; from the first month every
-  account has data; this month's figure in the header) and **In and out** (Income and
-  Spending bars per month, the table's figures). Then **Spending**: Income, total
+  YNAB's style, the maintainer's pick over a daily line; this month's figure in the
+  header) and **In and out** (Income and Spending bars per month, the table's figures).
+  Both show the months chosen; a month before every account has data is faded with "Not
+  every account has data" in its tooltip (Net worth once started at that month, so an
+  account added recently made every months choice look the same). Then **Spending**: Income, total
   spending, and the category groups in Budget page order (closed every time the page
   opens; hidden categories only if they spent), months as columns. Figures are Spent's. A whole month at least **$25 and 25%**
   above the category's Usual for it is marked "above usual" (↑), never "overspent" (that's
