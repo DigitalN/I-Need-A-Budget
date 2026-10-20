@@ -379,12 +379,49 @@ const moneyPlain = c => c ? (c / 100).toLocaleString('en-CA', { minimumFractionD
 // For a box you type an amount into: nothing yet is an empty box (its placeholder shows
 // 0.00), so there's no 0.00 to type into the middle of.
 const moneyOrBlank = c => c ? moneyPlain(c) : '';
-function parseMoney(text) {
-  const t = String(text ?? '').replace(/[$,\s]/g, '').replace(/−/g, '-');
+// What's typed in an amount box, in cents: an amount, or a sum of them (120+35.50, 3*45,
+// 300/4, brackets too). Given `base`, what the box held before you typed (an Assigned or
+// Budgeted amount), one that starts with + − * or / works on that: +50 adds 50 to it.
+// Anywhere else a leading minus is a negative amount. null for an empty box, NaN for
+// anything that isn't an amount. No eval(): the page's CSP doesn't allow it anyway.
+function parseMoney(text, base) {
+  let t = String(text ?? '').replace(/[$,\s]/g, '').replace(/−/g, '-').replace(/×/g, '*').replace(/÷/g, '/');
   if (t === '') return null;
-  if (!/^[-+]?(\d+(\.\d{0,2})?|\.\d{1,2})$/.test(t)) return NaN;
-  return Math.round(parseFloat(t) * 100);
+  if (base !== undefined && /^[-+*/]/.test(t)) t = `(${(base || 0) / 100})${t}`;
+  let i = 0;
+  const sum = () => {
+    let v = product();
+    while (t[i] === '+' || t[i] === '-') { const op = t[i++], w = product(); v = op === '+' ? v + w : v - w; }
+    return v;
+  };
+  const product = () => {
+    let v = unary();
+    while (t[i] === '*' || t[i] === '/') { const op = t[i++], w = unary(); v = op === '*' ? v * w : v / w; }
+    return v;
+  };
+  const unary = () => {
+    if (t[i] === '-') { i++; return -unary(); }
+    if (t[i] === '+') { i++; return unary(); }
+    if (t[i] === '(') { i++; const v = sum(); return t[i++] === ')' ? v : NaN; }
+    const m = /^(\d+\.?\d*|\.\d+)/.exec(t.slice(i));
+    if (!m) return NaN;
+    i += m[0].length;
+    return parseFloat(m[0]);
+  };
+  const v = sum();
+  if (i !== t.length || !Number.isFinite(v)) return NaN;
+  const cents = Math.round(Number((Math.abs(v) * 100).toFixed(6)));  // 1.005 is 101¢, not 100
+  return v < 0 && cents ? -cents : cents;
 }
+// What an amount box holds, in cents. A box marked data-relative (Assigned, Budgeted,
+// Assign money…'s Assign column) works +50 out from the amount it had when you clicked
+// into it (data-base), or else the amount it was drawn with: a redraw puts back what you'd
+// typed into a new box.
+const amountIn = el => parseMoney(el.value, !el.matches('[data-relative]') ? undefined
+  : el.dataset.base !== undefined ? Number(el.dataset.base) : parseMoney(el.defaultValue) || 0);
+// Whether what's in a box is math (120+35.50, or +50 in a relative box) rather than an amount.
+const isMath = el => /[*/()×÷]|.[-+−]/.test(el.value.replace(/[$,\s]/g, ''))
+  || (el.matches('[data-relative]') && /^\s*[-+−*/×÷]/.test(el.value));
 const monthLong = m => new Date(m + '-15T12:00').toLocaleDateString('en-CA', { month: 'long', year: 'numeric' });
 const monthShort = m => new Date(m + '-15T12:00').toLocaleDateString('en-CA', { month: 'short' });
 const monthOnly = m => new Date(m + '-15T12:00').toLocaleDateString('en-CA', { month: 'long' });
@@ -693,7 +730,7 @@ async function renderBudget() {
           <thead><tr><th>Category</th><th class="r">Budgeted</th><th class="r">Assigned</th><th class="r">Spent</th><th class="r">Available</th></tr></thead>
           <tbody>${rows.join('')}</tbody></table>
       </div>
-      ${view.groups.length ? `<p class="kbd-help">Click a category or what it spent to see this month's transactions and what it spent in past months. Type in Assigned and press Return; Tab moves to the next one.</p>` : ''}
+      ${view.groups.length ? `<p class="kbd-help">Click a category or what it spent to see this month's transactions and what it spent in past months. Type in Assigned and press Return (+50 adds to what's there, −20 takes away); Tab moves to the next one.</p>` : ''}
     </div>`); } finally { redrawing = false; }
   main.scrollTop = scrolled;
   if (keep) {
@@ -741,7 +778,7 @@ document.addEventListener('focusout', e => {
 });
 
 async function saveAssigned(input) {
-  const cents = parseMoney(input.value);
+  const cents = amountIn(input);
   if (Number.isNaN(cents)) { toast('That isn\'t an amount', { error: true }); return; }
   const id = Number(input.dataset.assign);
   const current = findCat(id);
@@ -759,7 +796,7 @@ function assignBox(c) {
     ? `<button class="copy-arrow" data-copy-budget="${c.id}" tabindex="-1" title="Assign the budgeted ${esc(money(c.monthly_budget))}">→</button>` : '';
   const fromSpent = spent > 0 && spent !== c.assigned
     ? `<button class="copy-arrow" data-copy-spent="${c.id}" tabindex="-1" title="Assign what it spent, ${esc(money(spent))}">←</button>` : '<span class="copy-gap"></span>';
-  return `${fromBudget}<input class="money-input" data-assign="${c.id}" value="${moneyOrBlank(c.assigned)}" placeholder="0.00" inputmode="decimal">${fromSpent}`;
+  return `${fromBudget}<input class="money-input" data-assign="${c.id}" data-relative value="${moneyOrBlank(c.assigned)}" placeholder="0.00" inputmode="decimal">${fromSpent}`;
 }
 async function assignFromArrow(id, which) {
   const c = findCat(id);
@@ -831,7 +868,7 @@ async function openCategory(id) {
       <div class="bars">${bars || '<span class="faint">No spending yet</span>'}</div>
       <div style="margin-top:10px">${spentRows}</div>
       <div class="row" style="padding:8px 0 0;margin-top:6px;border-top:1px solid var(--line)"><b>Budgeted</b><span class="spacer"></span>
-        <input id="monthly-input" class="num" style="width:110px;text-align:right" inputmode="decimal"
+        <input id="monthly-input" class="num" style="width:110px;text-align:right" inputmode="decimal" data-relative
           value="${d.monthly_budget === null ? '' : moneyPlain(d.monthly_budget)}" placeholder="Not set">
         <button class="btn small ghost" data-act="use-amount" data-amount="">Clear</button></div>
     </div>`}
@@ -856,7 +893,7 @@ async function openCategory(id) {
   const noteInput = $('#cat-note', dr), noteStatus = $('#note-status', dr);
   const saveMonthly = async () => {
     if (!monthlyInput) return;
-    const cents = parseMoney(monthlyInput.value);
+    const cents = amountIn(monthlyInput);
     if (Number.isNaN(cents) || (cents !== null && cents < 0)) return show(monthlyStatus, 'Not an amount', true);
     if (cents === savedMonthly) return show(monthlyStatus, monthlyStatus.textContent === 'Not an amount' ? '' : monthlyStatus.textContent);
     savedMonthly = cents;
@@ -941,7 +978,7 @@ async function openAssign(amount) {
   const rows = plan.plan.map((p, i) => `<tr><td>${esc(p.name)} <span class="faint small">${esc(p.group)}</span>${p.covered ? ` <span class="tag warn" title="Already spent, so it came out of Ready to assign: assigning up to this costs nothing">overspent ${money(p.covered)}</span>` : ''}</td>
       <td class="r num muted">${money(p.monthly_budget)}</td>
       <td class="r num ${p.has < 0 ? 'neg' : 'muted'}">${money(p.has)}</td>
-      <td class="r"><input class="money-input" style="box-shadow: inset 0 0 0 1px var(--line-strong) !important" data-i="${i}" value="${moneyOrBlank(p.amount)}" placeholder="0.00"></td></tr>`).join('');
+      <td class="r"><input class="money-input" style="box-shadow: inset 0 0 0 1px var(--line-strong) !important" data-i="${i}" data-relative value="${moneyOrBlank(p.amount)}" placeholder="0.00"></td></tr>`).join('');
   const body = `
     <div class="field"><label>Amount to share out</label>
       <div class="row"><input id="assign-amount" style="width:140px;text-align:right" value="${moneyPlain(plan.amount)}"><button type="button" class="btn small" id="assign-recalc">Recalculate</button>
@@ -958,7 +995,7 @@ async function openAssign(amount) {
       const left = () => {
         const total = parseMoney($('#assign-amount', d).value) || 0;
         const used = $$('[data-i]', d).reduce((s, el) => {  // covering overspending is already paid for
-          const v = parseMoney(el.value) || 0;
+          const v = amountIn(el) || 0;
           return s + (v > 0 ? Math.max(0, v - plan.plan[Number(el.dataset.i)].covered) : v);
         }, 0);
         const el = $('#assign-left', d); if (el) el.innerHTML = `Left over: <b class="${total - used < 0 ? 'neg' : ''}">${money(total - used)}</b>`;
@@ -974,7 +1011,7 @@ async function openAssign(amount) {
     },
   });
   if (result !== 'go') return;
-  const allocations = $$('#dlg [data-i]').map(el => ({ category_id: plan.plan[Number(el.dataset.i)].category_id, amount: parseMoney(el.value) || 0 })).filter(a => a.amount);
+  const allocations = $$('#dlg [data-i]').map(el => ({ category_id: plan.plan[Number(el.dataset.i)].category_id, amount: amountIn(el) || 0 })).filter(a => a.amount);
   if (!allocations.length) return;
   await call('apply_plan', [state.month, allocations]);
   await renderBudget();
@@ -1203,7 +1240,7 @@ function monthChart(el, opts) {
   if (opts.line) {
     const pts = opts.line.values.map((v, i) => [mid(i), y(v)]);
     parts.push(`<path class="net" d="M${pts.map(p => p.join(',')).join('L')}"/>`);
-    for (const [px, py] of pts) parts.push(`<circle class="dot" cx="${px}" cy="${py}" r="4"/>`);
+    pts.forEach(([px, py], i) => parts.push(`<circle class="dot${opts.faded && opts.faded(i) ? ' faded' : ''}" cx="${px}" cy="${py}" r="4"/>`));
   }
   for (let i = 0; i < n; i++) {
     parts.push(`<rect class="hit" data-i="${i}" tabindex="0" x="${pad.l + band * i}" y="0" width="${band}" height="${H}"/>`);
@@ -1242,7 +1279,8 @@ function drawCharts() {
       months: nw.months, stacked: true,
       series: [{ cls: 's1', values: nw.cash }, { cls: 's2', values: nw.owed.map(v => -v) }],
       line: { values: nw.net },
-      tip: i => `<b>${monthName(nw.months[i], current(i))}</b>${tipRow('ink', 'Net worth', nw.net[i])}${tipRow('s1', 'Cash', nw.cash[i])}${tipRow('s2', 'Owed', nw.owed[i])}`,
+      faded: i => !nw.complete[i],
+      tip: i => `<b>${monthName(nw.months[i], current(i))}</b>${tipRow('ink', 'Net worth', nw.net[i])}${tipRow('s1', 'Cash', nw.cash[i])}${tipRow('s2', 'Owed', nw.owed[i])}${nw.complete[i] ? '' : '<div class="small faint">Not every account has data</div>'}`,
     });
   }
   const sp = d.spending, flowEl = $('#chart-flow');
@@ -2559,6 +2597,12 @@ document.addEventListener('click', async e => {
   if (o) { await call('save_settings', [{ overspending: o.dataset.overspending }]); renderSettings(); }
 });
 document.addEventListener('keydown', e => {
+  if (e.target.dataset && e.target.dataset.assign !== undefined && e.key === 'Escape') {  // puts it back, saves nothing
+    e.preventDefault();
+    e.target.value = e.target.defaultValue;
+    e.target.blur();
+    return;
+  }
   if (e.target.dataset && e.target.dataset.assign !== undefined && e.key === 'Enter') {
     e.preventDefault();
     const inputs = $$('[data-assign]');
@@ -2573,7 +2617,8 @@ document.addEventListener('keydown', e => {
   inboxKeys(e);
 });
 const AMOUNT_BOXES = 'input[data-assign], input.money-input, #monthly-input, #move-amount, #assign-amount, ' +
-  'input[data-split-amt], input[data-payment], #ed-amount, #sf-amount, input[data-ob-balance]';
+  'input[data-split-amt], input[data-payment], #ed-amount, #sf-amount, input[data-ob-balance], ' +
+  'input[data-balance-for], #add-amount, #rec-amount, #na-balance';
 let mouseDown = false, keepSelected = null;
 document.addEventListener('mousedown', () => { mouseDown = true; }, true);
 document.addEventListener('mouseup', e => {
@@ -2582,9 +2627,19 @@ document.addEventListener('mouseup', e => {
   keepSelected = null;
 }, true);
 document.addEventListener('focusin', e => {
-  if (!e.target.matches || !e.target.matches(AMOUNT_BOXES)) return;
-  e.target.select();
-  if (mouseDown) keepSelected = e.target;
+  const el = e.target;
+  if (!el.matches || !el.matches(AMOUNT_BOXES)) return;
+  if (el.matches('[data-relative]') && !isMath(el)) el.dataset.base = parseMoney(el.value) || 0;
+  el.select();
+  if (mouseDown) keepSelected = el;
+});
+// Leaving a box with math in it shows the amount it comes to. (An Assigned box has
+// already read it: saving it is the focusout listener above this one.)
+document.addEventListener('focusout', e => {
+  const el = e.target;
+  if (!el.matches || !el.matches(AMOUNT_BOXES) || !isMath(el)) return;
+  const cents = amountIn(el);
+  if (cents !== null && !Number.isNaN(cents)) el.value = moneyPlain(cents);
 });
 let dragDepth = 0;
 document.addEventListener('dragenter', e => { if (e.dataTransfer && [...e.dataTransfer.types].includes('Files')) { dragDepth++; document.body.classList.add('dragging'); } });

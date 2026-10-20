@@ -349,7 +349,12 @@ Don't undo these without asking:
   saves when you leave it (Return, Tab, a click elsewhere), never when a redraw replaces
   it mid-typing. Redrawing the Budget page keeps the scroll position and the box you're
   in (it used to jump to the top after every save: `scrollIntoView` on the month strip
-  scrolled the page too).
+  scrolled the page too). **Math in amount boxes** (issue #28, `parseMoney`, no `eval`):
+  any amount box takes a sum (`120+35.50`, `3*45`, brackets), shown as its amount once you
+  leave it. In Assigned, Budgeted and Assign money…'s Assign column (`data-relative`) a
+  leading `+ − * /` works on what the box had when you clicked in: Food at $120, `+50` →
+  $170, `-20` → $100 (so `-50` in an empty box is still −$50). Anywhere else a leading
+  minus is a negative amount. Escape in an Assigned box puts it back and saves nothing.
 - **A card's payment category is money set aside, not paid**: it stays in the bank until
   a payment, so what you owe doesn't change. Its pop-over shows You owe / Set aside / Not
   set aside yet, its lines say "Set aside for card spending in Food" and "Paid to the card
@@ -409,9 +414,11 @@ Don't undo these without asking:
   disliked it resetting). Two charts, drawn as SVG in the page (no library; colours
   `--series-1`/`--series-2`, checked for colour blindness on the card in both themes):
   **Net worth** (a bar per month-end: cash above zero, owed below, the net worth line;
-  YNAB's style, the maintainer's pick over a daily line; from the first month every
-  account has data; this month's figure in the header) and **In and out** (Income and
-  Spending bars per month, the table's figures). Then **Spending**: Income, total
+  YNAB's style, the maintainer's pick over a daily line; this month's figure in the
+  header) and **In and out** (Income and Spending bars per month, the table's figures).
+  Both show the months chosen; a month before every account has data is faded with "Not
+  every account has data" in its tooltip (Net worth once started at that month, so an
+  account added recently made every months choice look the same). Then **Spending**: Income, total
   spending, and the category groups in Budget page order (closed every time the page
   opens; hidden categories only if they spent), months as columns. Figures are Spent's. A whole month at least **$25 and 25%**
   above the category's Usual for it is marked "above usual" (↑), never "overspent" (that's
