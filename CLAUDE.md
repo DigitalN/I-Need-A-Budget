@@ -349,7 +349,12 @@ Don't undo these without asking:
   saves when you leave it (Return, Tab, a click elsewhere), never when a redraw replaces
   it mid-typing. Redrawing the Budget page keeps the scroll position and the box you're
   in (it used to jump to the top after every save: `scrollIntoView` on the month strip
-  scrolled the page too).
+  scrolled the page too). **Math in amount boxes** (issue #28, `parseMoney`, no `eval`):
+  any amount box takes a sum (`120+35.50`, `3*45`, brackets), shown as its amount once you
+  leave it. In Assigned, Budgeted and Assign money…'s Assign column (`data-relative`) a
+  leading `+ − * /` works on what the box had when you clicked in: Food at $120, `+50` →
+  $170, `-20` → $100 (so `-50` in an empty box is still −$50). Anywhere else a leading
+  minus is a negative amount. Escape in an Assigned box puts it back and saves nothing.
 - **A card's payment category is money set aside, not paid**: it stays in the bank until
   a payment, so what you owe doesn't change. Its pop-over shows You owe / Set aside / Not
   set aside yet, its lines say "Set aside for card spending in Food" and "Paid to the card

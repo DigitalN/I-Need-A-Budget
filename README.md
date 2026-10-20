@@ -95,7 +95,8 @@ Click one (or press 1–4, Return for the first) and it's categorized. ⌘Z undo
 
 **Budget.** Each month: what each category has, spent and got. A category's
 **Budgeted** amount is the plan; money is only in it once it's assigned. Next to its
-Assigned box, **→** assigns the budgeted amount and **←** what it spent, in one click, and **Assign money…**
+Assigned box, **→** assigns the budgeted amount and **←** what it spent, in one click;
+typing `+50` in it adds $50 to what's there (any amount box does math: `120+35.50`). **Assign money…**
 shares out a paycheque, topping each category up to its budgeted amount in order (what's
 already in it counts). Click a category, or what it spent, to see every transaction that
 adds up to it this month (click one to change it), its **Monthly Budgeted Amount** (what
