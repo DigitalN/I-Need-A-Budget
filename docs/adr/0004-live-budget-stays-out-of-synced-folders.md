@@ -20,4 +20,4 @@ copies made when the app quits, go to `Documents/I Need A Budget Backups`.
   to another computer means copying a backup across.
 - The backups that were in Application Support's `Backups/` folder are moved to the new
   one once.
-- Decided 2026-10-14, for 1.2.0. Backups used to be made at launch, one per day, 14 kept.
+- Decided 2026-10-14, for 1.3.0. Backups used to be made at launch, one per day, 14 kept.

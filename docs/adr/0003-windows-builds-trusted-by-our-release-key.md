@@ -26,4 +26,4 @@ never goes to GitHub.
   themselves and need one reinstall by hand from a release signed with a new key.
 - A release is published only when both the Mac and the Windows builds succeed: every
   version exists for both.
-- Decided 2026-10-14, for 1.2.0. Linux was considered and dropped.
+- Decided 2026-10-14, for 1.3.0. Linux was considered and dropped.
