@@ -2619,20 +2619,29 @@ document.addEventListener('keydown', e => {
 const AMOUNT_BOXES = 'input[data-assign], input.money-input, #monthly-input, #move-amount, #assign-amount, ' +
   'input[data-split-amt], input[data-payment], #ed-amount, #sf-amount, input[data-ob-balance], ' +
   'input[data-balance-for], #add-amount, #rec-amount, #na-balance';
-let mouseDown = false, keepSelected = null;
-document.addEventListener('mousedown', () => { mouseDown = true; }, true);
-document.addEventListener('mouseup', e => {
-  mouseDown = false;
-  if (keepSelected && e.target === keepSelected) e.preventDefault();
-  keepSelected = null;
+// A click into an amount box selects all of it, so what you type replaces it (and +50
+// adds to it): a box you weren't in, and one Return or Tab moved you to. Another click in
+// a box you've clicked into puts the cursor where you click. It's done on mouse-down,
+// before WebKit places the cursor: cancelling the mouse-up didn't cover a box you were
+// already in.
+let clickedInto = null;
+document.addEventListener('mousedown', e => {
+  const el = e.target;
+  if (e.button !== 0 || !el.matches || !el.matches(AMOUNT_BOXES) || el.disabled || el.readOnly) return;
+  if (el === document.activeElement && el === clickedInto) return;
+  e.preventDefault();
+  el.focus({ preventScroll: true });
+  el.select();
+  clickedInto = el;
 }, true);
+// Keyboard focus (Tab, Return to the next Assigned box, a dialog's first box) selects too.
 document.addEventListener('focusin', e => {
   const el = e.target;
   if (!el.matches || !el.matches(AMOUNT_BOXES)) return;
   if (el.matches('[data-relative]') && !isMath(el)) el.dataset.base = parseMoney(el.value) || 0;
   el.select();
-  if (mouseDown) keepSelected = el;
 });
+document.addEventListener('focusout', e => { if (e.target === clickedInto) clickedInto = null; });
 // Leaving a box with math in it shows the amount it comes to. (An Assigned box has
 // already read it: saving it is the focusout listener above this one.)
 document.addEventListener('focusout', e => {

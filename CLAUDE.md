@@ -345,7 +345,10 @@ Don't undo these without asking:
   would change something (→ not for a $0 budget).
 - **Assigned boxes:** empty when nothing's assigned (0.00 is only the placeholder: the
   maintainer kept typing into the middle of "0.00"); clicking into any amount box selects
-  it so typing replaces it (the mouse-up is cancelled, or it drops the selection). A box
+  it so typing replaces it, also the box Return or Tab moved you to; another click in a box
+  you've clicked into places the cursor. It's done on mouse-down, before WebKit places
+  the cursor: cancelling the mouse-up (1.0.7–1.2.2) missed a box you were already in, and
+  Chromium (the preview) hid it. Test clicks in WebKit, the app's engine. A box
   saves when you leave it (Return, Tab, a click elsewhere), never when a redraw replaces
   it mid-typing. Redrawing the Budget page keeps the scroll position and the box you're
   in (it used to jump to the top after every save: `scrollIntoView` on the month strip
