@@ -25,7 +25,14 @@ Found ones are suggestions until you track them or dismiss them. Once tracked, e
 charge is linked to it, so the page can say when it's next due, when the price changed,
 when it seems to have stopped, and (the important one) when something charges you that
 shouldn't: after you marked it cancelled, or after its optional end date (a payment plan's
-last payment, a promotion's end). Such a charge goes to the inbox with a warning.
+last payment, a promotion's end). Such a charge goes to the inbox with a warning, worked
+out each time (`charged_when_it_shouldnt`), so reactivating it or moving the end date
+clears it.
+
+What happens to a charge in the inbox is inbox.py's to decide: this module only links
+charges to recurring charges and keeps their prices. A price follows a charge only when
+the charge first arrives (`link_transaction`) or when you choose "New price for…"
+(`link_to`).
 
 One payee can have several subscriptions told apart by price: Apple bills iCloud+ and
 Apple Music under the same "APPLE.COM/BILL". Each tracked subscription has its own name
@@ -231,8 +238,8 @@ def _link_matching(conn, sub_id, payee_id, amount, pricing):
 
 
 def track(conn, candidate, kind=None, name=None, category_id=None, pricing=None, ends_on=None):
-    """Starts tracking a detected subscription. Its past charges are linked to it, and
-    any still waiting for review are filed in its category."""
+    """Starts tracking a detected subscription. Its past charges are linked to it (the
+    inbox then re-checks its payee: its waiting charges go to its category)."""
     category_id = category_id or candidate.get("category_id")
     pricing = pricing if pricing in PRICINGS else candidate.get("pricing") or "fixed"
     sub_id = conn.execute(
@@ -244,7 +251,6 @@ def track(conn, candidate, kind=None, name=None, category_id=None, pricing=None,
     _link_ids(conn, sub_id, candidate.get("transaction_ids") or [])
     if pricing == "varies":
         _link_matching(conn, sub_id, candidate["payee_id"], candidate["amount"], pricing)
-    file_pending(conn, sub_id)
     return sub_id
 
 
@@ -258,7 +264,6 @@ def create(conn, payee_id, name, amount, cadence="monthly", kind="subscription",
         "VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?)",
         (name, payee_id, int(amount), cadence, kind, category_id, pricing, ends_on or None)).lastrowid
     _link_matching(conn, sub_id, payee_id, amount, pricing)
-    file_pending(conn, sub_id)
     return sub_id
 
 
@@ -272,19 +277,6 @@ def set_pricing(conn, sub_id, pricing):
     conn.execute("UPDATE subscriptions SET pricing = ? WHERE id = ?", (pricing, sub_id))
     if pricing == "varies":
         _link_matching(conn, sub_id, sub["payee_id"], sub["amount"], pricing)
-        file_pending(conn, sub_id)
-
-
-def file_pending(conn, sub_id):
-    """Files this subscription's charges that are waiting for review in its category."""
-    sub = conn.execute("SELECT name, category_id FROM subscriptions WHERE id = ?", (sub_id,)).fetchone()
-    if sub is None or sub["category_id"] is None:
-        return 0
-    return conn.execute(
-        "UPDATE transactions SET category_id = ?, status = 'done', reason = ? "
-        "WHERE subscription_id = ? AND status = 'review' AND is_split = 0 AND transfer_account_id IS NULL "
-        "AND reason NOT LIKE '%charged you again%'",
-        (sub["category_id"], f"{sub['name']} subscription", sub_id)).rowcount
 
 
 def dismiss(conn, candidate):
@@ -371,42 +363,41 @@ def unmatched_question(conn, txn):
 
 
 def link_to(conn, txn_id, sub_id):
-    """The person says this charge is `sub_id` at a new price: link it, take the new
-    price, and file it in the subscription's category."""
+    """The person says this charge is `sub_id` at a new price: link it and take the new
+    price. Returns the subscription as it was (its old price), or None."""
     txn = conn.execute("SELECT * FROM transactions WHERE id = ?", (txn_id,)).fetchone()
     sub = conn.execute("SELECT * FROM subscriptions WHERE id = ?", (sub_id,)).fetchone()
     if txn is None or sub is None:
-        return
-    new = -txn["amount"]
-    reason = f"{sub['name']}: new price ${sub['amount'] / 100:,.2f} → ${new / 100:,.2f}" \
-        if not same_price(sub["amount"], new) else f"{sub['name']} subscription"
-    conn.execute("UPDATE subscriptions SET amount = ? WHERE id = ?", (new, sub_id))
-    conn.execute("UPDATE transactions SET subscription_id = ?, reason = ? WHERE id = ?", (sub_id, reason, txn_id))
-    if sub["category_id"] and not txn["is_split"]:
-        conn.execute("UPDATE transactions SET category_id = ?, status = 'done' WHERE id = ?",
-                     (sub["category_id"], txn_id))
+        return None
+    conn.execute("UPDATE subscriptions SET amount = ? WHERE id = ?", (-txn["amount"], sub_id))
+    conn.execute("UPDATE transactions SET subscription_id = ? WHERE id = ?", (sub_id, txn_id))
+    return sub
 
 
-def link_transaction(conn, txn_id):
-    """Links a newly imported charge to its tracked subscription. Returns (subscription
-    row or None, warning or None); the warning is for a cancelled subscription that has
-    charged again."""
+def link_transaction(conn, txn_id, follow_price=True):
+    """Links a charge to its tracked subscription: the one it's linked to already, or the
+    one it matches. Returns that subscription (a row), or None. `follow_price` only when
+    the charge first arrives (the inbox's re-check never changes a price): a price that
+    doesn't vary is re-centred on this charge, for exchange-rate drift."""
     txn = conn.execute("SELECT * FROM transactions WHERE id = ?", (txn_id,)).fetchone()
     if txn is None:
-        return None, None
+        return None
+    if txn["subscription_id"]:
+        return conn.execute("SELECT * FROM subscriptions WHERE id = ?", (txn["subscription_id"],)).fetchone()
     sub = match(conn, txn)
     if sub is None:
-        return None, None
+        return None
     conn.execute("UPDATE transactions SET subscription_id = ? WHERE id = ?", (sub["id"], txn_id))
-    if sub["pricing"] != "varies" and sub["amount"] != -txn["amount"]:
+    if follow_price and sub["pricing"] != "varies" and sub["amount"] != -txn["amount"]:
         # Exchange-rate drift: centre the next match on the latest price.
         conn.execute("UPDATE subscriptions SET amount = ? WHERE id = ?", (-txn["amount"], sub["id"]))
-    return sub, charged_when_it_shouldnt(sub, txn["date"])
+    return sub
 
 
 def charged_when_it_shouldnt(sub, day):
     """The warning for a charge on `day` after the subscription was cancelled or should
-    have ended, else None. (The inbox keeps any reason with "charged you again" in it.)"""
+    have ended, else None. Worked out each time, never kept: reactivating it or moving its
+    end date clears the warning."""
     if sub["status"] == "cancelled" and sub["cancelled_on"] and day > sub["cancelled_on"]:
         return f"{sub['name']} was cancelled on {sub['cancelled_on']}, but it charged you again"
     if sub["ends_on"] and day > sub["ends_on"]:

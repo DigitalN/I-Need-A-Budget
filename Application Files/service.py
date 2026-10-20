@@ -17,14 +17,14 @@ from datetime import datetime
 from pathlib import Path
 
 import banks
-import budget as budget_math
 import csvlayout
 import importer
 import ledger
 import subscriptions
 import transfers
-from learn import analyze, guess
-from payees import TRANSFER_OR_BANK_ENTRY_HINTS, describe
+from figures import Figures
+from inbox import Inbox
+from payees import TRANSFER_OR_BANK_ENTRY_HINTS
 from settings import DASHBOARD_MONTHS
 from util import add_months, first_day, last_day, month_of, months_between, parse_date, today
 
@@ -274,44 +274,37 @@ class BudgetService:
                 needs_setup.append({"path": str(path), "filename": path.name, "needs": e.what})
                 continue
             results += file_results
-        refiled = self.refile() if learnt or results else 0
+        rechecked = self.recheck() if learnt or results else 0
         return {"results": results, "learnt": learnt, "errors": errors, "needs_setup": needs_setup,
-                "refiled": refiled, "counts": self.counts()}
+                "rechecked": rechecked, "counts": self.counts()}
 
     def _import_one(self, path, parsed, archive, accounts=None):
         sha = importer.sha256_of(path)
         with self.db.write() as c:
             file_results = importer.import_parsed(c, parsed, path.name, sha, accounts=accounts)
+            inbox = self._inbox(c)
+            for result in file_results:
+                arrived = inbox.arrive(result.new_ids)
+                result.categorized, result.to_review = arrived.categorized, arrived.waiting
             if archive:
                 archived = self._archive(path)
                 for result in file_results:
                     c.execute("UPDATE imports SET archived_path = ? WHERE id = ?", (archived, result.import_id))
         for result in file_results:
-            log.info("Imported %s into %s: %d new, %d already there, %d filed, %d to review", path.name,
-                     result.account_name, result.added, result.duplicates, result.filed, result.to_review)
+            log.info("Imported %s into %s: %d new, %d already there, %d categorized, %d to review", path.name,
+                     result.account_name, result.added, result.duplicates, result.categorized, result.to_review)
         return [r.as_dict() for r in file_results]
 
-    @exposed
-    def refile(self, payee_ids=None):
-        """Looks at what's waiting for review again (all of it, or just these payees'),
-        filing what the app is now sure about after learning something new."""
-        with self.db.write() as c:
-            return self._refile(c, payee_ids)
+    def _inbox(self, c):
+        """The inbox (inbox.Inbox) on this db.read() or db.write()."""
+        return Inbox(c, self.today())
 
-    def _refile(self, c, payee_ids=None):
-        where = ""
-        params = []
-        if payee_ids is not None:
-            payee_ids = [p for p in payee_ids if p]
-            if not payee_ids:
-                return 0
-            where = f"AND payee_id IN ({','.join('?' * len(payee_ids))})"
-            params = payee_ids
-        ids = [r["id"] for r in c.execute(
-            f"SELECT id FROM transactions WHERE status = 'review' AND similar_payee_id IS NULL "
-            f"AND reason NOT LIKE '%charged you again%' {where} ORDER BY date, id", params)]
-        filed, _ = importer.file_transactions(c, ids)
-        return filed
+    @exposed
+    def recheck(self, payee_ids=None):
+        """The re-check: looks again at what's waiting in the inbox (all of it, or just these
+        payees'), categorizing what the app is now sure of. Never what you decided."""
+        with self.db.write() as c:
+            return self._inbox(c).recheck(payee_ids)
 
     def watch_downloads(self):
         """Called every few seconds by the watcher: imports new bank files from Downloads
@@ -535,12 +528,15 @@ class BudgetService:
 
     @exposed
     def undo_import(self, import_id):
+        """Deletes the transactions an import added. The other halves of their transfers
+        are the app's to decide about again (Inbox.ask_again)."""
         with self.db.write("Remove import") as c:
-            ids = [r["id"] for r in c.execute("SELECT id FROM transactions WHERE import_id = ?", (import_id,))]
-            for txn_id in ids:
-                transfers.unlink(c, txn_id)
+            rows = c.execute("SELECT id, transfer_id FROM transactions WHERE import_id = ?", (import_id,)).fetchall()
+            ids = {r["id"] for r in rows}
+            others = [r["transfer_id"] for r in rows if r["transfer_id"] and r["transfer_id"] not in ids]
             c.execute("DELETE FROM transactions WHERE import_id = ?", (import_id,))
             c.execute("DELETE FROM imports WHERE id = ?", (import_id,))
+            self._inbox(c).ask_again(others, "Its other half was removed with its import")
         return {"removed": len(ids), "counts": self.counts()}
 
     # ── onboarding ──
@@ -596,17 +592,14 @@ class BudgetService:
 
     @exposed
     def categories(self):
+        """The category tree; `used` on each category: it can only be hidden, not deleted
+        (the app's own Income and Interest & Fees count as used)."""
         with self.db.read() as c:
-            return self._category_tree(c)
-
-    def _category_tree(self, c):
-        groups = []
-        for g in c.execute("SELECT * FROM category_groups ORDER BY sort, id"):
-            cats = _rows(c.execute(
-                "SELECT id, name, hidden, monthly_budget, debt_account_id, sort FROM categories "
-                "WHERE group_id = ? ORDER BY sort, id", (g["id"],)))
-            groups.append({**dict(g), "categories": cats})
-        return groups
+            tree, used = ledger.category_tree(c), ledger.used_category_ids(c) | ledger.own_category_ids(c)
+        for g in tree:
+            for cat in g["categories"]:
+                cat["used"] = cat["id"] in used
+        return tree
 
     def _next_sort(self, c, table, where="", params=()):
         return c.execute(f"SELECT COALESCE(MAX(sort), 0) + 1 FROM {table} {where}", params).fetchone()[0]
@@ -637,8 +630,8 @@ class BudgetService:
                 return False
             if g["role"] != "normal":
                 raise UserError("This group is needed by the app and can't be deleted.")
-            for cat in c.execute("SELECT id FROM categories WHERE group_id = ?", (group_id,)).fetchall():
-                self._uncategorize(c, cat["id"])
+            if c.execute("SELECT 1 FROM categories WHERE group_id = ?", (group_id,)).fetchone():
+                raise UserError("Only an empty group can be deleted.")
             c.execute("DELETE FROM category_groups WHERE id = ?", (group_id,))
         return True
 
@@ -687,33 +680,20 @@ class BudgetService:
             c.execute("UPDATE categories SET name = ?, old_names = ? WHERE id = ?", (name, "|".join(old), category_id))
         return True
 
-    def _uncategorize(self, c, category_id):
-        c.execute("UPDATE transactions SET category_id = NULL, status = 'review', reason = 'Its category was deleted' "
-                  "WHERE category_id = ?", (category_id,))
-        c.execute("UPDATE splits SET category_id = NULL WHERE category_id = ?", (category_id,))
-        c.execute("UPDATE transactions SET status = 'review', reason = 'A category in its split was deleted' "
-                  "WHERE id IN (SELECT transaction_id FROM splits WHERE category_id IS NULL)")
-
     @exposed
-    def delete_category(self, category_id, move_to=None):
+    def delete_category(self, category_id):
+        """Only a category never used (a typo just made): a used one can only be hidden
+        (ledger.used_category_ids)."""
         with self.db.write("Delete category") as c:
-            row = c.execute("SELECT debt_account_id FROM categories WHERE id = ?", (category_id,)).fetchone()
+            row = c.execute("SELECT name, debt_account_id FROM categories WHERE id = ?", (category_id,)).fetchone()
             if row is None:
                 return False
             if row["debt_account_id"]:
-                raise UserError("A card's payment category goes away when you delete the account.")
-            if category_id == ledger.income_category(c) or category_id == ledger.interest_category(c):
+                raise UserError("A card's payment category can't be deleted.")
+            if int(category_id) in ledger.own_category_ids(c):
                 raise UserError("This category is needed by the app and can't be deleted.")
-            if move_to:
-                c.execute("UPDATE transactions SET category_id = ? WHERE category_id = ?", (move_to, category_id))
-                c.execute("UPDATE splits SET category_id = ? WHERE category_id = ?", (move_to, category_id))
-                c.execute("UPDATE examples SET category_id = ? WHERE category_id = ?", (move_to, category_id))
-                for b in c.execute("SELECT month, assigned FROM budget WHERE category_id = ?", (category_id,)).fetchall():
-                    c.execute("INSERT INTO budget (month, category_id, assigned) VALUES (?, ?, ?) "
-                              "ON CONFLICT(month, category_id) DO UPDATE SET assigned = assigned + excluded.assigned",
-                              (b["month"], move_to, b["assigned"]))
-            else:
-                self._uncategorize(c, category_id)
+            if int(category_id) in ledger.used_category_ids(c):
+                raise UserError(f"{row['name']} has been used, so it can only be hidden.")
             c.execute("DELETE FROM categories WHERE id = ?", (category_id,))
         return True
 
@@ -746,149 +726,40 @@ class BudgetService:
 
     # ── the budget ──
 
-    def _roles(self, c):
-        income = ledger.income_category_ids(c)
-        out = []
-        for r in c.execute("SELECT id, debt_account_id FROM categories"):
-            role = "income" if r["id"] in income else "payment" if r["debt_account_id"] else "normal"
-            out.append({"id": r["id"], "role": role, "debt_account_id": r["debt_account_id"]})
-        return out
-
-    def _figures(self, c, end):
-        start = self.budget_start()
-        if not start or end < start:
-            return {}, start
-        lines = [(month_of(r["date"]), r["account_id"], ledger.is_debt(r["kind"]), r["category_id"], r["amount"])
-                 for r in c.execute(
-                     """
-                     SELECT t.date, t.account_id, a.kind, CASE WHEN t.status = 'done' THEN t.category_id END AS category_id,
-                            t.amount FROM transactions t
-                       JOIN accounts a ON a.id = t.account_id
-                      WHERE t.transfer_account_id IS NULL AND t.is_split = 0 AND t.date BETWEEN ? AND ?
-                     UNION ALL
-                     SELECT t.date, t.account_id, a.kind, CASE WHEN t.status = 'done' THEN s.category_id END, s.amount FROM splits s
-                       JOIN transactions t ON t.id = s.transaction_id JOIN accounts a ON a.id = t.account_id
-                      WHERE t.transfer_account_id IS NULL AND t.is_split = 1 AND t.date BETWEEN ? AND ?
-                     """, (first_day(start), last_day(end), first_day(start), last_day(end)))]
-        payments = [(month_of(r["date"]), r["transfer_account_id"], r["amount"]) for r in c.execute(
-            """
-            SELECT t.date, t.transfer_account_id, t.amount FROM transactions t
-              JOIN accounts a ON a.id = t.account_id JOIN accounts b ON b.id = t.transfer_account_id
-             WHERE a.kind IN ('chequing', 'savings', 'cash') AND b.kind IN ('credit_card', 'line_of_credit')
-               AND t.date BETWEEN ? AND ?
-            """, (first_day(start), last_day(end)))]
-        assigned = {(r["month"], r["category_id"]): r["assigned"] for r in c.execute(
-            "SELECT month, category_id, assigned FROM budget WHERE month BETWEEN ? AND ?", (start, end))}
-        opening, _ = ledger.opening_cash(c, start)
-        return budget_math.compute(start, end, self._roles(c), lines, payments, assigned, opening,
-                                   overspending=self.settings.get()["overspending"]), start
-
-    def _coverage_start(self, c):
-        """The first month every account has data for (for averages)."""
-        firsts = [r[0] for r in c.execute("SELECT MIN(date) FROM transactions GROUP BY account_id")]
-        return max(month_of(d) for d in firsts) if firsts else self.current_month()
-
-    def _spending_by_month(self, c, category_id=None):
-        """{category_id: {month: net amount}} from every categorized transaction, budget or
-        not (an inbox item counts in no category: docs/adr/0002)."""
-        out = {}
-        where = "AND t.category_id = ?" if category_id else ""
-        where_split = "AND s.category_id = ?" if category_id else ""
-        params = (category_id, category_id) if category_id else ()
-        for r in c.execute(
-                f"""
-                SELECT t.category_id AS cid, substr(t.date, 1, 7) AS m, SUM(t.amount) AS total FROM transactions t
-                 WHERE t.transfer_account_id IS NULL AND t.is_split = 0 AND t.category_id IS NOT NULL
-                   AND t.status = 'done' {where}
-                 GROUP BY cid, m
-                UNION ALL
-                SELECT s.category_id, substr(t.date, 1, 7), SUM(s.amount) FROM splits s
-                  JOIN transactions t ON t.id = s.transaction_id
-                 WHERE t.transfer_account_id IS NULL AND t.is_split = 1 AND s.category_id IS NOT NULL
-                   AND t.status = 'done' {where_split}
-                 GROUP BY s.category_id, substr(t.date, 1, 7)
-                """, params):
-            months = out.setdefault(r["cid"], {})
-            months[r["m"]] = months.get(r["m"], 0) + r["total"]
-        return out
+    def _figures(self, c):
+        """Every money figure, from one reading of the database (figures.Figures). Use it
+        inside the same db.read() or db.write()."""
+        s = self.settings.get()
+        return Figures(c, self.today(), s["overspending"], s["average_months"])
 
     @exposed
     def month(self, month=None):
         month = month or self.current_month()
         current = self.current_month()
         with self.db.read() as c:
-            start = self.budget_start()
-            end = max(month, current)
-            figures, start = self._figures(c, end)
-            tree = self._category_tree(c)
-            coverage = self._coverage_start(c)
-            spending = self._spending_by_month(c)
-            n = self.settings.get()["average_months"]
-            accounts = {a["id"]: a for a in self._accounts(c)}
-            missing = [a["name"] for a in accounts.values() if a["balance"] is None and not a["closed"]]
+            f = self._figures(c)
+            figures = f.month(month)
+            tree, start, first_month, missing = f.tree, f.start, f.first_month or current, f.without_balance
             review = c.execute("SELECT COUNT(*) FROM transactions WHERE status = 'review' AND substr(date,1,7) = ?",
                                (month,)).fetchone()[0]
-            data_first = c.execute("SELECT MIN(date) FROM transactions").fetchone()[0]
-            cash = self._cash(c, month) if month in figures else None
-        month_figures = figures.get(month)
         groups = []
         for g in tree:
             if g["role"] == "income":
                 continue
-            cats = []
-            for cat in g["categories"]:
-                f = (month_figures or {}).get("categories", {}).get(cat["id"])
-                history = spending.get(cat["id"], {})
-                row = {
-                    "id": cat["id"], "name": cat["name"], "hidden": cat["hidden"],
-                    "monthly_budget": cat["monthly_budget"],
-                    "assigned": f["assigned"] if f else 0,
-                    "activity": f["activity"] if f else history.get(month, 0),
-                    "available": f["available"] if f else None,
-                    "carried": f["carried"] if f else 0,
-                    "overspent_cash": f["overspent_cash"] if f else 0,
-                    "overspent_credit": f["overspent_credit"] if f else 0,
-                    "usual": budget_math.usual_spending(history, current, coverage, n) if not cat["debt_account_id"] else None,
-                    "debt_account_id": cat["debt_account_id"],
-                }
-                if cat["debt_account_id"] and cat["debt_account_id"] in accounts:
-                    owing = -(accounts[cat["debt_account_id"]]["balance"] or 0)
-                    row["owing"] = owing
-                    row["not_covered"] = max(0, owing - max(row["available"] or 0, 0))
-                cats.append(row)
+            cats = [{"id": cat["id"], "name": cat["name"], "hidden": cat["hidden"], "monthly_budget": cat["monthly_budget"],
+                     "debt_account_id": cat["debt_account_id"], **figures["categories"][cat["id"]]}
+                    for cat in g["categories"]]
             groups.append({"id": g["id"], "name": g["name"], "role": g["role"], "collapsed": g["collapsed"],
-                           "categories": cats,
-                           "assigned": sum(x["assigned"] for x in cats), "activity": sum(x["activity"] for x in cats),
-                           "available": sum((x["available"] or 0) for x in cats)})
-        first_month = month_of(data_first) if data_first else current
+                           "categories": cats, **figures["groups"][g["id"]]})
         nav_from = min(first_month, start or current)
         nav_to = add_months(current, 3)
-        future_short = [m for m, f in figures.items() if m > month and f["ready_to_assign"] < 0]
         return {
             "month": month, "current_month": current, "budget_start": start,
             "before_start": bool(start) and month < start, "is_past": month < current,
             "months": months_between(nav_from, max(nav_to, month)),
-            "summary": {**{k: v for k, v in month_figures.items() if k != "categories"}, "cash": cash}
-                       if month_figures else None,
-            "groups": groups, "missing_balances": missing,
-            "to_review": review, "future_short": future_short,
-            "overspending": self.settings.get()["overspending"],
+            "summary": figures["summary"], "groups": groups, "missing_balances": missing,
+            "to_review": review, "future_short": figures["short_later"], "overspending": f.overspending,
         }
-
-    def _cash(self, c, month):
-        """What's in the cash accounts at the end of `month`, from their own balances (so
-        the page can show Ready to assign + money in categories adding up to it), or None
-        while one of them has no balance."""
-        total, names = 0, []
-        for a in c.execute("SELECT id, name, closed FROM accounts WHERE kind IN (?, ?, ?) ORDER BY sort, id",
-                           ledger.CASH_KINDS).fetchall():
-            balance = ledger.account_balance(c, a["id"], last_day(month))
-            if balance is None:
-                return None
-            total += balance
-            if balance or not a["closed"]:
-                names.append(a["name"])
-        return {"total": total, "accounts": names}
 
     def _assigned(self, c, month, category_id):
         row = c.execute("SELECT assigned FROM budget WHERE month = ? AND category_id = ?", (month, category_id)).fetchone()
@@ -919,38 +790,19 @@ class BudgetService:
 
     @exposed
     def assign_plan(self, month, amount=None):
-        """How to share out money (a paycheque, or everything ready to assign): fills each
-        category up to its monthly amount, in budget order (bills first if they're first).
-        What's already in a category counts: what it carried into the month (below zero
-        when overspending carries over) plus what's been assigned this month.
-
-        When overspending comes out of Ready to assign the month it happens, covering what
-        a category overspent this month costs nothing: it already came out (`covered`).
-        Only the rest of an amount uses up the money being shared out."""
-        view = self.month(month)
-        available = view["summary"]["ready_to_assign"] if view["summary"] else 0
-        amount = available if amount in (None, "") else int(amount)
-        remaining = max(0, amount)
-        plan = []
-        for g in view["groups"]:
-            for cat in g["categories"]:
-                if cat["hidden"]:
-                    continue
-                target = cat["monthly_budget"]
-                if target is None:
-                    continue
-                has = cat["carried"] + cat["assigned"]
-                need = max(0, target - has)
-                covered = cat["overspent_cash"] if view["overspending"] == "this_month" else 0
-                give = min(need, remaining + covered)
-                remaining -= max(0, give - covered)
-                plan.append({"category_id": cat["id"], "name": cat["name"], "group": g["name"], "need": need,
-                             "monthly_budget": target, "assigned": cat["assigned"], "has": has, "amount": give,
-                             "covered": covered})
-        return {"month": month, "amount": amount, "ready_to_assign": available, "plan": plan, "left_over": remaining,
-                "without_monthly_amount": [cat["name"] for g in view["groups"] for cat in g["categories"]
-                                           if cat["monthly_budget"] is None and not cat["hidden"]
-                                           and not cat["debt_account_id"]]}
+        """How to share out money (a paycheque, or everything ready to assign): see
+        Figures.assign_plan."""
+        with self.db.read() as c:
+            f = self._figures(c)
+            plan = f.assign_plan(month, amount)
+            tree = f.tree
+        names = {cat["id"]: (cat["name"], g["name"]) for g in tree for cat in g["categories"]}
+        for item in plan["plan"]:
+            item["name"], item["group"] = names[item["category_id"]]
+        plan["without_monthly_amount"] = [cat["name"] for g in tree if g["role"] != "income" for cat in g["categories"]
+                                          if cat["monthly_budget"] is None and not cat["hidden"]
+                                          and not cat["debt_account_id"]]
+        return plan
 
     @exposed
     def apply_plan(self, month, allocations):
@@ -967,19 +819,15 @@ class BudgetService:
         """Assigns exactly what was spent, so no category ends the month overspent. For
         catching up on months gone by."""
         with self.db.write("Catch up month") as c:
-            self._catch_up(c, month)
+            self._catch_up(c, [month])
         return self.month(month)
 
-    def _catch_up(self, c, month):
-        for role in ("normal", "payment"):
-            figures, _ = self._figures(c, month)
-            f = figures.get(month)
-            if f is None:
-                raise UserError("That month is before the budget starts.")
-            roles = {r["id"]: r["role"] for r in self._roles(c)}
-            for cid, cat in f["categories"].items():
-                if roles.get(cid) == role and cat["available"] < 0:
-                    self._set_assigned(c, month, cid, cat["assigned"] - cat["available"])
+    def _catch_up(self, c, months):
+        changes = self._figures(c).catch_up(months)
+        if changes is None:
+            raise UserError("That month is before the budget starts.")
+        for (month, category_id), cents in changes.items():
+            self._set_assigned(c, month, category_id, cents)
 
     @exposed
     def catch_up_all(self):
@@ -987,40 +835,26 @@ class BudgetService:
         start = self.budget_start()
         if not start:
             raise UserError("Set a start month first.")
-        last = add_months(self.current_month(), -1)
         with self.db.write("Catch up past months") as c:
-            for m in months_between(start, last):
-                self._catch_up(c, m)
+            self._catch_up(c, months_between(start, add_months(self.current_month(), -1)))
         return self.month(self.current_month())
 
     @exposed
     def category_detail(self, category_id, month=None):
         month = month or self.current_month()
-        current = self.current_month()
         with self.db.read() as c:
             cat = c.execute("SELECT * FROM categories WHERE id = ?", (category_id,)).fetchone()
             if cat is None:
                 raise UserError("That category no longer exists.")
-            coverage = self._coverage_start(c)
-            history = self._spending_by_month(c, category_id).get(category_id, {})
-            first = c.execute("SELECT MIN(date) FROM transactions").fetchone()[0]
-            months = months_between(month_of(first) if first else current, current)
-            averages = {}
-            for n in (3, 6, 12):
-                ms = budget_math.complete_months_before(current, coverage, n)
-                if ms and (n == 3 or len(ms) == n):
-                    averages[n] = {"months": len(ms), "amount": budget_math.average_spending(history, ms)}
-            spent = self._spent(c, [category_id], month)
+            f = self._figures(c)
+            history = f.history(category_id)
+            spent = self._spent(c, f, [category_id], month)
             subs = _rows(c.execute(
                 "SELECT DISTINCT s.id, s.name, s.amount, s.cadence FROM subscriptions s JOIN transactions t "
                 "ON t.subscription_id = s.id WHERE t.category_id = ? AND s.status = 'active'", (category_id,)))
-        last = add_months(current, -1)
         return {"id": cat["id"], "name": cat["name"], "monthly_budget": cat["monthly_budget"],
-                "debt_account_id": cat["debt_account_id"], "note": cat["note"],
-                "history": [{"month": m, "spent": -history.get(m, 0), "complete": m >= coverage and m < current}
-                            for m in months],
-                "last_month": {"month": last, "amount": max(0, -history.get(last, 0))},
-                "averages": averages, "spent": spent, "subscriptions": subs, "month": month}
+                "debt_account_id": cat["debt_account_id"], "note": cat["note"], **history,
+                "spent": spent, "subscriptions": subs, "month": month}
 
     @exposed
     def spent_detail(self, month, category_id=None, group_id=None):
@@ -1038,54 +872,27 @@ class BudgetService:
                 if cat is None:
                     raise UserError("That category no longer exists.")
                 name, ids = cat["name"], [category_id]
-            spent = self._spent(c, ids, month)
+            spent = self._spent(c, self._figures(c), ids, month)
         return {"name": name, "month": month, "group": bool(group_id), **spent}
 
-    def _spent(self, c, category_ids, month):
-        """The lines behind these categories' Spent in `month`, the same ones the budget
-        counts: a split transaction counts only its line in the category. A card's payment
-        envelope also gets the payments to the card and the card spending moved in from
-        other categories (from the budget's own figures, so it adds up the same)."""
+    def _spent(self, c, f, category_ids, month):
+        """The lines behind these categories' Spent in `month` (Figures.spent), with what
+        the page shows for each: the payee and account, or a label for money that isn't a
+        transaction."""
         if not category_ids:
             return {"lines": [], "total": 0, "transactions": []}
-        marks = ",".join("?" * len(category_ids))
-        span = (first_day(month), last_day(month))
+        spent = f.spent(category_ids, month)
         names = ledger.category_names(c)
-        lines = [dict(r) for r in c.execute(
-            f"""
-            SELECT t.id, t.date, t.amount, 0 AS split, t.category_id FROM transactions t
-             WHERE t.transfer_account_id IS NULL AND t.is_split = 0 AND t.category_id IN ({marks})
-               AND t.status = 'done' AND t.date BETWEEN ? AND ?
-            UNION ALL
-            SELECT t.id, t.date, s.amount, 1, s.category_id FROM splits s JOIN transactions t ON t.id = s.transaction_id
-             WHERE t.transfer_account_id IS NULL AND t.is_split = 1 AND s.category_id IN ({marks})
-               AND t.status = 'done' AND t.date BETWEEN ? AND ?
-            """, (*category_ids, *span, *category_ids, *span))]
-        debt = {r["id"]: r["debt_account_id"] for r in c.execute(
-            f"SELECT id, debt_account_id FROM categories WHERE id IN ({marks}) AND debt_account_id IS NOT NULL",
-            category_ids)}
-        figures = {}
-        if debt and self.budget_start() and month >= self.budget_start():
-            figures = (self._figures(c, month)[0].get(month) or {}).get("categories", {})
-        for cid, account_id in debt.items():
-            if cid not in figures:
-                continue  # before the budget starts, only what was filed in it
-            for r in c.execute(
-                    """
-                    SELECT t.id, t.date, t.amount FROM transactions t
-                      JOIN accounts a ON a.id = t.account_id JOIN accounts b ON b.id = t.transfer_account_id
-                     WHERE t.transfer_account_id = ? AND a.kind IN ('chequing', 'savings', 'cash')
-                       AND b.kind IN ('credit_card', 'line_of_credit') AND t.date BETWEEN ? AND ?
-                    """, (account_id, *span)):
-                lines.append({"id": r["id"], "date": r["date"], "amount": r["amount"], "split": 0,
-                              "category_id": cid, "payment": True})
-            income = ledger.income_category_ids(c)
-            for source, amount in figures[cid].get("moved_from", {}).items():
-                label = ("Set aside for card spending not in a category yet" if source is None else
-                         f"{names.get(source, 'A deleted category')} on the card (you owe less)" if source in income else
-                         f"Set aside for card spending in {names.get(source, 'a deleted category')}")
-                lines.append({"id": None, "date": None, "amount": amount, "split": 0, "category_id": cid,
-                              "label": label})
+        income = ledger.income_category_ids(c)
+        lines = []
+        for line in spent["lines"]:
+            line = dict(line)
+            if "moved_from" in line:
+                source = line.pop("moved_from")
+                line["label"] = ("Set aside for card spending not in a category yet" if source is None else
+                                 f"{names.get(source, 'A deleted category')} on the card (you owe less)" if source in income
+                                 else f"Set aside for card spending in {names.get(source, 'a deleted category')}")
+            lines.append(line)
         txns = {t["id"]: t for t in self._transactions(c, {"ids": sorted({l["id"] for l in lines if l["id"]})},
                                                        limit=100000)} if lines else {}
         for line in lines:
@@ -1098,7 +905,7 @@ class BudgetService:
                 if line.get("payment"):
                     line["label"] = f"Paid to the card from {t['account_name']}"
         lines.sort(key=lambda l: (l["date"] or "", l["id"] or 0), reverse=True)  # money moved in goes last
-        return {"lines": lines, "total": sum(l["amount"] for l in lines), "transactions": list(txns.values())}
+        return {"lines": lines, "total": spent["total"], "transactions": list(txns.values())}
 
     @exposed
     def set_category_note(self, category_id, note):
@@ -1119,121 +926,56 @@ class BudgetService:
         category spent (the same figures as Spent). All over the last `months` whole months
         (3, 6, 12 or "all"; by default the Dashboard's saved choice) and this month so far.
         Each whole month is compared with the category's Usual for it (the whole months
-        before it) and marked when it's above usual: at least $25 and 25% more."""
+        before it) and marked when it's above usual: at least $25 and 25% more. Both charts
+        show the same months; one before every account has data isn't `complete`."""
         months = self.settings.get()["dashboard_months"] if months is None else months
         if months not in DASHBOARD_MONTHS or isinstance(months, bool):
             raise UserError("Pick 3, 6 or 12 months, or All.")
         current = self.current_month()
-        view = self.month(current)
         inbox = self.counts()["inbox"]
         with self.db.read() as c:
-            accounts = self._accounts(c)
-            tree = self._category_tree(c)
-            spending = self._spending_by_month(c)
-            coverage = self._coverage_start(c)
-            first = c.execute("SELECT MIN(date) FROM transactions").fetchone()[0]
-            first_month = month_of(first) if first else current
+            f = self._figures(c)
+            figures = f.month(current)
+            tree, coverage, first_month = f.tree, f.coverage, f.first_month or current
             cols = months_between(first_month if months == "all" else max(first_month, add_months(current, -months)),
                                   current)
-            worth = self._net_worth(c, [m for m in cols if m >= coverage], accounts)
-        n = self.settings.get()["average_months"]
-
-        def above(spent, usual_amount, month):
-            return (coverage <= month < current and bool(usual_amount) and spent >= usual_amount + 2500
-                    and spent * 4 >= usual_amount * 5)
-
-        income, total, groups = [0] * len(cols), [0] * len(cols), []
-        for g in tree:
-            if g["role"] == "income":
-                for cat in g["categories"]:
-                    history = spending.get(cat["id"], {})
-                    income = [x + history.get(m, 0) for x, m in zip(income, cols)]
-                continue
-            cats = []
-            for cat in g["categories"]:
-                if cat["debt_account_id"]:
-                    continue  # a payment category's money is card spending, counted where it came from
-                history = spending.get(cat["id"], {})
-                spent = [-history.get(m, 0) for m in cols]
-                if cat["hidden"] and not any(spent):
-                    continue
-                usuals = [budget_math.usual_spending(history, m, coverage, n) for m in cols]
-                cats.append({"id": cat["id"], "name": cat["name"], "hidden": bool(cat["hidden"]), "spent": spent,
-                             "usual": usuals,
-                             "above": [above(s, u, m) for s, u, m in zip(spent, usuals, cols)]})
-            if not cats:
-                continue
-            spent = [sum(x["spent"][i] for x in cats) for i in range(len(cols))]
-            total = [x + y for x, y in zip(total, spent)]
-            groups.append({"id": g["id"], "name": g["name"], "spent": spent, "categories": cats,
-                           "above": [any(x["above"][i] for x in cats) for i in range(len(cols))]})
-
-        live = [a for a in accounts if not a["closed"] or a["balance"]]
-        cash = None if any(a["balance"] is None for a in live if not a["is_debt"]) else \
-            sum(a["balance"] for a in live if not a["is_debt"])
-        owed = -sum(a["balance"] or 0 for a in live if a["is_debt"])
-        overspent = sorted(({"id": x["id"], "name": x["name"], "amount": -x["available"]}
-                            for g in view["groups"] for x in g["categories"] if (x["available"] or 0) < 0),
+            spending = f.spending(cols)
+            worth = f.worth(cols)
+            now = f.balances()
+            missing = f.without_balance
+        names = {cat["id"]: cat for g in tree for cat in g["categories"]}
+        group_names = {g["id"]: g["name"] for g in tree}
+        groups = [{"id": g["id"], "name": group_names[g["id"]], "spent": g["spent"], "above": g["above"],
+                   "categories": [{**x, "name": names[x["id"]]["name"], "hidden": bool(names[x["id"]]["hidden"])}
+                                  for x in g["categories"]]}
+                  for g in spending["groups"]]
+        overspent = sorted(({"id": cid, "name": names[cid]["name"], "amount": amount} for cid, amount in figures["overspent"]),
                            key=lambda x: -x["amount"])
-        summary = view["summary"]
+        summary = figures["summary"]
         return {
-            "month": current, "summary": summary, "overspending": view["overspending"],
+            "month": current, "summary": summary, "overspending": f.overspending,
             "inbox": inbox, "waiting": summary["waiting"] if summary else 0, "overspent": overspent,
-            "cash": cash, "owed": owed, "has_debt": any(a["is_debt"] for a in live),
-            "missing_balances": view["missing_balances"], "net_worth": worth,
-            "spending": {"range": months, "usual_months": n, "income": income, "total": total, "groups": groups,
+            "overspent_total": figures["overspent_total"],
+            "cash": now["cash"], "owed": now["owed"], "has_debt": now["has_debt"],
+            "missing_balances": missing, "net_worth": worth,
+            "spending": {"range": months, "usual_months": f.usual_months, "income": spending["income"],
+                         "total": spending["total"], "groups": groups,
                          "income_group": next((g["id"] for g in tree if g["role"] == "income"), None),
                          "months": [{"month": m, "so_far": m == current, "complete": m >= coverage} for m in cols]},
         }
-
-    def _net_worth(self, c, months, accounts):
-        """Cash, what's owed and net worth (cash − owed) at the end of each month (this
-        month: so far), from every account that has a balance, closed ones included."""
-        known = [a for a in accounts if a["anchor_date"]]
-        today = self.today()
-        out = {"months": months, "cash": [], "owed": [], "net": []}
-        for m in months:
-            day = min(last_day(m), today)
-            cash = sum(ledger.account_balance(c, a["id"], day) for a in known if not a["is_debt"])
-            owed = -sum(ledger.account_balance(c, a["id"], day) for a in known if a["is_debt"])
-            out["cash"].append(cash)
-            out["owed"].append(owed)
-            out["net"].append(cash - owed)
-        return out
 
     # ── inbox ──
 
     @exposed
     def inbox(self):
+        """The Inbox page: its items (Inbox.view: suggestions, today's reason, question,
+        group key and guess on each), what was categorized automatically from recent
+        imports, and the notices above them."""
         with self.db.read() as c:
-            items = self._transactions(c, {"status": "review"}, limit=1000, order="t.date DESC, t.id DESC")
-            names = ledger.category_names(c)
-            income_id = ledger.income_category(c)
-            for item in items:
-                txn = c.execute("SELECT * FROM transactions WHERE id = ?", (item["id"],)).fetchone()
-                s = analyze(c, txn)
-                item["suggestions"] = [{"id": cid, "name": names.get(cid, "?")} for cid in s.options]
-                item["guess"] = guess(txn, s, income_id)
-                item["mixed"] = s.mixed
-                item["group"] = s.group
-                # Today's reasoning, not what was thought at import (the rules and what the app
-                # has learnt both change). Only a warning, or a similar-name match, is kept.
-                saved = item["reason"] or ""
-                if "charged you again" not in saved:
-                    matched = re.match(r"Matched to .*? \(similar name\)", saved)
-                    item["reason"] = f"{matched.group(0)}. {s.reason}" if matched else s.reason
-                if txn["similar_payee_id"]:
-                    p = c.execute("SELECT id, name FROM payees WHERE id = ?", (txn["similar_payee_id"],)).fetchone()
-                    item["similar_payee"] = dict(p) if p else None
-                choices = subscriptions.price_change_choices(c, txn)
-                if choices:
-                    item["subscription_choices"] = choices
-                    item["reason"] = subscriptions.unmatched_question(c, txn)
-                    item["group"] = ""  # each one is its own question
-            recent_imports = [r["id"] for r in c.execute("SELECT id FROM imports ORDER BY id DESC LIMIT 10")]
-            filed = self._transactions(
-                c, {"status": "done", "import_ids": recent_imports}, limit=300, order="t.date DESC, t.id DESC") \
-                if recent_imports else []
+            view = self._inbox(c).view()
+            rows = {t["id"]: t for t in self._transactions(c, {"status": "review"}, limit=1000)}
+            items = [{**rows[item["id"]], **item} for item in view["items"] if item["id"] in rows]
+            categorized = self._transactions(c, {"ids": view["categorized"]}, limit=300) if view["categorized"] else []
             alerts = [{"type": "duplicate", **d} for d in ledger.duplicate_accounts(c)]
             copies = {a["account_id"] for a in alerts}
             for a in c.execute("SELECT id, name FROM accounts WHERE anchor_date IS NULL AND closed = 0"):
@@ -1241,116 +983,38 @@ class BudgetService:
                     continue  # merge it rather than give it a balance
                 alerts.append({"type": "balance", "account_id": a["id"],
                                "text": f"What's the balance of {a['name']}? The app needs it once to show balances."})
-        return {"items": items, "filed": filed, "alerts": alerts, "files": self.pending_files(), "counts": self.counts()}
+        return {"items": items, "categorized": categorized, "alerts": alerts, "files": self.pending_files(),
+                "counts": self.counts()}
 
     @exposed
-    def approve(self, txn_id, category_id, refile=True):
-        """Files one transaction. With `refile`, others from the same payee that the app is
-        now sure about are filed too; "One at a time" in the inbox turns that off."""
-        with self.db.write("File transaction") as c:
-            payee = self._approve(c, txn_id, category_id)
-            also = self._refile(c, [payee]) if refile else 0
-            prompt = self._subscription_prompt(c, [txn_id])
-        return {**self.counts(), "also_filed": also, "subscription_prompt": prompt}
-
-    def _approve(self, c, txn_id, category_id):
-        txn = c.execute("SELECT * FROM transactions WHERE id = ?", (txn_id,)).fetchone()
-        if txn is None:
-            raise UserError("That transaction no longer exists.")
-        if txn["is_split"] or txn["transfer_account_id"]:
-            c.execute("UPDATE transactions SET status = 'done', similar_payee_id = NULL WHERE id = ?", (txn_id,))
-            return txn["payee_id"]
-        if category_id in (None, ""):
-            raise UserError("Pick a category first.")
-        refund_of = None
-        if txn["amount"] > 0:
-            s = analyze(c, txn)
-            if s.refund_of and s.options and s.options[0] == int(category_id):
-                refund_of = s.refund_of
-        c.execute("UPDATE transactions SET category_id = ?, status = 'done', reason = 'Categorized by you', "
-                  "similar_payee_id = NULL, refund_of = ? WHERE id = ?", (int(category_id), refund_of, txn_id))
-        if txn["subscription_id"]:
-            # A subscription without a category learns it from the first charge you file.
-            c.execute("UPDATE subscriptions SET category_id = ? WHERE id = ? AND category_id IS NULL",
-                      (int(category_id), txn["subscription_id"]))
-            subscriptions.file_pending(c, txn["subscription_id"])
-        return txn["payee_id"]
+    def categorize(self, txn_ids, category_id, recheck_payee=False):
+        """You put these inbox items (one, or a group) in a category. `recheck_payee`: the
+        rest of their payee that the app is now sure of is categorized too; "One at a time"
+        in the inbox turns that off."""
+        txn_ids = [int(i) for i in txn_ids]
+        label = "Categorize transaction" if len(txn_ids) == 1 else f"Categorize {len(txn_ids)} transactions"
+        with self.db.write(label) as c:
+            out = self._inbox(c).categorize(txn_ids, category_id, recheck_payee)
+        return {**self.counts(), "also_categorized": out.also, "question": out.question}
 
     @exposed
-    def approve_many(self, items, refile=True):
-        with self.db.write(f"File {len(items)} transactions") as c:
-            payees = {self._approve(c, item["id"], item.get("category_id")) for item in items}
-            also = self._refile(c, list(payees)) if refile else 0
-            prompt = self._subscription_prompt(c, [item["id"] for item in items]) if len(
-                {item.get("category_id") for item in items}) == 1 else None
-        return {**self.counts(), "also_filed": also, "subscription_prompt": prompt}
-
-    def _subscription_prompt(self, c, txn_ids):
-        """After filing: when the charges look like a subscription or bill that isn't tracked
-        yet (filed under a subscriptions category, or charging on a steady rhythm), the
-        question to ask: what's it for? None otherwise."""
-        rows = []
-        for txn_id in txn_ids:
-            r = c.execute("SELECT t.*, p.name AS payee_name, cat.name AS category_name "
-                          "FROM transactions t JOIN payees p ON p.id = t.payee_id "
-                          f"LEFT JOIN categories cat ON cat.id = t.category_id WHERE t.id = ? AND {subscriptions.CAN_RECUR_SQL}",
-                          (txn_id,)).fetchone()
-            if r and r["amount"] < 0 and not r["transfer_account_id"] and not r["subscription_id"] and r["category_id"]:
-                rows.append(r)
-        if not rows:
-            return None
-        first = rows[0]
-        price = -first["amount"]
-        dismissed = c.execute("SELECT 1 FROM subscriptions WHERE payee_id = ? AND status = 'ignored' "
-                              "AND abs(amount - ?) <= 2", (first["payee_id"], price)).fetchone()
-        if dismissed:
-            return None
-        in_subscriptions = "subscript" in (first["category_name"] or "").lower() or c.execute(
-            "SELECT 1 FROM subscriptions WHERE category_id = ? AND status != 'ignored'", (first["category_id"],)).fetchone()
-        candidate = next((cand for cand in subscriptions.detect(c, self.today())
-                          if cand["payee_id"] == first["payee_id"] and first["id"] in cand["transaction_ids"]), None)
-        if not in_subscriptions and candidate is None:
-            return None
-        count = sum(1 for t in c.execute("SELECT amount FROM transactions WHERE payee_id = ? AND amount < 0 "
-                                         "AND subscription_id IS NULL AND transfer_account_id IS NULL",
-                                         (first["payee_id"],)) if subscriptions.same_price(-t["amount"], price))
-        cadence = candidate["cadence"] if candidate else "monthly"
-        if candidate:
-            pricing = candidate.get("pricing", "fixed")
-        else:
-            pricing = "currency" if "foreign currency" in (first["bank_category"] or "").lower() else "fixed"
-        if candidate and pricing == "varies":
-            count = candidate["count"]
-            why = "It charges once a month, a different amount each time"
-        elif candidate:
-            why = f"It looks like it charges {cadence}"
-        else:
-            why = f"You put it in {first['category_name']}"
-        return {"txn_id": first["id"], "payee": first["payee_name"], "amount": price, "count": count,
-                "category_id": first["category_id"], "category": first["category_name"], "cadence": cadence,
-                "kind": candidate["kind"] if candidate else "subscription", "candidate": candidate,
-                "pricing": pricing, "why": why}
+    def accept_all(self, txn_ids):
+        """Accept all in the inbox: each of these items goes to its own guess (none: left)."""
+        with self.db.write("Accept all") as c:
+            out = self._inbox(c).accept_all([int(i) for i in txn_ids])
+        return {**self.counts(), "categorized": out.categorized, "also_categorized": out.also}
 
     @exposed
     def same_payee(self, txn_id, same):
         with self.db.write("Payee match") as c:
-            txn = c.execute("SELECT * FROM transactions WHERE id = ?", (txn_id,)).fetchone()
-            if txn is None or not txn["similar_payee_id"]:
-                return self.counts()
-            if same:
-                target = c.execute("SELECT name FROM payees WHERE id = ?", (txn["similar_payee_id"],)).fetchone()
-                self._set_payee(c, txn_id, target["name"])
-                txn = c.execute("SELECT * FROM transactions WHERE id = ?", (txn_id,)).fetchone()
-                c.execute("UPDATE transactions SET reason = ? WHERE id = ?", (analyze(c, txn).reason, txn_id))
-            c.execute("UPDATE transactions SET similar_payee_id = NULL WHERE similar_payee_id = ? AND payee_id = ?",
-                      (txn["similar_payee_id"], txn["payee_id"]))
+            self._inbox(c).same_payee(int(txn_id), same)
         return self.counts()
 
     @exposed
     def link_subscription(self, txn_id, sub_id):
         """This charge is a subscription you track, at a new price."""
         with self.db.write("New subscription price") as c:
-            subscriptions.link_to(c, int(txn_id), int(sub_id))
+            self._inbox(c).new_price(int(txn_id), int(sub_id))
         return self.counts()
 
     @exposed
@@ -1370,7 +1034,7 @@ class BudgetService:
             if note:
                 c.execute("UPDATE subscriptions SET note = ? WHERE id = ?", (str(note).strip(), sub_id))
             c.execute("UPDATE transactions SET subscription_id = ? WHERE id = ?", (sub_id, txn_id))
-            subscriptions.file_pending(c, sub_id)
+            self._inbox(c).recheck([txn["payee_id"]])
         return {"subscription_id": sub_id, "counts": self.counts()}
 
     @exposed
@@ -1395,8 +1059,7 @@ class BudgetService:
         """Switches a payee's Always ask on or off. Switched off, its waiting transactions
         the app is now sure about are categorized. Returns how many."""
         with self.db.write("Change payee setting") as c:
-            c.execute("UPDATE payees SET always_ask = ? WHERE id = ?", (1 if always_ask else 0, payee_id))
-            return 0 if always_ask else self._refile(c, [payee_id])
+            return self._inbox(c).set_always_ask(payee_id, always_ask)
 
     # ── transactions ──
 
@@ -1461,36 +1124,6 @@ class BudgetService:
             items = self._transactions(c, filters or {}, limit=(filters or {}).get("limit", 500))
         return {"items": items, "total": sum(i["amount"] for i in items)}
 
-    def _set_payee(self, c, txn_id, name):
-        """This bank description belongs to payee `name` (an existing one, or a new one)."""
-        name = _clean_name(name)
-        txn = c.execute("SELECT t.*, a.kind FROM transactions t JOIN accounts a ON a.id = t.account_id "
-                        "WHERE t.id = ?", (txn_id,)).fetchone()
-        old = txn["payee_id"]
-        old_row = c.execute("SELECT name, kind FROM payees WHERE id = ?", (old,)).fetchone() if old else None
-        if old_row and old_row["name"].lower() == name.lower():
-            return old
-        others = c.execute("SELECT COUNT(*) FROM transactions WHERE payee_id = ? AND id != ?", (old, txn_id)).fetchone()[0] \
-            if old else 0
-        exists = c.execute("SELECT id FROM payees WHERE name = ? COLLATE NOCASE", (name,)).fetchone()
-        if old and not exists and others == 0:
-            return ledger.rename_payee(c, old, name)  # its only transaction: just rename it
-        target = exists["id"] if exists else ledger.get_or_create_payee(
-            c, name, old_row["kind"] if old_row else "merchant", always_ask=txn["hint"] == "etransfer")
-        key = describe(txn["raw_name"], txn["raw_memo"], txn["kind"]).key if txn["raw_name"] else None
-        if key:
-            ledger.add_payee_key(c, key, target, "user")
-            # Every transaction with the same bank description moves too.
-            for other in c.execute("SELECT t.id, t.raw_name, t.raw_memo, a.kind FROM transactions t JOIN accounts a "
-                                   "ON a.id = t.account_id WHERE t.payee_id = ?", (old,)).fetchall():
-                if describe(other["raw_name"], other["raw_memo"], other["kind"]).key == key:
-                    c.execute("UPDATE transactions SET payee_id = ? WHERE id = ?", (target, other["id"]))
-        c.execute("UPDATE transactions SET payee_id = ? WHERE id = ?", (target, txn_id))
-        if old and not c.execute("SELECT 1 FROM transactions WHERE payee_id = ?", (old,)).fetchone() \
-                and not c.execute("SELECT 1 FROM payee_keys WHERE payee_id = ?", (old,)).fetchone():
-            c.execute("DELETE FROM payees WHERE id = ?", (old,))
-        return target
-
     @exposed
     def rename_payee(self, payee_id, name):
         with self.db.write("Rename payee") as c:
@@ -1503,21 +1136,26 @@ class BudgetService:
 
     @exposed
     def update_transaction(self, txn_id, changes):
+        """Changes a transaction from anywhere but the inbox's suggestions: its payee, its
+        category (only this transaction: its payee isn't re-checked; no category sends it
+        back to the inbox), its note, a transfer or not, and the date and amount of one
+        added by hand. Returns "What's this for?" when the category makes it look like a
+        recurring charge, else None."""
         changes = dict(changes or {})
+        question = None
         with self.db.write("Edit transaction") as c:
             txn = c.execute("SELECT * FROM transactions WHERE id = ?", (txn_id,)).fetchone()
             if txn is None:
                 raise UserError("That transaction no longer exists.")
+            inbox = self._inbox(c)
             manual = txn["fingerprint"] is None and txn["fitid"] is None
             if "payee" in changes and changes["payee"] is not None:
-                self._set_payee(c, txn_id, changes["payee"])
+                ledger.set_payee(c, txn_id, _clean_name(changes["payee"]))
             if "category_id" in changes:
-                cid = changes["category_id"]
-                if txn["transfer_account_id"]:
-                    transfers.unlink(c, txn_id)
-                c.execute("DELETE FROM splits WHERE transaction_id = ?", (txn_id,))
-                c.execute("UPDATE transactions SET category_id = ?, is_split = 0, status = ?, reason = ? WHERE id = ?",
-                          (cid or None, "done" if cid else "review", "Categorized by you" if cid else "", txn_id))
+                if changes["category_id"]:
+                    question = inbox.categorize([txn_id], changes["category_id"]).question
+                else:
+                    inbox.send_back(txn_id)
             if "note" in changes:
                 c.execute("UPDATE transactions SET note = ? WHERE id = ?", (str(changes["note"] or ""), txn_id))
             if manual:
@@ -1526,41 +1164,23 @@ class BudgetService:
                 if changes.get("amount") is not None:
                     c.execute("UPDATE transactions SET amount = ? WHERE id = ?", (int(changes["amount"]), txn_id))
             if "transfer_account_id" in changes:
-                target = changes["transfer_account_id"]
-                if target:
-                    transfers.make_transfer(c, txn_id, int(target))
+                if changes["transfer_account_id"]:
+                    inbox.mark_transfer(txn_id, int(changes["transfer_account_id"]))
                 else:
-                    transfers.unlink(c, txn_id)
-        return True
+                    inbox.not_a_transfer(txn_id)
+        return {"question": question}
 
     @exposed
     def split_transaction(self, txn_id, parts):
         with self.db.write("Split transaction") as c:
-            txn = c.execute("SELECT * FROM transactions WHERE id = ?", (txn_id,)).fetchone()
-            if txn is None:
-                raise UserError("That transaction no longer exists.")
-            parts = [p for p in parts if int(p.get("amount") or 0) != 0]
-            if len(parts) < 2:
-                raise UserError("A split needs at least two parts.")
-            if sum(int(p["amount"]) for p in parts) != txn["amount"]:
-                raise UserError("The parts have to add up to the transaction's amount.")
-            if any(not p.get("category_id") for p in parts):
-                raise UserError("Every part needs a category.")
-            if txn["transfer_account_id"]:
-                transfers.unlink(c, txn_id)
-            c.execute("DELETE FROM splits WHERE transaction_id = ?", (txn_id,))
-            for p in parts:
-                c.execute("INSERT INTO splits (transaction_id, category_id, amount, note) VALUES (?, ?, ?, ?)",
-                          (txn_id, int(p["category_id"]), int(p["amount"]), str(p.get("note") or "")))
-            c.execute("UPDATE transactions SET is_split = 1, category_id = NULL, status = 'done', "
-                      "reason = 'Split by you' WHERE id = ?", (txn_id,))
+            self._inbox(c).split(int(txn_id), parts)
         return True
 
     @exposed
     def unsplit_transaction(self, txn_id):
+        """Unsplitting sends it back to the inbox, to wait for you."""
         with self.db.write("Unsplit transaction") as c:
-            c.execute("DELETE FROM splits WHERE transaction_id = ?", (txn_id,))
-            c.execute("UPDATE transactions SET is_split = 0, status = 'review', reason = '' WHERE id = ?", (txn_id,))
+            self._inbox(c).send_back(int(txn_id))
         return True
 
     @exposed
@@ -1571,19 +1191,27 @@ class BudgetService:
         if amount == 0:
             raise UserError("Enter an amount.")
         with self.db.write("Add transaction") as c:
+            acct = c.execute("SELECT name, closed FROM accounts WHERE id = ?", (int(account_id),)).fetchone()
+            if acct is None:
+                raise UserError("That account no longer exists.")
+            if acct["closed"]:
+                raise UserError(f"{acct['name']} is closed.")
             payee_id = ledger.get_or_create_payee(c, _clean_name(payee)) if payee else None
             txn_id = c.execute(
-                "INSERT INTO transactions (account_id, date, amount, payee_id, category_id, status, reason, note) "
-                "VALUES (?, ?, ?, ?, ?, ?, 'Added by you', ?)",
+                "INSERT INTO transactions (account_id, date, amount, payee_id, category_id, status, reason, note, by_you) "
+                "VALUES (?, ?, ?, ?, ?, ?, 'Added by you', ?, 1)",
                 (int(account_id), date, amount, payee_id, category_id or None, "done" if category_id else "review",
                  str(note or ""))).lastrowid
         return txn_id
 
     @exposed
     def delete_transaction(self, txn_id):
+        """Deletes a transaction. Its other half, if it was a transfer, is the app's to
+        decide about again."""
         with self.db.write("Delete transaction") as c:
-            transfers.unlink(c, txn_id)
+            others = transfers.unlink(c, txn_id)[1:]
             c.execute("DELETE FROM transactions WHERE id = ?", (txn_id,))
+            self._inbox(c).ask_again(others, "Its other half was deleted")
         return self.counts()
 
     # ── accounts ──
@@ -1591,6 +1219,7 @@ class BudgetService:
     def _accounts(self, c):
         out = []
         duplicates = {d["account_id"]: d for d in ledger.duplicate_accounts(c)}
+        used = ledger.used_account_ids(c)
         for a in c.execute("SELECT * FROM accounts ORDER BY closed, sort, id").fetchall():
             stats = c.execute("SELECT MIN(date) AS first, MAX(date) AS last, COUNT(*) AS n FROM transactions "
                               "WHERE account_id = ?", (a["id"],)).fetchone()
@@ -1598,7 +1227,7 @@ class BudgetService:
             out.append({**dict(a), "balance": ledger.account_balance(c, a["id"]), "is_debt": ledger.is_debt(a["kind"]),
                         "kind_label": ledger.KIND_LABELS.get(a["kind"], a["kind"]), "first_date": stats["first"],
                         "last_date": stats["last"], "transactions": stats["n"], "last_import": last_import,
-                        "duplicate_of": duplicates.get(a["id"])})
+                        "duplicate_of": duplicates.get(a["id"]), "used": a["id"] in used})
         return out
 
     @exposed
@@ -1629,7 +1258,10 @@ class BudgetService:
     @exposed
     def update_account(self, account_id, changes):
         changes = dict(changes or {})
-        with self.db.write("Edit account") as c:
+        label = "Edit account"
+        if set(changes) == {"closed"}:
+            label = "Close account" if changes["closed"] else "Reopen account"
+        with self.db.write(label) as c:
             if "name" in changes:
                 name = _clean_name(changes["name"])
                 if c.execute("SELECT 1 FROM accounts WHERE name = ? COLLATE NOCASE AND id != ?",
@@ -1680,9 +1312,10 @@ class BudgetService:
             if diff == 0:
                 return {"adjusted": 0}
             payee = ledger.get_or_create_payee(c, "Balance adjustment", "bank")
-            c.execute("INSERT INTO transactions (account_id, date, amount, payee_id, category_id, status, reason) "
-                      "VALUES (?, ?, ?, ?, NULL, 'review', 'To match the balance the bank shows')",
-                      (account_id, self.today(), diff, payee))
+            txn_id = c.execute("INSERT INTO transactions (account_id, date, amount, payee_id, category_id, status, reason) "
+                               "VALUES (?, ?, ?, ?, NULL, 'review', 'To match the balance the bank shows')",
+                               (account_id, self.today(), diff, payee)).lastrowid
+            self._inbox(c).arrive([txn_id])  # like an import's: the app's to categorize
         return {"adjusted": diff}
 
     @exposed
@@ -1690,54 +1323,35 @@ class BudgetService:
         """`from_id` is the same account as `into_id`: see ledger.merge_accounts()."""
         with self.db.write("Merge accounts") as c:
             name = c.execute("SELECT name FROM accounts WHERE id = ?", (into_id,)).fetchone()
-            moved, dropped = ledger.merge_accounts(c, int(from_id), int(into_id))
+            moved, dropped, unpaired = ledger.merge_accounts(c, int(from_id), int(into_id))
+            self._inbox(c).ask_again(unpaired, f"No longer a transfer: both halves are in {name['name'] if name else 'one account'}")
         log.info("Merged account %s into %s: %d moved, %d duplicates dropped", from_id, into_id, moved, dropped)
         return {"into": name["name"] if name else "", "moved": moved, "dropped": dropped, "counts": self.counts()}
 
     @exposed
     def delete_account(self, account_id):
+        """Only an account never used: a used one can only be closed (ledger.used_account_ids)."""
         with self.db.write("Delete account") as c:
-            for t in c.execute("SELECT id FROM transactions WHERE account_id = ? AND transfer_id IS NOT NULL",
-                               (account_id,)).fetchall():
-                transfers.unlink(c, t["id"])
-            c.execute("UPDATE transactions SET transfer_account_id = NULL, status = 'review' "
-                      "WHERE transfer_account_id = ?", (account_id,))
+            row = c.execute("SELECT name FROM accounts WHERE id = ?", (account_id,)).fetchone()
+            if row is None:
+                return False
+            if int(account_id) in ledger.used_account_ids(c):
+                raise UserError(f"{row['name']} has been used, so it can only be closed.")
             c.execute("DELETE FROM accounts WHERE id = ?", (account_id,))
         return True
 
     @exposed
     def debt(self):
-        """Each card / line of credit: what's owed, what's set aside, interest, and a payoff estimate."""
-        current = self.current_month()
+        """Each card / line of credit: what's owed, what's set aside, interest, and a payoff
+        estimate (Figures.debts)."""
         with self.db.read() as c:
-            figures, _ = self._figures(c, current)
-            f = figures.get(current, {}).get("categories", {})
+            debts = self._figures(c).debts()
+            accounts = {r["id"]: r for r in c.execute("SELECT id, name, kind, apr, planned_payment FROM accounts")}
             payment_cats = ledger.payment_categories(c)
             interest_cat = ledger.interest_category(c) if payment_cats else None
-            out = []
-            for a in self._accounts(c):
-                if not a["is_debt"] or a["closed"]:
-                    continue
-                owing = -(a["balance"] or 0)
-                set_aside = max(0, f.get(payment_cats.get(a["id"]), {}).get("available", 0))
-                months = [add_months(current, -i) for i in range(5, -1, -1)]
-                interest = []
-                for m in months:
-                    total = c.execute(
-                        "SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE account_id = ? AND hint IN "
-                        "('interest', 'fee') AND date BETWEEN ? AND ?", (a["id"], first_day(m), last_day(m))).fetchone()[0]
-                    interest.append({"month": m, "amount": -total})
-                balances = [{"month": m, "owing": -(ledger.account_balance(c, a["id"], last_day(m)) or 0)} for m in months]
-                paid = c.execute(
-                    "SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE account_id = ? AND transfer_account_id "
-                    "IS NOT NULL AND amount > 0 AND date BETWEEN ? AND ?",
-                    (a["id"], first_day(add_months(current, -3)), last_day(add_months(current, -1)))).fetchone()[0]
-                payment = a["planned_payment"] or (round(paid / 3) if paid else None)
-                out.append({"account_id": a["id"], "name": a["name"], "kind": a["kind"], "owing": owing,
-                            "set_aside": set_aside, "not_covered": max(0, owing - set_aside), "apr": a["apr"],
-                            "planned_payment": a["planned_payment"], "estimate_payment": payment,
-                            "interest": interest, "balances": balances, "has_balance": a["balance"] is not None,
-                            "payoff": payoff(owing, a["apr"], payment)})
+        out = [{**d, "name": accounts[d["account_id"]]["name"], "kind": accounts[d["account_id"]]["kind"],
+                "apr": accounts[d["account_id"]]["apr"], "planned_payment": accounts[d["account_id"]]["planned_payment"]}
+               for d in debts]
         return {"accounts": out, "interest_category_id": interest_cat}
 
     # ── subscriptions ──
@@ -1752,8 +1366,10 @@ class BudgetService:
                            ends_on=None):
         name = _clean_name(name) if name else None
         with self.db.write("Track subscription") as c:
-            return subscriptions.track(c, candidate, kind, name, int(category_id) if category_id else None, pricing,
-                                       _end_date(ends_on))
+            sub_id = subscriptions.track(c, candidate, kind, name, int(category_id) if category_id else None, pricing,
+                                         _end_date(ends_on))
+            self._inbox(c).recheck([candidate["payee_id"]])  # its waiting charges go to its category
+        return sub_id
 
     @exposed
     def add_subscription(self, payee, name, amount, cadence="monthly", kind="subscription", category_id=None,
@@ -1767,8 +1383,10 @@ class BudgetService:
             raise UserError("Pick how often it charges.")
         with self.db.write(f"Add subscription {name}") as c:
             payee_id = payee if isinstance(payee, int) else ledger.get_or_create_payee(c, _clean_name(payee))
-            return subscriptions.create(c, payee_id, name, amount, cadence, kind,
-                                        int(category_id) if category_id else None, pricing, _end_date(ends_on))
+            sub_id = subscriptions.create(c, payee_id, name, amount, cadence, kind,
+                                          int(category_id) if category_id else None, pricing, _end_date(ends_on))
+            self._inbox(c).recheck([payee_id])
+        return sub_id
 
     @exposed
     def dismiss_subscription(self, candidate):
@@ -1794,12 +1412,20 @@ class BudgetService:
             if "category_id" in changes:
                 cid = int(changes["category_id"]) if changes["category_id"] else None
                 c.execute("UPDATE subscriptions SET category_id = ? WHERE id = ?", (cid, sub_id))
-                subscriptions.file_pending(c, sub_id)
             if changes.get("pricing") in subscriptions.PRICINGS:
                 subscriptions.set_pricing(c, sub_id, changes["pricing"])
             if "ends_on" in changes:
                 c.execute("UPDATE subscriptions SET ends_on = ? WHERE id = ?", (_end_date(changes["ends_on"]), sub_id))
+            self._recheck_subscription(c, sub_id)
         return True
+
+    def _recheck_subscription(self, c, sub_id):
+        """After a recurring charge changes (its category, price type, end date, cancelled
+        or not): its payee's waiting charges are re-checked, so they follow it (and a
+        "charged you again" warning it no longer gives goes)."""
+        row = c.execute("SELECT payee_id FROM subscriptions WHERE id = ?", (sub_id,)).fetchone()
+        if row:
+            self._inbox(c).recheck([row["payee_id"]])
 
     @exposed
     def cancel_subscription(self, sub_id, cancelled_on=None):
@@ -1812,6 +1438,7 @@ class BudgetService:
     def reactivate_subscription(self, sub_id):
         with self.db.write("Mark subscription active") as c:
             c.execute("UPDATE subscriptions SET status = 'active', cancelled_on = NULL WHERE id = ?", (sub_id,))
+            self._recheck_subscription(c, sub_id)
         return True
 
     @exposed
@@ -1895,21 +1522,3 @@ def _clean_name(name):
         raise UserError("That name is too long.")
     return name
 
-
-def payoff(owing, apr, payment):
-    """Months to pay off `owing` at `payment` a month, and the interest that costs.
-    None if it would never be paid off (the payment doesn't cover the interest)."""
-    if owing <= 0:
-        return {"months": 0, "interest": 0}
-    if not payment or payment <= 0:
-        return None
-    rate = (apr or 0) / 100 / 12
-    balance, interest, months = owing, 0, 0
-    while balance > 0 and months < 600:
-        charge = round(balance * rate)
-        if payment <= charge:
-            return None
-        interest += charge
-        balance = balance + charge - payment
-        months += 1
-    return {"months": months, "interest": interest}

@@ -7,7 +7,7 @@ commits. Amounts are cents.
 """
 
 import transfers
-from payees import find_similar, merchant_key, transaction_hint
+from payees import describe, find_similar, merchant_key, transaction_hint
 from util import day_before
 
 CASH_KINDS = ("chequing", "savings", "cash")
@@ -40,6 +40,18 @@ def create_account(conn, name, kind, keys=(), last4=None, anchor_date=None, anch
         ensure_payment_envelope(conn, account_id)
         interest_category(conn)
     return account_id
+
+
+def used_account_ids(conn):
+    """Accounts that have been used: transactions in them or transfers to them, or money
+    assigned to a card's payment category. A used account can only be closed, never
+    deleted: deleting it would take its history with it and send the other halves of its
+    transfers back to the inbox."""
+    return {r[0] for r in conn.execute(
+        "SELECT account_id FROM transactions "
+        "UNION SELECT transfer_account_id FROM transactions WHERE transfer_account_id IS NOT NULL "
+        "UNION SELECT c.debt_account_id FROM categories c JOIN budget b ON b.category_id = c.id "
+        "WHERE c.debt_account_id IS NOT NULL AND b.assigned != 0")}
 
 
 def account_by_key(conn, keys):
@@ -110,7 +122,9 @@ def duplicate_accounts(conn):
 def merge_accounts(conn, from_id, into_id):
     """`from_id` turned out to be the same account as `into_id`. Its transactions that
     `into_id` already has are dropped (keeping anything you decided about the copy), the
-    rest move over, and `from_id` goes. Returns (moved, dropped)."""
+    rest move over, and `from_id` goes. Returns (moved, dropped, ids): `ids` were a
+    transfer between the two copies, both halves now in one account, for the inbox to
+    ask about again."""
     a = conn.execute("SELECT * FROM accounts WHERE id = ?", (from_id,)).fetchone()
     b = conn.execute("SELECT * FROM accounts WHERE id = ?", (into_id,)).fetchone()
     if a is None or b is None or from_id == into_id:
@@ -136,9 +150,8 @@ def merge_accounts(conn, from_id, into_id):
             _drop_copy(conn, t, twin)
             dropped += 1
     conn.execute("UPDATE transactions SET transfer_account_id = ? WHERE transfer_account_id = ?", (into_id, from_id))
-    for t in conn.execute("SELECT id FROM transactions WHERE account_id = ? AND transfer_account_id = ?",
-                          (into_id, into_id)).fetchall():
-        transfers.unlink(conn, t["id"])  # was a transfer between the two copies
+    unlinked = [t["id"] for t in conn.execute("SELECT id FROM transactions WHERE account_id = ? AND "
+                                              "transfer_account_id = ?", (into_id, into_id)).fetchall()]
     if a["bank"] and not b["bank"]:
         conn.execute("UPDATE accounts SET bank = ? WHERE id = ?", (a["bank"], into_id))
     for table in ("account_sources", "imports", "subscriptions"):
@@ -153,16 +166,17 @@ def merge_accounts(conn, from_id, into_id):
             conn.execute("INSERT INTO budget (month, category_id, assigned) VALUES (?, ?, ?) ON CONFLICT(month, "
                          "category_id) DO UPDATE SET assigned = assigned + excluded.assigned", (r["month"], new, r["assigned"]))
     conn.execute("DELETE FROM accounts WHERE id = ?", (from_id,))
-    return moved, dropped
+    return moved, dropped, unlinked
 
 
 def _drop_copy(conn, copy, twin):
     """Deletes `copy`, a second copy of `twin`, moving onto `twin` what only the copy has:
-    your category, a split, a note, its subscription, its transfer, its bank ID."""
-    # "Filed by you" is what versions before 1.0.8 wrote.
-    if twin["status"] == "review" and copy["reason"] in ("Categorized by you", "Filed by you", "Split by you"):
-        conn.execute("UPDATE transactions SET category_id = ?, is_split = ?, status = 'done', reason = ?, refund_of = ? "
-                     "WHERE id = ?", (copy["category_id"], copy["is_split"], copy["reason"], copy["refund_of"], twin["id"]))
+    what you decided about it (a category, a split, sending it back), a note, its
+    subscription, its transfer, its bank ID."""
+    if copy["by_you"] and not twin["by_you"] and not copy["transfer_account_id"] and not twin["transfer_account_id"]:
+        conn.execute("UPDATE transactions SET category_id = ?, is_split = ?, status = ?, reason = ?, refund_of = ?, "
+                     "by_you = 1 WHERE id = ?", (copy["category_id"], copy["is_split"], copy["status"], copy["reason"],
+                                                 copy["refund_of"], twin["id"]))
         if copy["is_split"]:
             conn.execute("DELETE FROM splits WHERE transaction_id = ?", (twin["id"],))
             conn.execute("UPDATE splits SET transaction_id = ? WHERE transaction_id = ?", (twin["id"], copy["id"]))
@@ -247,6 +261,39 @@ def category_names(conn):
     return {r["id"]: r["name"] for r in conn.execute("SELECT id, name FROM categories")}
 
 
+def category_tree(conn):
+    """Category groups in budget order, each with its categories in order."""
+    groups = []
+    for g in conn.execute("SELECT * FROM category_groups ORDER BY sort, id").fetchall():
+        cats = [dict(r) for r in conn.execute(
+            "SELECT id, name, hidden, monthly_budget, debt_account_id, sort FROM categories "
+            "WHERE group_id = ? ORDER BY sort, id", (g["id"],))]
+        groups.append({**dict(g), "categories": cats})
+    return groups
+
+
+def used_category_ids(conn):
+    """Categories that have been used: a transaction or a split line in them, an example
+    learnt from Actual, money assigned in any month, or a recurring charge filed there. A
+    used category can only be hidden, never deleted: deleting it would send its
+    transactions back to the inbox and take its money out of every month."""
+    return {r[0] for r in conn.execute(
+        "SELECT category_id FROM transactions WHERE category_id IS NOT NULL "
+        "UNION SELECT category_id FROM splits WHERE category_id IS NOT NULL "
+        "UNION SELECT category_id FROM examples "
+        "UNION SELECT category_id FROM budget WHERE assigned != 0 "
+        "UNION SELECT category_id FROM subscriptions WHERE category_id IS NOT NULL")}
+
+
+def own_category_ids(conn):
+    """Income and Interest & Fees, which the app needs: never deleted. Only looks (unlike
+    income_category() and interest_category(), which make them when they're missing)."""
+    income = conn.execute("SELECT c.id FROM categories c JOIN category_groups g ON g.id = c.group_id "
+                          "WHERE g.role = 'income' ORDER BY g.sort, g.id, c.sort, c.id LIMIT 1").fetchone()
+    interest = conn.execute("SELECT value FROM meta WHERE key = 'interest_category_id'").fetchone()
+    return {int(r[0]) for r in (income, interest) if r}
+
+
 def assignable_category_ids(conn):
     """Categories a transaction can be filed under: not hidden, not a payment envelope."""
     return {r["id"] for r in conn.execute(
@@ -282,27 +329,57 @@ def add_payee_key(conn, key, payee_id, how):
 
 
 def resolve_payee(conn, desc):
-    """(payee_id, note, similar_payee_id) for a payees.Description. `note` explains a
-    similar-name match it was sure of ("Matched to Safeway (similar name)"), else ''.
-    `similar_payee_id` is a payee it wasn't sure enough of, to ask about."""
+    """(payee_id, similar_payee_id) for a payees.Description. A similar-name match it's
+    sure of is kept as the key's `how` ('similar': the inbox says "Matched to Safeway
+    (similar name)"). `similar_payee_id` is a payee it wasn't sure enough of, to ask about."""
     row = conn.execute("SELECT payee_id FROM payee_keys WHERE key = ?", (desc.key,)).fetchone()
     if row:
-        return row["payee_id"], "", None
+        return row["payee_id"], None
     if desc.brand or desc.kind == "bank":
         payee_id = get_or_create_payee(conn, desc.name, desc.kind)
         add_payee_key(conn, desc.key, payee_id, "brand" if desc.brand else "exact")
-        return payee_id, "", None
+        return payee_id, None
     known = [(r["key"], r["payee_id"], r["name"]) for r in conn.execute(
         "SELECT k.key, k.payee_id, p.name FROM payee_keys k JOIN payees p ON p.id = k.payee_id "
         "WHERE p.kind != 'bank'")]
     match = find_similar(desc.name, desc.key, known)
     if match and match[3]:
-        payee_id, name = match[0], match[1]
-        add_payee_key(conn, desc.key, payee_id, "similar")
-        return payee_id, f"Matched to {name} (similar name)", None
+        add_payee_key(conn, desc.key, match[0], "similar")
+        return match[0], None
     payee_id = get_or_create_payee(conn, desc.name, desc.kind, always_ask=transaction_hint(desc) == "etransfer")
     add_payee_key(conn, desc.key, payee_id, "exact")
-    return payee_id, "", (match[0] if match else None)
+    return payee_id, (match[0] if match else None)
+
+
+def set_payee(conn, txn_id, name):
+    """This transaction's bank description belongs to payee `name` (an existing one, or a
+    new one): every transaction with the same bank description moves too, and the app
+    remembers. Returns the payee's id."""
+    txn = conn.execute("SELECT t.*, a.kind FROM transactions t JOIN accounts a ON a.id = t.account_id "
+                       "WHERE t.id = ?", (txn_id,)).fetchone()
+    old = txn["payee_id"]
+    old_row = conn.execute("SELECT name, kind FROM payees WHERE id = ?", (old,)).fetchone() if old else None
+    if old_row and old_row["name"].lower() == name.lower():
+        return old
+    others = conn.execute("SELECT COUNT(*) FROM transactions WHERE payee_id = ? AND id != ?", (old, txn_id)).fetchone()[0] \
+        if old else 0
+    exists = conn.execute("SELECT id FROM payees WHERE name = ? COLLATE NOCASE", (name,)).fetchone()
+    if old and not exists and others == 0:
+        return rename_payee(conn, old, name)  # its only transaction: just rename it
+    target = exists["id"] if exists else get_or_create_payee(
+        conn, name, old_row["kind"] if old_row else "merchant", always_ask=txn["hint"] == "etransfer")
+    key = describe(txn["raw_name"], txn["raw_memo"], txn["kind"]).key if txn["raw_name"] else None
+    if key:
+        add_payee_key(conn, key, target, "user")
+        for other in conn.execute("SELECT t.id, t.raw_name, t.raw_memo, a.kind FROM transactions t JOIN accounts a "
+                                  "ON a.id = t.account_id WHERE t.payee_id = ?", (old,)).fetchall():
+            if describe(other["raw_name"], other["raw_memo"], other["kind"]).key == key:
+                conn.execute("UPDATE transactions SET payee_id = ? WHERE id = ?", (target, other["id"]))
+    conn.execute("UPDATE transactions SET payee_id = ? WHERE id = ?", (target, txn_id))
+    if old and not conn.execute("SELECT 1 FROM transactions WHERE payee_id = ?", (old,)).fetchone() \
+            and not conn.execute("SELECT 1 FROM payee_keys WHERE payee_id = ?", (old,)).fetchone():
+        conn.execute("DELETE FROM payees WHERE id = ?", (old,))
+    return target
 
 
 def rename_payee(conn, payee_id, new_name):

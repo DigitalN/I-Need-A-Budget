@@ -194,15 +194,19 @@ def average_spending(month_totals, months):
     return round(sum(-month_totals.get(m, 0) for m in months) / len(months))
 
 
-def usual_spending(month_totals, month, earliest, count):
-    """A category's Usual for `month`: what it actually spent on average in up to `count`
-    whole months before it, from `earliest` (the first month every account has data for)
-    and from its own first spending, so a bill that started last month isn't averaged
-    with months it didn't exist. None when there's no such month."""
+def usual_months(month_totals, month, earliest, count):
+    """The whole months a category's Usual for `month` averages: up to `count` before it,
+    from `earliest` (the first month every account has data for) and from its own first
+    spending, so a bill that started last month isn't averaged with months it didn't
+    exist. None of them if it has never spent anything."""
     spent = [m for m, total in month_totals.items() if total]
-    if not spent:
-        return None
-    months = complete_months_before(month, max(earliest, min(spent)), count)
+    return complete_months_before(month, max(earliest, min(spent)), count) if spent else []
+
+
+def usual_spending(month_totals, month, earliest, count):
+    """A category's Usual for `month`: what it actually spent on average over its
+    usual_months(). None when there's no such month."""
+    months = usual_months(month_totals, month, earliest, count)
     return average_spending(month_totals, months) if months else None
 
 

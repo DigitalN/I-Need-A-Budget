@@ -9,6 +9,10 @@ aren't spending. The budget counts a card payment once, from the cash side.
 
 If only one half is imported so far, it's still marked as a transfer to the obvious
 account, and the other half pairs with it when it arrives.
+
+The inbox (inbox.py) decides when to pair; this module only pairs. It never pairs with a
+transaction you decided about (docs/adr/0005): one you categorized, split or sent back,
+or said isn't a transfer. A half arriving for one of those waits in the inbox instead.
 """
 
 import re
@@ -20,17 +24,21 @@ def _accounts(conn):
     return {r["id"]: r for r in conn.execute("SELECT id, name, kind, bank FROM accounts WHERE closed = 0")}
 
 
-def find_counterpart(conn, txn, window=PAIR_WINDOW_DAYS):
+def find_counterpart(conn, txn, window=PAIR_WINDOW_DAYS, yours=False):
     """The other half of a transfer: the opposite amount in another account, within a
-    week, not paired yet, and looking like a transfer on at least one side."""
+    week, not paired yet, and looking like a transfer on at least one side. Not one you
+    decided about, unless you marked it as a transfer to this account. With `yours`, only
+    one you decided about that isn't a transfer: the inbox asks about those."""
+    mine = "by_you = 1 AND transfer_account_id IS NULL" if yours else "(by_you = 0 OR transfer_account_id = :account)"
     return conn.execute(
-        """
+        f"""
         SELECT * FROM transactions
          WHERE account_id != :account AND amount = :opposite AND transfer_id IS NULL AND id != :id
            AND date BETWEEN date(:date, :minus) AND date(:date, :plus)
            AND (hint = 'transfer' OR :hint = 'transfer' OR transfer_account_id = :account
                 OR :target = account_id)
            AND (transfer_account_id IS NULL OR transfer_account_id = :account)
+           AND {mine}
          ORDER BY abs(julianday(date) - julianday(:date)), id
          LIMIT 1
         """, {"account": txn["account_id"], "opposite": -txn["amount"], "id": txn["id"], "date": txn["date"],
@@ -38,11 +46,12 @@ def find_counterpart(conn, txn, window=PAIR_WINDOW_DAYS):
               "target": txn["transfer_account_id"] or 0}).fetchone()
 
 
-def link(conn, a, b, accounts=None):
-    accounts = accounts or _accounts(conn)
+def link(conn, a, b):
+    # Named from every account: a closed account keeps its history, transfers included.
+    names = {r["id"]: r["name"] for r in conn.execute("SELECT id, name FROM accounts")}
     for this, other in ((a, b), (b, a)):
         verb = "from" if this["amount"] > 0 else "to"
-        other_name = accounts[other["account_id"]]["name"] if other["account_id"] in accounts else "another account"
+        other_name = names.get(other["account_id"], "another account")
         conn.execute(
             "UPDATE transactions SET transfer_id = ?, transfer_account_id = ?, category_id = NULL, is_split = 0, "
             "status = 'done', reason = ? WHERE id = ?",
@@ -78,15 +87,18 @@ def _named_in(account, text):
 
 
 def pair(conn, txn):
-    """Marks `txn` as a transfer if it is one. Returns True if it did."""
+    """Marks `txn` as a transfer if it is one. Returns True if it did. Not when its other
+    half looks like a transaction you decided about (find_counterpart's `yours`)."""
     accounts = _accounts(conn)
     if txn["transfer_id"]:
         return True
     other = find_counterpart(conn, txn)
     if other is not None:
-        link(conn, txn, other, accounts)
+        link(conn, txn, other)
         return True
     if txn["hint"] != "transfer" and not txn["transfer_account_id"]:
+        return False
+    if find_counterpart(conn, txn, yours=True) is not None:
         return False
     target = accounts.get(txn["transfer_account_id"]) if txn["transfer_account_id"] else guess_other_account(conn, txn, accounts)
     if target is None:
@@ -102,7 +114,7 @@ def pair(conn, txn):
 
 def make_transfer(conn, txn_id, account_id):
     """The user says this is a transfer to/from `account_id`: pair it with the other half
-    if that's already imported, otherwise just mark it."""
+    if that's already imported (whoever decided about it), otherwise just mark it."""
     txn = conn.execute("SELECT * FROM transactions WHERE id = ?", (txn_id,)).fetchone()
     unlink(conn, txn_id)
     conn.execute("UPDATE transactions SET transfer_account_id = ? WHERE id = ?", (account_id, txn_id))
@@ -120,9 +132,10 @@ def make_transfer(conn, txn_id, account_id):
 
 
 def unlink(conn, txn_id):
-    """Stops treating a transaction (and its other half) as a transfer."""
+    """Stops treating a transaction (and its other half) as a transfer. Returns both ids,
+    this one first: the inbox decides what happens to them next."""
     txn = conn.execute("SELECT transfer_id FROM transactions WHERE id = ?", (txn_id,)).fetchone()
     ids = [txn_id] + ([txn["transfer_id"]] if txn and txn["transfer_id"] else [])
     for i in ids:
-        conn.execute("UPDATE transactions SET transfer_id = NULL, transfer_account_id = NULL, status = 'review', "
-                     "reason = 'No longer a transfer' WHERE id = ?", (i,))
+        conn.execute("UPDATE transactions SET transfer_id = NULL, transfer_account_id = NULL WHERE id = ?", (i,))
+    return ids

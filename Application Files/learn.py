@@ -62,7 +62,8 @@ def _history(conn, txn):
            AND transfer_account_id IS NULL AND id != :id
         UNION ALL
         SELECT s.category_id, s.amount, t.date, 'own' FROM splits s JOIN transactions t ON t.id = s.transaction_id
-         WHERE t.payee_id = :payee AND t.status = 'done' AND s.category_id IS NOT NULL AND t.id != :id
+         WHERE t.payee_id = :payee AND t.status = 'done' AND t.is_split = 1 AND s.category_id IS NOT NULL
+           AND t.transfer_account_id IS NULL AND t.id != :id
         UNION ALL
         SELECT category_id, amount, date, 'example' FROM examples WHERE payee_id = :payee
         ORDER BY date DESC LIMIT :limit
