@@ -28,7 +28,7 @@ Imported Files/
 *.log
 Logs/
 
-# Build output (scripts/build.sh builds in ~/Library/Caches/I Need A Budget-build)
+# Build output, should any land here: scripts/build.sh and package.sh work in ~/Library/Caches
 Application Files/build/
 Application Files/dist/
 *.app/
