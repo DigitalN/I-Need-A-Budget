@@ -5,13 +5,16 @@
     (start the `demo` entry in .claude/launch.json: the preview on that folder, port 8766)
     python3 scripts/screenshots.py [--url http://127.0.0.1:8766] [--out docs/screenshots]
 
-Draws each page off screen at 1280×820 (saved at 2×) and quits.
+Draws the Budget page off screen at 1280×820, then a close-up of one part of a page for
+each feature the README shows (in a narrower window, so its text stays readable), all
+saved at 2×, and quits.
 
 Only ever point it at a preview of made-up data (scripts/demo_data.py): the pictures go
 into the public repository.
 """
 
 import argparse
+import json
 from pathlib import Path
 
 import AppKit
@@ -21,8 +24,17 @@ from Foundation import NSURL, NSURLRequest
 from PyObjCTools import AppHelper
 
 ROOT = Path(__file__).resolve().parent.parent
-WIDTH, HEIGHT = 1280, 820
-PAGES = ["dashboard", "budget", "inbox", "subscriptions", "accounts"]
+WINDOW = (1280, 820)
+PAD = 6  # page background kept around a close-up (less than the gap between cards)
+# (file name, page, what a close-up frames: a CSS selector, or None for the whole window;
+#  window width: narrower than WINDOW keeps a close-up's text readable at README size)
+SHOTS = [
+    ("budget", "budget", None, WINDOW[0]),
+    ("inbox", "inbox", ".items > :nth-child(-n+2)", 1000),
+    ("ready-to-assign", "budget", ".card.hero", 1000),
+    ("subscriptions", "subscriptions", ".stack > .card", 1200),
+    ("charts", "dashboard", ".charts", 1000),
+]
 
 
 class Shooter(AppKit.NSObject):
@@ -30,8 +42,8 @@ class Shooter(AppKit.NSObject):
         self = self.init()
         self.out = Path(out)
         self.out.mkdir(parents=True, exist_ok=True)
-        self.jobs = [(page, theme) for theme in ("light", "dark") for page in PAGES]
-        frame = AppKit.NSMakeRect(0, 0, WIDTH, HEIGHT)
+        self.jobs = [(shot, theme) for theme in ("light", "dark") for shot in SHOTS]
+        frame = AppKit.NSMakeRect(0, 0, *WINDOW)
         self.window = AppKit.NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
             frame, AppKit.NSWindowStyleMaskBorderless, AppKit.NSBackingStoreBuffered, False)
         self.window.setFrameOrigin_((-10000, -10000))  # off screen
@@ -54,30 +66,49 @@ class Shooter(AppKit.NSObject):
         if not self.jobs:
             AppHelper.stopEventLoop()
             return
-        page, theme = self.jobs[0]
+        (_name, page, selector, width), theme = self.jobs[0]
+        self.window.setContentSize_((width, 1000) if selector else WINDOW)
         appearance = AppKit.NSAppearance.appearanceNamed_(
             AppKit.NSAppearanceNameDarkAqua if theme == "dark" else AppKit.NSAppearanceNameAqua)
         self.view.setAppearance_(appearance)
         js = (f"document.documentElement.setAttribute('data-theme', '{theme}'); navigate('{page}'); "
               "window.scrollTo(0, 0);")
-        self.view.evaluateJavaScript_completionHandler_(js, lambda *_: self.after(1.2, self.shoot))
+        self.view.evaluateJavaScript_completionHandler_(js, lambda *_: self.after(1.2, self.measure))
 
     @objc.python_method
-    def shoot(self):
+    def measure(self):
+        selector = self.jobs[0][0][2]
+        if not selector:
+            self.shoot(None)
+            return
+        # The box around everything the selector matches, plus a little of the page around it
+        js = (f"(() => {{ const r = [...document.querySelectorAll({json.dumps(selector)})]"
+              ".map(e => e.getBoundingClientRect()); if (!r.length) return '';"
+              f" const x = Math.min(...r.map(b => b.left)) - {PAD}, y = Math.min(...r.map(b => b.top)) - {PAD};"
+              f" return JSON.stringify([x, y, Math.max(...r.map(b => b.right)) + {PAD} - x,"
+              f" Math.max(...r.map(b => b.bottom)) + {PAD} - y]); }})()")
+        self.view.evaluateJavaScript_completionHandler_(js, lambda box, _error: self.shoot(box))
+
+    @objc.python_method
+    def shoot(self, box):
         config = WebKit.WKSnapshotConfiguration.new()
+        if box:
+            config.setRect_(AppKit.NSMakeRect(*json.loads(box)))
+        elif self.jobs[0][0][2]:
+            print("Nothing matches", self.jobs[0][0][2], flush=True)
         self.view.takeSnapshotWithConfiguration_completionHandler_(config, self.saved)
 
     @objc.python_method
     def saved(self, image, error):
-        page, theme = self.jobs.pop(0)
+        (name, _page, _selector, _width), theme = self.jobs.pop(0)
         if image is not None:
             rep = AppKit.NSBitmapImageRep.imageRepWithData_(image.TIFFRepresentation())
             png = rep.representationUsingType_properties_(AppKit.NSBitmapImageFileTypePNG, {})
-            path = self.out / f"{page}-{theme}.png"
+            path = self.out / f"{name}-{theme}.png"
             png.writeToFile_atomically_(str(path), True)
             print("Saved", path.relative_to(ROOT) if path.is_relative_to(ROOT) else path, flush=True)
         else:
-            print("Failed", page, theme, error, flush=True)
+            print("Failed", name, theme, error, flush=True)
         self.next()
 
 
