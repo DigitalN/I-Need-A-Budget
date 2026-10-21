@@ -1166,7 +1166,7 @@ async function openCategory(id) {
     nameInput.addEventListener('change', saveName);
     nameInput.addEventListener('keydown', e => {
       if (e.key === 'Enter') { e.preventDefault(); nameInput.blur(); }
-      else if (e.key === 'Escape') { e.stopPropagation(); nameInput.value = savedName; nameInput.blur(); }
+      else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); nameInput.value = savedName; nameInput.blur(); }
     });
   }
 
@@ -1176,7 +1176,8 @@ async function openCategory(id) {
     bg.remove(); dr.remove();
     if (changed) { await loadCategories(); await renderBudget(); }
   };
-  const onKey = e => { if (e.key === 'Escape' && !$('#dlg').open && !$('.popover')) close(); };
+  // Marked handled, or the app's window passes Escape on and macOS plays its warning sound.
+  const onKey = e => { if (e.key === 'Escape' && !$('#dlg').open && !$('.popover')) { e.preventDefault(); close(); } };
   document.addEventListener('keydown', onKey);
   bg.onclick = close;
   dr.addEventListener('click', async e => {
@@ -1235,7 +1236,7 @@ async function openSpent(which, { total = 'Spent' } = {}) {
     ${spentCard(d, d.month, { group: d.group, total })}`;
   document.body.append(bg, dr);
   const close = async () => { document.removeEventListener('keydown', onKey); bg.remove(); dr.remove(); };
-  const onKey = e => { if (e.key === 'Escape' && !$('#dlg').open && !$('.popover')) close(); };
+  const onKey = e => { if (e.key === 'Escape' && !$('#dlg').open && !$('.popover')) { e.preventDefault(); close(); } };
   document.addEventListener('keydown', onKey);
   bg.onclick = close;
   dr.addEventListener('click', e => {

@@ -504,6 +504,9 @@ Don't undo these without asking:
 
 - Every pop-up has a ✕ top right that closes without saving (the `dialog()` helper adds
   it). Save with no changes just closes, with no "Saved" message.
+- A key the page acts on (Escape closing a pop-over, a shortcut) calls `preventDefault`:
+  otherwise the app's window passes it on, nothing takes it, and macOS plays its warning
+  sound (it did for Escape on the category pop-over). `tests/test_page.py` checks Escape.
 - A popover opened from a pop-up (the category list) is attached inside the open
   `<dialog>`: dialogs live in the browser's top layer, above anything else on the page.
   So is a message (toast) shown while a pop-up is open, or it's hidden under it. There's
