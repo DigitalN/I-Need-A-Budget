@@ -1436,8 +1436,9 @@ function bindCategoryEditor(host) {
 // Dragging categories and category groups by their handle (⋮⋮) with the mouse, on the
 // Budget page and in onboarding's list. Pointer events, not HTML drag and drop (that
 // would show the "drop a bank file" overlay). The row moves to the place under the
-// pointer as you go, and it's saved when you let go. Dragging a group folds every group
-// to its heading (0.1 s), the one you're holding staying under the pointer, so a long
+// pointer as you go, and it's saved when you let go. Pressing a group's handle folds
+// every group to its heading at once (0.1 s, before the mouse moves: waiting for it made
+// it hard to use), the one you're holding staying under the pointer, so a long
 // list fits; on the drop they unfold (0.1 s too), the group staying where it was dropped
 // (the maintainer's design). If the move can't be saved, it goes back and still unfolds. `root()` is the list: its `.grp` children are the
 // groups, `[data-cat-row]` the categories. `redraw()` draws it again from
@@ -1556,6 +1557,7 @@ function beginDrag(e, { root, redraw }) {
   document.addEventListener('pointermove', move);
   document.addEventListener('pointerup', up);
   document.addEventListener('keydown', key, true);
+  if (isGroup) start();  // a category waits for the mouse to move: nothing folds for it
 }
 // Keeps `el` at `top` on screen for `ms` while the rows around it fold or unfold: by
 // scrolling, and by a top margin on `list` where there's nothing left to scroll.

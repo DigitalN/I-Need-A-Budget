@@ -397,8 +397,8 @@ Don't undo these without asking:
   category makes a category above it, named in place. ✎ renames in place. In place:
   Return or clicking away saves, Escape or an empty box cancels, a refused name keeps
   you in the box after Return. Drag by ⋮⋮: a category within its group or into another, a
-  group among the others; saved on release, no Done. Dragging a group folds every
-  group's categories in 0.1 s (each group is its own `<tbody>`; the cells are wrapped
+  group among the others; saved on release, no Done. Pressing a group's ⋮⋮ folds every
+  group's categories at once, before the mouse moves (waiting for it was hard to use), in 0.1 s (each group is its own `<tbody>`; the cells are wrapped
   so rows can fold), the held group staying under the pointer, so a long list fits; on
   release they unfold in 0.1 s too, the group staying where it was dropped, and it flashes;
   groups you folded stay folded (`beginDrag`, also onboarding's list). A move that
