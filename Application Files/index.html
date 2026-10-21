@@ -174,13 +174,15 @@ th.r, td.r { text-align: right; }
 .btable .cat .name:hover { color: var(--accent); }
 .btable .cat.hidden-cat { opacity: .5; }
 .btable col.c-num { width: 132px; }
-/* Tools: ⋮⋮ in the card's left margin; +, ✎ and ✕ right of the name. Shown near the
-   pointer (nearTools), fading out over 0.5 s. */
+/* Tools: ⋮⋮ in the card's left margin; +, ✎ and ✕ right of the name. Shown at once on the
+   row the pointer is on, fading out over 0.5 s when it leaves (the maintainer's design;
+   a 60 px reach around the pointer was too busy). The margin is part of the row, so the
+   pointer can reach ⋮⋮ without leaving it. */
 .budget-card { padding: 6px 8px 6px 28px; }
 .btable tr > td:first-child { position: relative; }
-.btable .gutter { position: absolute; left: -24px; top: 50%; transform: translateY(-50%); display: flex; align-items: center; gap: 1px; }
+.btable .gutter { position: absolute; left: -24px; top: 0; width: 24px; height: 100%; display: flex; align-items: center; }
 .btable .tool { opacity: 0; transition: opacity .5s ease; pointer-events: none; }
-.btable .tool.near { opacity: 1; transition: none; pointer-events: auto; }
+.btable tr:hover .tool, .btable tr:focus-within .tool { opacity: 1; transition: none; pointer-events: auto; }
 .btable .drag-handle { cursor: grab; color: var(--muted); font-size: 14px; font-weight: 400; letter-spacing: -3px; padding: 2px 4px 2px 2px; user-select: none; -webkit-user-select: none; touch-action: none; }
 .btable .drag-handle:hover { color: var(--text); }
 .btable .plus { border: 0; background: transparent; color: var(--muted); width: 20px; height: 20px; border-radius: 5px; padding: 0; font-size: 16px; line-height: 1; font-weight: 400; cursor: default; }
@@ -736,9 +738,9 @@ async function renderBudget() {
   }
 
   // Each group is its own <tbody>, so dragging one takes its categories along. The tools
-  // (⋮⋮ in the margin; +, ✎ and an empty group's ✕ right of the name) show when the
-  // pointer is near them (nearTools). Only an ordinary group or category has them, but
-  // every group has + (a group above it).
+  // (⋮⋮ in the margin; +, ✎ and an empty group's ✕ right of the name) show on the row the
+  // pointer is on. Only an ordinary group or category has them, but every group has +
+  // (a group above it).
   const bodies = [];
   const hiddenCount = view.groups.reduce((n, g) => n + g.categories.filter(c => c.hidden).length, 0);
   for (const g of view.groups) {
@@ -801,7 +803,6 @@ async function renderBudget() {
       ${view.groups.length ? `<p class="kbd-help">Click a category or what it spent to see this month's transactions and what it spent in past months. Type in Assigned and press Return (+50 adds to what's there, −20 takes away); Tab moves to the next one.</p>` : ''}
     </div>`); } finally { redrawing = false; }
   main.scrollTop = scrolled;
-  nearTools();
   if (keep) {
     const el = $(`[data-assign="${keep.id}"]`);
     if (el) { if (keep.typed) el.value = keep.value; el.focus({ preventScroll: true }); el.setSelectionRange(keep.start, keep.end); }
@@ -817,23 +818,6 @@ async function renderBudget() {
 // Added, renamed, moved and deleted on the page itself (there's no Edit categories…).
 const PENCIL = '<svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><path d="M11.2 2.3l2.5 2.5-7.9 7.9-3.2.7.7-3.2z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>';
 
-// The tools (⋮⋮, +, ✎, ✕) show at once when the pointer is within 60 px of them and fade
-// over 0.5 s when it moves away (the maintainer's design): the table stays plain.
-let toolsAt = null;
-function nearTools() {
-  for (const el of $$('.btable .tool')) {
-    let near = false;
-    if (toolsAt) {
-      const r = el.getBoundingClientRect();
-      const dx = Math.max(r.left - toolsAt[0], 0, toolsAt[0] - r.right), dy = Math.max(r.top - toolsAt[1], 0, toolsAt[1] - r.bottom);
-      near = dx * dx + dy * dy <= 60 * 60;
-    }
-    el.classList.toggle('near', near);
-  }
-}
-// On every move, not once a frame: whether a tool can be clicked mustn't wait for one.
-document.addEventListener('mousemove', e => { toolsAt = [e.clientX, e.clientY]; if (state.page === 'budget') nearTools(); });
-document.documentElement.addEventListener('mouseleave', () => { toolsAt = null; nearTools(); });
 document.addEventListener('pointerdown', e => {
   if (e.target.closest('.btable .drag-handle')) beginDrag(e, { root: () => $('.btable'), redraw: renderBudget });
 });

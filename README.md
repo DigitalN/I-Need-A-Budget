@@ -104,7 +104,7 @@ it actually spent in past months, last month and the 3/6/12-month averages, and 
 subscriptions and bills come to a month, each with **Use**, and the amount itself), the
 subscriptions and bills that go into it, move money and keep notes. Click its name to
 rename it, hide it or delete it. It all saves as you type. A group's Spent lists the whole
-group. Point near a category or group and its tools appear: drag **⋮⋮** to move it (the
+group. Point at a category or group and its tools appear: drag **⋮⋮** to move it (the
 groups fold up while you drag one), **+** adds one above it, **✎** renames it.
 
 **Ready to assign** is money you really have: overspending a category comes out of it

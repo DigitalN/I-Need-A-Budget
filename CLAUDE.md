@@ -387,9 +387,10 @@ Don't undo these without asking:
   same list for the whole group. Clicking a transaction opens it (it has a Category
   field) and the pop-over reopens with the change.
 - **Categories are edited on the Budget page itself** (issue #29; there's no Edit
-  categories… pop-up, the maintainer had it removed). Tools appear at once when the
-  pointer is within 60 px of them and fade over 0.5 s when it moves away (`nearTools`):
-  ⋮⋮ in the card's left margin, and right of the name **+**, **✎** (a pencil, not the
+  categories… pop-up, the maintainer had it removed). A row's tools appear at once while
+  the pointer is on that row and fade over 0.5 s when it leaves (a 60 px reach around the
+  pointer was tried and was too busy): ⋮⋮ in the card's left margin (part of the row, so
+  the pointer reaches it without leaving), and right of the name **+**, **✎** (a pencil, not the
   word "Rename") and, on an empty group, **✕**, which asks. + on a group makes a group
   above it, named in place, with a "New Spending Category" (2, 3… if taken) whose name
   you're then typing, selected: one undo step (`add_group(first_category=True)`). + on a

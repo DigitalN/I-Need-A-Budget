@@ -131,7 +131,8 @@ def test_categories_are_edited_on_the_budget_page():
     for tool in ("data-drag-group", "data-drag-cat", "data-group-plus", "data-cat-plus", "data-group-pencil", "data-cat-pencil",
                  "data-group-x"):
         assert tool in PAGE, tool
-    assert "near = dx * dx + dy * dy <= 60 * 60;" in PAGE  # shown within 60 px
+    assert ".btable tr:hover .tool, .btable tr:focus-within .tool { opacity: 1; transition: none;" in PAGE  # the row you're on
     assert ".btable .tool { opacity: 0; transition: opacity .5s ease;" in PAGE  # fading over 0.5 s
+    assert "nearTools" not in PAGE  # no reach around the pointer: too busy
     assert "beginDrag(e, { root: () => $('.btable'), redraw: renderBudget })" in PAGE
     assert "bindCategoryEditor($('#ob-cats'))" in PAGE and "body.dataset.bound" not in PAGE
