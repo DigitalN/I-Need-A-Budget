@@ -57,8 +57,8 @@ folder there and set `downloads_dir` in its `settings.json` to try onboarding.
 
 ## README screenshots
 
-`docs/screenshots/` holds each page in light and dark, taken from made-up data only (the
-repository is public):
+`docs/screenshots/` holds the Budget page and a close-up for each feature the README
+shows, in light and dark, taken from made-up data only (the repository is public):
 
 ```bash
 python3 scripts/demo_data.py
@@ -66,8 +66,8 @@ python3 scripts/demo_data.py
 
 builds a fictional budget in `~/Library/Caches/I Need A Budget-demo` through the real
 engine; start the `demo` entry in `.claude/launch.json` (the preview on it, port 8766),
-then `python3 scripts/screenshots.py` draws each page off screen with WebKit and saves
-the PNGs. Retake them when a page changes noticeably.
+then `python3 scripts/screenshots.py` draws them off screen with WebKit (the list is
+`SHOTS` in the script) and saves the PNGs. Retake them when a page changes noticeably.
 
 ## Release checklist
 

@@ -107,10 +107,10 @@ def made_up_history(today):
         d += timedelta(days=1)
     # One bigger, rarer charge for the Vacation category, and pay the card off each month.
     card.append((date(2026, 7, 18), -486_40, "WESTJET 8382940118 CALGARY AB"))
-    # Recent ones the app isn't sure about, left in the Inbox: someone new, a refund, a
-    # new price from a subscription payee, and an e-transfer for a share of dinner.
+    # Recent ones the app isn't sure about, left in the Inbox: someone new, a refund, and
+    # an e-transfer for a share of a dinner (the dinner itself already categorized).
     card += [(today - timedelta(days=4), -349_99, "BEST BUY #965 CALGARY AB"),
-             (today - timedelta(days=5), -85_00, "THE KEG STEAKHOUSE #12 CALGARY AB"),
+             (today - timedelta(days=7), -85_00, "THE KEG STEAKHOUSE #12 CALGARY AB"),
              (today - timedelta(days=3), 34_99, "AMAZON.CA AMAZON.CA ON")]
     cheq.append((today - timedelta(days=2), 42_50, "INTERAC e-Transfer From: JORDAN"))
     card.sort()
@@ -176,11 +176,13 @@ def main():
         gid = call(app, "add_group", group)
         for n in names:
             call(app, "add_category", gid, n)
-    cats = {c["name"]: c["id"] for g in call(app, "categories") for c in g["categories"]}
+    # The cards' group under the spending groups, as a person would drag it
+    call(app, "move_group", next(g["id"] for g in call(app, "categories") if g["role"] == "debt"))
+    cats ={c["name"]: c["id"] for g in call(app, "categories") for c in g["categories"]}
     by_text = {n: cat for n, cat, *_ in CARD_SHOPS + CARD_SUBSCRIPTIONS}
     by_text.update({"MAPLE RIDGE": "Rent", "ALLSTATE": "Insurance", "UTILITIES": "Utilities",
                     "TELUS": "Phone & Internet", "ROGERS": "Phone & Internet", "PAYROLL": "Income",
-                    "WESTJET": "Vacation"})
+                    "WESTJET": "Vacation", "KEG STEAKHOUSE": "Food"})
 
     def category_for(item):
         text = " ".join(str(item.get(k) or "") for k in ("payee_name", "description", "memo", "raw_name")).upper()
