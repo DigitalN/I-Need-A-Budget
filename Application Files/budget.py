@@ -49,7 +49,7 @@ With these rules, at the end of every month:
   Ready to assign + Σ max(available, 0) − overspent_pending + waiting == cash in cash accounts
 where `overspent_pending` is cash overspending not taken from Ready to assign (yet): none
 with `this_month`, this month's with `next_month`, what the categories still owe with
-`carry_over`; and `waiting` is money in on cash accounts that isn't categorized yet. `tests/test_budget.py` checks that on random histories for all three. The
+`carry_over`; and `waiting` is money in on cash accounts that isn't categorized yet. `scripts/tests/test_budget.py` checks that on random histories for all three. The
 Budget page shows it under Ready to assign, from the accounts' own balances, as a check.
 """
 

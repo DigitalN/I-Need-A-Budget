@@ -104,5 +104,5 @@ balances. Start a few months back if you like: they catch up in one click.
 ## License
 
 Free and open source under the [GNU GPL v3](LICENSE): use it, change it and share it, but
-what you share stays open too. Keep the [NOTICE](NOTICE) file with it. To build it
-yourself, see [DEVELOPMENT.md](DEVELOPMENT.md).
+what you share stays open too. Keep the [NOTICE](docs/NOTICE) file with it. To build it
+yourself, see [DEVELOPMENT.md](docs/DEVELOPMENT.md).

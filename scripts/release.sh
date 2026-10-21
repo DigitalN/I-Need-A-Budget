@@ -1,5 +1,5 @@
 #!/bin/bash
-# Publishes a release of what's on main: every step of DEVELOPMENT.md's release checklist
+# Publishes a release of what's on main: every step of docs/DEVELOPMENT.md's release checklist
 # that a script can do, stopping at the first problem.
 #
 #   scripts/release.sh NOTES.md            check, build, check the build, publish
@@ -23,7 +23,7 @@ newer() { python3 -c "import sys; sys.path.insert(0, 'Application Files'); from 
 
 VERSION=$(sed -n 's/^VERSION = "\([^"]*\)".*/\1/p' "Application Files/main.py")
 TAG="v$VERSION"
-DMG="dist/I-Need-A-Budget-$VERSION.dmg"
+DMG="$HOME/Library/Caches/I Need A Budget-dmg/I-Need-A-Budget-$VERSION.dmg"
 [[ -n "$VERSION" ]] || fail "Couldn't read VERSION from Application Files/main.py."
 
 step "Releasing $VERSION$([[ $DRY == 1 ]] && echo ' (dry run: nothing is published)')"
@@ -57,7 +57,7 @@ python3 -m pytest -q >&2 || fail "Tests failed."
 
 step "Signing certificate (team $TEAM) valid for at least 30 more days"
 IDENTITY=$(security find-identity -v -p codesigning | awk '/"Apple Development/ {print $2; exit}')
-[[ -n "$IDENTITY" ]] || fail "No valid Apple Development certificate in the keychain (see DEVELOPMENT.md)."
+[[ -n "$IDENTITY" ]] || fail "No valid Apple Development certificate in the keychain (see docs/DEVELOPMENT.md)."
 CERT=$(security find-certificate -a -c "Apple Development" -Z -p 2>/dev/null |
     awk -v want="$IDENTITY" '/^SHA-1 hash:/ {hash=$3} /BEGIN CERT/ {if (hash == want) keep=1} keep {print} /END CERT/ {if (keep) exit}')
 echo "$CERT" | openssl x509 -noout -subject | grep -q "OU *= *$TEAM" || fail "The certificate isn't team $TEAM's."

@@ -7,7 +7,7 @@
 # ═══════════════════════════════════════════════════════════════
 
 set -e
-PROJECT_ROOT="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$PROJECT_ROOT"
 
 echo ""
@@ -61,7 +61,7 @@ echo "════════════════════════�
 echo "  ✓ Setup complete! I Need A Budget is in Applications."
 echo ""
 echo "  It keeps itself up to date (Settings → Updates)."
-echo "  To rebuild your own changes: double-click 'Build I Need A Budget.command'"
+echo "  To rebuild your own changes: scripts/install.sh --open"
 echo "═══════════════════════════════════════════════════════════"
 echo ""
 
