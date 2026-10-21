@@ -1,13 +1,13 @@
 # Developing I Need A Budget
 
 Notes for building from source and publishing releases. For using it, see the
-[README](README.md). The architecture and the rules the code follows are in
-[CLAUDE.md](CLAUDE.md).
+[README](../README.md). The architecture and the rules the code follows are in
+[CLAUDE.md](../.claude/CLAUDE.md).
 
 ## Build from source
 
 You need Python 3 from [python.org](https://www.python.org/downloads/) and the pinned
-packages in `Application Files/requirements.txt` (`First Time Setup.command` installs
+packages in `Application Files/requirements.txt` (`scripts/First Time Setup.command` installs
 them and switches on the privacy hook). Then:
 
 ```bash
@@ -15,8 +15,7 @@ scripts/install.sh --open
 ```
 
 This builds `I Need A Budget.app`, signs it with your **Apple Development** certificate,
-installs it to `/Applications` and opens it. `Build I Need A Budget.command` does the same
-after pulling the latest code and running the tests.
+installs it to `/Applications` and opens it.
 
 Without a certificate the build is signed ad hoc: it works, but it can't update itself.
 A free Apple ID is enough to get one: Xcode → Settings → Apple Accounts → sign in →
@@ -33,7 +32,7 @@ cd "Application Files" && INAB_DATA_DIR=/tmp/inab-test python3 main.py
 ```
 
 `INAB_DATA_DIR` points at a throwaway data folder; `INAB_TODAY=YYYY-MM-DD` pins today's
-date; `INAB_DEBUG=1` turns on the web inspector. Tests: `python3 -m pytest`.
+date; `INAB_DEBUG=1` turns on the web inspector. Tests (`scripts/tests/`): `python3 -m pytest`.
 
 The app icon is drawn by `scripts/make-icon.swift`. To redraw it:
 
@@ -120,13 +119,14 @@ is up to date (1.0.0 and 1.0.1 also said that when the token couldn't see the re
 
 ### Build and check the disk image
 
-- [ ] `scripts/package.sh` makes `dist/I-Need-A-Budget-<version>.dmg`. That's the only
-  file a release has. The first time, macOS asks to let Terminal control Finder (it lays
-  out the disk image window): allow it.  `dist/` is ignored by git.
+- [ ] `scripts/package.sh` makes `~/Library/Caches/I Need A Budget-dmg/I-Need-A-Budget-<version>.dmg`
+  (outside the repository, and only the newest). That's the only file a release has. The
+  first time, macOS asks to let Terminal control Finder (it lays out the disk image
+  window): allow it.
 - [ ] Open the DMG: the app and Applications with the arrow between them.
 - [ ] The app inside has the new version, a valid signature, and the right team:
   ```bash
-  M=$(hdiutil attach -nobrowse -readonly -noautoopen dist/I-Need-A-Budget-1.0.0.dmg | grep -o '/Volumes/.*$')
+  M=$(hdiutil attach -nobrowse -readonly -noautoopen ~/Library/Caches/"I Need A Budget-dmg"/I-Need-A-Budget-1.0.0.dmg | grep -o '/Volumes/.*$')
   defaults read "$M/I Need A Budget.app/Contents/Info" CFBundleShortVersionString
   codesign --verify --deep --strict "$M/I Need A Budget.app" && codesign -dvv "$M/I Need A Budget.app" 2>&1 | grep TeamIdentifier
   hdiutil detach "$M"
@@ -148,7 +148,7 @@ is up to date (1.0.0 and 1.0.1 also said that when the token couldn't see the re
   scratchpad), not as a file in it.
 - [ ] Publish it, tagged `v<version>`, from the commit it was built from:
   ```bash
-  gh release create v1.0.0 dist/I-Need-A-Budget-1.0.0.dmg --title "I Need A Budget 1.0.0" --notes-file notes.md
+  gh release create v1.0.0 ~/Library/Caches/"I Need A Budget-dmg"/I-Need-A-Budget-1.0.0.dmg --title "I Need A Budget 1.0.0" --notes-file notes.md
   ```
   Drafts and pre-releases are skipped by the updater.
 - [ ] Turn the previous release into a draft so the page lists only the current one:

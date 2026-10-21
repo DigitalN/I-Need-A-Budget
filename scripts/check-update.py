@@ -6,7 +6,7 @@ against the image, exactly as it would after downloading it: the app inside must
 the installed copy's bundle identifier, pass `codesign --verify --deep --strict` signed by
 the same team, and be a newer version. Prints why not, if not.
 
-    python3 scripts/check-update.py dist/I-Need-A-Budget-1.0.2.dmg [installed app]
+    python3 scripts/check-update.py ~/Library/Caches/"I Need A Budget-dmg"/I-Need-A-Budget-1.0.2.dmg [installed app]
 
 Read-only: the installed app is only read, and everything it copies is deleted.
 """

@@ -1,6 +1,6 @@
 #!/bin/bash
 # Builds I Need A Budget and packages it as a disk image for a GitHub release:
-#   dist/I-Need-A-Budget-<version>.dmg
+#   ~/Library/Caches/I Need A Budget-dmg/I-Need-A-Budget-<version>.dmg
 # When opened, it shows the app and the Applications folder on a background with an
 # arrow between them. Attach it to a release tagged v<version>; installed copies update
 # themselves from it too.
@@ -16,12 +16,13 @@ APP=$(scripts/build.sh)
 # Installed copies only take updates signed by their own team, so a release must be too.
 TEAM=$(codesign -d --verbose=2 "$APP" 2>&1 | sed -n 's/^TeamIdentifier=//p')
 if [[ -z "$TEAM" || "$TEAM" == "not set" ]]; then
-    echo "Releases must be signed with an Apple Development certificate (see DEVELOPMENT.md)." >&2
+    echo "Releases must be signed with an Apple Development certificate (see docs/DEVELOPMENT.md)." >&2
     exit 1
 fi
 VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$APP/Contents/Info.plist")
 ICON=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIconFile" "$APP/Contents/Info.plist")
-DMG="dist/I-Need-A-Budget-$VERSION.dmg"
+# Only the newest is kept, outside the repo: the others are on their GitHub releases.
+DMG="$HOME/Library/Caches/I Need A Budget-dmg/I-Need-A-Budget-$VERSION.dmg"
 
 # Work outside the repo, which may be synced by iCloud Drive (see build.sh).
 WORK="$HOME/Library/Caches/I Need A Budget-build/dmg"
@@ -90,8 +91,8 @@ sync
 detach
 trap - EXIT
 
-mkdir -p dist
-rm -f "$DMG"
+rm -rf "$(dirname "$DMG")"
+mkdir -p "$(dirname "$DMG")"
 hdiutil convert -quiet "$WORK/layout.dmg" -format UDZO -imagekey zlib-level=9 -o "$DMG"
 rm -rf "$(dirname "$WORK")"
 

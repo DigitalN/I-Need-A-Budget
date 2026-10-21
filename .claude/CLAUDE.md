@@ -2,9 +2,9 @@
 
 An envelope budget (like YNAB or Actual Budget) built around the files banks let you
 download, as a Mac app: Python + pywebview, one window, SQLite. Building, the release checklist, how
-updates work and the dev preview are in @DEVELOPMENT.md. What it does for the user is in
+updates work and the dev preview are in @../docs/DEVELOPMENT.md. What it does for the user is in
 README.md. The words for things (categorize, file, transfer vs e-transfer, payment
-category, recurring charge...) are in `CONTEXT.md`: use them in the page, docs, comments
+category, recurring charge...) are in `docs/CONTEXT.md`: use them in the page, docs, comments
 and issues.
 
 The maintainer banks with Tangerine: a chequing account and a Mastercard, maybe a line
@@ -25,10 +25,10 @@ that are local businesses, category names that reveal finances, and real amounts
 - `.gitignore` excludes bank files and databases. `scripts/hooks/pre-commit` (switched on
   with `git config core.hooksPath scripts/hooks`; First Time Setup does it) refuses
   commits with those files, card-number shapes, or any word in `.git-denylist`, a local,
-  ignored list of private words. `tests/test_privacy.py` checks the working tree the same
+  ignored list of private words. `scripts/tests/test_privacy.py` checks the working tree the same
   way. Never bypass the hook, and never weaken these checks.
 - Tests and examples use made-up data only ("SAMPLE CAFE CALGARY AB", made-up amounts).
-  Build card file names in code (`tests/helpers.CARD_FILE`) so no card-number shape
+  Build card file names in code (`scripts/tests/helpers.CARD_FILE`) so no card-number shape
   appears in the source.
 - `payees.BRANDS` is for well-known chains only, never local businesses someone uses.
 - The user's own categories were seeded straight into their data folder by a one-off
@@ -100,7 +100,7 @@ All in `Application Files/`:
   `same_payee`, `new_price`, `set_always_ask`. **Only it puts a transaction in the inbox or
   takes it out**, from every page (the Transactions page and the transaction pop-up too).
   It asks learn.py for suggestions and subscriptions.py for the recurring-charge rules;
-  service.py wraps each call in its undo step. `tests/test_inbox.py` drives it directly.
+  service.py wraps each call in its undo step. `scripts/tests/test_inbox.py` drives it directly.
 - `transfers.py`: pairing the two halves of a transfer between own accounts, for the inbox.
 - `subscriptions.py`: detection (steady rhythm; same price, or a once-a-month bill that
   varies), tracking with a name, category, price type and optional end date, price-change
@@ -108,12 +108,12 @@ All in `Application Files/`:
   charges and keeps prices; what happens to a charge in the inbox is inbox.py's.
 - `budget.py`: pure envelope math, credit cards included, and the three ways overspending
   is paid for (the Overspending setting). Its docstring states the rules and the
-  invariant `tests/test_budget.py` checks on random histories (all three ways).
+  invariant `scripts/tests/test_budget.py` checks on random histories (all three ways).
 - `figures.py`: every money figure the pages show (Budget page, Dashboard, category
   pop-over and Spent list, Debt page, Assign money…, Catch up), from one reading of the
   database per request, with `budget.compute` as its core. It only reads: `service.py`
   makes the changes and arranges the figures for the page. Working one of these figures
-  out anywhere else (service.py, index.html) is a bug. `tests/test_figures.py` checks
+  out anywhere else (service.py, index.html) is a bug. `scripts/tests/test_figures.py` checks
   it on random databases.
 - `updater.py`, `launch.py`: updates from the repo's GitHub releases (anonymously, or
   with a token if there is one); moving into Applications;
@@ -146,10 +146,10 @@ All in `Application Files/`:
 - **Learning only uses `status = 'done'` transactions** (plus Actual examples). Rows waiting
   in the inbox never teach the app anything, and count in no category: no tentative
   category, Spent/Usual/the budget only count `status = 'done'`
-  ([ADR 0002](docs/adr/0002-inbox-items-count-in-no-category.md)). The inbox's "Accept
+  ([ADR 0002](../docs/adr/0002-inbox-items-count-in-no-category.md)). The inbox's "Accept
   all" uses each item's `guess` (`Inbox.view`, from `learn.guess()`: never an e-transfer,
   a question or one you sent back).
-- **What you decided stays decided** ([ADR 0005](docs/adr/0005-what-you-decided-stays-decided.md)).
+- **What you decided stays decided** ([ADR 0005](../docs/adr/0005-what-you-decided-stays-decided.md)).
   Who decided is a fact: `transactions.by_you`. Yours: what you categorize (one, a group,
   Accept all), split, mark as a transfer or Not a transfer, send back, or add by hand.
   The app's: what an import or the re-check categorizes, and what removing an import (or
@@ -215,7 +215,7 @@ with months it didn't exist).
 
 ## Releasing
 
-- A release means the whole **Release checklist** in DEVELOPMENT.md, every time.
+- A release means the whole **Release checklist** in docs/DEVELOPMENT.md, every time.
 - **Every PR raises `VERSION` itself** (in `Application Files/main.py`), so merging is
   all the maintainer does: 1.0.1 → 1.0.2 by default, 1.0.x → 1.1.0 only for a change big
   enough to deserve it. Never leave the bump for a separate PR after the merge.
@@ -224,8 +224,8 @@ with months it didn't exist).
   published on GitHub.
 - The repository is **public** (it was private at first). It's
   **GPL-3.0-only**, the maintainer's choice, made knowing the GPL allows selling: what
-  they want is that nobody builds a closed product from it. NOTICE is a section 7(b)
-  attribution term; CITATION.cff gives GitHub's "Cite this repository". The updater asks
+  they want is that nobody builds a closed product from it. `docs/NOTICE` is a section 7(b)
+  attribution term. The updater asks
   GitHub anonymously, or with a token when there is one (saved in the Keychain from
   Settings, or the GitHub CLI's login, `gh auth token`). Settings shows the token field
   only when GitHub refused this copy (`needs_access`): it would if the repository went
@@ -311,7 +311,7 @@ Don't undo these without asking:
     no payee re-check (the maintainer's call: a mixed payee like a warehouse store, food
     one week and household the next, must stay as they put it).
   - **A payee is just a name; e-transfers start with Always ask on**
-    ([ADR 0001](docs/adr/0001-payee-is-just-a-name.md)). Anyone you e-transfer with
+    ([ADR 0001](../docs/adr/0001-payee-is-just-a-name.md)). Anyone you e-transfer with
     gets Always ask when first seen, so their e-transfers are never categorized without
     asking and never grouped; the last choice is only suggested. (The user hit this with
     several e-transfers to one person, each for something different.) Switched off, the
@@ -479,6 +479,13 @@ Don't undo these without asking:
   below zero); a closed group shows it on its total. Not marked: this month, months
   without data for every account, income. Clicking a figure opens its transactions. No
   by-payee report (the maintainer dropped it: e-transfer payees mix unrelated things).
+- **The top of the repository is kept short** (the maintainer's call): `.claude/` (this file,
+  `launch.json`), `Application Files/`, `docs/` (DEVELOPMENT.md, CONTEXT.md, NOTICE, ADRs,
+  pictures), `scripts/` (tools, `First Time Setup.command`, `tests/`, `hooks/`),
+  `.gitignore`, `LICENSE`, `README.md`. Nothing else goes there (CITATION.cff, a Build
+  .command, `.gitattributes` and `pytest.ini` were removed). `scripts/` keeps its name:
+  every copy's privacy hook is `core.hooksPath scripts/hooks`. Disk images are made in
+  `~/Library/Caches/I Need A Budget-dmg`, never in the repository (iCloud syncs it).
 
 ## Roadmap (future chats)
 
@@ -506,7 +513,7 @@ Don't undo these without asking:
   it). Save with no changes just closes, with no "Saved" message.
 - A key the page acts on (Escape closing a pop-over, a shortcut) calls `preventDefault`:
   otherwise the app's window passes it on, nothing takes it, and macOS plays its warning
-  sound (it did for Escape on the category pop-over). `tests/test_page.py` checks Escape.
+  sound (it did for Escape on the category pop-over). `scripts/tests/test_page.py` checks Escape.
 - A popover opened from a pop-up (the category list) is attached inside the open
   `<dialog>`: dialogs live in the browser's top layer, above anything else on the page.
   So is a message (toast) shown while a pop-up is open, or it's hidden under it. There's
@@ -514,7 +521,7 @@ Don't undo these without asking:
   pop-up.
 - Every clickable thing needs a handler: `[data-act]` buttons are dispatched by the
   document click handler (plus each page's action function), suggestion chips by
-  `[data-pick]`. `tests/test_page.py` fails on a button action nobody handles. A button
+  `[data-pick]`. `scripts/tests/test_page.py` fails on a button action nobody handles. A button
   that silently does nothing is the worst kind of bug here: it happened once.
 - Amounts and notes in side panels save as they're typed (debounced), no Save button.
 - Copy is short and plain. The user trims explanations that don't earn their place;
@@ -530,7 +537,7 @@ Don't undo these without asking:
 
 ## Tests
 
-`python3 -m pytest` (tests/, all synthetic data). `tests/test_privacy.py` fails if the
+`python3 -m pytest` (scripts/tests/, all synthetic data). `scripts/tests/test_privacy.py` fails if the
 working tree has anything from `.git-denylist` or a card-number shape.
 
 ## Agent skills
@@ -547,5 +554,5 @@ The five defaults: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-h
 
 ### Domain docs
 
-Single-context: `CONTEXT.md` (the glossary) and `docs/adr/` (decisions) at the repo root.
+Single-context: `docs/CONTEXT.md` (the glossary) and `docs/adr/` (decisions).
 See `docs/agents/domain.md`.

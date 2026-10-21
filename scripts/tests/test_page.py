@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-PAGE = (Path(__file__).resolve().parent.parent / "Application Files" / "index.html").read_text(encoding="utf-8")
+PAGE = (Path(__file__).resolve().parents[2] / "Application Files" / "index.html").read_text(encoding="utf-8")
 
 
 def test_every_action_name_is_handled():

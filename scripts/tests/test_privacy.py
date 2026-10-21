@@ -8,7 +8,7 @@ import re
 import subprocess
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[2]
 CARD_NUMBER = re.compile(r"[0-9]{4}[ *x]+x{4}[ *x]+x{4}[ *x]+[0-9]{4}", re.IGNORECASE)
 
 
