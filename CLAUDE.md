@@ -400,7 +400,7 @@ Don't undo these without asking:
   group among the others; saved on release, no Done. Dragging a group folds every
   group's categories in 0.1 s (each group is its own `<tbody>`; the cells are wrapped
   so rows can fold), the held group staying under the pointer, so a long list fits; on
-  release they unfold in 0.3 s, the group staying where it was dropped, and it flashes;
+  release they unfold in 0.1 s too, the group staying where it was dropped, and it flashes;
   groups you folded stay folded (`beginDrag`, also onboarding's list). A move that
   can't be saved goes back, and the list still unfolds (it once stayed folded). Nothing
   moves into or out of Income or the cards' group, not even within Income: the first

@@ -193,13 +193,13 @@ th.r, td.r { text-align: right; }
 .btable td:has(.inline-name) .row-tools { display: none; }
 .btable .inline-name { width: min(300px, 100%); font-weight: inherit; padding: 3px 7px; }
 .btable tbody.grp:not(:last-child) tr:last-child td { border-bottom: 1px solid var(--line); }
-/* While a group is dragged, every group's categories fold away (0.1 s; 0.3 s to unfold). */
-.btable tr.cat > td { transition: padding .3s ease, border-color .3s ease; }
-.btable .cell { display: grid; grid-template-rows: 1fr; transition: grid-template-rows .3s ease, opacity .3s ease; }
+/* While a group is dragged, every group's categories fold away, and back, in 0.1 s. */
+.btable tr.cat > td { transition: padding .1s ease, border-color .1s ease; }
+.btable .cell { display: grid; grid-template-rows: 1fr; transition: grid-template-rows .1s ease, opacity .1s ease; }
 .btable .cell > div { min-height: 0; }
 .btable.folded .cell > div, .btable.unfolding .cell > div { overflow: hidden; }
-.btable.folded tr.cat > td { padding-top: 0; padding-bottom: 0; border-color: transparent; transition-duration: .1s; }
-.btable.folded .cell { grid-template-rows: 0fr; opacity: 0; transition-duration: .1s; }
+.btable.folded tr.cat > td { padding-top: 0; padding-bottom: 0; border-color: transparent; }
+.btable.folded .cell { grid-template-rows: 0fr; opacity: 0; }
 .btable.is-dragging, .btable.is-dragging * { cursor: grabbing !important; user-select: none; -webkit-user-select: none; }
 .btable.is-dragging .tool { opacity: 0 !important; }
 .btable .dragged > tr > td, .btable tr.dragged > td { background: var(--accent-soft) !important; }
@@ -353,18 +353,18 @@ body.dragging .drop-hint { display: flex; }
 .csv-sample th { vertical-align: top; }
 .su-preview { border-top: 1px solid var(--line); padding-top: 10px; }
 .su-preview .row { padding: 2px 0; }
-.cat-editor .grp { margin-bottom: 14px; border-radius: 8px; transition: margin-bottom .3s ease; }
-.cat-editor .grp-head { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; transition: margin-bottom .3s ease; }
+.cat-editor .grp { margin-bottom: 14px; border-radius: 8px; transition: margin-bottom .1s ease; }
+.cat-editor .grp-head { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; transition: margin-bottom .1s ease; }
 .cat-editor .grp-head input { font-weight: 600; flex: 1; }
 .cat-editor .cat-row { display: flex; gap: 6px; align-items: center; padding: 3px 0 3px 18px; border-radius: 8px; }
 .cat-editor .cat-row input { flex: 1; }
-/* The categories fold away while a group is dragged (grid rows animate to 0: 0.1 s to
-   fold, 0.3 s to unfold). The padding lets the focus ring show. */
-.cat-editor .grp-cats { display: grid; grid-template-rows: 1fr; transition: grid-template-rows .3s ease, opacity .3s ease; }
+/* The categories fold away while a group is dragged (grid rows animate to 0, and back,
+   in 0.1 s). The padding lets the focus ring show. */
+.cat-editor .grp-cats { display: grid; grid-template-rows: 1fr; transition: grid-template-rows .1s ease, opacity .1s ease; }
 .cat-editor .grp-cats > div { overflow: hidden; min-height: 0; padding: 0 4px; margin: 0 -4px; }
-.cat-editor.folded .grp-cats { grid-template-rows: 0fr; opacity: 0; transition-duration: .1s; }
-.cat-editor.folded .grp { margin-bottom: 4px; transition-duration: .1s; }
-.cat-editor.folded .grp-head { margin-bottom: 0; transition-duration: .1s; }
+.cat-editor.folded .grp-cats { grid-template-rows: 0fr; opacity: 0; }
+.cat-editor.folded .grp { margin-bottom: 4px; }
+.cat-editor.folded .grp-head { margin-bottom: 0; }
 .cat-editor .drag-handle { cursor: grab; color: var(--faint); padding: 2px 2px; font-size: 13px; letter-spacing: -3px; user-select: none; -webkit-user-select: none; touch-action: none; }
 .cat-editor .drag-handle:hover { color: var(--text); }
 .cat-editor.is-dragging, .cat-editor.is-dragging * { cursor: grabbing !important; user-select: none; -webkit-user-select: none; }
@@ -1438,7 +1438,7 @@ function bindCategoryEditor(host) {
 // would show the "drop a bank file" overlay). The row moves to the place under the
 // pointer as you go, and it's saved when you let go. Dragging a group folds every group
 // to its heading (0.1 s), the one you're holding staying under the pointer, so a long
-// list fits; on the drop they unfold (0.3 s), the group staying where it was dropped
+// list fits; on the drop they unfold (0.1 s too), the group staying where it was dropped
 // (the maintainer's design). If the move can't be saved, it goes back and still unfolds. `root()` is the list: its `.grp` children are the
 // groups, `[data-cat-row]` the categories. `redraw()` draws it again from
 // state.categories; nothing else redraws it meanwhile (state.dragging).
@@ -1547,7 +1547,7 @@ function beginDrag(e, { root, redraw }) {
     }
     if (fresh && moved) fresh.classList.add('just-moved');
     // What was dropped stays where it was dropped while the groups open up around it.
-    if (fresh) await holdAt(scroller, again, fresh, top, isGroup ? 380 : 0);
+    if (fresh) await holdAt(scroller, again, fresh, top, isGroup ? 150 : 0);
     again.classList.remove('unfolding');
     if (parseFloat(again.style.marginTop)) { again.style.transition = 'margin-top .2s ease'; again.style.marginTop = ''; }
   };
