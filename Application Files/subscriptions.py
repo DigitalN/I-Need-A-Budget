@@ -407,11 +407,36 @@ def charged_when_it_shouldnt(sub, day):
 
 def listing(conn, today):
     """Everything the Subscriptions page shows."""
+    subs = _tracked(conn, today)
+    active = [s for s in subs if s["status"] == "active"]
+    return {
+        "subscriptions": [s for s in active if s["kind"] == "subscription"],
+        "bills": [s for s in active if s["kind"] == "bill"],
+        "cancelled": [s for s in subs if s["status"] == "cancelled"],
+        "suggested": detect(conn, today),
+        "monthly_subscriptions": sum(s["monthly"] for s in active if s["kind"] == "subscription"),
+        "monthly_bills": sum(s["monthly"] for s in active if s["kind"] == "bill"),
+    }
+
+
+def for_category(conn, today, category_id):
+    """The active recurring charges whose category is this one, where their next charge
+    goes, whether or not a charge has landed there yet (a bill moved to a new category
+    keeps its past charges where they were), and what they come to a month: the
+    category pop-over's Subscriptions and Bills cards and its Recurring charges row."""
+    active = [s for s in _tracked(conn, today, "AND s.category_id = ?", (category_id,)) if s["status"] == "active"]
+    return {"subscriptions": [s for s in active if s["kind"] == "subscription"],
+            "bills": [s for s in active if s["kind"] == "bill"],
+            "monthly": sum(s["monthly"] for s in active)}
+
+
+def _tracked(conn, today, where="", params=()):
+    """The tracked recurring charges, cancelled ones too, as the pages show them."""
     subs = []
     for s in conn.execute(
             "SELECT s.*, p.name AS payee_name, c.name AS category_name FROM subscriptions s "
             "LEFT JOIN payees p ON p.id = s.payee_id LEFT JOIN categories c ON c.id = s.category_id "
-            "WHERE s.status != 'ignored' ORDER BY s.name COLLATE NOCASE"):
+            f"WHERE s.status != 'ignored' {where} ORDER BY s.name COLLATE NOCASE", params):
         charges = _charges(conn, s["id"])
         amounts = [c["amt"] for c in charges]
         last = charges[-1] if charges else None
@@ -442,12 +467,4 @@ def listing(conn, today):
             "ending_soon": bool(s["ends_on"] and not ended and days_between(today, s["ends_on"]) <= 30),
             "charges": [{"date": c["date"], "amount": c["amt"]} for c in charges[-12:]],
         })
-    active = [s for s in subs if s["status"] == "active"]
-    return {
-        "subscriptions": [s for s in active if s["kind"] == "subscription"],
-        "bills": [s for s in active if s["kind"] == "bill"],
-        "cancelled": [s for s in subs if s["status"] == "cancelled"],
-        "suggested": detect(conn, today),
-        "monthly_subscriptions": sum(s["monthly"] for s in active if s["kind"] == "subscription"),
-        "monthly_bills": sum(s["monthly"] for s in active if s["kind"] == "bill"),
-    }
+    return subs

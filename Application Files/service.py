@@ -593,13 +593,20 @@ class BudgetService:
     @exposed
     def categories(self):
         """The category tree; `used` on each category: it can only be hidden, not deleted
-        (the app's own Income and Interest & Fees count as used)."""
+        (the app's own Income and Interest & Fees count as used, and are `own`)."""
         with self.db.read() as c:
-            tree, used = ledger.category_tree(c), ledger.used_category_ids(c) | ledger.own_category_ids(c)
+            tree, own = ledger.category_tree(c), ledger.own_category_ids(c)
+            used = ledger.used_category_ids(c) | own
         for g in tree:
             for cat in g["categories"]:
-                cat["used"] = cat["id"] in used
+                cat["used"], cat["own"] = cat["id"] in used, cat["id"] in own
         return tree
+
+    @exposed
+    def category_uses(self, category_id):
+        """What a used category is used by, for the ✕'s "can't be deleted" message."""
+        with self.db.read() as c:
+            return ledger.category_uses(c, int(category_id))
 
     def _next_sort(self, c, table, where="", params=()):
         return c.execute(f"SELECT COALESCE(MAX(sort), 0) + 1 FROM {table} {where}", params).fetchone()[0]
@@ -608,6 +615,7 @@ class BudgetService:
     def add_group(self, name):
         name = _clean_name(name)
         with self.db.write(f"Add group {name}") as c:
+            _group_name_free(c, name)
             income_sort = c.execute("SELECT MIN(sort) FROM category_groups WHERE role = 'income'").fetchone()[0]
             sort = self._next_sort(c, "category_groups", "WHERE role != 'income'")
             if income_sort is not None and sort >= income_sort:
@@ -619,6 +627,7 @@ class BudgetService:
     def rename_group(self, group_id, name):
         name = _clean_name(name)
         with self.db.write(f"Rename group to {name}") as c:
+            _group_name_free(c, name, group_id)
             c.execute("UPDATE category_groups SET name = ? WHERE id = ?", (name, group_id))
         return True
 
@@ -636,16 +645,18 @@ class BudgetService:
         return True
 
     @exposed
-    def move_group(self, group_id, direction):
+    def move_group(self, group_id, before_id=None):
+        """Dragged in the Categories pop-up: before `before_id`, or last (Income stays at
+        the bottom whatever happens)."""
         with self.db.write("Move group") as c:
+            g = c.execute("SELECT role FROM category_groups WHERE id = ?", (group_id,)).fetchone()
+            if g is None:
+                raise UserError("That group no longer exists.")
+            if g["role"] != "normal":
+                raise UserError("This group stays where it is.")
             groups = [r["id"] for r in c.execute(
-                "SELECT id FROM category_groups WHERE role != 'income' ORDER BY sort, id")]
-            if group_id not in groups:
-                return False
-            i = groups.index(group_id)
-            j = i + (1 if direction > 0 else -1)
-            if 0 <= j < len(groups):
-                groups[i], groups[j] = groups[j], groups[i]
+                "SELECT id FROM category_groups WHERE role != 'income' AND id != ? ORDER BY sort, id", (group_id,))]
+            groups.insert(groups.index(before_id) if before_id in groups else len(groups), group_id)
             for sort, gid in enumerate(groups, start=1):
                 c.execute("UPDATE category_groups SET sort = ? WHERE id = ?", (sort, gid))
         return True
@@ -663,6 +674,7 @@ class BudgetService:
             role = c.execute("SELECT role FROM category_groups WHERE id = ?", (group_id,)).fetchone()
             if role is None:
                 raise UserError("That group no longer exists.")
+            _category_name_free(c, name)
             cid = c.execute("INSERT INTO categories (group_id, name, sort) VALUES (?, ?, ?)",
                             (group_id, name, self._next_sort(c, "categories", "WHERE group_id = ?", (group_id,)))).lastrowid
         return cid
@@ -674,6 +686,7 @@ class BudgetService:
             row = c.execute("SELECT name, old_names FROM categories WHERE id = ?", (category_id,)).fetchone()
             if row is None:
                 raise UserError("That category no longer exists.")
+            _category_name_free(c, name, category_id)
             old = [n for n in row["old_names"].split("|") if n]
             if row["name"] != name and row["name"] not in old:
                 old.append(row["name"])
@@ -699,14 +712,26 @@ class BudgetService:
 
     @exposed
     def move_category(self, category_id, group_id, before_id=None):
+        """Dragged in the Categories pop-up: into `group_id`, before `before_id` or last.
+        Only between ordinary groups: a category moved into Income would count as income,
+        all its history too, and the first one in Income is the app's own Income."""
         with self.db.write("Move category") as c:
-            ids = [r["id"] for r in c.execute(
-                "SELECT id FROM categories WHERE group_id = ? AND id != ? ORDER BY sort, id", (group_id, category_id))]
-            index = ids.index(before_id) if before_id in ids else len(ids)
-            ids.insert(index, category_id)
-            c.execute("UPDATE categories SET group_id = ? WHERE id = ?", (group_id, category_id))
-            for sort, cid in enumerate(ids, start=1):
-                c.execute("UPDATE categories SET sort = ? WHERE id = ?", (sort, cid))
+            _move_category(c, int(category_id), int(group_id), before_id)
+        return True
+
+    @exposed
+    def show_category(self, category_id, group_id):
+        """A hidden category back in use, in the group its name was typed in: what adding
+        a category with a hidden one's name offers instead of making a second."""
+        with self.db.write("Show category") as c:
+            row = c.execute("SELECT group_id, debt_account_id FROM categories WHERE id = ?", (category_id,)).fetchone()
+            if row is None:
+                raise UserError("That category no longer exists.")
+            if row["debt_account_id"]:
+                raise UserError("A card's payment category is shown when its card is open.")
+            if row["group_id"] != int(group_id):
+                _move_category(c, int(category_id), int(group_id))
+            c.execute("UPDATE categories SET hidden = 0 WHERE id = ?", (category_id,))
         return True
 
     @exposed
@@ -849,12 +874,10 @@ class BudgetService:
             f = self._figures(c)
             history = f.history(category_id)
             spent = self._spent(c, f, [category_id], month)
-            subs = _rows(c.execute(
-                "SELECT DISTINCT s.id, s.name, s.amount, s.cadence FROM subscriptions s JOIN transactions t "
-                "ON t.subscription_id = s.id WHERE t.category_id = ? AND s.status = 'active'", (category_id,)))
+            recurring = subscriptions.for_category(c, self.today(), category_id)
         return {"id": cat["id"], "name": cat["name"], "monthly_budget": cat["monthly_budget"],
                 "debt_account_id": cat["debt_account_id"], "note": cat["note"], **history,
-                "spent": spent, "subscriptions": subs, "month": month}
+                "spent": spent, "recurring": recurring, "month": month}
 
     @exposed
     def spent_detail(self, month, category_id=None, group_id=None):
@@ -1512,6 +1535,41 @@ def parse_any_date(text):
         return parse_date(text)
     except ValueError:
         return parse_date(text, "dmy")
+
+
+def _category_name_free(c, name, except_id=None):
+    """No two categories with one name, in any group or capitalization: a second Gifts
+    would be two of everything in every category list."""
+    for r in c.execute("SELECT c.id, c.name, c.hidden, g.name AS group_name FROM categories c "
+                       "JOIN category_groups g ON g.id = c.group_id"):
+        if r["id"] != except_id and r["name"].casefold() == name.casefold():
+            raise UserError(f"There's already a {r['name']} in {r['group_name']}{' (hidden)' if r['hidden'] else ''}.")
+
+
+def _group_name_free(c, name, except_id=None):
+    for r in c.execute("SELECT id, name FROM category_groups"):
+        if r["id"] != except_id and r["name"].casefold() == name.casefold():
+            raise UserError(f"There's already a group called {r['name']}.")
+
+
+def _move_category(c, category_id, group_id, before_id=None):
+    row = c.execute("SELECT c.group_id, g.role, g.name FROM categories c JOIN category_groups g ON g.id = c.group_id "
+                    "WHERE c.id = ?", (category_id,)).fetchone()
+    if row is None:
+        raise UserError("That category no longer exists.")
+    target = c.execute("SELECT role, name FROM category_groups WHERE id = ?", (group_id,)).fetchone()
+    if target is None:
+        raise UserError("That group no longer exists.")
+    if row["role"] != "normal":
+        raise UserError(f"The categories in {row['name']} stay where they are.")
+    if target["role"] != "normal":
+        raise UserError(f"Categories can't be moved into {target['name']}.")
+    ids = [r["id"] for r in c.execute(
+        "SELECT id FROM categories WHERE group_id = ? AND id != ? ORDER BY sort, id", (group_id, category_id))]
+    ids.insert(ids.index(before_id) if before_id in ids else len(ids), category_id)
+    c.execute("UPDATE categories SET group_id = ? WHERE id = ?", (group_id, category_id))
+    for sort, cid in enumerate(ids, start=1):
+        c.execute("UPDATE categories SET sort = ? WHERE id = ?", (sort, cid))
 
 
 def _clean_name(name):

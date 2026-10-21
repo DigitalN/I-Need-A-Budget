@@ -258,8 +258,12 @@ th.r, td.r { text-align: right; }
 .drawer { position: fixed; top: 0; right: 0; bottom: 0; width: min(640px, calc(100vw - 80px)); background: var(--bg); box-shadow: var(--pop); z-index: 21; overflow-y: auto; padding: 20px 22px 40px; }
 .spent-link { cursor: pointer; border-radius: 4px; }
 .spent-link:hover { text-decoration: underline; }
-.spent-lines tr[data-line-tx] { cursor: pointer; }
-.spent-lines tr[data-line-tx]:hover td { background: var(--accent-soft); }
+.spent-lines tr[data-line-tx], .rec-lines tr { cursor: pointer; }
+.spent-lines tr[data-line-tx]:hover td, .rec-lines tr:hover td { background: var(--accent-soft); }
+/* The category pop-over's name: a heading until you click it to rename. */
+.drawer input.cat-name { flex: 1; min-width: 0; font-size: 15px; font-weight: 600; padding: 3px 6px; margin-left: -6px; }
+.drawer input.cat-name:not(:focus) { background: transparent; box-shadow: none; }
+.drawer input.cat-name:not(:focus):hover { background: var(--hover); }
 .spent-lines tfoot td { border-top: 1px solid var(--line-strong); font-weight: 600; }
 .bars { display: flex; align-items: flex-end; gap: 6px; height: 110px; padding-top: 14px; }
 .bars .bar { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; gap: 3px; min-width: 0; }
@@ -318,11 +322,26 @@ body.dragging .drop-hint { display: flex; }
 .csv-sample th { vertical-align: top; }
 .su-preview { border-top: 1px solid var(--line); padding-top: 10px; }
 .su-preview .row { padding: 2px 0; }
-.cat-editor .grp { margin-bottom: 14px; }
-.cat-editor .grp-head { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; }
+.cat-editor .grp { margin-bottom: 14px; border-radius: 8px; transition: margin-bottom .3s ease; }
+.cat-editor .grp-head { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; transition: margin-bottom .3s ease; }
 .cat-editor .grp-head input { font-weight: 600; flex: 1; }
-.cat-editor .cat-row { display: flex; gap: 6px; align-items: center; padding: 3px 0 3px 18px; }
+.cat-editor .cat-row { display: flex; gap: 6px; align-items: center; padding: 3px 0 3px 18px; border-radius: 8px; }
 .cat-editor .cat-row input { flex: 1; }
+/* The categories fold away while a group is dragged (grid rows animate to 0). The
+   padding lets the focus ring show. */
+.cat-editor .grp-cats { display: grid; grid-template-rows: 1fr; transition: grid-template-rows .3s ease, opacity .3s ease; }
+.cat-editor .grp-cats > div { overflow: hidden; min-height: 0; padding: 0 4px; margin: 0 -4px; }
+.cat-editor.folded .grp-cats { grid-template-rows: 0fr; opacity: 0; }
+.cat-editor.folded .grp { margin-bottom: 4px; }
+.cat-editor.folded .grp-head { margin-bottom: 0; }
+.cat-editor .drag-handle { cursor: grab; color: var(--faint); padding: 2px 2px; font-size: 13px; letter-spacing: -3px; user-select: none; -webkit-user-select: none; touch-action: none; }
+.cat-editor .drag-handle:hover { color: var(--text); }
+.cat-editor.is-dragging, .cat-editor.is-dragging * { cursor: grabbing !important; user-select: none; -webkit-user-select: none; }
+.cat-editor .dragged { background: var(--accent-soft); box-shadow: 0 0 0 1px var(--accent); position: relative; z-index: 1; }
+.cat-editor .just-moved { animation: just-moved 1.6s ease; }
+@keyframes just-moved { 0%, 40% { background: var(--accent-soft); } 100% { background: transparent; } }
+.cat-editor .cat-confirm { display: flex; gap: 8px; align-items: center; margin: 2px 0 8px 18px; padding: 8px 10px; border-radius: 8px; background: var(--hover); font-size: 13px; }
+@media (prefers-reduced-motion: reduce) { .cat-editor .grp-cats, .cat-editor .grp, .cat-editor .grp-head { transition: none; } }
 .icon-btn { border: 0; background: transparent; color: var(--muted); border-radius: 5px; padding: 2px 6px; cursor: default; }
 .icon-btn:hover { background: var(--hover); color: var(--text); }
 .icon-btn.danger:hover { color: var(--neg); }
@@ -464,6 +483,10 @@ window.addEventListener('unhandledrejection', e => {
 let toastTimer;
 function toast(msg, opts = {}) {
   const el = $('#toast');
+  // Inside an open pop-up, or it's under it: pop-ups live in the browser's top layer.
+  const dlg = $('#dlg');
+  const host = dlg.open ? dlg : document.body;
+  if (el.parentElement !== host) host.appendChild(el);
   el.querySelector('span').textContent = msg;
   const btn = el.querySelector('button');
   btn.textContent = opts.action ? opts.action.label : '';
@@ -495,7 +518,14 @@ function dialog({ title, body, actions, wide = false, onOpen }) {
     const bar = d.querySelector('.dlg-actions');
     bar.innerHTML = '';
     let done = false;
-    const finish = v => { if (done) return; done = true; d.close(); resolve(v); };
+    const finish = v => {
+      if (done) return;
+      done = true;
+      const t = $('#toast');
+      if (d.contains(t)) document.body.appendChild(t);  // a message still showing outlives the pop-up
+      d.close();
+      resolve(v);
+    };
     (actions || [{ label: 'OK', value: true, primary: true }]).forEach(a => {
       const b = document.createElement('button');
       b.type = 'button';
@@ -853,12 +883,20 @@ async function openCategory(id) {
   const useRow = (label, amount, title = '') => `<div class="row" style="padding:4px 0"${title ? ` title="${esc(title)}"` : ''}>
       <span class="muted">${label}</span><span class="spacer"></span><b class="num">${money(amount)}</b>
       <button class="btn small" data-act="use-amount" data-amount="${amount}">Use</button></div>`;
+  const rec = d.recurring, recAll = [...rec.subscriptions, ...rec.bills];
   const spentRows = useRow('Last month', d.last_month.amount, `What ${d.name} actually spent in ${monthLong(d.last_month.month)}`) +
-    Object.values(d.averages).filter(a => a.months > 1).map(a => useRow(`Last ${a.months} months`, a.amount, 'Average of what was actually spent')).join('');
+    Object.values(d.averages).filter(a => a.months > 1).map(a => useRow(`Last ${a.months} months`, a.amount, 'Average of what was actually spent')).join('') +
+    (recAll.length ? useRow('Recurring charges', rec.monthly, 'What its subscriptions and bills below come to a month') : '');
+  // The recurring charges whose category this is (where their next charge goes), each
+  // opening its Edit… pop-up.
+  const recCard = (title, list) => list.length ? `<div class="card" style="margin-top:12px"><h2>${title}</h2>
+      <table class="spent-lines rec-lines"><tbody>${list.map(x => `<tr data-sub-line="${x.id}" title="Edit ${esc(x.name)}">
+        <td>${esc(x.name)}</td><td class="r num nowrap">${priceCell(x)}</td></tr>`).join('')}</tbody></table></div>` : '';
   const bg = document.createElement('div'); bg.className = 'drawer-bg';
   const dr = document.createElement('div'); dr.className = 'drawer';
   dr.innerHTML = `
-    <div class="row"><h3 style="margin:0">${esc(d.name)}</h3><span class="spacer"></span><button class="icon-btn" data-close>✕</button></div>
+    <div class="row">${d.debt_account_id ? `<h3 style="margin:0">${esc(d.name)}</h3>`
+      : `<input id="cat-name" class="cat-name" value="${esc(d.name)}" title="Click to rename" aria-label="Name">`}<span class="spacer"></span><button class="icon-btn" data-close>✕</button></div>
     ${d.debt_account_id ? `<p class="muted small">Money set aside to pay the card. It stays in your bank account until you pay the card. Card spending from a category with money is set aside here automatically; assign more here to cover the rest.</p>
       ${envelopeSummary(findCat(d.id))}` : ''}
     ${spentCard(d.spent, d.month, { total: d.debt_account_id ? 'This month' : 'Spent' })}
@@ -872,6 +910,7 @@ async function openCategory(id) {
           value="${d.monthly_budget === null ? '' : moneyPlain(d.monthly_budget)}" placeholder="Not set">
         <button class="btn small ghost" data-act="use-amount" data-amount="">Clear</button></div>
     </div>`}
+    ${recCard('Subscriptions', rec.subscriptions)}${recCard('Bills', rec.bills)}
     <div class="card" style="margin-top:12px">
       <h2>Move money</h2>
       <div class="row wrap"><input id="move-amount" style="width:110px;text-align:right" placeholder="0.00">
@@ -881,8 +920,7 @@ async function openCategory(id) {
     <div class="card" style="margin-top:12px">
       <div class="row"><h2 style="margin:0">Notes</h2><span class="spacer"></span><span id="note-status" class="small muted"></span></div>
       <textarea id="cat-note" rows="4" style="width:100%;margin-top:8px;resize:vertical" placeholder="Anything to remember about ${esc(d.name)}: when it renews, what it covers…">${esc(d.note || '')}</textarea>
-    </div>
-    ${d.subscriptions.length ? `<div class="card" style="margin-top:12px"><h2>Subscriptions here</h2>${d.subscriptions.map(s => `<div class="row"><span>${esc(s.name)}</span><span class="spacer"></span><span class="num">${money(s.amount)}/${s.cadence === 'yearly' ? 'yr' : s.cadence === 'weekly' ? 'wk' : 'mo'}</span></div>`).join('')}</div>` : ''}`;
+    </div>`;
   document.body.append(bg, dr);
 
   // Both the budgeted amount and the note save as they're typed.
@@ -919,10 +957,32 @@ async function openCategory(id) {
   }
   noteInput.addEventListener('input', debounce(saveNote, 700));
   noteInput.addEventListener('change', saveNote);
+  // The name saves when you leave it (Return too); Escape puts it back. A refused name
+  // (one another category has) goes back as well.
+  const nameInput = $('#cat-name', dr);
+  let savedName = d.name;
+  const saveName = async () => {
+    if (!nameInput) return;
+    const name = nameInput.value.replace(/\s+/g, ' ').trim();
+    if (name === savedName) return;
+    if (!name) { nameInput.value = savedName; return; }
+    try {
+      await call('rename_category', [d.id, name]);
+      savedName = name; nameInput.value = name; changed = true;
+      await loadCategories();  // the new name everywhere it's looked up (a bill's Edit… pop-up)
+    } catch (_) { nameInput.value = savedName; }
+  };
+  if (nameInput) {
+    nameInput.addEventListener('change', saveName);
+    nameInput.addEventListener('keydown', e => {
+      if (e.key === 'Enter') { e.preventDefault(); nameInput.blur(); }
+      else if (e.key === 'Escape') { e.stopPropagation(); nameInput.value = savedName; nameInput.blur(); }
+    });
+  }
 
   const close = async () => {
     document.removeEventListener('keydown', onKey);
-    await Promise.all([saveMonthly(), saveNote()]);  // anything typed in the last moment
+    await Promise.all([saveMonthly(), saveNote(), saveName()]);  // anything typed in the last moment
     bg.remove(); dr.remove();
     if (changed) { await loadCategories(); await renderBudget(); }
   };
@@ -933,6 +993,12 @@ async function openCategory(id) {
     if (e.target.closest('[data-close]')) return close();
     const line = e.target.closest('[data-line-tx]');
     if (line) return editFromDrawer(Number(line.dataset.lineTx), close, () => openCategory(id));
+    const sub = e.target.closest('[data-sub-line]');
+    if (sub) {
+      await editSubscriptionDialog(recAll.find(x => x.id === Number(sub.dataset.subLine)));
+      await close();
+      return openCategory(id);
+    }
     const btn = e.target.closest('[data-act]');
     if (!btn) return;
     const act = btn.dataset.act, cat = Number(btn.dataset.cat);
@@ -1019,65 +1085,281 @@ async function openAssign(amount) {
 }
 
 // ── categories editor (budget + onboarding) ─────────────
-// Only an empty group or a category never used has a ✕; the others get this blank in its
-// place so the buttons stay in line.
+// Rows are dragged by their handle (⋮⋮): a category within its group or into another
+// ordinary one, a category group among the others. Income's and the cards' categories
+// stay where they are (move_category). ✕ is on every category you made and always asks
+// first: one never used is deleted, a used one can only be hidden. Blanks keep the rows
+// in line where a handle or a ✕ isn't offered.
 const NO_DELETE = '<button type="button" class="icon-btn" style="visibility:hidden" tabindex="-1" aria-hidden="true">✕</button>';
+const NO_HANDLE = '<span class="drag-handle" style="visibility:hidden" aria-hidden="true">⋮⋮</span>';
 function categoryEditorHtml(groups) {
-  return `<div class="cat-editor">${groups.map(g => `
-    <div class="grp" data-group="${g.id}">
+  return `<div class="cat-editor">${groups.map(g => {
+    const normal = g.role === 'normal';
+    return `<div class="grp" data-group="${g.id}" data-role="${g.role}">
       <div class="grp-head">
-        <input value="${esc(g.name)}" data-rename-group="${g.id}" ${g.role !== 'normal' ? 'disabled' : ''}>
-        ${g.role === 'normal' ? `<button type="button" class="icon-btn" data-move-group="${g.id}" data-dir="-1" title="Move up">↑</button>
-        <button type="button" class="icon-btn" data-move-group="${g.id}" data-dir="1" title="Move down">↓</button>
-        ${g.categories.length ? NO_DELETE : `<button type="button" class="icon-btn danger" data-delete-group="${g.id}" title="Delete group">✕</button>`}` : `<span class="tag">${g.role === 'income' ? 'Income' : 'Cards'}</span>`}
+        ${normal ? `<span class="drag-handle" data-drag-group="${g.id}" title="Drag to move">⋮⋮</span>` : NO_HANDLE}
+        <input value="${esc(g.name)}" data-rename-group="${g.id}" ${normal ? '' : 'disabled'}>
+        ${normal ? (g.categories.length ? NO_DELETE : `<button type="button" class="icon-btn danger" data-delete-group="${g.id}" title="Delete group">✕</button>`)
+          : `<span class="tag">${g.role === 'income' ? 'Income' : 'Cards'}</span>`}
       </div>
-      ${g.categories.map(c => `<div class="cat-row">
-        <input value="${esc(c.name)}" data-rename-cat="${c.id}" ${c.debt_account_id ? 'disabled' : ''}>
-        ${c.debt_account_id ? '<span class="tag">Card payment</span>' : `
-        <button type="button" class="icon-btn" data-hide-cat="${c.id}" data-hidden="${c.hidden}" title="${c.hidden ? 'Show' : 'Hide'}">${c.hidden ? 'Show' : 'Hide'}</button>
-        ${c.used ? NO_DELETE : `<button type="button" class="icon-btn danger" data-delete-cat="${c.id}" title="Delete">✕</button>`}`}
-      </div>`).join('')}
-      ${g.role !== 'debt' ? `<div class="cat-row"><input placeholder="Add a category…" data-add-cat="${g.id}"></div>` : ''}
-    </div>`).join('')}
+      <div class="grp-cats"><div>
+        ${g.categories.map(c => `<div class="cat-row" data-cat-row="${c.id}">
+          ${normal ? `<span class="drag-handle" data-drag-cat="${c.id}" title="Drag to move">⋮⋮</span>` : NO_HANDLE}
+          <input value="${esc(c.name)}" data-rename-cat="${c.id}" ${c.debt_account_id ? 'disabled' : ''}>
+          ${c.debt_account_id ? '<span class="tag">Card payment</span>' : `
+          <button type="button" class="icon-btn" data-hide-cat="${c.id}" data-hidden="${c.hidden}" title="${c.hidden ? 'Show' : 'Hide'}">${c.hidden ? 'Show' : 'Hide'}</button>
+          ${c.own ? NO_DELETE : `<button type="button" class="icon-btn danger" data-delete-cat="${c.id}" title="Delete">✕</button>`}`}
+        </div>`).join('')}
+        ${g.role !== 'debt' ? `<div class="cat-row add-row">${NO_HANDLE}<input placeholder="Add a category…" data-add-cat="${g.id}"></div>` : ''}
+      </div></div>
+    </div>`;
+  }).join('')}
     <div class="row"><input placeholder="Add a group…" data-add-group style="flex:1"></div>
   </div>`;
 }
-function bindCategoryEditor(root, rerender) {
-  const run = async (fn, msg) => { try { await fn(); await loadCategories(); await rerender(); if (msg) toast(msg, { action: undoAction }); } catch (_) {} };
-  root.addEventListener('change', e => {
+const editorCat = id => { for (const g of state.categories) for (const c of g.categories) if (c.id === id) return { ...c, group: g }; return null; };
+const sameName = (a, b) => a.replace(/\s+/g, ' ').trim().toLowerCase() === b.replace(/\s+/g, ' ').trim().toLowerCase();
+const andList = xs => xs.length > 1 ? `${xs.slice(0, -1).join(', ')} and ${xs[xs.length - 1]}` : xs[0];
+
+// `host` is made for this editor (a new one each time the pop-up opens), so its handlers
+// go with it: on the shared pop-up they piled up, one more set per opening, and a Return
+// then added a category once per set.
+function bindCategoryEditor(host) {
+  let drag = null;  // the drag under way; nothing redraws until it's dropped
+  const FOCUSABLE = ['data-rename-group', 'data-rename-cat', 'data-add-cat', 'data-add-group'];
+  // Redrawn after every change, keeping the box you're in (Tab after a rename moved you on).
+  const rerender = () => {
+    if (drag) return;
+    const a = document.activeElement;
+    const attr = a && host.contains(a) ? FOCUSABLE.find(n => a.hasAttribute(n)) : null;
+    const value = attr && a.getAttribute(attr);
+    host.innerHTML = categoryEditorHtml(state.categories);
+    const again = attr && host.querySelector(value ? `[${attr}="${value}"]` : `[${attr}]`);
+    if (again) again.focus();
+  };
+  const run = async (fn, msg) => {
+    let ok = false;
+    try { await fn(); ok = true; } catch (_) {}
+    await loadCategories(); rerender();  // also after a refusal, so a refused name goes back
+    if (ok && msg) toast(msg, { action: undoAction });
+    return ok;
+  };
+  // The ✕'s question (and "Show it again?"), in a strip under the row: the editor is
+  // itself a pop-up, so another one can't open over it.
+  const ask = (after, text, yes, onYes, danger = false) => {
+    host.querySelectorAll('.cat-confirm').forEach(x => x.remove());
+    const strip = document.createElement('div');
+    strip.className = 'cat-confirm';
+    strip.innerHTML = `<span>${esc(text)}</span><span class="spacer"></span>
+      <button type="button" class="btn small" data-confirm="no">${yes ? 'Cancel' : 'OK'}</button>
+      ${yes ? `<button type="button" class="btn small ${danger ? 'danger' : 'primary'}" data-confirm="yes">${esc(yes)}</button>` : ''}`;
+    strip.onYes = onYes;
+    after.after(strip);
+    (strip.querySelector('[data-confirm="yes"]') || strip.querySelector('[data-confirm]')).focus();
+  };
+  const askDelete = async (row, id) => {
+    const cat = editorCat(id);
+    if (!cat) return;
+    if (!cat.used) {
+      return ask(row, `Delete ${cat.name}? It's never been used, so nothing else changes.`, 'Delete',
+        () => run(() => call('delete_category', [id]), 'Category deleted'), true);
+    }
+    const u = await call('category_uses', [id]);
+    const what = [u.transactions && plural(u.transactions, 'transaction'), u.assigned && 'money assigned',
+      u.recurring && plural(u.recurring, 'recurring charge'), u.examples && 'examples learnt from Actual'].filter(Boolean);
+    const why = what.length ? `${cat.name} has ${andList(what)}, so it can't be deleted.` : `${cat.name} has been used, so it can't be deleted.`;
+    if (cat.hidden) return ask(row, `${why} It's hidden already: it keeps its history but isn't offered for new transactions.`);
+    ask(row, `${why} Hide it? It keeps its history and money but isn't offered for new transactions.`, 'Hide',
+      () => run(() => call('set_category_hidden', [id, true]), `${cat.name} hidden`));
+  };
+  // A name already taken keeps what you typed (add_category refuses it too); a hidden
+  // category's name offers that one back instead of a second.
+  const add = (el) => {
+    const gid = Number(el.dataset.addCat), name = el.value;
+    const same = state.categories.flatMap(g => g.categories.map(c => ({ ...c, group: g }))).find(c => sameName(c.name, name));
+    if (!same) return run(() => call('add_category', [gid, name]));
+    if (!same.hidden || same.debt_account_id) return toast(`There's already a ${same.name} in ${same.group.name}.`, { error: true });
+    ask(el.closest('.cat-row'), `${same.name} is hidden${same.group.id === gid ? '' : ` in ${same.group.name}`}. Show it again?`, 'Show it again',
+      () => run(() => call('show_category', [same.id, gid]), `${same.name} is back`));
+  };
+  const addGroup = (el) => {
+    const same = state.categories.find(g => sameName(g.name, el.value));
+    if (same) return toast(`There's already a group called ${same.name}.`, { error: true });
+    run(() => call('add_group', [el.value]));
+  };
+
+  host.addEventListener('change', e => {
     const el = e.target;
     if (el.dataset.renameGroup) run(() => call('rename_group', [Number(el.dataset.renameGroup), el.value]));
     else if (el.dataset.renameCat) run(() => call('rename_category', [Number(el.dataset.renameCat), el.value]));
   });
-  root.addEventListener('keydown', e => {
+  host.addEventListener('keydown', e => {
     const el = e.target;
-    if (e.key !== 'Enter') return;
+    if (e.key !== 'Enter' || el.tagName !== 'INPUT') return;
     e.preventDefault();
-    if (el.dataset.addCat !== undefined && el.value.trim()) run(() => call('add_category', [Number(el.dataset.addCat), el.value]));
-    else if (el.dataset.addGroup !== undefined && el.value.trim()) run(() => call('add_group', [el.value]));
+    if (el.dataset.addCat !== undefined && el.value.trim()) add(el);
+    else if (el.dataset.addGroup !== undefined && el.value.trim()) addGroup(el);
     else el.blur();
   });
-  root.addEventListener('click', async e => {
+  host.addEventListener('click', async e => {
     const b = e.target.closest('button');
     if (!b) return;
-    if (b.dataset.moveGroup) run(() => call('move_group', [Number(b.dataset.moveGroup), Number(b.dataset.dir)]));
-    else if (b.dataset.hideCat) run(() => call('set_category_hidden', [Number(b.dataset.hideCat), b.dataset.hidden !== '1']));
-    else if (b.dataset.deleteCat) {
-      run(() => call('delete_category', [Number(b.dataset.deleteCat)]), 'Category deleted');
-    } else if (b.dataset.deleteGroup) {
-      run(() => call('delete_group', [Number(b.dataset.deleteGroup)]), 'Group deleted');
+    if (b.dataset.confirm) {
+      const strip = b.closest('.cat-confirm');
+      strip.remove();
+      if (b.dataset.confirm === 'yes') await strip.onYes();
+    } else if (b.dataset.hideCat) run(() => call('set_category_hidden', [Number(b.dataset.hideCat), b.dataset.hidden !== '1']));
+    else if (b.dataset.deleteCat) askDelete(b.closest('.cat-row'), Number(b.dataset.deleteCat));
+    else if (b.dataset.deleteGroup) {
+      const g = state.categories.find(x => x.id === Number(b.dataset.deleteGroup));
+      ask(b.closest('.grp-head'), `Delete the group ${g ? g.name : ''}?`, 'Delete',
+        () => run(() => call('delete_group', [Number(b.dataset.deleteGroup)]), 'Group deleted'), true);
     }
   });
+
+  // Dragging, with the mouse: pointer events, not HTML drag and drop (that would show the
+  // "drop a bank file" overlay). The row moves to the place under the pointer as you go.
+  // Dragging a group folds every group to its heading (0.3 s), so a long list fits; on
+  // the drop they unfold in the same time, the group staying where it was dropped.
+  host.addEventListener('pointerdown', e => {
+    const handle = e.target.closest('[data-drag-cat], [data-drag-group]');
+    if (!handle || e.button !== 0) return;
+    e.preventDefault();
+    const isGroup = handle.dataset.dragGroup !== undefined;
+    const editor = host.querySelector('.cat-editor');
+    const item = handle.closest(isGroup ? '.grp' : '.cat-row');
+    const scroller = scrollParent(host);
+    const before = () => isGroup ? [item.parentElement, nextOf(item, '.grp:not([data-role="income"])')]
+      : [item.closest('.grp'), nextOf(item, '[data-cat-row]')];
+    const [startParent, startNext] = before();
+    let started = false, folding = false, y = e.clientY, raf = 0;
+
+    const place = () => {
+      if (isGroup) {
+        const others = [...editor.querySelectorAll(':scope > .grp:not([data-role="income"])')].filter(g => g !== item);
+        const ref = others.find(g => { const r = g.getBoundingClientRect(); return y < r.top + r.height / 2; })
+          || editor.querySelector(':scope > .grp[data-role="income"]') || editor.querySelector(':scope > .row');
+        if (item.nextElementSibling !== ref) editor.insertBefore(item, ref);
+        return;
+      }
+      const groups = [...editor.querySelectorAll(':scope > .grp[data-role="normal"]')];
+      if (!groups.length) return;
+      const group = groups.find(g => y < g.getBoundingClientRect().bottom) || groups[groups.length - 1];
+      const box = group.querySelector('.grp-cats > div');
+      const rows = [...box.querySelectorAll('[data-cat-row]')].filter(r => r !== item);
+      const ref = rows.find(r => { const b = r.getBoundingClientRect(); return y < b.top + b.height / 2; })
+        || box.querySelector('.add-row');
+      if (item.nextElementSibling !== ref || item.parentElement !== box) box.insertBefore(item, ref);
+    };
+    // Near the top or bottom edge, the list scrolls by itself, and the row follows.
+    const edgeScroll = () => {
+      const r = scroller.getBoundingClientRect(), edge = 40;
+      const top = Math.max(r.top, 0), bottom = Math.min(r.bottom, window.innerHeight);
+      const speed = y < top + edge ? -(top + edge - y) / 3 : y > bottom - edge ? (y - bottom + edge) / 3 : 0;
+      const was = scroller.scrollTop;
+      if (speed && !folding) scroller.scrollTop += speed;
+      if (scroller.scrollTop !== was) place();
+      raf = requestAnimationFrame(edgeScroll);
+    };
+    const start = () => {
+      started = true;
+      if (host.contains(document.activeElement)) document.activeElement.blur();  // a rename typed just before
+      host.querySelectorAll('.cat-confirm').forEach(x => x.remove());
+      drag = { item };
+      item.classList.add('dragged');
+      editor.classList.add('is-dragging');
+      if (isGroup) {
+        // The pop-up keeps its size, and the group you're holding stays under the pointer
+        // while the others fold up around it; it follows the pointer once they have.
+        scroller.style.minHeight = `${scroller.offsetHeight}px`;
+        const top = item.getBoundingClientRect().top;
+        editor.classList.add('folded');
+        folding = true;
+        holdAt(scroller, editor, item, top, 380).then(() => { folding = false; if (drag) place(); });
+      }
+      raf = requestAnimationFrame(edgeScroll);
+    };
+    const move = ev => {
+      y = ev.clientY;
+      if (!started && Math.abs(y - e.clientY) < 4) return;
+      if (!started) start();
+      if (!folding) place();
+    };
+    const finish = async cancelled => {
+      document.removeEventListener('pointermove', move);
+      document.removeEventListener('pointerup', up);
+      document.removeEventListener('keydown', key, true);
+      cancelAnimationFrame(raf);
+      if (!started) return;
+      if (folding && !cancelled) place();  // let go before the groups had folded
+      const [parent, next] = before();
+      const moved = !cancelled && (parent !== startParent || next !== startNext);
+      const id = Number(isGroup ? item.dataset.group : item.dataset.catRow);
+      const top = item.getBoundingClientRect().top, padding = editor.style.paddingTop;
+      if (moved) {
+        try {
+          if (isGroup) await call('move_group', [id, next ? Number(next.dataset.group) : null]);
+          else await call('move_category', [id, Number(parent.dataset.group), next ? Number(next.dataset.catRow) : null]);
+        } catch (_) {}
+      }
+      await loadCategories();
+      drag = null;
+      rerender();
+      const fresh = host.querySelector(isGroup ? `.grp[data-group="${id}"]` : `[data-cat-row="${id}"]`);
+      const ed = host.querySelector('.cat-editor');
+      if (isGroup) {  // drawn folded, then unfolds
+        ed.style.paddingTop = padding;
+        ed.classList.add('folded');
+        void ed.offsetHeight;
+        ed.classList.remove('folded');
+      }
+      if (fresh && moved) fresh.classList.add('just-moved');
+      // What was dropped stays where it was dropped while the groups open up around it.
+      if (fresh) await holdAt(scroller, ed, fresh, top, isGroup ? 380 : 0);
+      scroller.style.minHeight = '';
+      if (parseFloat(ed.style.paddingTop)) { ed.style.transition = 'padding-top .2s ease'; ed.style.paddingTop = ''; }
+    };
+    const up = () => finish(false);
+    const key = ev => { if (ev.key === 'Escape') { ev.preventDefault(); ev.stopPropagation(); finish(true); } };
+    document.addEventListener('pointermove', move);
+    document.addEventListener('pointerup', up);
+    document.addEventListener('keydown', key, true);
+  });
 }
+// Keeps `el` at `top` on screen for `ms` while the rows around it fold or unfold: by
+// scrolling, and by padding the top of `list` where there's nothing left to scroll.
+function holdAt(scroller, list, el, top, ms) {
+  const until = performance.now() + ms;
+  const pad = () => parseFloat(list.style.paddingTop) || 0;
+  return new Promise(resolve => {
+    const step = () => {
+      if (!el.isConnected) return resolve();
+      const down = top - el.getBoundingClientRect().top;  // how far the rows must move down
+      if (down > 0) {
+        const s = Math.min(scroller.scrollTop, down);
+        scroller.scrollTop -= s;
+        list.style.paddingTop = `${pad() + down - s}px`;
+      } else if (down < 0) {
+        const p = Math.min(pad(), -down);
+        list.style.paddingTop = `${pad() - p}px`;
+        scroller.scrollTop += -down - p;
+      }
+      if (performance.now() < until) requestAnimationFrame(step); else resolve();
+    };
+    step();
+  });
+}
+const nextOf = (el, sel) => { for (let n = el.nextElementSibling; n; n = n.nextElementSibling) if (n.matches(sel)) return n; return null; };
+const scrollParent = el => {
+  for (let p = el.parentElement; p; p = p.parentElement) if (/(auto|scroll)/.test(getComputedStyle(p).overflowY)) return p;
+  return document.scrollingElement;
+};
 async function openCategoryEditor() {
   await loadCategories();
-  const d = $('#dlg');
-  const promise = dialog({ title: 'Categories', body: categoryEditorHtml(state.categories), wide: true, actions: [{ label: 'Done', value: true, primary: true }] });
-  const body = d.querySelector('.dlg-body');
-  const rerender = async () => { body.innerHTML = categoryEditorHtml(state.categories); };
-  if (!body.dataset.bound) { bindCategoryEditor(body, rerender); body.dataset.bound = '1'; }
+  const promise = dialog({ title: 'Categories', body: `<div class="cat-editor-host">${categoryEditorHtml(state.categories)}</div>`,
+    wide: true, actions: [{ label: 'Done', value: true, primary: true }] });
+  bindCategoryEditor($('#dlg .cat-editor-host'));
   await promise;
-  delete body.dataset.bound;
   await renderBudget();
 }
 
@@ -2439,8 +2721,7 @@ async function renderOnboarding() {
   }
   root.innerHTML = `<div class="inner">${head}${body}</div>`;
   if (ob.step === 1) {
-    const box = $('#ob-cats');
-    bindCategoryEditor(box, async () => { box.innerHTML = categoryEditorHtml(state.categories); });
+    bindCategoryEditor($('#ob-cats'));
   }
 }
 async function onboardingAction(btn) {
