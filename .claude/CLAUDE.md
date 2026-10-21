@@ -254,6 +254,8 @@ with months it didn't exist).
 ## Git
 
 - Work on a branch, not `main`. The maintainer opens pull requests with Create PR.
+- Commit titles say what changed, never the version (not "1.2.5: …"): GitHub shows each
+  file's last commit title beside it, and the version is already in `VERSION` and the tag.
 - The pre-commit hook must stay on (`git config core.hooksPath` → `scripts/hooks`).
 
 ## Decisions already made
