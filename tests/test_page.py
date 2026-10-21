@@ -136,3 +136,14 @@ def test_categories_are_edited_on_the_budget_page():
     assert "nearTools" not in PAGE  # no reach around the pointer: too busy
     assert "beginDrag(e, { root: () => $('.btable'), redraw: renderBudget })" in PAGE
     assert "bindCategoryEditor($('#ob-cats'))" in PAGE and "body.dataset.bound" not in PAGE
+
+
+def test_keys_the_page_acts_on_are_marked_handled():
+    """A key the page acts on calls preventDefault: otherwise the app's window (WebKit)
+    passes it on, nothing takes it, and macOS plays its warning sound. It did for Escape
+    closing the category pop-over."""
+    lines = PAGE.splitlines()
+    for i, line in enumerate(lines):
+        if "key === 'Escape'" in line:
+            assert "preventDefault" in " ".join(lines[i:i + 3]), f"line {i + 1}: {line.strip()}"
+

@@ -198,12 +198,13 @@ th.r, td.r { text-align: right; }
 .btable .cell { display: grid; grid-template-rows: 1fr; transition: grid-template-rows .1s ease, opacity .1s ease; }
 .btable .cell > div { min-height: 0; }
 .btable.folded .cell > div, .btable.unfolding .cell > div { overflow: hidden; }
-.btable.folded tr.cat > td { padding-top: 0; padding-bottom: 0; border-color: transparent; }
+.btable.folded tr.cat > td { padding-top: 0; padding-bottom: 0; border-bottom: 0 !important; }  /* not even a 1px line each */
 .btable.folded .cell { grid-template-rows: 0fr; opacity: 0; }
 .btable.no-anim *, .cat-editor.no-anim * { transition: none !important; }
+body.moving-rows, body.moving-rows * { -webkit-user-select: none !important; user-select: none !important; }
 .btable.is-dragging, .btable.is-dragging * { cursor: grabbing !important; user-select: none; -webkit-user-select: none; }
 .btable.is-dragging .tool { opacity: 0 !important; }
-.btable .dragged > tr > td, .btable tr.dragged > td { background: var(--accent-soft) !important; }
+.btable .dragged > tr.group > td, .btable tr.dragged > td { background: var(--accent-soft) !important; }
 .btable .just-moved > tr > td, .btable tr.just-moved > td { animation: just-moved 1.6s ease; }
 @media (prefers-reduced-motion: reduce) { .btable .cell, .btable tr.cat > td { transition: none; } }
 .btable td.assign-cell { white-space: nowrap; }
@@ -1165,7 +1166,7 @@ async function openCategory(id) {
     nameInput.addEventListener('change', saveName);
     nameInput.addEventListener('keydown', e => {
       if (e.key === 'Enter') { e.preventDefault(); nameInput.blur(); }
-      else if (e.key === 'Escape') { e.stopPropagation(); nameInput.value = savedName; nameInput.blur(); }
+      else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); nameInput.value = savedName; nameInput.blur(); }
     });
   }
 
@@ -1175,7 +1176,8 @@ async function openCategory(id) {
     bg.remove(); dr.remove();
     if (changed) { await loadCategories(); await renderBudget(); }
   };
-  const onKey = e => { if (e.key === 'Escape' && !$('#dlg').open && !$('.popover')) close(); };
+  // Marked handled, or the app's window passes Escape on and macOS plays its warning sound.
+  const onKey = e => { if (e.key === 'Escape' && !$('#dlg').open && !$('.popover')) { e.preventDefault(); close(); } };
   document.addEventListener('keydown', onKey);
   bg.onclick = close;
   dr.addEventListener('click', async e => {
@@ -1234,7 +1236,7 @@ async function openSpent(which, { total = 'Spent' } = {}) {
     ${spentCard(d, d.month, { group: d.group, total })}`;
   document.body.append(bg, dr);
   const close = async () => { document.removeEventListener('keydown', onKey); bg.remove(); dr.remove(); };
-  const onKey = e => { if (e.key === 'Escape' && !$('#dlg').open && !$('.popover')) close(); };
+  const onKey = e => { if (e.key === 'Escape' && !$('#dlg').open && !$('.popover')) { e.preventDefault(); close(); } };
   document.addEventListener('keydown', onKey);
   bg.onclick = close;
   dr.addEventListener('click', e => {
@@ -1451,6 +1453,13 @@ function beginDrag(e, { root, redraw }) {
   const handle = e.target.closest('[data-drag-cat], [data-drag-group]');
   if (!handle || e.button !== 0) return;
   e.preventDefault();
+  // No text gets selected while the mouse is down: WebKit (the app) selected it anyway,
+  // despite the preventDefault.
+  const noSelect = ev => ev.preventDefault();
+  document.addEventListener('selectstart', noSelect);
+  document.body.classList.add('moving-rows');
+  const selection = document.getSelection();
+  if (selection) selection.removeAllRanges();
   const isGroup = handle.dataset.dragGroup !== undefined;
   const list = root();
   const item = handle.closest(isGroup ? '.grp' : '[data-cat-row]');
@@ -1514,6 +1523,8 @@ function beginDrag(e, { root, redraw }) {
     document.removeEventListener('pointermove', move);
     document.removeEventListener('pointerup', up);
     document.removeEventListener('keydown', key, true);
+    document.removeEventListener('selectstart', noSelect);
+    document.body.classList.remove('moving-rows');
     cancelAnimationFrame(raf);
     if (!started) return;
     // The click that ends a drag isn't a click on whatever is under it (a group's row folds).

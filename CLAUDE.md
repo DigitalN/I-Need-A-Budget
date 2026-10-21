@@ -404,7 +404,10 @@ Don't undo these without asking:
   the maintainer found unintuitive): the card keeps its height and the other groups close
   up around the held one. On release they unfold in 0.1 s too, the group staying where it
   was dropped; the page scrolls only if the group ends up out of sight; it flashes;
-  groups you folded stay folded (`beginDrag`, also onboarding's list). Debt Payments (the
+  groups you folded stay folded (`beginDrag`, also onboarding's list). A folded row has no
+  height at all, borders included, and only the held group's heading is coloured: in
+  WebKit each folded row kept its 1px line, leaving gaps (1.2.4). No text is selected
+  while the mouse is down (`selectstart`; WebKit selected it despite preventDefault). Debt Payments (the
   cards' group) has ⋮⋮ and + too and moves like any group; Income never moves. A move that
   can't be saved goes back, and the list still unfolds (it once stayed folded). Nothing
   moves into or out of Income or the cards' group, not even within Income: the first
@@ -501,6 +504,9 @@ Don't undo these without asking:
 
 - Every pop-up has a ✕ top right that closes without saving (the `dialog()` helper adds
   it). Save with no changes just closes, with no "Saved" message.
+- A key the page acts on (Escape closing a pop-over, a shortcut) calls `preventDefault`:
+  otherwise the app's window passes it on, nothing takes it, and macOS plays its warning
+  sound (it did for Escape on the category pop-over). `tests/test_page.py` checks Escape.
 - A popover opened from a pop-up (the category list) is attached inside the open
   `<dialog>`: dialogs live in the browser's top layer, above anything else on the page.
   So is a message (toast) shown while a pop-up is open, or it's hidden under it. There's
