@@ -29,7 +29,7 @@ def test_clickable_data_attributes_are_listened_for():
                     "data-sub", "data-what", "data-amount", "data-group", "data-import", "data-payee", "data-on",
                     "data-hidden", "data-cat", "data-into"}  # read by the handler of the button's action, not clicked on
     selectors = " ".join(re.findall(r"closest\('([^']+)'\)", PAGE))
-    handled_elsewhere = {"data-month", "data-theme-set", "data-move-group", "data-hide-cat",
+    handled_elsewhere = {"data-month", "data-theme-set", "data-confirm", "data-hide-cat",
                          "data-delete-cat", "data-delete-group", "data-split-cat", "data-split-del",
                          "data-split-add"}  # dataset checks in their own handlers
     missing = [a for a in on_buttons - carry_values - handled_elsewhere if f"[{a}" not in selectors]
@@ -62,10 +62,13 @@ def test_amount_boxes_start_empty_and_redraws_keep_your_place():
 
 
 def test_used_categories_and_accounts_are_hidden_or_closed_not_deleted():
-    """A ✕ shows only for a category or account never used, and for an empty group;
-    Edit… closes or reopens an account."""
-    assert "${c.used ? NO_DELETE : `<button type=\"button\" class=\"icon-btn danger\" data-delete-cat=" in PAGE
-    assert "${g.categories.length ? NO_DELETE : `<button type=\"button\" class=\"icon-btn danger\" data-delete-group=" in PAGE
+    """A category's ✕ (on every one you made) always asks: one never used is deleted, a
+    used one can only be hidden. An empty group's ✕ asks too. An account's ✕ shows only
+    for one never used; Edit… closes or reopens an account."""
+    assert "${c.own ? NO_DELETE : `<button type=\"button\" class=\"icon-btn danger\" data-delete-cat=" in PAGE
+    assert "It's never been used, so nothing else changes." in PAGE and "so it can't be deleted." in PAGE
+    assert "(g.categories.length ? NO_DELETE : `<button type=\"button\" class=\"icon-btn danger\" data-delete-group=" in PAGE
+    assert "Delete the group" in PAGE
     assert "${a.used ? '' : `<button class=\"icon-btn danger\" data-act=\"delete-account\"" in PAGE
     assert "label: 'Close account', value: 'close'" in PAGE and "label: 'Reopen account', value: 'reopen'" in PAGE
     assert "went back to the Inbox" not in PAGE
@@ -115,3 +118,21 @@ def test_relative_boxes_and_escape():
     assert "const cents = amountIn(input);" in PAGE and "const cents = amountIn(monthlyInput);" in PAGE
     assert "amount: amountIn(el) || 0" in PAGE
     assert "e.target.value = e.target.defaultValue;" in PAGE
+
+
+def test_categories_are_edited_on_the_budget_page():
+    """No Edit categories… pop-up: categories are dragged (⋮⋮), added (+) and renamed (✎)
+    on the Budget page, each group its own <tbody> so dragging one takes its categories
+    along. Onboarding keeps its own list, bound to an element made each time it's drawn
+    (bound to the shared pop-up, its handlers piled up and one Return added a category
+    once per opening)."""
+    assert "edit-categories" not in PAGE and "openCategoryEditor" not in PAGE
+    assert '<tbody class="grp" data-group="${g.id}" data-role="${g.role}">' in PAGE
+    for tool in ("data-drag-group", "data-drag-cat", "data-group-plus", "data-cat-plus", "data-group-pencil", "data-cat-pencil",
+                 "data-group-x"):
+        assert tool in PAGE, tool
+    assert ".btable tr:hover .tool, .btable tr:focus-within .tool { opacity: 1; transition: none;" in PAGE  # the row you're on
+    assert ".btable .tool { opacity: 0; transition: opacity .5s ease;" in PAGE  # fading over 0.5 s
+    assert "nearTools" not in PAGE  # no reach around the pointer: too busy
+    assert "beginDrag(e, { root: () => $('.btable'), redraw: renderBudget })" in PAGE
+    assert "bindCategoryEditor($('#ob-cats'))" in PAGE and "body.dataset.bound" not in PAGE

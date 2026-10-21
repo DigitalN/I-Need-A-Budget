@@ -285,6 +285,17 @@ def used_category_ids(conn):
         "UNION SELECT category_id FROM subscriptions WHERE category_id IS NOT NULL")}
 
 
+
+def category_uses(conn, category_id):
+    """What makes a category used (used_category_ids), counted: what the Categories
+    pop-up says when a used one's ✕ is clicked."""
+    one = lambda sql: conn.execute(sql, (category_id,)).fetchone()[0]
+    return {"transactions": one("SELECT COUNT(*) FROM transactions WHERE category_id = ?")
+                            + one("SELECT COUNT(*) FROM splits WHERE category_id = ?"),
+            "assigned": bool(one("SELECT COUNT(*) FROM budget WHERE category_id = ? AND assigned != 0")),
+            "recurring": one("SELECT COUNT(*) FROM subscriptions WHERE category_id = ?"),
+            "examples": one("SELECT COUNT(*) FROM examples WHERE category_id = ?")}
+
 def own_category_ids(conn):
     """Income and Interest & Fees, which the app needs: never deleted. Only looks (unlike
     income_category() and interest_category(), which make them when they're missing)."""

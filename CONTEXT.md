@@ -180,6 +180,10 @@ A named pot of money for one purpose, like Food or Rent: the envelope of the env
 method.
 _Avoid_: envelope
 
+**Category group**:
+A named set of categories on the Budget page, like Everyday or Bills.
+_Avoid_: group (on its own: that's the inbox's), master category
+
 **Hidden category**:
 A category you no longer use. It keeps its history and money but isn't offered for new
 transactions.

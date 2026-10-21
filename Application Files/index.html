@@ -174,6 +174,38 @@ th.r, td.r { text-align: right; }
 .btable .cat .name:hover { color: var(--accent); }
 .btable .cat.hidden-cat { opacity: .5; }
 .btable col.c-num { width: 132px; }
+/* Tools: ⋮⋮ in the card's left margin; +, ✎ and ✕ right of the name. Shown at once on the
+   row the pointer is on, fading out over 0.5 s when it leaves (the maintainer's design;
+   a 60 px reach around the pointer was too busy). The margin is part of the row, so the
+   pointer can reach ⋮⋮ without leaving it. */
+.budget-card { padding: 6px 8px 6px 28px; }
+.btable tr > td:first-child { position: relative; }
+.btable .gutter { position: absolute; left: -24px; top: 0; width: 24px; height: 100%; display: flex; align-items: center; }
+.btable .tool { opacity: 0; transition: opacity .5s ease; pointer-events: none; }
+.btable tr:hover .tool, .btable tr:focus-within .tool { opacity: 1; transition: none; pointer-events: auto; }
+.btable .drag-handle { cursor: grab; color: var(--muted); font-size: 14px; font-weight: 400; letter-spacing: -3px; padding: 2px 4px 2px 2px; user-select: none; -webkit-user-select: none; touch-action: none; }
+.btable .drag-handle:hover { color: var(--text); }
+.btable .plus { border: 0; background: transparent; color: var(--muted); width: 20px; height: 20px; border-radius: 5px; padding: 0; font-size: 16px; line-height: 1; font-weight: 400; cursor: default; }
+.btable .plus:hover { background: var(--hover); color: var(--accent); }
+.btable .row-tools { display: inline-flex; align-items: center; gap: 1px; margin-left: 6px; vertical-align: -3px; }
+.btable .row-tools .icon-btn { padding: 2px 5px; font-weight: 400; }
+.btable .row-tools svg { display: block; }
+.btable td:has(.inline-name) .row-tools { display: none; }
+.btable .inline-name { width: min(300px, 100%); font-weight: inherit; padding: 3px 7px; }
+.btable tbody.grp:not(:last-child) tr:last-child td { border-bottom: 1px solid var(--line); }
+/* While a group is dragged, every group's categories fold away, and back, in 0.1 s. */
+.btable tr.cat > td { transition: padding .1s ease, border-color .1s ease; }
+.btable .cell { display: grid; grid-template-rows: 1fr; transition: grid-template-rows .1s ease, opacity .1s ease; }
+.btable .cell > div { min-height: 0; }
+.btable.folded .cell > div, .btable.unfolding .cell > div { overflow: hidden; }
+.btable.folded tr.cat > td { padding-top: 0; padding-bottom: 0; border-color: transparent; }
+.btable.folded .cell { grid-template-rows: 0fr; opacity: 0; }
+.btable.no-anim *, .cat-editor.no-anim * { transition: none !important; }
+.btable.is-dragging, .btable.is-dragging * { cursor: grabbing !important; user-select: none; -webkit-user-select: none; }
+.btable.is-dragging .tool { opacity: 0 !important; }
+.btable .dragged > tr > td, .btable tr.dragged > td { background: var(--accent-soft) !important; }
+.btable .just-moved > tr > td, .btable tr.just-moved > td { animation: just-moved 1.6s ease; }
+@media (prefers-reduced-motion: reduce) { .btable .cell, .btable tr.cat > td { transition: none; } }
 .btable td.assign-cell { white-space: nowrap; }
 .btable col.c-assign { width: 170px; }
 .copy-arrow { border: 0; background: transparent; color: var(--faint); border-radius: 5px; width: 22px; padding: 1px 0; cursor: default; }
@@ -258,8 +290,12 @@ th.r, td.r { text-align: right; }
 .drawer { position: fixed; top: 0; right: 0; bottom: 0; width: min(640px, calc(100vw - 80px)); background: var(--bg); box-shadow: var(--pop); z-index: 21; overflow-y: auto; padding: 20px 22px 40px; }
 .spent-link { cursor: pointer; border-radius: 4px; }
 .spent-link:hover { text-decoration: underline; }
-.spent-lines tr[data-line-tx] { cursor: pointer; }
-.spent-lines tr[data-line-tx]:hover td { background: var(--accent-soft); }
+.spent-lines tr[data-line-tx], .rec-lines tr { cursor: pointer; }
+.spent-lines tr[data-line-tx]:hover td, .rec-lines tr:hover td { background: var(--accent-soft); }
+/* The category pop-over's name: a heading until you click it to rename. */
+.drawer input.cat-name { flex: 1; min-width: 0; font-size: 15px; font-weight: 600; padding: 3px 6px; margin-left: -6px; }
+.drawer input.cat-name:not(:focus) { background: transparent; box-shadow: none; }
+.drawer input.cat-name:not(:focus):hover { background: var(--hover); }
 .spent-lines tfoot td { border-top: 1px solid var(--line-strong); font-weight: 600; }
 .bars { display: flex; align-items: flex-end; gap: 6px; height: 110px; padding-top: 14px; }
 .bars .bar { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; gap: 3px; min-width: 0; }
@@ -318,11 +354,26 @@ body.dragging .drop-hint { display: flex; }
 .csv-sample th { vertical-align: top; }
 .su-preview { border-top: 1px solid var(--line); padding-top: 10px; }
 .su-preview .row { padding: 2px 0; }
-.cat-editor .grp { margin-bottom: 14px; }
-.cat-editor .grp-head { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; }
+.cat-editor .grp { margin-bottom: 14px; border-radius: 8px; transition: margin-bottom .1s ease; }
+.cat-editor .grp-head { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; transition: margin-bottom .1s ease; }
 .cat-editor .grp-head input { font-weight: 600; flex: 1; }
-.cat-editor .cat-row { display: flex; gap: 6px; align-items: center; padding: 3px 0 3px 18px; }
+.cat-editor .cat-row { display: flex; gap: 6px; align-items: center; padding: 3px 0 3px 18px; border-radius: 8px; }
 .cat-editor .cat-row input { flex: 1; }
+/* The categories fold away while a group is dragged (grid rows animate to 0, and back,
+   in 0.1 s). The padding lets the focus ring show. */
+.cat-editor .grp-cats { display: grid; grid-template-rows: 1fr; transition: grid-template-rows .1s ease, opacity .1s ease; }
+.cat-editor .grp-cats > div { overflow: hidden; min-height: 0; padding: 0 4px; margin: 0 -4px; }
+.cat-editor.folded .grp-cats { grid-template-rows: 0fr; opacity: 0; }
+.cat-editor.folded .grp { margin-bottom: 4px; }
+.cat-editor.folded .grp-head { margin-bottom: 0; }
+.cat-editor .drag-handle { cursor: grab; color: var(--faint); padding: 2px 2px; font-size: 13px; letter-spacing: -3px; user-select: none; -webkit-user-select: none; touch-action: none; }
+.cat-editor .drag-handle:hover { color: var(--text); }
+.cat-editor.is-dragging, .cat-editor.is-dragging * { cursor: grabbing !important; user-select: none; -webkit-user-select: none; }
+.cat-editor .dragged { background: var(--accent-soft); box-shadow: 0 0 0 1px var(--accent); position: relative; z-index: 1; }
+.cat-editor .just-moved { animation: just-moved 1.6s ease; }
+@keyframes just-moved { 0%, 40% { background: var(--accent-soft); } }
+.cat-editor .cat-confirm { display: flex; gap: 8px; align-items: center; margin: 2px 0 8px 18px; padding: 8px 10px; border-radius: 8px; background: var(--hover); font-size: 13px; }
+@media (prefers-reduced-motion: reduce) { .cat-editor .grp-cats, .cat-editor .grp, .cat-editor .grp-head { transition: none; } }
 .icon-btn { border: 0; background: transparent; color: var(--muted); border-radius: 5px; padding: 2px 6px; cursor: default; }
 .icon-btn:hover { background: var(--hover); color: var(--text); }
 .icon-btn.danger:hover { color: var(--neg); }
@@ -464,6 +515,10 @@ window.addEventListener('unhandledrejection', e => {
 let toastTimer;
 function toast(msg, opts = {}) {
   const el = $('#toast');
+  // Inside an open pop-up, or it's under it: pop-ups live in the browser's top layer.
+  const dlg = $('#dlg');
+  const host = dlg.open ? dlg : document.body;
+  if (el.parentElement !== host) host.appendChild(el);
   el.querySelector('span').textContent = msg;
   const btn = el.querySelector('button');
   btn.textContent = opts.action ? opts.action.label : '';
@@ -495,7 +550,14 @@ function dialog({ title, body, actions, wide = false, onOpen }) {
     const bar = d.querySelector('.dlg-actions');
     bar.innerHTML = '';
     let done = false;
-    const finish = v => { if (done) return; done = true; d.close(); resolve(v); };
+    const finish = v => {
+      if (done) return;
+      done = true;
+      const t = $('#toast');
+      if (d.contains(t)) document.body.appendChild(t);  // a message still showing outlives the pop-up
+      d.close();
+      resolve(v);
+    };
     (actions || [{ label: 'OK', value: true, primary: true }]).forEach(a => {
       const b = document.createElement('button');
       b.type = 'button';
@@ -594,7 +656,7 @@ function pickCategory(anchor, { income = true, title = '' } = {}) {
 const state = {
   page: 'budget', month: null, boot: null, categories: [], accounts: [], counts: {},
   inboxSel: 0, txFilters: { month: null }, expanded: new Set(), update: null, inboxFind: { text: '', payee: null },
-  dash: null, dashOpen: new Set(),
+  dash: null, dashOpen: new Set(), showHidden: false, dragging: false,
 };
 
 function setCounts(c) {
@@ -610,6 +672,7 @@ const incomeIds = () => state.categories.filter(g => g.role === 'income').flatMa
 
 function navigate(page, opts = {}) {
   if (page === 'dashboard' && state.page !== 'dashboard') state.dashOpen = new Set();  // its groups start closed
+  if (page === 'budget' && state.page !== 'budget') state.showHidden = false;
   state.page = page;
   if (opts.month) state.month = opts.month;
   $$('#nav button').forEach(b => b.setAttribute('aria-current', b.dataset.nav === page ? 'page' : 'false'));
@@ -672,20 +735,24 @@ async function renderBudget() {
       <div class="hero-actions">
         <button class="btn primary" data-act="assign">Assign money…</button>
         ${view.is_past ? `<button class="btn" data-act="catch-up" title="Assign exactly what was spent, so nothing ends the month overspent">Catch up this month</button>` : ''}
-        <button class="btn" data-act="edit-categories">Edit categories…</button>
       </div></div>`;
   }
 
-  const rows = [];
+  // Each group is its own <tbody>, so dragging one takes its categories along. The tools
+  // (⋮⋮ in the margin; +, ✎ and an empty group's ✕ right of the name) show on the row the
+  // pointer is on. Every group has ⋮⋮ and + (a group above it), Debt Payments too; ✎,
+  // ✕ and the categories' tools are for ordinary groups only.
+  const bodies = [];
+  const hiddenCount = view.groups.reduce((n, g) => n + g.categories.filter(c => c.hidden).length, 0);
   for (const g of view.groups) {
-    const collapsed = !!g.collapsed;
+    const collapsed = !!g.collapsed, normal = g.role === 'normal';
+    const rows = [];
     rows.push(`<tr class="group ${collapsed ? 'collapsed' : ''}" data-group="${g.id}">
-      <td><span class="caret">▾</span> ${esc(g.name)}</td><td></td>
+      <td>${g.role !== 'income' ? `<span class="gutter"><span class="drag-handle tool" data-drag-group="${g.id}" title="Drag to move">⋮⋮</span></span>` : ''}<span class="caret">▾</span> <span class="gname">${esc(g.name)}</span><span class="row-tools"><button class="plus tool" data-group-plus="${g.id}" title="Add a group above" aria-label="Add a group above">+</button>${normal ? `<button class="icon-btn tool" data-group-pencil="${g.id}" title="Rename" aria-label="Rename">${PENCIL}</button>${g.categories.length ? '' : `<button class="icon-btn danger tool" data-group-x="${g.id}" title="Delete group" aria-label="Delete group">✕</button>`}` : ''}</span></td><td></td>
       <td class="r num">${view.before_start ? '' : money(g.assigned)}</td><td class="r num">${g.activity ? `<span class="spent-link" data-spent-group="${g.id}" title="What makes up this">${money(g.activity)}</span>` : money(g.activity)}</td>
       <td class="r num">${view.before_start ? '' : money(g.available)}</td></tr>`);
-    if (collapsed) continue;
-    for (const c of g.categories) {
-      if (c.hidden && !c.assigned && !c.activity && !c.available) continue;
+    for (const c of collapsed ? [] : g.categories) {
+      if (c.hidden && !state.showHidden && !c.assigned && !c.activity && !c.available) continue;
       const avail = c.available;
       const pillClass = avail === null ? 'zero' : (avail < 0 ? 'neg' : (avail > 0 ? 'pos' : 'zero'));
       let monthly;
@@ -700,13 +767,16 @@ async function renderBudget() {
       }
       const overNote = c.overspent_credit ? ` title="${esc(money(c.overspent_credit))} of this was on a card without money in the category: it became debt"` :
         (c.overspent_cash ? ` title="${esc(money(c.overspent_cash))} overspent: ${OVERSPENT_NOTE[view.overspending]}"` : '');
-      rows.push(`<tr class="cat ${c.hidden ? 'hidden-cat' : ''}">
-        <td><span class="name" data-cat="${c.id}">${esc(c.name)}</span></td>
-        <td class="r">${monthly}</td>
-        <td class="r assign-cell">${view.before_start ? '' : assignBox(c)}</td>
-        <td class="r num ${c.activity < 0 ? '' : (c.activity > 0 ? 'pos' : 'faint')}"${c.debt_account_id ? ' title="Set aside for card spending this month, less what was paid to the card"' : ''}>${c.activity ? `<span class="spent-link" data-spent="${c.id}" title="What makes up this">${money(c.activity)}</span>` : money(c.activity)}</td>
-        <td class="r">${view.before_start ? '' : `<span class="pill ${pillClass}"${overNote}>${money(avail ?? 0)}</span>`}</td></tr>`);
+      // Each cell's content is wrapped so the row can fold away while a group is dragged.
+      const cell = html => `<div class="cell"><div>${html}</div></div>`;
+      rows.push(`<tr class="cat ${c.hidden ? 'hidden-cat' : ''}" data-cat-row="${c.id}">
+        <td>${normal ? `<span class="gutter"><span class="drag-handle tool" data-drag-cat="${c.id}" title="Drag to move">⋮⋮</span></span>` : ''}${cell(`<span class="name" data-cat="${c.id}">${esc(c.name)}</span>${normal ? `<span class="row-tools"><button class="plus tool" data-cat-plus="${c.id}" title="Add a category above" aria-label="Add a category above">+</button><button class="icon-btn tool" data-cat-pencil="${c.id}" title="Rename" aria-label="Rename">${PENCIL}</button></span>` : ''}`)}</td>
+        <td class="r">${cell(monthly)}</td>
+        <td class="r assign-cell">${cell(view.before_start ? '' : assignBox(c))}</td>
+        <td class="r num ${c.activity < 0 ? '' : (c.activity > 0 ? 'pos' : 'faint')}"${c.debt_account_id ? ' title="Set aside for card spending this month, less what was paid to the card"' : ''}>${cell(c.activity ? `<span class="spent-link" data-spent="${c.id}" title="What makes up this">${money(c.activity)}</span>` : money(c.activity))}</td>
+        <td class="r">${cell(view.before_start ? '' : `<span class="pill ${pillClass}"${overNote}>${money(avail ?? 0)}</span>`)}</td></tr>`);
     }
+    bodies.push(`<tbody class="grp" data-group="${g.id}" data-role="${g.role}">${rows.join('')}</tbody>`);
   }
 
   // Redrawing (after every save) keeps your place: how far down you are, and the Assigned
@@ -725,11 +795,12 @@ async function renderBudget() {
     <div class="stack" style="margin-top:12px">
       ${notices.join('')}
       ${hero}
-      <div class="card" style="padding:6px 8px">
+      <div class="card budget-card">
         <table class="btable"><colgroup><col><col class="c-num"><col class="c-assign"><col class="c-num"><col class="c-num"></colgroup>
           <thead><tr><th>Category</th><th class="r">Budgeted</th><th class="r">Assigned</th><th class="r">Spent</th><th class="r">Available</th></tr></thead>
-          <tbody>${rows.join('')}</tbody></table>
+          ${bodies.join('')}</table>
       </div>
+      ${hiddenCount ? `<div class="small" style="margin-top:-6px"><button class="link" data-act="toggle-hidden">${state.showHidden ? 'Hide hidden categories' : `Show hidden (${hiddenCount})`}</button></div>` : ''}
       ${view.groups.length ? `<p class="kbd-help">Click a category or what it spent to see this month's transactions and what it spent in past months. Type in Assigned and press Return (+50 adds to what's there, −20 takes away); Tab moves to the next one.</p>` : ''}
     </div>`); } finally { redrawing = false; }
   main.scrollTop = scrolled;
@@ -742,6 +813,150 @@ async function renderBudget() {
   const strip = $('#months'), cur = $('#months button[aria-current="true"]');
   if (cur) strip.scrollLeft += cur.getBoundingClientRect().left - strip.getBoundingClientRect().left
     - (strip.clientWidth - cur.offsetWidth) / 2;
+}
+
+// ── categories on the Budget page ───────────────────────
+// Added, renamed, moved and deleted on the page itself (there's no Edit categories…).
+const PENCIL = '<svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><path d="M11.2 2.3l2.5 2.5-7.9 7.9-3.2.7.7-3.2z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>';
+
+document.addEventListener('pointerdown', e => {
+  if (e.target.closest('.btable .drag-handle')) beginDrag(e, { root: () => $('.btable'), redraw: renderBudget });
+});
+
+// A name typed in place: Return or clicking away saves it, Escape or an empty box
+// cancels. `save` resolves false when the name was refused: after Return you're still in
+// the box to fix it; after clicking away it's cancelled.
+function nameInPlace(input, { save, cancel }) {
+  let busy = false;
+  const finish = async how => {
+    if (busy) return;
+    busy = true;
+    const name = input.value.replace(/\s+/g, ' ').trim();
+    if (how === 'cancel' || !name) return cancel();
+    if (await save(name) !== false) return;
+    if (how === 'enter' && input.isConnected) { busy = false; input.focus(); } else cancel();
+  };
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); finish('enter'); }
+    else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); finish('cancel'); }
+  });
+  input.addEventListener('blur', () => finish('blur'));
+  input.focus();
+}
+const takenGroup = (name, except) => {
+  const same = state.categories.find(g => g.id !== except && sameName(g.name, name));
+  if (same) toast(`There's already a group called ${same.name}.`, { error: true });
+  return !!same;
+};
+
+// + on a group: a new group above it, named in place, starting with a "New Spending
+// Category" whose name you're then typing (add_group).
+function newGroupAbove(gid) {
+  const open = $('#main .inline-name');
+  if (open) return open.focus();
+  const tb = document.createElement('tbody');
+  tb.className = 'new-grp';
+  tb.innerHTML = '<tr class="group"><td colspan="5"><input class="inline-name" placeholder="Group name" aria-label="Group name"></td></tr>';
+  $(`.btable .grp[data-group="${gid}"]`).before(tb);
+  nameInPlace(tb.querySelector('input'), {
+    cancel: () => tb.remove(),
+    save: async name => {
+      if (takenGroup(name)) return false;
+      let id;
+      try { id = await call('add_group', [name, gid, true]); } catch (_) { return false; }
+      await loadCategories();
+      await renderBudget();
+      const first = (state.categories.find(g => g.id === id) || { categories: [] }).categories[0];
+      if (first) renameCategoryInPlace(first.id);
+    },
+  });
+}
+
+// + on a category: a new category above it, named in place. A hidden category's name
+// offers that one back instead (show_category).
+function newCategoryAbove(cid) {
+  const open = $('#main .inline-name');
+  if (open) return open.focus();
+  const row = $(`.btable [data-cat-row="${cid}"]`);
+  const gid = Number(row.closest('.grp').dataset.group);
+  const tr = document.createElement('tr');
+  tr.className = 'cat new-cat';
+  tr.innerHTML = '<td><input class="inline-name" placeholder="Category name" aria-label="Category name"></td><td colspan="4"></td>';
+  row.before(tr);
+  nameInPlace(tr.querySelector('input'), {
+    cancel: () => tr.remove(),
+    save: async name => {
+      const same = allCategories().find(c => sameName(c.name, name));
+      if (same && (!same.hidden || same.debt_account_id)) { toast(`There's already a ${same.name} in ${same.group.name}.`, { error: true }); return false; }
+      try {
+        if (same) {
+          if (!await confirmBox('Show it again?', `${same.name} is hidden${same.group.id === gid ? '' : ` in ${same.group.name}`}. Show it again?`, 'Show it again')) return false;
+          await call('show_category', [same.id, gid]);
+        } else await call('add_category', [gid, name, cid]);
+      } catch (_) { return false; }
+      await loadCategories();
+      await renderBudget();
+      if (same) toast(`${same.name} is back`, { action: undoAction });
+    },
+  });
+}
+
+// ✎ on a category, and a new group's first category: its name, renamed in place with
+// the name selected.
+function renameCategoryInPlace(cid) {
+  const span = $(`.btable [data-cat-row="${cid}"] .name`);
+  if (!span || $('#main .inline-name')) return;
+  const old = span.textContent;
+  const input = document.createElement('input');
+  input.className = 'inline-name';
+  input.value = old;
+  input.setAttribute('aria-label', 'Category name');
+  span.replaceWith(input);
+  nameInPlace(input, {
+    cancel: () => input.replaceWith(span),
+    save: async name => {
+      if (name === old) return input.replaceWith(span);
+      const same = allCategories().find(c => c.id !== cid && sameName(c.name, name));
+      if (same) { toast(`There's already a ${same.name} in ${same.group.name}.`, { error: true }); return false; }
+      try { await call('rename_category', [cid, name]); } catch (_) { return false; }
+      await loadCategories();
+      await renderBudget();
+    },
+  });
+  input.select();
+}
+
+// ✎ on a group: its name, renamed in place.
+function renameGroupInPlace(gid) {
+  const span = $(`.btable .grp[data-group="${gid}"] .gname`);
+  if (!span || $('#main .inline-name')) return;
+  const old = span.textContent;
+  const input = document.createElement('input');
+  input.className = 'inline-name';
+  input.value = old;
+  input.setAttribute('aria-label', 'Group name');
+  span.replaceWith(input);
+  nameInPlace(input, {
+    cancel: () => input.replaceWith(span),
+    save: async name => {
+      if (name === old) return input.replaceWith(span);
+      if (takenGroup(name, gid)) return false;
+      try { await call('rename_group', [gid, name]); } catch (_) { return false; }
+      await loadCategories();
+      await renderBudget();
+    },
+  });
+  input.select();
+}
+
+// ✕ on an empty group (only an empty one has it).
+async function deleteGroupAsked(gid) {
+  const g = state.categories.find(x => x.id === gid);
+  if (!await confirmBox('Delete group', `Delete the group ${g ? g.name : ''}?`, 'Delete', true)) return;
+  await call('delete_group', [gid]);
+  await loadCategories();
+  await renderBudget();
+  toast('Group deleted', { action: undoAction });
 }
 
 // The Overspending setting (budget.py): what happens to a category's overspending.
@@ -853,12 +1068,21 @@ async function openCategory(id) {
   const useRow = (label, amount, title = '') => `<div class="row" style="padding:4px 0"${title ? ` title="${esc(title)}"` : ''}>
       <span class="muted">${label}</span><span class="spacer"></span><b class="num">${money(amount)}</b>
       <button class="btn small" data-act="use-amount" data-amount="${amount}">Use</button></div>`;
+  const rec = d.recurring, recAll = [...rec.subscriptions, ...rec.bills];
+  const meta = editorCat(d.id);  // used, own (Income and Interest & Fees: Hide only)
   const spentRows = useRow('Last month', d.last_month.amount, `What ${d.name} actually spent in ${monthLong(d.last_month.month)}`) +
-    Object.values(d.averages).filter(a => a.months > 1).map(a => useRow(`Last ${a.months} months`, a.amount, 'Average of what was actually spent')).join('');
+    Object.values(d.averages).filter(a => a.months > 1).map(a => useRow(`Last ${a.months} months`, a.amount, 'Average of what was actually spent')).join('') +
+    (recAll.length ? useRow('Recurring charges', rec.monthly, 'What its subscriptions and bills below come to a month') : '');
+  // The recurring charges whose category this is (where their next charge goes), each
+  // opening its Edit… pop-up.
+  const recCard = (title, list) => list.length ? `<div class="card" style="margin-top:12px"><h2>${title}</h2>
+      <table class="spent-lines rec-lines"><tbody>${list.map(x => `<tr data-sub-line="${x.id}" title="Edit ${esc(x.name)}">
+        <td>${esc(x.name)}</td><td class="r num nowrap">${priceCell(x)}</td></tr>`).join('')}</tbody></table></div>` : '';
   const bg = document.createElement('div'); bg.className = 'drawer-bg';
   const dr = document.createElement('div'); dr.className = 'drawer';
   dr.innerHTML = `
-    <div class="row"><h3 style="margin:0">${esc(d.name)}</h3><span class="spacer"></span><button class="icon-btn" data-close>✕</button></div>
+    <div class="row">${d.debt_account_id ? `<h3 style="margin:0">${esc(d.name)}</h3>`
+      : `<input id="cat-name" class="cat-name" value="${esc(d.name)}" title="Click to rename" aria-label="Name">`}<span class="spacer"></span><button class="icon-btn" data-close>✕</button></div>
     ${d.debt_account_id ? `<p class="muted small">Money set aside to pay the card. It stays in your bank account until you pay the card. Card spending from a category with money is set aside here automatically; assign more here to cover the rest.</p>
       ${envelopeSummary(findCat(d.id))}` : ''}
     ${spentCard(d.spent, d.month, { total: d.debt_account_id ? 'This month' : 'Spent' })}
@@ -872,6 +1096,7 @@ async function openCategory(id) {
           value="${d.monthly_budget === null ? '' : moneyPlain(d.monthly_budget)}" placeholder="Not set">
         <button class="btn small ghost" data-act="use-amount" data-amount="">Clear</button></div>
     </div>`}
+    ${recCard('Subscriptions', rec.subscriptions)}${recCard('Bills', rec.bills)}
     <div class="card" style="margin-top:12px">
       <h2>Move money</h2>
       <div class="row wrap"><input id="move-amount" style="width:110px;text-align:right" placeholder="0.00">
@@ -882,7 +1107,9 @@ async function openCategory(id) {
       <div class="row"><h2 style="margin:0">Notes</h2><span class="spacer"></span><span id="note-status" class="small muted"></span></div>
       <textarea id="cat-note" rows="4" style="width:100%;margin-top:8px;resize:vertical" placeholder="Anything to remember about ${esc(d.name)}: when it renews, what it covers…">${esc(d.note || '')}</textarea>
     </div>
-    ${d.subscriptions.length ? `<div class="card" style="margin-top:12px"><h2>Subscriptions here</h2>${d.subscriptions.map(s => `<div class="row"><span>${esc(s.name)}</span><span class="spacer"></span><span class="num">${money(s.amount)}/${s.cadence === 'yearly' ? 'yr' : s.cadence === 'weekly' ? 'wk' : 'mo'}</span></div>`).join('')}</div>` : ''}`;
+    ${d.debt_account_id ? '' : `<div class="row" style="margin-top:14px;gap:8px">
+      <button class="btn small" data-act="cat-hide">${d.hidden ? 'Show' : 'Hide'}</button>
+      ${meta && meta.own ? '' : '<button class="btn small danger" data-act="cat-delete">Delete…</button>'}</div>`}`;
   document.body.append(bg, dr);
 
   // Both the budgeted amount and the note save as they're typed.
@@ -919,10 +1146,32 @@ async function openCategory(id) {
   }
   noteInput.addEventListener('input', debounce(saveNote, 700));
   noteInput.addEventListener('change', saveNote);
+  // The name saves when you leave it (Return too); Escape puts it back. A refused name
+  // (one another category has) goes back as well.
+  const nameInput = $('#cat-name', dr);
+  let savedName = d.name;
+  const saveName = async () => {
+    if (!nameInput) return;
+    const name = nameInput.value.replace(/\s+/g, ' ').trim();
+    if (name === savedName) return;
+    if (!name) { nameInput.value = savedName; return; }
+    try {
+      await call('rename_category', [d.id, name]);
+      savedName = name; nameInput.value = name; changed = true;
+      await loadCategories();  // the new name everywhere it's looked up (a bill's Edit… pop-up)
+    } catch (_) { nameInput.value = savedName; }
+  };
+  if (nameInput) {
+    nameInput.addEventListener('change', saveName);
+    nameInput.addEventListener('keydown', e => {
+      if (e.key === 'Enter') { e.preventDefault(); nameInput.blur(); }
+      else if (e.key === 'Escape') { e.stopPropagation(); nameInput.value = savedName; nameInput.blur(); }
+    });
+  }
 
   const close = async () => {
     document.removeEventListener('keydown', onKey);
-    await Promise.all([saveMonthly(), saveNote()]);  // anything typed in the last moment
+    await Promise.all([saveMonthly(), saveNote(), saveName()]);  // anything typed in the last moment
     bg.remove(); dr.remove();
     if (changed) { await loadCategories(); await renderBudget(); }
   };
@@ -933,12 +1182,34 @@ async function openCategory(id) {
     if (e.target.closest('[data-close]')) return close();
     const line = e.target.closest('[data-line-tx]');
     if (line) return editFromDrawer(Number(line.dataset.lineTx), close, () => openCategory(id));
+    const sub = e.target.closest('[data-sub-line]');
+    if (sub) {
+      await editSubscriptionDialog(recAll.find(x => x.id === Number(sub.dataset.subLine)));
+      await close();
+      return openCategory(id);
+    }
     const btn = e.target.closest('[data-act]');
     if (!btn) return;
     const act = btn.dataset.act, cat = Number(btn.dataset.cat);
     if (act === 'use-amount') {
       monthlyInput.value = btn.dataset.amount === '' ? '' : moneyPlain(Number(btn.dataset.amount));
       await saveMonthly();
+    } else if (act === 'cat-hide') {
+      await call('set_category_hidden', [d.id, !d.hidden]);
+      changed = true;
+      await close();
+      toast(d.hidden ? `${d.name} is back` : `${d.name} hidden`, { action: undoAction });
+    } else if (act === 'cat-delete') {
+      // The same question as onboarding's ✕: deleted if never used, else Hide.
+      const q = await deleteQuestion({ ...(meta || {}), id: d.id, name: savedName, hidden: d.hidden });
+      const yes = await dialog({ title: q.yes === 'Delete' ? `Delete ${savedName}` : savedName, body: `<p>${esc(q.text)}</p>`,
+        actions: q.yes ? [{ label: 'Cancel', value: false }, { label: q.yes, value: true, primary: !q.danger, danger: q.danger }]
+          : [{ label: 'OK', value: false, primary: true }] });
+      if (!yes) return;
+      await q.run();
+      changed = true;
+      await close();
+      toast(q.done, { action: undoAction });
     } else if (act === 'move-to' || act === 'move-from') {
       const cents = parseMoney($('#move-amount', dr).value);
       if (!cents || cents < 0) return toast('Enter an amount to move', { error: true });
@@ -1018,69 +1289,322 @@ async function openAssign(amount) {
   toast(`Assigned ${money(allocations.reduce((s, a) => s + a.amount, 0))}`, { action: undoAction });
 }
 
-// ── categories editor (budget + onboarding) ─────────────
-// Only an empty group or a category never used has a ✕; the others get this blank in its
-// place so the buttons stay in line.
+// ── categories editor (onboarding) ──────────────────────
+// Onboarding's list of categories (after it, they're edited on the Budget page). Rows are
+// dragged by their handle (⋮⋮): a category within its group or into another ordinary
+// one, a category group among the others. Income's and the cards' categories stay where
+// they are (move_category). ✕ is on every category you made and always asks first: one
+// never used is deleted, a used one can only be hidden. Blanks keep the rows in line
+// where a handle or a ✕ isn't offered.
 const NO_DELETE = '<button type="button" class="icon-btn" style="visibility:hidden" tabindex="-1" aria-hidden="true">✕</button>';
+const NO_HANDLE = '<span class="drag-handle" style="visibility:hidden" aria-hidden="true">⋮⋮</span>';
 function categoryEditorHtml(groups) {
-  return `<div class="cat-editor">${groups.map(g => `
-    <div class="grp" data-group="${g.id}">
+  return `<div class="cat-editor">${groups.map(g => {
+    const normal = g.role === 'normal';
+    return `<div class="grp" data-group="${g.id}" data-role="${g.role}">
       <div class="grp-head">
-        <input value="${esc(g.name)}" data-rename-group="${g.id}" ${g.role !== 'normal' ? 'disabled' : ''}>
-        ${g.role === 'normal' ? `<button type="button" class="icon-btn" data-move-group="${g.id}" data-dir="-1" title="Move up">↑</button>
-        <button type="button" class="icon-btn" data-move-group="${g.id}" data-dir="1" title="Move down">↓</button>
-        ${g.categories.length ? NO_DELETE : `<button type="button" class="icon-btn danger" data-delete-group="${g.id}" title="Delete group">✕</button>`}` : `<span class="tag">${g.role === 'income' ? 'Income' : 'Cards'}</span>`}
+        ${g.role !== 'income' ? `<span class="drag-handle" data-drag-group="${g.id}" title="Drag to move">⋮⋮</span>` : NO_HANDLE}
+        <input value="${esc(g.name)}" data-rename-group="${g.id}" ${normal ? '' : 'disabled'}>
+        ${normal ? (g.categories.length ? NO_DELETE : `<button type="button" class="icon-btn danger" data-delete-group="${g.id}" title="Delete group">✕</button>`)
+          : `<span class="tag">${g.role === 'income' ? 'Income' : 'Cards'}</span>`}
       </div>
-      ${g.categories.map(c => `<div class="cat-row">
-        <input value="${esc(c.name)}" data-rename-cat="${c.id}" ${c.debt_account_id ? 'disabled' : ''}>
-        ${c.debt_account_id ? '<span class="tag">Card payment</span>' : `
-        <button type="button" class="icon-btn" data-hide-cat="${c.id}" data-hidden="${c.hidden}" title="${c.hidden ? 'Show' : 'Hide'}">${c.hidden ? 'Show' : 'Hide'}</button>
-        ${c.used ? NO_DELETE : `<button type="button" class="icon-btn danger" data-delete-cat="${c.id}" title="Delete">✕</button>`}`}
-      </div>`).join('')}
-      ${g.role !== 'debt' ? `<div class="cat-row"><input placeholder="Add a category…" data-add-cat="${g.id}"></div>` : ''}
-    </div>`).join('')}
+      <div class="grp-cats"><div>
+        ${g.categories.map(c => `<div class="cat-row" data-cat-row="${c.id}">
+          ${normal ? `<span class="drag-handle" data-drag-cat="${c.id}" title="Drag to move">⋮⋮</span>` : NO_HANDLE}
+          <input value="${esc(c.name)}" data-rename-cat="${c.id}" ${c.debt_account_id ? 'disabled' : ''}>
+          ${c.debt_account_id ? '<span class="tag">Card payment</span>' : `
+          <button type="button" class="icon-btn" data-hide-cat="${c.id}" data-hidden="${c.hidden}" title="${c.hidden ? 'Show' : 'Hide'}">${c.hidden ? 'Show' : 'Hide'}</button>
+          ${c.own ? NO_DELETE : `<button type="button" class="icon-btn danger" data-delete-cat="${c.id}" title="Delete">✕</button>`}`}
+        </div>`).join('')}
+        ${g.role !== 'debt' ? `<div class="cat-row add-row">${NO_HANDLE}<input placeholder="Add a category…" data-add-cat="${g.id}"></div>` : ''}
+      </div></div>
+    </div>`;
+  }).join('')}
     <div class="row"><input placeholder="Add a group…" data-add-group style="flex:1"></div>
   </div>`;
 }
-function bindCategoryEditor(root, rerender) {
-  const run = async (fn, msg) => { try { await fn(); await loadCategories(); await rerender(); if (msg) toast(msg, { action: undoAction }); } catch (_) {} };
-  root.addEventListener('change', e => {
+const allCategories = () => state.categories.flatMap(g => g.categories.map(c => ({ ...c, group: g })));
+const editorCat = id => allCategories().find(c => c.id === id) || null;
+const sameName = (a, b) => a.replace(/\s+/g, ' ').trim().toLowerCase() === b.replace(/\s+/g, ' ').trim().toLowerCase();
+const andList = xs => xs.length > 1 ? `${xs.slice(0, -1).join(', ')} and ${xs[xs.length - 1]}` : xs[0];
+
+// What a category's ✕ (onboarding's list) or Delete… (its pop-over) asks: one never used
+// is deleted, a used one says what it's used by and can only be hidden. {text, yes,
+// danger, run, done}; without `yes` there's only OK.
+async function deleteQuestion(cat) {
+  if (!cat.used) {
+    return { text: `Delete ${cat.name}? It's never been used, so nothing else changes.`, yes: 'Delete', danger: true,
+      run: () => call('delete_category', [cat.id]), done: 'Category deleted' };
+  }
+  const u = await call('category_uses', [cat.id]);
+  const what = [u.transactions && plural(u.transactions, 'transaction'), u.assigned && 'money assigned',
+    u.recurring && plural(u.recurring, 'recurring charge'), u.examples && 'examples learnt from Actual'].filter(Boolean);
+  const why = what.length ? `${cat.name} has ${andList(what)}, so it can't be deleted.` : `${cat.name} has been used, so it can't be deleted.`;
+  if (cat.hidden) return { text: `${why} It's hidden already: it keeps its history but isn't offered for new transactions.` };
+  return { text: `${why} Hide it? It keeps its history and money but isn't offered for new transactions.`, yes: 'Hide',
+    run: () => call('set_category_hidden', [cat.id, true]), done: `${cat.name} hidden` };
+}
+
+// `host` is made for this list each time it's drawn, so its handlers go with it (bound to
+// the shared pop-up the editor once was in, they piled up, one more set per opening, and
+// a Return then added a category once per set).
+function bindCategoryEditor(host) {
+  const FOCUSABLE = ['data-rename-group', 'data-rename-cat', 'data-add-cat', 'data-add-group'];
+  // Redrawn after every change, keeping the box you're in (Tab after a rename moved you on).
+  const rerender = () => {
+    if (state.dragging) return;
+    const a = document.activeElement;
+    const attr = a && host.contains(a) ? FOCUSABLE.find(n => a.hasAttribute(n)) : null;
+    const value = attr && a.getAttribute(attr);
+    host.innerHTML = categoryEditorHtml(state.categories);
+    const again = attr && host.querySelector(value ? `[${attr}="${value}"]` : `[${attr}]`);
+    if (again) again.focus();
+  };
+  const run = async (fn, msg) => {
+    let ok = false;
+    try { await fn(); ok = true; } catch (_) {}
+    await loadCategories(); rerender();  // also after a refusal, so a refused name goes back
+    if (ok && msg) toast(msg, { action: undoAction });
+    return ok;
+  };
+  // The ✕'s question (and "Show it again?"), in a strip under the row: the editor is
+  // itself a pop-up, so another one can't open over it.
+  const ask = (after, text, yes, onYes, danger = false) => {
+    host.querySelectorAll('.cat-confirm').forEach(x => x.remove());
+    const strip = document.createElement('div');
+    strip.className = 'cat-confirm';
+    strip.innerHTML = `<span>${esc(text)}</span><span class="spacer"></span>
+      <button type="button" class="btn small" data-confirm="no">${yes ? 'Cancel' : 'OK'}</button>
+      ${yes ? `<button type="button" class="btn small ${danger ? 'danger' : 'primary'}" data-confirm="yes">${esc(yes)}</button>` : ''}`;
+    strip.onYes = onYes;
+    after.after(strip);
+    (strip.querySelector('[data-confirm="yes"]') || strip.querySelector('[data-confirm]')).focus();
+  };
+  const askDelete = async (row, id) => {
+    const cat = editorCat(id);
+    if (!cat) return;
+    const q = await deleteQuestion(cat);
+    ask(row, q.text, q.yes, q.run && (() => run(q.run, q.done)), q.danger);
+  };
+  // A name already taken keeps what you typed (add_category refuses it too); a hidden
+  // category's name offers that one back instead of a second.
+  const add = (el) => {
+    const gid = Number(el.dataset.addCat), name = el.value;
+    const same = allCategories().find(c => sameName(c.name, name));
+    if (!same) return run(() => call('add_category', [gid, name]));
+    if (!same.hidden || same.debt_account_id) return toast(`There's already a ${same.name} in ${same.group.name}.`, { error: true });
+    ask(el.closest('.cat-row'), `${same.name} is hidden${same.group.id === gid ? '' : ` in ${same.group.name}`}. Show it again?`, 'Show it again',
+      () => run(() => call('show_category', [same.id, gid]), `${same.name} is back`));
+  };
+  const addGroup = (el) => {
+    const same = state.categories.find(g => sameName(g.name, el.value));
+    if (same) return toast(`There's already a group called ${same.name}.`, { error: true });
+    run(() => call('add_group', [el.value, null, true]));  // with a "New Spending Category", as on the Budget page
+  };
+
+  host.addEventListener('change', e => {
     const el = e.target;
     if (el.dataset.renameGroup) run(() => call('rename_group', [Number(el.dataset.renameGroup), el.value]));
     else if (el.dataset.renameCat) run(() => call('rename_category', [Number(el.dataset.renameCat), el.value]));
   });
-  root.addEventListener('keydown', e => {
+  host.addEventListener('keydown', e => {
     const el = e.target;
-    if (e.key !== 'Enter') return;
+    if (e.key !== 'Enter' || el.tagName !== 'INPUT') return;
     e.preventDefault();
-    if (el.dataset.addCat !== undefined && el.value.trim()) run(() => call('add_category', [Number(el.dataset.addCat), el.value]));
-    else if (el.dataset.addGroup !== undefined && el.value.trim()) run(() => call('add_group', [el.value]));
+    if (el.dataset.addCat !== undefined && el.value.trim()) add(el);
+    else if (el.dataset.addGroup !== undefined && el.value.trim()) addGroup(el);
     else el.blur();
   });
-  root.addEventListener('click', async e => {
+  host.addEventListener('click', async e => {
     const b = e.target.closest('button');
     if (!b) return;
-    if (b.dataset.moveGroup) run(() => call('move_group', [Number(b.dataset.moveGroup), Number(b.dataset.dir)]));
-    else if (b.dataset.hideCat) run(() => call('set_category_hidden', [Number(b.dataset.hideCat), b.dataset.hidden !== '1']));
-    else if (b.dataset.deleteCat) {
-      run(() => call('delete_category', [Number(b.dataset.deleteCat)]), 'Category deleted');
-    } else if (b.dataset.deleteGroup) {
-      run(() => call('delete_group', [Number(b.dataset.deleteGroup)]), 'Group deleted');
+    if (b.dataset.confirm) {
+      const strip = b.closest('.cat-confirm');
+      strip.remove();
+      if (b.dataset.confirm === 'yes') await strip.onYes();
+    } else if (b.dataset.hideCat) run(() => call('set_category_hidden', [Number(b.dataset.hideCat), b.dataset.hidden !== '1']));
+    else if (b.dataset.deleteCat) askDelete(b.closest('.cat-row'), Number(b.dataset.deleteCat));
+    else if (b.dataset.deleteGroup) {
+      const g = state.categories.find(x => x.id === Number(b.dataset.deleteGroup));
+      ask(b.closest('.grp-head'), `Delete the group ${g ? g.name : ''}?`, 'Delete',
+        () => run(() => call('delete_group', [Number(b.dataset.deleteGroup)]), 'Group deleted'), true);
     }
   });
-}
-async function openCategoryEditor() {
-  await loadCategories();
-  const d = $('#dlg');
-  const promise = dialog({ title: 'Categories', body: categoryEditorHtml(state.categories), wide: true, actions: [{ label: 'Done', value: true, primary: true }] });
-  const body = d.querySelector('.dlg-body');
-  const rerender = async () => { body.innerHTML = categoryEditorHtml(state.categories); };
-  if (!body.dataset.bound) { bindCategoryEditor(body, rerender); body.dataset.bound = '1'; }
-  await promise;
-  delete body.dataset.bound;
-  await renderBudget();
+
+  host.addEventListener('pointerdown', e => beginDrag(e, { root: () => host.querySelector('.cat-editor'), redraw: async () => rerender() }));
 }
 
+// Dragging categories and category groups by their handle (⋮⋮) with the mouse, on the
+// Budget page and in onboarding's list. Pointer events, not HTML drag and drop (that
+// would show the "drop a bank file" overlay). The row moves to the place under the
+// pointer as you go, and it's saved when you let go. Pressing a group's handle folds
+// every group to its heading at once (0.1 s, before the mouse moves: waiting for it made
+// it hard to use), the one you're holding staying under the pointer, so a long
+// list fits; on the drop they unfold (0.1 s too), the group staying where it was dropped
+// and the page scrolling only if it ends up out of sight (the maintainer's design). The
+// page never scrolls by itself while folding (it did, and the top of the page slid into
+// view): the list's card keeps its height instead. If the move can't be saved, it goes
+// back and still unfolds. `root()` is the list: its `.grp` children are the
+// groups, `[data-cat-row]` the categories. `redraw()` draws it again from
+// state.categories; nothing else redraws it meanwhile (state.dragging).
+function beginDrag(e, { root, redraw }) {
+  const handle = e.target.closest('[data-drag-cat], [data-drag-group]');
+  if (!handle || e.button !== 0) return;
+  e.preventDefault();
+  const isGroup = handle.dataset.dragGroup !== undefined;
+  const list = root();
+  const item = handle.closest(isGroup ? '.grp' : '[data-cat-row]');
+  const scroller = scrollParent(list);
+  const before = () => isGroup ? [item.parentElement, nextOf(item, '.grp:not([data-role="income"])')]
+    : [item.closest('.grp'), nextOf(item, '[data-cat-row]')];
+  const [startParent, startNext] = before();
+  let started = false, folding = false, heldAt = 0, y = e.clientY, raf = 0;
+
+  const place = () => {
+    if (isGroup) {
+      const others = [...list.querySelectorAll(':scope > .grp:not([data-role="income"])')].filter(g => g !== item);
+      const ref = others.find(g => { const r = g.getBoundingClientRect(); return y < r.top + r.height / 2; })
+        || list.querySelector(':scope > .grp[data-role="income"]') || list.querySelector(':scope > .row');
+      if (item.nextElementSibling !== ref) list.insertBefore(item, ref);
+      return;
+    }
+    // Only into an ordinary group (move_category).
+    const groups = [...list.querySelectorAll(':scope > .grp[data-role="normal"]')];
+    if (!groups.length) return;
+    const group = groups.find(g => y < g.getBoundingClientRect().bottom) || groups[groups.length - 1];
+    const box = group.querySelector('.grp-cats > div') || group;
+    const rows = [...box.querySelectorAll('[data-cat-row]')].filter(r => r !== item);
+    const ref = rows.find(r => { const b = r.getBoundingClientRect(); return y < b.top + b.height / 2; })
+      || box.querySelector(':scope > .add-row');
+    if (item.nextElementSibling !== ref || item.parentElement !== box) box.insertBefore(item, ref);
+  };
+  // Near the top or bottom edge, the list scrolls by itself, and the row follows.
+  const edgeScroll = () => {
+    const r = scroller.getBoundingClientRect(), edge = 40;
+    const top = Math.max(r.top, 0), bottom = Math.min(r.bottom, window.innerHeight);
+    const speed = y < top + edge ? -(top + edge - y) / 3 : y > bottom - edge ? (y - bottom + edge) / 3 : 0;
+    const was = scroller.scrollTop;
+    if (speed && !folding) scroller.scrollTop += speed;
+    if (scroller.scrollTop !== was) place();
+    raf = requestAnimationFrame(edgeScroll);
+  };
+  const start = () => {
+    started = true;
+    state.dragging = true;
+    if (list.contains(document.activeElement)) document.activeElement.blur();  // a rename typed just before
+    list.querySelectorAll('.cat-confirm').forEach(x => x.remove());
+    item.classList.add('dragged');
+    list.classList.add('is-dragging');
+    if (isGroup) {
+      heldAt = item.getBoundingClientRect().top;
+      list.parentElement.style.minHeight = `${list.parentElement.offsetHeight}px`;  // the page doesn't get shorter
+      list.classList.add('folded');
+      folding = true;
+      holdAt(list, item, heldAt, 150).then(() => { folding = false; if (state.dragging) place(); });
+    }
+    raf = requestAnimationFrame(edgeScroll);
+  };
+  const move = ev => {
+    y = ev.clientY;
+    if (!started && Math.abs(y - e.clientY) < 4) return;
+    if (!started) start();
+    if (!folding) place();
+  };
+  const finish = async cancelled => {
+    document.removeEventListener('pointermove', move);
+    document.removeEventListener('pointerup', up);
+    document.removeEventListener('keydown', key, true);
+    cancelAnimationFrame(raf);
+    if (!started) return;
+    // The click that ends a drag isn't a click on whatever is under it (a group's row folds).
+    const swallow = ev => { ev.stopPropagation(); ev.preventDefault(); };
+    window.addEventListener('click', swallow, true);
+    setTimeout(() => window.removeEventListener('click', swallow, true), 0);
+    if (folding && !cancelled) {  // let go before the groups had folded: fold them now, then place it
+      list.classList.add('no-anim');
+      void list.offsetHeight;
+      holdAt(list, item, heldAt, 0);
+      place();
+      list.classList.remove('no-anim');
+    }
+    const [parent, next] = before();
+    const moved = !cancelled && (parent !== startParent || next !== startNext);
+    const id = Number(isGroup ? item.dataset.group : item.dataset.catRow);
+    const top = item.getBoundingClientRect().top, margin = list.style.marginTop, height = list.parentElement.style.minHeight;
+    let saved = true, failure = null;
+    try {
+      if (moved && isGroup) await call('move_group', [id, next ? Number(next.dataset.group) : null]);
+      else if (moved) await call('move_category', [id, Number(parent.dataset.group), next ? Number(next.dataset.catRow) : null]);
+      await loadCategories();
+      state.dragging = false;
+      await redraw();
+    } catch (err) { saved = false; failure = err; }
+    state.dragging = false;
+    if (!saved) {  // not saved (or not redrawn): back where it was, and opened up again
+      startParent.insertBefore(item, startNext);
+      item.classList.remove('dragged');
+      list.classList.remove('folded', 'is-dragging');
+      list.style.marginTop = list.parentElement.style.minHeight = '';
+      if (moved && !(failure instanceof UserFacingError)) toast("Couldn't save that move", { error: true });  // else it said why
+      return;
+    }
+    const fresh = root().querySelector(isGroup ? `.grp[data-group="${id}"]` : `[data-cat-row="${id}"]`);
+    const again = root();
+    if (isGroup) {  // drawn folded, then unfolds
+      again.style.marginTop = margin;
+      again.parentElement.style.minHeight = height;
+      again.classList.add('folded');
+      void again.offsetHeight;
+      again.classList.remove('folded');
+      again.classList.add('unfolding');
+    }
+    if (fresh && moved) fresh.classList.add('just-moved');
+    // What was dropped stays where it was dropped while the groups open up around it.
+    if (fresh) await holdAt(again, fresh, top, isGroup ? 150 : 0);
+    again.classList.remove('unfolding');
+    again.parentElement.style.minHeight = '';
+    if (parseFloat(again.style.marginTop)) {
+      again.style.transition = 'margin-top .1s ease';
+      again.style.marginTop = '';
+      await sleep(120);
+    }
+    // Only now, and only if it's out of sight: the page scrolls just enough to show it.
+    const head = fresh && (fresh.querySelector('tr.group, .grp-head') || fresh);
+    if (head && head.isConnected) {
+      const r = head.getBoundingClientRect(), view = scroller.getBoundingClientRect();
+      const above = r.top - (Math.max(view.top, 0) + 8), below = r.bottom - (Math.min(view.bottom, window.innerHeight) - 8);
+      if (above < 0) scroller.scrollBy({ top: above, behavior: 'smooth' });
+      else if (below > 0) scroller.scrollBy({ top: Math.min(below, above), behavior: 'smooth' });
+    }
+  };
+  const up = () => finish(false);
+  const key = ev => { if (ev.key === 'Escape') { ev.preventDefault(); ev.stopPropagation(); finish(true); } };
+  document.addEventListener('pointermove', move);
+  document.addEventListener('pointerup', up);
+  document.addEventListener('keydown', key, true);
+  if (isGroup) start();  // a category waits for the mouse to move: nothing folds for it
+}
+// Keeps `el` at `top` on screen for `ms` while the rows around it fold or unfold, with a
+// top margin on `list`, never by scrolling the page. Where the margin runs out (the rows
+// above opening up by more than it), `el` moves down with them.
+function holdAt(list, el, top, ms) {
+  const until = performance.now() + ms;
+  const margin = () => parseFloat(list.style.marginTop) || 0;
+  return new Promise(resolve => {
+    const step = () => {
+      if (!el.isConnected) return resolve();
+      const down = top - el.getBoundingClientRect().top;  // how far the rows must move down
+      if (down) list.style.marginTop = `${Math.max(0, margin() + down)}px`;
+      if (performance.now() < until) requestAnimationFrame(step); else resolve();
+    };
+    step();
+  });
+}
+const nextOf = (el, sel) => { for (let n = el.nextElementSibling; n; n = n.nextElementSibling) if (n.matches(sel)) return n; return null; };
+const scrollParent = el => {
+  for (let p = el.parentElement; p; p = p.parentElement) if (/(auto|scroll)/.test(getComputedStyle(p).overflowY)) return p;
+  return document.scrollingElement;
+};
 // ── dashboard ───────────────────────────────────────────
 // The page the app opens on: four figures, each opening its page, then what each
 // category spent month by month (the same figures as Spent). A whole month that's above
@@ -2439,8 +2963,7 @@ async function renderOnboarding() {
   }
   root.innerHTML = `<div class="inner">${head}${body}</div>`;
   if (ob.step === 1) {
-    const box = $('#ob-cats');
-    bindCategoryEditor(box, async () => { box.innerHTML = categoryEditorHtml(state.categories); });
+    bindCategoryEditor($('#ob-cats'));
   }
 }
 async function onboardingAction(btn) {
@@ -2512,7 +3035,7 @@ window.appEvent = (name, payload) => {
     toast(added ? `Imported ${plural(added, 'new transaction')} from ${results.map(r => r.filename).join(', ')}${review ? ` · ${review} in the Inbox` : ''}`
       : `Nothing new in ${results.map(r => r.filename).join(', ')}`,
       review ? { action: { label: 'Open Inbox', run: () => navigate('inbox') } } : {});
-    if (!$('#dlg').open && !$('.drawer') && !$('.popover')) refresh();
+    if (!$('#dlg').open && !$('.drawer') && !$('.popover') && !state.dragging && !$('#main .inline-name')) refresh();
   } else if (name === 'update') {
     state.update = payload;
     if (state.checkingByHand && payload.status !== 'checking') {
@@ -2523,7 +3046,7 @@ window.appEvent = (name, payload) => {
       else if (payload.status === 'idle') toast(`You're up to date: ${payload.current} is the latest version.`);
     }
     if (state.page === 'settings') renderSettings();
-    else if (payload.status === 'ready') refresh();
+    else if (payload.status === 'ready' && !state.dragging && !$('#main .inline-name')) refresh();
   }
 };
 
@@ -2537,6 +3060,17 @@ document.addEventListener('click', async e => {
   if (obBtn) { try { await onboardingAction(obBtn); } catch (_) {} return; }
   const m = e.target.closest('#main [data-month]');
   if (m) { state.month = m.dataset.month; return renderBudget(); }
+  if (e.target.closest('.btable .drag-handle, .btable .inline-name')) return;
+  const groupPlus = e.target.closest('.btable [data-group-plus]');
+  if (groupPlus) return newGroupAbove(Number(groupPlus.dataset.groupPlus));
+  const catPlus = e.target.closest('.btable [data-cat-plus]');
+  if (catPlus) return newCategoryAbove(Number(catPlus.dataset.catPlus));
+  const pencil = e.target.closest('.btable [data-group-pencil]');
+  if (pencil) return renameGroupInPlace(Number(pencil.dataset.groupPencil));
+  const catPencil = e.target.closest('.btable [data-cat-pencil]');
+  if (catPencil) return renameCategoryInPlace(Number(catPencil.dataset.catPencil));
+  const groupX = e.target.closest('.btable [data-group-x]');
+  if (groupX) return deleteGroupAsked(Number(groupX.dataset.groupX));
   const spentGroup = e.target.closest('.btable [data-spent-group]');
   if (spentGroup) return openSpent({ month: state.month, group_id: Number(spentGroup.dataset.spentGroup) });
   const spent = e.target.closest('.btable [data-spent]');
@@ -2565,7 +3099,7 @@ document.addEventListener('click', async e => {
     } else if (act === 'start-here') {
       await call('set_budget_start', [state.month]); state.boot.budget_start = state.month; await renderBudget();
       toast(`The budget now starts in ${monthLong(state.month)}`);
-    } else if (act === 'edit-categories') await openCategoryEditor();
+    } else if (act === 'toggle-hidden') { state.showHidden = !state.showHidden; await renderBudget(); }
     else if (act === 'tx-cat') {
       const cid = await pickCategory(btn);
       if (cid) {

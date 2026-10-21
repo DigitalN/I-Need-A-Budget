@@ -100,9 +100,12 @@ typing `+50` in it adds $50 to what's there (any amount box does math: `120+35.5
 shares out a paycheque, topping each category up to its budgeted amount in order (what's
 already in it counts). Click a category, or what it spent, to see every transaction that
 adds up to it this month (click one to change it), its **Monthly Budgeted Amount** (what
-it actually spent in past months, last month and the 3/6/12-month averages, each with
-**Use**, and the amount itself), move money and keep notes. It all saves as you type. A
-group's Spent lists the whole group.
+it actually spent in past months, last month and the 3/6/12-month averages, and what its
+subscriptions and bills come to a month, each with **Use**, and the amount itself), the
+subscriptions and bills that go into it, move money and keep notes. Click its name to
+rename it, hide it or delete it. It all saves as you type. A group's Spent lists the whole
+group. Point at a category or group and its tools appear: drag **⋮⋮** to move it (the
+groups fold up while you drag one), **+** adds one above it, **✎** renames it.
 
 **Ready to assign** is money you really have: overspending a category comes out of it
 straight away, since that money has already left the bank. Under it, a line ties it to
