@@ -399,9 +399,13 @@ Don't undo these without asking:
   you in the box after Return. Drag by ⋮⋮: a category within its group or into another, a
   group among the others; saved on release, no Done. Pressing a group's ⋮⋮ folds every
   group's categories at once, before the mouse moves (waiting for it was hard to use), in 0.1 s (each group is its own `<tbody>`; the cells are wrapped
-  so rows can fold), the held group staying under the pointer, so a long list fits; on
-  release they unfold in 0.1 s too, the group staying where it was dropped, and it flashes;
-  groups you folded stay folded (`beginDrag`, also onboarding's list). A move that
+  so rows can fold), the held group staying under the pointer, so a long list fits. The
+  page never scrolls while it folds (it did, and the top of the page slid into view, which
+  the maintainer found unintuitive): the card keeps its height and the other groups close
+  up around the held one. On release they unfold in 0.1 s too, the group staying where it
+  was dropped; the page scrolls only if the group ends up out of sight; it flashes;
+  groups you folded stay folded (`beginDrag`, also onboarding's list). Debt Payments (the
+  cards' group) has ⋮⋮ and + too and moves like any group; Income never moves. A move that
   can't be saved goes back, and the list still unfolds (it once stayed folded). Nothing
   moves into or out of Income or the cards' group, not even within Income: the first
   category there is the app's own Income (`move_category`); the Income group isn't on

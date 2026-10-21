@@ -657,14 +657,15 @@ class BudgetService:
 
     @exposed
     def move_group(self, group_id, before_id=None):
-        """Dragged in the Categories pop-up: before `before_id`, or last (Income stays at
-        the bottom whatever happens)."""
+        """Dragged on the Budget page: before `before_id`, or last. Any group but Income,
+        which stays at the bottom whatever happens; the cards' group moves too (its
+        categories stay in it: move_category)."""
         with self.db.write("Move group") as c:
             g = c.execute("SELECT role FROM category_groups WHERE id = ?", (group_id,)).fetchone()
             if g is None:
                 raise UserError("That group no longer exists.")
-            if g["role"] != "normal":
-                raise UserError("This group stays where it is.")
+            if g["role"] == "income":
+                raise UserError("Income stays at the bottom.")
             groups = [r["id"] for r in c.execute(
                 "SELECT id FROM category_groups WHERE role != 'income' AND id != ? ORDER BY sort, id", (group_id,))]
             groups.insert(groups.index(before_id) if before_id in groups else len(groups), group_id)

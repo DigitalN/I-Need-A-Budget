@@ -200,6 +200,7 @@ th.r, td.r { text-align: right; }
 .btable.folded .cell > div, .btable.unfolding .cell > div { overflow: hidden; }
 .btable.folded tr.cat > td { padding-top: 0; padding-bottom: 0; border-color: transparent; }
 .btable.folded .cell { grid-template-rows: 0fr; opacity: 0; }
+.btable.no-anim *, .cat-editor.no-anim * { transition: none !important; }
 .btable.is-dragging, .btable.is-dragging * { cursor: grabbing !important; user-select: none; -webkit-user-select: none; }
 .btable.is-dragging .tool { opacity: 0 !important; }
 .btable .dragged > tr > td, .btable tr.dragged > td { background: var(--accent-soft) !important; }
@@ -739,15 +740,15 @@ async function renderBudget() {
 
   // Each group is its own <tbody>, so dragging one takes its categories along. The tools
   // (⋮⋮ in the margin; +, ✎ and an empty group's ✕ right of the name) show on the row the
-  // pointer is on. Only an ordinary group or category has them, but every group has +
-  // (a group above it).
+  // pointer is on. Every group has ⋮⋮ and + (a group above it), Debt Payments too; ✎,
+  // ✕ and the categories' tools are for ordinary groups only.
   const bodies = [];
   const hiddenCount = view.groups.reduce((n, g) => n + g.categories.filter(c => c.hidden).length, 0);
   for (const g of view.groups) {
     const collapsed = !!g.collapsed, normal = g.role === 'normal';
     const rows = [];
     rows.push(`<tr class="group ${collapsed ? 'collapsed' : ''}" data-group="${g.id}">
-      <td>${normal ? `<span class="gutter"><span class="drag-handle tool" data-drag-group="${g.id}" title="Drag to move">⋮⋮</span></span>` : ''}<span class="caret">▾</span> <span class="gname">${esc(g.name)}</span><span class="row-tools"><button class="plus tool" data-group-plus="${g.id}" title="Add a group above" aria-label="Add a group above">+</button>${normal ? `<button class="icon-btn tool" data-group-pencil="${g.id}" title="Rename" aria-label="Rename">${PENCIL}</button>${g.categories.length ? '' : `<button class="icon-btn danger tool" data-group-x="${g.id}" title="Delete group" aria-label="Delete group">✕</button>`}` : ''}</span></td><td></td>
+      <td>${g.role !== 'income' ? `<span class="gutter"><span class="drag-handle tool" data-drag-group="${g.id}" title="Drag to move">⋮⋮</span></span>` : ''}<span class="caret">▾</span> <span class="gname">${esc(g.name)}</span><span class="row-tools"><button class="plus tool" data-group-plus="${g.id}" title="Add a group above" aria-label="Add a group above">+</button>${normal ? `<button class="icon-btn tool" data-group-pencil="${g.id}" title="Rename" aria-label="Rename">${PENCIL}</button>${g.categories.length ? '' : `<button class="icon-btn danger tool" data-group-x="${g.id}" title="Delete group" aria-label="Delete group">✕</button>`}` : ''}</span></td><td></td>
       <td class="r num">${view.before_start ? '' : money(g.assigned)}</td><td class="r num">${g.activity ? `<span class="spent-link" data-spent-group="${g.id}" title="What makes up this">${money(g.activity)}</span>` : money(g.activity)}</td>
       <td class="r num">${view.before_start ? '' : money(g.available)}</td></tr>`);
     for (const c of collapsed ? [] : g.categories) {
@@ -1302,7 +1303,7 @@ function categoryEditorHtml(groups) {
     const normal = g.role === 'normal';
     return `<div class="grp" data-group="${g.id}" data-role="${g.role}">
       <div class="grp-head">
-        ${normal ? `<span class="drag-handle" data-drag-group="${g.id}" title="Drag to move">⋮⋮</span>` : NO_HANDLE}
+        ${g.role !== 'income' ? `<span class="drag-handle" data-drag-group="${g.id}" title="Drag to move">⋮⋮</span>` : NO_HANDLE}
         <input value="${esc(g.name)}" data-rename-group="${g.id}" ${normal ? '' : 'disabled'}>
         ${normal ? (g.categories.length ? NO_DELETE : `<button type="button" class="icon-btn danger" data-delete-group="${g.id}" title="Delete group">✕</button>`)
           : `<span class="tag">${g.role === 'income' ? 'Income' : 'Cards'}</span>`}
@@ -1440,7 +1441,10 @@ function bindCategoryEditor(host) {
 // every group to its heading at once (0.1 s, before the mouse moves: waiting for it made
 // it hard to use), the one you're holding staying under the pointer, so a long
 // list fits; on the drop they unfold (0.1 s too), the group staying where it was dropped
-// (the maintainer's design). If the move can't be saved, it goes back and still unfolds. `root()` is the list: its `.grp` children are the
+// and the page scrolling only if it ends up out of sight (the maintainer's design). The
+// page never scrolls by itself while folding (it did, and the top of the page slid into
+// view): the list's card keeps its height instead. If the move can't be saved, it goes
+// back and still unfolds. `root()` is the list: its `.grp` children are the
 // groups, `[data-cat-row]` the categories. `redraw()` draws it again from
 // state.categories; nothing else redraws it meanwhile (state.dragging).
 function beginDrag(e, { root, redraw }) {
@@ -1454,7 +1458,7 @@ function beginDrag(e, { root, redraw }) {
   const before = () => isGroup ? [item.parentElement, nextOf(item, '.grp:not([data-role="income"])')]
     : [item.closest('.grp'), nextOf(item, '[data-cat-row]')];
   const [startParent, startNext] = before();
-  let started = false, folding = false, y = e.clientY, raf = 0;
+  let started = false, folding = false, heldAt = 0, y = e.clientY, raf = 0;
 
   const place = () => {
     if (isGroup) {
@@ -1492,10 +1496,11 @@ function beginDrag(e, { root, redraw }) {
     item.classList.add('dragged');
     list.classList.add('is-dragging');
     if (isGroup) {
-      const top = item.getBoundingClientRect().top;
+      heldAt = item.getBoundingClientRect().top;
+      list.parentElement.style.minHeight = `${list.parentElement.offsetHeight}px`;  // the page doesn't get shorter
       list.classList.add('folded');
       folding = true;
-      holdAt(scroller, list, item, top, 150).then(() => { folding = false; if (state.dragging) place(); });
+      holdAt(list, item, heldAt, 150).then(() => { folding = false; if (state.dragging) place(); });
     }
     raf = requestAnimationFrame(edgeScroll);
   };
@@ -1515,32 +1520,39 @@ function beginDrag(e, { root, redraw }) {
     const swallow = ev => { ev.stopPropagation(); ev.preventDefault(); };
     window.addEventListener('click', swallow, true);
     setTimeout(() => window.removeEventListener('click', swallow, true), 0);
-    if (folding && !cancelled) place();  // let go before the groups had folded
+    if (folding && !cancelled) {  // let go before the groups had folded: fold them now, then place it
+      list.classList.add('no-anim');
+      void list.offsetHeight;
+      holdAt(list, item, heldAt, 0);
+      place();
+      list.classList.remove('no-anim');
+    }
     const [parent, next] = before();
     const moved = !cancelled && (parent !== startParent || next !== startNext);
     const id = Number(isGroup ? item.dataset.group : item.dataset.catRow);
-    const top = item.getBoundingClientRect().top, margin = list.style.marginTop;
-    let saved = true;
+    const top = item.getBoundingClientRect().top, margin = list.style.marginTop, height = list.parentElement.style.minHeight;
+    let saved = true, failure = null;
     try {
       if (moved && isGroup) await call('move_group', [id, next ? Number(next.dataset.group) : null]);
       else if (moved) await call('move_category', [id, Number(parent.dataset.group), next ? Number(next.dataset.catRow) : null]);
       await loadCategories();
       state.dragging = false;
       await redraw();
-    } catch (err) { saved = false; }
+    } catch (err) { saved = false; failure = err; }
     state.dragging = false;
     if (!saved) {  // not saved (or not redrawn): back where it was, and opened up again
       startParent.insertBefore(item, startNext);
       item.classList.remove('dragged');
       list.classList.remove('folded', 'is-dragging');
-      list.style.marginTop = '';
-      if (moved) toast("Couldn't save that move", { error: true });
+      list.style.marginTop = list.parentElement.style.minHeight = '';
+      if (moved && !(failure instanceof UserFacingError)) toast("Couldn't save that move", { error: true });  // else it said why
       return;
     }
     const fresh = root().querySelector(isGroup ? `.grp[data-group="${id}"]` : `[data-cat-row="${id}"]`);
     const again = root();
     if (isGroup) {  // drawn folded, then unfolds
       again.style.marginTop = margin;
+      again.parentElement.style.minHeight = height;
       again.classList.add('folded');
       void again.offsetHeight;
       again.classList.remove('folded');
@@ -1548,9 +1560,22 @@ function beginDrag(e, { root, redraw }) {
     }
     if (fresh && moved) fresh.classList.add('just-moved');
     // What was dropped stays where it was dropped while the groups open up around it.
-    if (fresh) await holdAt(scroller, again, fresh, top, isGroup ? 150 : 0);
+    if (fresh) await holdAt(again, fresh, top, isGroup ? 150 : 0);
     again.classList.remove('unfolding');
-    if (parseFloat(again.style.marginTop)) { again.style.transition = 'margin-top .2s ease'; again.style.marginTop = ''; }
+    again.parentElement.style.minHeight = '';
+    if (parseFloat(again.style.marginTop)) {
+      again.style.transition = 'margin-top .1s ease';
+      again.style.marginTop = '';
+      await sleep(120);
+    }
+    // Only now, and only if it's out of sight: the page scrolls just enough to show it.
+    const head = fresh && (fresh.querySelector('tr.group, .grp-head') || fresh);
+    if (head && head.isConnected) {
+      const r = head.getBoundingClientRect(), view = scroller.getBoundingClientRect();
+      const above = r.top - (Math.max(view.top, 0) + 8), below = r.bottom - (Math.min(view.bottom, window.innerHeight) - 8);
+      if (above < 0) scroller.scrollBy({ top: above, behavior: 'smooth' });
+      else if (below > 0) scroller.scrollBy({ top: Math.min(below, above), behavior: 'smooth' });
+    }
   };
   const up = () => finish(false);
   const key = ev => { if (ev.key === 'Escape') { ev.preventDefault(); ev.stopPropagation(); finish(true); } };
@@ -1559,24 +1584,17 @@ function beginDrag(e, { root, redraw }) {
   document.addEventListener('keydown', key, true);
   if (isGroup) start();  // a category waits for the mouse to move: nothing folds for it
 }
-// Keeps `el` at `top` on screen for `ms` while the rows around it fold or unfold: by
-// scrolling, and by a top margin on `list` where there's nothing left to scroll.
-function holdAt(scroller, list, el, top, ms) {
+// Keeps `el` at `top` on screen for `ms` while the rows around it fold or unfold, with a
+// top margin on `list`, never by scrolling the page. Where the margin runs out (the rows
+// above opening up by more than it), `el` moves down with them.
+function holdAt(list, el, top, ms) {
   const until = performance.now() + ms;
   const margin = () => parseFloat(list.style.marginTop) || 0;
   return new Promise(resolve => {
     const step = () => {
       if (!el.isConnected) return resolve();
       const down = top - el.getBoundingClientRect().top;  // how far the rows must move down
-      if (down > 0) {
-        const s = Math.min(scroller.scrollTop, down);
-        scroller.scrollTop -= s;
-        list.style.marginTop = `${margin() + down - s}px`;
-      } else if (down < 0) {
-        const m = Math.min(margin(), -down);
-        list.style.marginTop = `${margin() - m}px`;
-        scroller.scrollTop += -down - m;
-      }
+      if (down) list.style.marginTop = `${Math.max(0, margin() + down)}px`;
       if (performance.now() < until) requestAnimationFrame(step); else resolve();
     };
     step();

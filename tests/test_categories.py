@@ -104,7 +104,12 @@ def test_a_category_group_is_dragged_and_income_stays_last(app):
     assert cards in order()
     assert call(app, "undo")["undone"] == "Move group"
     assert order()[:3] == ["Fun", "Everyday", "Bills"]
-    assert refused(app, "move_group", g["Income"]["id"], g["Fun"]["id"]) == "This group stays where it is."
+    assert refused(app, "move_group", g["Income"]["id"], g["Fun"]["id"]) == "Income stays at the bottom."
+    # The cards' group moves like any other; its categories stay in it.
+    cards_id = next(x["id"] for x in g.values() if x["role"] == "debt")
+    call(app, "move_group", cards_id, g["Fun"]["id"])
+    assert order()[0] == cards and order()[-1] == "Income"
+    assert [c["name"] for c in groups(app)[cards]["categories"]] == [ledger.INTEREST_CATEGORY_NAME]
 
 
 def test_what_a_used_category_is_used_by(app):
