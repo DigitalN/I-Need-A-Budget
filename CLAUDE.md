@@ -398,10 +398,11 @@ Don't undo these without asking:
   Return or clicking away saves, Escape or an empty box cancels, a refused name keeps
   you in the box after Return. Drag by ⋮⋮: a category within its group or into another, a
   group among the others; saved on release, no Done. Dragging a group folds every
-  group's categories in 0.3 s (each group is its own `<tbody>`; the cells are wrapped
+  group's categories in 0.1 s (each group is its own `<tbody>`; the cells are wrapped
   so rows can fold), the held group staying under the pointer, so a long list fits; on
-  release they unfold in the same time, the group staying where it was dropped, and it
-  flashes; groups you folded stay folded (`beginDrag`, also onboarding's list). Nothing
+  release they unfold in 0.3 s, the group staying where it was dropped, and it flashes;
+  groups you folded stay folded (`beginDrag`, also onboarding's list). A move that
+  can't be saved goes back, and the list still unfolds (it once stayed folded). Nothing
   moves into or out of Income or the cards' group, not even within Income: the first
   category there is the app's own Income (`move_category`); the Income group isn't on
   the Budget page at all, so + on the last group is how a group goes at the bottom. **Show
