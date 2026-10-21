@@ -120,9 +120,18 @@ def test_relative_boxes_and_escape():
     assert "e.target.value = e.target.defaultValue;" in PAGE
 
 
-def test_the_category_editor_binds_to_its_own_host():
-    """Edit categories binds to an element made for it each time it opens: bound to the
-    shared pop-up, its handlers piled up and one Return added a category once per opening
-    (and Return stopped working in every other pop-up)."""
-    assert "bindCategoryEditor($('#dlg .cat-editor-host'))" in PAGE
-    assert "body.dataset.bound" not in PAGE
+def test_categories_are_edited_on_the_budget_page():
+    """No Edit categories… pop-up: categories are dragged (⋮⋮), added (+) and renamed (✎)
+    on the Budget page, each group its own <tbody> so dragging one takes its categories
+    along. Onboarding keeps its own list, bound to an element made each time it's drawn
+    (bound to the shared pop-up, its handlers piled up and one Return added a category
+    once per opening)."""
+    assert "edit-categories" not in PAGE and "openCategoryEditor" not in PAGE
+    assert '<tbody class="grp" data-group="${g.id}" data-role="${g.role}">' in PAGE
+    for tool in ("data-drag-group", "data-drag-cat", "data-group-plus", "data-cat-plus", "data-group-pencil", "data-cat-pencil",
+                 "data-group-x"):
+        assert tool in PAGE, tool
+    assert "near = dx * dx + dy * dy <= 60 * 60;" in PAGE  # shown within 60 px
+    assert ".btable .tool { opacity: 0; transition: opacity .5s ease;" in PAGE  # fading over 0.5 s
+    assert "beginDrag(e, { root: () => $('.btable'), redraw: renderBudget })" in PAGE
+    assert "bindCategoryEditor($('#ob-cats'))" in PAGE and "body.dataset.bound" not in PAGE

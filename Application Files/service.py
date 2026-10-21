@@ -42,6 +42,9 @@ class UserError(Exception):
     """Something the person can fix; the message is shown on the page."""
 
 
+# What a group made by hand starts with, to rename (numbered if it's taken).
+NEW_CATEGORY_NAME = "New Spending Category"
+
 STARTER_CATEGORIES = [
     ("Bills", ["Rent / Mortgage", "Utilities", "Phone & Internet", "Insurance", "Subscriptions"]),
     ("Everyday", ["Groceries", "Eating Out", "Transportation", "Household", "Fun Money"]),
@@ -612,15 +615,23 @@ class BudgetService:
         return c.execute(f"SELECT COALESCE(MAX(sort), 0) + 1 FROM {table} {where}", params).fetchone()[0]
 
     @exposed
-    def add_group(self, name):
+    def add_group(self, name, before_id=None, first_category=False):
+        """A new group, before `before_id` (the group whose + was clicked on the Budget
+        page) or last; Income stays at the bottom whatever happens. With
+        `first_category`, it starts with a "New Spending Category" to rename, in the same
+        undo step."""
         name = _clean_name(name)
         with self.db.write(f"Add group {name}") as c:
             _group_name_free(c, name)
-            income_sort = c.execute("SELECT MIN(sort) FROM category_groups WHERE role = 'income'").fetchone()[0]
-            sort = self._next_sort(c, "category_groups", "WHERE role != 'income'")
-            if income_sort is not None and sort >= income_sort:
-                sort = income_sort - 1
-            gid = c.execute("INSERT INTO category_groups (name, sort) VALUES (?, ?)", (name, sort)).lastrowid
+            gid = c.execute("INSERT INTO category_groups (name, sort) VALUES (?, 0)", (name,)).lastrowid
+            groups = [r["id"] for r in c.execute(
+                "SELECT id FROM category_groups WHERE role != 'income' AND id != ? ORDER BY sort, id", (gid,))]
+            groups.insert(groups.index(before_id) if before_id in groups else len(groups), gid)
+            for sort, g in enumerate(groups, start=1):
+                c.execute("UPDATE category_groups SET sort = ? WHERE id = ?", (sort, g))
+            if first_category:
+                c.execute("INSERT INTO categories (group_id, name, sort) VALUES (?, ?, 1)",
+                          (gid, _free_category_name(c, NEW_CATEGORY_NAME)))
         return gid
 
     @exposed
@@ -668,15 +679,24 @@ class BudgetService:
         return True
 
     @exposed
-    def add_category(self, group_id, name):
+    def add_category(self, group_id, name, before_id=None):
+        """A new category in `group_id`, before `before_id` (the category whose + was
+        clicked on the Budget page) or last. Never before the app's own Income, which has
+        to stay first in its group."""
         name = _clean_name(name)
         with self.db.write(f"Add category {name}") as c:
             role = c.execute("SELECT role FROM category_groups WHERE id = ?", (group_id,)).fetchone()
             if role is None:
                 raise UserError("That group no longer exists.")
             _category_name_free(c, name)
-            cid = c.execute("INSERT INTO categories (group_id, name, sort) VALUES (?, ?, ?)",
-                            (group_id, name, self._next_sort(c, "categories", "WHERE group_id = ?", (group_id,)))).lastrowid
+            ids = [r["id"] for r in c.execute("SELECT id FROM categories WHERE group_id = ? ORDER BY sort, id", (group_id,))]
+            index = ids.index(before_id) if before_id in ids else len(ids)
+            if role["role"] == "income":
+                index = max(index, 1)
+            cid = c.execute("INSERT INTO categories (group_id, name, sort) VALUES (?, ?, 0)", (group_id, name)).lastrowid
+            ids.insert(index, cid)
+            for sort, i in enumerate(ids, start=1):
+                c.execute("UPDATE categories SET sort = ? WHERE id = ?", (sort, i))
         return cid
 
     @exposed
@@ -876,7 +896,7 @@ class BudgetService:
             spent = self._spent(c, f, [category_id], month)
             recurring = subscriptions.for_category(c, self.today(), category_id)
         return {"id": cat["id"], "name": cat["name"], "monthly_budget": cat["monthly_budget"],
-                "debt_account_id": cat["debt_account_id"], "note": cat["note"], **history,
+                "debt_account_id": cat["debt_account_id"], "note": cat["note"], "hidden": cat["hidden"], **history,
                 "spent": spent, "recurring": recurring, "month": month}
 
     @exposed
@@ -1544,6 +1564,16 @@ def _category_name_free(c, name, except_id=None):
                        "JOIN category_groups g ON g.id = c.group_id"):
         if r["id"] != except_id and r["name"].casefold() == name.casefold():
             raise UserError(f"There's already a {r['name']} in {r['group_name']}{' (hidden)' if r['hidden'] else ''}.")
+
+
+def _free_category_name(c, base):
+    """`base`, or "base 2", "base 3"… if another category has it."""
+    taken = {r[0].casefold() for r in c.execute("SELECT name FROM categories")}
+    name, n = base, 1
+    while name.casefold() in taken:
+        n += 1
+        name = f"{base} {n}"
+    return name
 
 
 def _group_name_free(c, name, except_id=None):

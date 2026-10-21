@@ -287,12 +287,13 @@ Don't undo these without asking:
   rest moved, undoable.
 - **A used category or account can only be hidden or closed**, never deleted (deleting
   one sent its transactions back to the inbox and took its assigned money with it). No
-  Merge into… for categories either (the maintainer's call, issue #29). Every category
-  you made has a ✕ in the Categories pop-up, and it always asks first, in a strip under
-  the row: one never used ("Delete Gifts? It's never been used, so nothing else
-  changes.") is deleted; a used one says what it's used by (`ledger.category_uses()`) and
-  offers Hide. Income, Interest & Fees and card payment categories have none. An empty
-  group's ✕ asks too. An account's ✕ is only for one never used
+  Merge into… for categories either (the maintainer's call, issue #29). Deleting a
+  category you made (Delete… in its pop-over; ✕ in onboarding's list) always asks first:
+  one never used ("Delete Gifts? It's never been used, so nothing else changes.") is
+  deleted; a used one says what it's used by (`ledger.category_uses()`) and offers Hide
+  (`deleteQuestion` in the page). Income and Interest & Fees can only be hidden, card
+  payment categories neither. An empty group's ✕ asks too. An account's ✕ is only for
+  one never used
   (`ledger.used_category_ids()`, `used_account_ids()`). A closed account keeps its history,
   stays in Net worth and in Cash while it has money, and isn't offered for imports,
   transfers or new transactions; Close account / Reopen account are in Edit…, and closed
@@ -381,21 +382,38 @@ Don't undo these without asking:
   cards come to a month (`subscriptions.for_category`: the active recurring charges whose
   category this is, where their next charge goes, whether or not one has landed there
   yet). Clicking one opens its Edit… pop-up. The name at the top is a box: click it to
-  rename the category (not a card's payment category, named after its card). A group's
-  Spent opens the same list for the whole group. Clicking a transaction opens it (it has
-  a Category field) and the pop-over reopens with the change.
-- **The Categories pop-up** (Edit categories…, and onboarding): drag a category by its
-  handle (⋮⋮) within its group or into another, and a group among the others (there are
-  no ↑↓ buttons). Dragging a group folds every group to its heading in 0.3 s, the held
-  group staying under the pointer, so a long list fits; on the drop they unfold in the
-  same time, the group staying where it was dropped, and it flashes (the maintainer's
-  design, issue #29). Nothing moves into or out of Income or the cards' group, not even
-  within Income: the first category there is the app's own Income (`move_category`). No
-  two categories share a name, nor two groups, in any capitalization; typing a hidden
-  category's name offers "Show it again?", which brings it back into the group it was
-  typed in (`show_category`). Its handlers are bound to an element made each time it
-  opens: bound to the shared pop-up they piled up, one more set per opening, so one
-  Return added a category five times, and Return stopped working in other pop-ups.
+  rename the category (not a card's payment category, named after its card). At the
+  bottom, **Hide** (**Show** for a hidden one) and **Delete…**. A group's Spent opens the
+  same list for the whole group. Clicking a transaction opens it (it has a Category
+  field) and the pop-over reopens with the change.
+- **Categories are edited on the Budget page itself** (issue #29; there's no Edit
+  categories… pop-up, the maintainer had it removed). Tools appear at once when the
+  pointer is within 60 px of them and fade over 0.5 s when it moves away (`nearTools`):
+  ⋮⋮ in the card's left margin, and right of the name **+**, **✎** (a pencil, not the
+  word "Rename") and, on an empty group, **✕**, which asks. + on a group makes a group
+  above it, named in place, with a "New Spending Category" (2, 3… if taken) whose name
+  you're then typing, selected: one undo step (`add_group(first_category=True)`). + on a
+  category makes a category above it, named in place. ✎ renames in place. In place:
+  Return or clicking away saves, Escape or an empty box cancels, a refused name keeps
+  you in the box after Return. Drag by ⋮⋮: a category within its group or into another, a
+  group among the others; saved on release, no Done. Dragging a group folds every
+  group's categories in 0.3 s (each group is its own `<tbody>`; the cells are wrapped
+  so rows can fold), the held group staying under the pointer, so a long list fits; on
+  release they unfold in the same time, the group staying where it was dropped, and it
+  flashes; groups you folded stay folded (`beginDrag`, also onboarding's list). Nothing
+  moves into or out of Income or the cards' group, not even within Income: the first
+  category there is the app's own Income (`move_category`); the Income group isn't on
+  the Budget page at all, so + on the last group is how a group goes at the bottom. **Show
+  hidden (N)** under the table lists hidden categories, faded, until the page is left.
+  No two categories share a name, nor two groups, in any capitalization; typing a hidden
+  category's name offers "Show it again?", which brings it back into that group
+  (`show_category`). An import's redraw waits while you drag or type a name.
+- **Onboarding's categories step** keeps a list of its own (there's no Budget page yet):
+  handles, ✕ that asks in a strip under the row, Add a category…, Add a group… (a group
+  gets a "New Spending Category" there too). Its handlers are bound to an element made
+  each time it's drawn: bound to the shared pop-up the editor was once in, they piled up,
+  one more set per opening, so one Return added a category five times, and Return
+  stopped working in other pop-ups.
 - Budgeting is **as each paycheque lands** (Assign money… fills categories up to their
   budgeted amount, in order), not a lump at the start of the month.
 - **Credit cards YNAB-style** (payment categories, paying down a balance), with room for a
@@ -479,9 +497,9 @@ Don't undo these without asking:
   it). Save with no changes just closes, with no "Saved" message.
 - A popover opened from a pop-up (the category list) is attached inside the open
   `<dialog>`: dialogs live in the browser's top layer, above anything else on the page.
-  So is a message (toast) shown while a pop-up is open, or it's hidden under it. A
-  question inside a pop-up is a strip in it (the Categories pop-up's ✕), not a second
-  pop-up: there's only one.
+  So is a message (toast) shown while a pop-up is open, or it's hidden under it. There's
+  only one pop-up, so a question asked from inside one is a strip in it, not a second
+  pop-up.
 - Every clickable thing needs a handler: `[data-act]` buttons are dispatched by the
   document click handler (plus each page's action function), suggestion chips by
   `[data-pick]`. `tests/test_page.py` fails on a button action nobody handles. A button

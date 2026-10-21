@@ -141,3 +141,35 @@ def test_a_categorys_pop_over_lists_the_recurring_charges_whose_category_it_is(a
     recurring = call(app, "category_detail", ids["Phone"])["recurring"]
     assert [s["name"] for s in recurring["subscriptions"]] == ["Sample Streaming"]
     assert recurring["monthly"] == 6500
+
+
+def test_a_group_is_added_above_the_one_whose_plus_was_clicked_with_a_category_to_rename(app):
+    categories(app, CATS)
+    with_income_and_cards(app)
+    g = groups(app)
+    order = lambda: [x["name"] for x in call(app, "categories")]
+    fun = call(app, "add_group", "Fun", g["Bills"]["id"], True)
+    assert order()[:3] == ["Everyday", "Fun", "Bills"]
+    assert names(app, "Fun") == ["New Spending Category"]
+    call(app, "add_group", "Trips", g["Everyday"]["id"], True)
+    assert order()[0] == "Trips"
+    assert names(app, "Trips") == ["New Spending Category 2"]  # the first one's name is taken
+    call(app, "add_group", "Last", g["Income"]["id"], True)  # before Income: the bottom
+    assert order()[-2:] == ["Last", "Income"]
+    assert call(app, "undo")["undone"] == "Add group Last"  # the group and its category, one step
+    assert "Last" not in order() and "New Spending Category 3" not in names(app, "Fun") + names(app, "Trips")
+    assert call(app, "add_group", "Plain") and names(app, "Plain") == []  # onboarding's own list: its choice
+    assert fun
+
+
+def test_a_category_is_added_above_the_one_whose_plus_was_clicked(app):
+    ids = categories(app, CATS)
+    g = with_income_and_cards(app)
+    call(app, "add_category", g["Bills"]["id"], "Internet", ids["Power"])
+    assert names(app, "Bills") == ["Phone", "Internet", "Power"]
+    call(app, "add_category", g["Bills"]["id"], "Water")
+    assert names(app, "Bills") == ["Phone", "Internet", "Power", "Water"]
+    # Never above the app's own Income, the first in its group.
+    call(app, "add_category", g["Income"]["id"], "Side Work", g["Income"]["categories"][0]["id"])
+    assert names(app, "Income") == ["Income", "Side Work"]
+    assert call(app, "category_detail", ids["Phone"])["hidden"] == 0
