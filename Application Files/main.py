@@ -7,8 +7,9 @@ the app opens no network ports. Its only network access is the update check
 (updater.py); "Release notes" in Settings opens GitHub in your browser. All data stays in
 ~/Library/Application Support/I Need A Budget.
 
-Closing the window asks, then quits the app entirely (it isn't meant to keep running
-in the background). ⌘Q quits without asking. A downloaded update is installed on quit.
+Closing the window quits the app entirely (it isn't meant to keep running in the
+background), and so does ⌘Q: the page saves what you're typing first, and asks only about
+a pop-up with changes or an entry it can't save. A downloaded update is installed on quit.
 """
 
 import fcntl
@@ -22,7 +23,7 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 APP_NAME = "I Need A Budget"
-VERSION = "1.2.5"  # the build reads it from here; see the release checklist in docs/DEVELOPMENT.md
+VERSION = "1.2.6"  # the build reads it from here; see the release checklist in docs/DEVELOPMENT.md
 if os.environ.get("INAB_DATA_DIR"):  # for development/testing against a throwaway folder
     DATA_DIR = Path(os.environ["INAB_DATA_DIR"]).expanduser()
     LOG_DIR = DATA_DIR / "Logs"
@@ -100,6 +101,21 @@ class Api:
         """Page errors land in app.log next to the Python ones."""
         log.warning("Page error: %s", str(message)[:2000])
 
+    def quit(self):
+        """The page has saved what you were typing (or you chose to quit without it)."""
+        from PyObjCTools import AppHelper
+
+        AppHelper.callAfter(self._app._quit_now)
+
+    def asking_before_quit(self):
+        """The page is asking about a pop-up with changes or an entry it can't save."""
+        from PyObjCTools import AppHelper
+
+        import launch
+
+        log.info("Quit waits: the page is asking about unsaved changes")
+        AppHelper.callAfter(launch.activate_app)
+
 
 class BudgetApp:
     def __init__(self):
@@ -132,6 +148,7 @@ class BudgetApp:
         })
         self._window = None
         self._quitting = False
+        self._quit_asked = None  # when the page was last asked to quit and hasn't answered yet
         self._settings.on_change(self._on_settings_changed)
 
     # ── hooks for the page ──
@@ -267,26 +284,41 @@ class BudgetApp:
             log.exception("Couldn't set up dropping files on the window")
 
     def _on_closing(self):
-        """The close button asks, then quits the whole app (and installs a waiting update)."""
-        import AppKit
-
+        """The close button quits the whole app (and installs a waiting update), once the
+        page has saved what you're typing: see _ask_page_to_quit."""
         if self._quitting:
             return True
-        import launch
+        if self._ask_page_to_quit():
+            self._before_quit()
+            return True
+        return False
 
-        launch.activate_app()
-        alert = AppKit.NSAlert.alloc().init()
-        alert.setMessageText_(f"Quit {APP_NAME}?")
-        ready = self._updater.status == "ready"
-        alert.setInformativeText_(
-            f"Version {self._updater.version} will be installed as it quits." if ready else
-            "Everything is saved. New bank downloads are imported the next time you open it.")
-        alert.addButtonWithTitle_("Quit")
-        alert.addButtonWithTitle_("Cancel")
-        if alert.runModal() != AppKit.NSAlertFirstButtonReturn:
+    def _ask_page_to_quit(self):
+        """Close and ⌘Q (on the main thread): the page saves what you're typing, or asks
+        about a pop-up with changes or an entry it can't save, then calls Api.quit. True
+        to quit now instead: a page that isn't there, or hasn't answered by the next try
+        3 s later, doesn't keep the app open."""
+        loaded = self._window is not None and self._window.events.loaded.is_set()
+        stuck = self._quit_asked is not None and time.monotonic() - self._quit_asked > 3
+        if not loaded or stuck:
+            return True
+        if self._quit_asked is not None:
             return False
-        self._before_quit()
-        return True
+        self._quit_asked = time.monotonic()
+
+        def ask():
+            try:
+                answered = self._window.evaluate_js("window.quitRequested ? window.quitRequested() : false")
+            except Exception:
+                log.exception("Couldn't ask the page before quitting")
+                answered = False
+            self._quit_asked = None
+            if not answered:
+                from PyObjCTools import AppHelper
+
+                AppHelper.callAfter(self._quit_now)
+        threading.Thread(target=ask, name="quit", daemon=True).start()
+        return False
 
     def _before_quit(self):
         self._quitting = True
@@ -333,17 +365,24 @@ class BudgetApp:
         AppKit.NSApp.terminate_(None)
 
     def _install_quit_handler(self):
-        """⌘Q quits straight away (pywebview's default would ask through the close handler)."""
+        """⌘Q (or Quit in the Dock) goes the close button's way, through the page. Logging
+        out, restarting or shutting down quits straight away: holding it up would stop the Mac."""
         import AppKit
         import objc
         from webview.platforms import cocoa
 
         app = self
+        quit_reason = int.from_bytes(b"why?", "big")  # keyAEQuitReason: set when the Mac is logging out
 
         def applicationShouldTerminate_(self, sender):
-            if not app._quitting:
+            if app._quitting:
+                return AppKit.NSTerminateNow
+            event = AppKit.NSAppleEventManager.sharedAppleEventManager().currentAppleEvent()
+            logging_out = event is not None and event.attributeDescriptorForKeyword_(quit_reason) is not None
+            if logging_out or app._ask_page_to_quit():
                 app._before_quit()
-            return AppKit.NSTerminateNow
+                return AppKit.NSTerminateNow
+            return AppKit.NSTerminateCancel
 
         objc.classAddMethods(cocoa.BrowserView.AppDelegate, [applicationShouldTerminate_])
 

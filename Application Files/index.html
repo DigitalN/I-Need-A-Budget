@@ -315,6 +315,7 @@ dialog form { display: flex; flex-direction: column; max-height: calc(100vh - 60
 .dlg-error { color: var(--neg); padding: 0 20px; min-height: 0; }
 .dlg-error:empty { display: none; }
 .dlg-actions { display: flex; gap: 8px; justify-content: flex-end; padding: 12px 20px 16px; }
+.dlg-ask { display: flex; gap: 8px; align-items: center; margin: 4px 20px 0; padding: 8px 10px; border-radius: 8px; background: var(--hover); font-size: 13px; }
 .field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; }
 .field > label, .label { font-size: 12px; font-weight: 600; color: var(--muted); }
 .field input, .field select, .field textarea { width: 100%; }
@@ -331,8 +332,7 @@ dialog form { display: flex; flex-direction: column; max-height: calc(100vh - 60
 }
 #toast.show { opacity: 1; transform: translate(-50%, 0); pointer-events: auto; }
 #toast.error { background: #b4001a; }
-#toast button { border: 0; background: rgba(255,255,255,.16); color: #fff; border-radius: 6px; padding: 3px 10px; font-weight: 600; cursor: default; }
-#toast button:empty { display: none; }
+#toast button { border: 0; background: rgba(255,255,255,.16); color: #fff; border-radius: 6px; padding: 3px 10px; font-weight: 600; cursor: default; white-space: nowrap; }
 .update-bar { position: sticky; top: 0; z-index: 10; background: var(--accent); color: #fff; padding: 8px 26px; display: flex; gap: 12px; align-items: center; }
 .update-bar .btn { background: #fff; color: var(--accent); }
 .drop-hint { position: fixed; inset: 10px; border: 3px dashed var(--accent); border-radius: 16px; background: var(--accent-soft); z-index: 70; display: none; align-items: center; justify-content: center; font-size: 20px; font-weight: 600; color: var(--accent); pointer-events: none; }
@@ -410,7 +410,7 @@ body.dragging .drop-hint { display: flex; }
   <main id="main"></main>
 </div>
 <div id="onboard" class="onboard" hidden></div>
-<div id="toast"><span></span><button type="button"></button></div>
+<div id="toast"><span></span></div>
 <div class="drop-hint">Drop bank files to import them</div>
 <dialog id="dlg"><form method="dialog"><div class="dlg-head"><div class="dlg-title"></div><button type="button" class="icon-btn dlg-x" title="Close without saving (Esc)" aria-label="Close">✕</button></div><div class="dlg-body"></div><div class="dlg-error"></div><div class="dlg-actions"></div></form></dialog>
 
@@ -489,10 +489,18 @@ function logError(where, e) {
   console.error(where, e);
   try { window.pywebview.api.log_error(`${where}: ${(e && e.stack) || e}`); } catch (_) {}
 }
+// What's been sent to the app and not answered yet, so quitting can wait for it (settled).
+const inFlight = new Set();
+function track(p) {
+  inFlight.add(p);
+  const done = () => inFlight.delete(p);
+  p.then(done, done);
+  return p;
+}
 async function call(name, args) {
   const api = window.pywebview && window.pywebview.api;
   if (!api) throw new Error('The app bridge is not ready');
-  const r = await api.call(name, args === undefined ? [] : args);
+  const r = await track(api.call(name, args === undefined ? [] : args));
   if (!r || !r.ok) {
     const msg = (r && r.error) || 'Something went wrong';
     toast(msg, { error: true });
@@ -503,7 +511,7 @@ async function call(name, args) {
 }
 // Like call(), but returns {ok, result, error} instead of showing errors as a toast.
 async function tryCall(name, args) {
-  const r = await window.pywebview.api.call(name, args === undefined ? [] : args);
+  const r = await track(window.pywebview.api.call(name, args === undefined ? [] : args));
   if (r && r.ok && r.result && r.result.counts) setCounts(r.result.counts);
   return r || { ok: false, error: 'Something went wrong' };
 }
@@ -513,7 +521,8 @@ window.addEventListener('unhandledrejection', e => {
   try { window.pywebview.api.log_error(String(e.reason && e.reason.stack || e.reason)); } catch (_) {}
 });
 
-let toastTimer;
+// `actions` for more than one button; `stay` keeps it up until one is clicked.
+let toastTimer, errorsShown = 0, lastError = '';
 function toast(msg, opts = {}) {
   const el = $('#toast');
   // Inside an open pop-up, or it's under it: pop-ups live in the browser's top layer.
@@ -521,13 +530,20 @@ function toast(msg, opts = {}) {
   const host = dlg.open ? dlg : document.body;
   if (el.parentElement !== host) host.appendChild(el);
   el.querySelector('span').textContent = msg;
-  const btn = el.querySelector('button');
-  btn.textContent = opts.action ? opts.action.label : '';
-  btn.onclick = opts.action ? () => { el.classList.remove('show'); opts.action.run(); } : null;
+  el.querySelectorAll('button').forEach(b => b.remove());
+  for (const a of opts.actions || (opts.action ? [opts.action] : [])) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.textContent = a.label;
+    btn.onmousedown = e => e.preventDefault();  // the box you're in stays the one you're in
+    btn.onclick = () => { el.classList.remove('show'); a.run(); };
+    el.appendChild(btn);
+  }
+  if (opts.error) { errorsShown++; lastError = msg; }
   el.classList.toggle('error', !!opts.error);
   el.classList.add('show');
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => el.classList.remove('show'), opts.action ? 7000 : (opts.error ? 6000 : 3200));
+  if (!opts.stay) toastTimer = setTimeout(() => el.classList.remove('show'), opts.action || opts.actions ? 7000 : (opts.error ? 6000 : 3200));
 }
 const undoAction = { label: 'Undo', run: () => doUndo() };
 
@@ -548,29 +564,36 @@ function dialog({ title, body, actions, wide = false, onOpen }) {
     d.querySelector('.dlg-title').textContent = title;
     d.querySelector('.dlg-body').innerHTML = body;
     d.querySelector('.dlg-error').textContent = '';
+    d.querySelectorAll('.dlg-ask').forEach(x => x.remove());
     const bar = d.querySelector('.dlg-actions');
     bar.innerHTML = '';
     let done = false;
     const finish = v => {
       if (done) return;
       done = true;
+      d.quitCheck = null;
+      d.querySelectorAll('.dlg-ask').forEach(x => x.remove());
       const t = $('#toast');
       if (d.contains(t)) document.body.appendChild(t);  // a message still showing outlives the pop-up
       d.close();
       resolve(v);
     };
-    (actions || [{ label: 'OK', value: true, primary: true }]).forEach(a => {
+    // True once the pop-up has closed with the action's value.
+    const run = async a => {
+      if (a.check) {
+        const err = await a.check(d);
+        if (err) { d.querySelector('.dlg-error').textContent = err; return false; }
+      }
+      finish(a.value);
+      return true;
+    };
+    actions = actions || [{ label: 'OK', value: true, primary: true }];
+    actions.forEach(a => {
       const b = document.createElement('button');
       b.type = 'button';
       b.className = 'btn' + (a.primary ? ' primary' : '') + (a.danger ? ' danger' : '');
       b.textContent = a.label;
-      b.onclick = async () => {
-        if (a.check) {
-          const err = await a.check(d);
-          if (err) { d.querySelector('.dlg-error').textContent = err; return; }
-        }
-        finish(a.value);
-      };
+      b.onclick = () => run(a);
       if (a.left) { b.style.marginRight = 'auto'; }
       bar.appendChild(b);
     });
@@ -588,6 +611,13 @@ function dialog({ title, body, actions, wide = false, onOpen }) {
     };
     d.showModal();
     if (onOpen) onOpen(d);
+    // Quitting asks about a pop-up with changes (quitWhenSaved): "Save and quit" runs its primary action.
+    const fields = () => $$('.dlg-body input, .dlg-body select, .dlg-body textarea', d)
+      .map(el => el.type === 'checkbox' || el.type === 'radio' ? el.checked : el.value).join('\n');
+    const opened = fields();
+    delete d.dataset.picked;  // pickCategory sets it
+    const primary = actions.find(a => a.primary);
+    d.quitCheck = primary ? { changed: () => !!d.dataset.picked || fields() !== opened, label: primary.label, save: () => run(primary) } : null;
     const first = d.querySelector('.dlg-body input, .dlg-body select, .dlg-body textarea');
     if (first) { first.focus(); if (first.select) first.select(); }
   });
@@ -635,7 +665,7 @@ function pickCategory(anchor, { income = true, title = '' } = {}) {
       el.classList.toggle('active', i === active);
       if (i === active) el.scrollIntoView({ block: 'nearest' });
     });
-    const close = v => { cleanup(); resolve(v); };
+    const close = v => { cleanup(); if (v && openDialog) openDialog.dataset.picked = '1'; resolve(v); };
     const outside = e => { if (!pop.contains(e.target)) close(null); };
     const cleanup = () => { pop.remove(); document.removeEventListener('mousedown', outside, true); pickerCleanup = null; };
     pickerCleanup = () => close(null);
@@ -829,14 +859,18 @@ document.addEventListener('pointerdown', e => {
 // the box to fix it; after clicking away it's cancelled.
 function nameInPlace(input, { save, cancel }) {
   let busy = false;
+  // False when the name was refused and you're still in the box.
   const finish = async how => {
-    if (busy) return;
+    if (busy) return true;
     busy = true;
     const name = input.value.replace(/\s+/g, ' ').trim();
-    if (how === 'cancel' || !name) return cancel();
-    if (await save(name) !== false) return;
-    if (how === 'enter' && input.isConnected) { busy = false; input.focus(); } else cancel();
+    if (how === 'cancel' || !name) { cancel(); return true; }
+    if (await save(name) !== false) return true;
+    if (how === 'enter' && input.isConnected) { busy = false; input.focus(); return false; }
+    cancel();
+    return true;
   };
+  input.commitTyping = () => finish('enter');  // quitting saves it like Return
   input.addEventListener('keydown', e => {
     if (e.key === 'Enter') { e.preventDefault(); finish('enter'); }
     else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); finish('cancel'); }
@@ -1151,19 +1185,25 @@ async function openCategory(id) {
   // (one another category has) goes back as well.
   const nameInput = $('#cat-name', dr);
   let savedName = d.name;
-  const saveName = async () => {
-    if (!nameInput) return;
+  // Quitting keeps a refused name in the box to fix (commitTyping): false.
+  const saveName = async (quitting = false) => {
+    if (!nameInput) return true;
     const name = nameInput.value.replace(/\s+/g, ' ').trim();
-    if (name === savedName) return;
-    if (!name) { nameInput.value = savedName; return; }
+    if (name === savedName) return true;
+    if (!name) { nameInput.value = savedName; return true; }
     try {
       await call('rename_category', [d.id, name]);
       savedName = name; nameInput.value = name; changed = true;
       await loadCategories();  // the new name everywhere it's looked up (a bill's Edit… pop-up)
-    } catch (_) { nameInput.value = savedName; }
+      return true;
+    } catch (_) {
+      if (!quitting) nameInput.value = savedName;
+      return false;
+    }
   };
   if (nameInput) {
-    nameInput.addEventListener('change', saveName);
+    nameInput.commitTyping = () => saveName(true);
+    nameInput.addEventListener('change', () => saveName());
     nameInput.addEventListener('keydown', e => {
       if (e.key === 'Enter') { e.preventDefault(); nameInput.blur(); }
       else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); nameInput.value = savedName; nameInput.blur(); }
@@ -3025,6 +3065,85 @@ function summarizeImport(r) {
   if (r.learnt) parts.push(`learnt ${r.learnt.examples} examples from ${r.learnt.filename}`);
   for (const e of r.errors || []) parts.push(`${e.filename}: ${e.error}`);
   return parts.join(' · ') || 'Nothing new';
+}
+
+// ── quitting ────────────────────────────────────────────
+// The close button and ⌘Q ask here first (main.py). What you're typing is saved; only a
+// pop-up with changes, or an entry that can't be saved, asks before the app quits.
+let quitBusy = false;
+window.quitRequested = () => {
+  if (!quitBusy) {
+    quitBusy = true;
+    quitWhenSaved().catch(e => { logError('Quitting', e); quitNow(); }).finally(() => { quitBusy = false; });
+  }
+  return true;
+};
+const quitNow = () => window.pywebview.api.quit();
+
+async function quitWhenSaved() {
+  const d = $('#dlg');
+  if (d.open && d.quitCheck && d.quitCheck.changed()) return askInDialog(d);
+  const a = document.activeElement;
+  if (a && a.matches && a.matches('input, textarea, select') && !d.contains(a) && !await commitTyping(a)) return askAboutEntry(a);
+  await settled();
+  quitNow();
+}
+
+// Saves the box you're in as leaving it would (or as Return would, for a name). False if it can't be.
+async function commitTyping(a) {
+  if (a.matches(AMOUNT_BOXES) && Number.isNaN(amountIn(a))) { lastError = 'That isn\'t an amount'; return false; }
+  const errors = errorsShown;
+  let ok = true;
+  if (a.commitTyping) { try { ok = await a.commitTyping(); } catch (_) { ok = false; } }
+  else a.blur();
+  await settled();
+  return ok !== false && errorsShown === errors;
+}
+
+// Waits for the app's answers to what's been sent, and to what they lead to: 5 s at most.
+async function settled() {
+  const until = Date.now() + 5000;
+  await sleep(0);
+  while (inFlight.size && Date.now() < until) {
+    await Promise.race([Promise.allSettled([...inFlight]), sleep(until - Date.now())]);
+    await sleep(0);
+  }
+}
+
+function askAboutEntry(a) {
+  window.pywebview.api.asking_before_quit();
+  if (a.isConnected) { a.focus(); if (a.select) a.select(); }
+  const why = lastError.replace(/[.!]$/, '');
+  toast(why ? `You need to finish this before quitting: ${why.charAt(0).toLowerCase()}${why.slice(1)}.` : 'You need to finish this before quitting.', {
+    error: true, stay: true,
+    actions: [{ label: 'Go back', run: () => { if (a.isConnected) a.focus(); } }, { label: 'Quit anyway', run: quitNow }] });
+  a.addEventListener('input', () => $('#toast').classList.remove('show'), { once: true });
+}
+
+function askInDialog(d) {
+  window.pywebview.api.asking_before_quit();
+  let strip = $('.dlg-ask', d);
+  if (!strip) {
+    strip = document.createElement('div');
+    strip.className = 'dlg-ask';
+    strip.innerHTML = `<span>You need to finish this before quitting.</span><span class="spacer"></span>
+      <button type="button" class="btn small" data-quit="keep">Keep editing</button>
+      <button type="button" class="btn small" data-quit="discard">Quit anyway</button>
+      <button type="button" class="btn small primary" data-quit="save">${esc(d.quitCheck.label)} and quit</button>`;
+    strip.onclick = async e => {
+      const b = e.target.closest('[data-quit]');
+      if (!b) return;
+      strip.remove();
+      if (b.dataset.quit === 'discard') return quitNow();
+      if (b.dataset.quit === 'keep' || !d.quitCheck) return;
+      const errors = errorsShown;
+      if (!await d.quitCheck.save()) return;  // its own error shows, and it stays open
+      await settled();
+      if (errorsShown === errors && !d.open) quitNow();  // not if saving asked something next
+    };
+    d.querySelector('.dlg-actions').before(strip);
+  }
+  $('[data-quit="save"]', strip).focus();
 }
 
 // ── events from Python ──────────────────────────────────

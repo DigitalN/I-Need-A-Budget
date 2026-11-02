@@ -253,7 +253,8 @@ with months it didn't exist).
 
 ## Git
 
-- Work on a branch, not `main`. The maintainer opens pull requests with Create PR.
+- Work on a branch, not `main`. When the work is done, Claude pushes it and opens the pull
+  request itself; merging is the maintainer's.
 - Commit titles say what changed, never the version (not "1.2.5: …"): GitHub shows each
   file's last commit title beside it, and the version is already in `VERSION` and the tag.
 - The pre-commit hook must stay on (`git config core.hooksPath` → `scripts/hooks`).
@@ -435,8 +436,14 @@ Don't undo these without asking:
   own category, price changes, late/cancelled tracking, "charged again" alerts. New prices
   from a subscription payee always ask (see Key rules). A charge opened on the
   Transactions page has a Subscription line: Track as subscription… or Edit….
-- **Window only, no menu bar item.** The close button asks, then quits the app entirely;
-  ⌘Q quits without asking. A downloaded update installs on quit.
+- **Window only, no menu bar item.** The close button quits the app entirely, like ⌘Q,
+  without a "Quit?" question (the app opens fast enough not to need one). Both save the
+  box you're typing in first (`quitWhenSaved` in the page) and ask only when they can't:
+  a pop-up with changes or an entry that can't be saved: "You need to finish this before
+  quitting" (with the reason for an entry), then Keep editing or Go back / Quit anyway / for
+  a pop-up "<its own button> and quit". The maintainer's wording: "finish", never "save",
+  which would suggest the rest might not be saved. Logging out or shutting down quits
+  straight away. A downloaded update installs on quit.
 - "Eating Out" was renamed **Food** (Actual's old name still matches through `old_names`).
 - **Update checks only at launch and on Check now**, never on a timer while the app is
   open (the maintainer's choice).
