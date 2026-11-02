@@ -253,7 +253,8 @@ with months it didn't exist).
 
 ## Git
 
-- Work on a branch, not `main`. The maintainer opens pull requests with Create PR.
+- Work on a branch, not `main`. When the work is done, Claude pushes it and opens the pull
+  request itself; merging is the maintainer's.
 - Commit titles say what changed, never the version (not "1.2.5: …"): GitHub shows each
   file's last commit title beside it, and the version is already in `VERSION` and the tag.
 - The pre-commit hook must stay on (`git config core.hooksPath` → `scripts/hooks`).
