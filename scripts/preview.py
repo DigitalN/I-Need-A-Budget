@@ -26,7 +26,8 @@ REAL_DATA = Path.home() / "Library" / "Application Support" / "I Need A Budget"
 SHIM = ("<script>window.pywebview = {api: {"
         "call: (name, args) => fetch('/api', {method: 'POST', headers: {'Content-Type': 'application/json'}, "
         "body: JSON.stringify({name, args})}).then(r => r.json()),"
-        "log_error: m => console.error(m)}};</script>\n")
+        "log_error: m => console.error(m),"
+        "quit: () => console.log('Quit'), asking_before_quit: () => console.log('Quit waits')}};</script>\n")
 
 
 def main():

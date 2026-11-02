@@ -147,3 +147,22 @@ def test_keys_the_page_acts_on_are_marked_handled():
         if "key === 'Escape'" in line:
             assert "preventDefault" in " ".join(lines[i:i + 3]), f"line {i + 1}: {line.strip()}"
 
+
+
+def test_quitting_saves_what_you_are_typing_and_asks_only_when_it_cant():
+    """The close button and ⌘Q don't ask "Quit?": the page saves the box you're in, and
+    asks only about a pop-up with changes or an entry that can't be saved."""
+    main = (Path(__file__).resolve().parents[2] / "Application Files" / "main.py").read_text(encoding="utf-8")
+    assert "NSAlert" not in main and "Quit {APP_NAME}?" not in main
+    assert "window.quitRequested" in main and "def quit(self)" in main and "def asking_before_quit(self)" in main
+    assert "window.quitRequested = () =>" in PAGE
+    # "finish", not "save": nothing suggests what isn't asked about might not be saved
+    assert "You need to finish this before quitting" in PAGE and "${esc(d.quitCheck.label)} and quit" in PAGE
+    for label in ("Keep editing", "Quit anyway", "Go back"):
+        assert label in PAGE, label
+    # a refused name stays in its box to fix, rather than going back
+    assert "input.commitTyping = () => finish('enter')" in PAGE and "nameInput.commitTyping = () => saveName(true)" in PAGE
+    # a pop-up without changes doesn't ask; a category picked counts as a change
+    assert "fields() !== opened" in PAGE and "openDialog.dataset.picked = '1'" in PAGE
+    # call() and tryCall() are tracked, so quitting waits for their answers
+    assert "await track(api.call(" in PAGE and "await track(window.pywebview.api.call(" in PAGE

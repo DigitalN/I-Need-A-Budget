@@ -144,7 +144,7 @@ def main():
     today = date.fromisoformat(args.today)
 
     sys.path.insert(0, str(ROOT / "Application Files"))
-    sys.path.insert(0, str(ROOT / "tests"))
+    sys.path.insert(0, str(ROOT / "scripts" / "tests"))
     from db import Database
     from helpers import call, card_number
     from service import BudgetService
