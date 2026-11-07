@@ -138,7 +138,7 @@ def now():
 
 def same_day_next_month(day, anchor_day=None):
     """The same day of the month a month later, clamped to the month's end. With `anchor_day`
-    (the day a monthly charge first fell on: the 31st), that day instead of `day`'s, so a charge
+    (the day a monthly charge belongs on: the 31st), that day instead of `day`'s, so a charge
     clamped to the 28th in February is due on the 31st again in March."""
     d = date.fromisoformat(day)
     month = add_months(month_of(day), 1)

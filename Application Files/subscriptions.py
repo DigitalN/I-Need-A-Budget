@@ -41,7 +41,7 @@ that category without asking.
 """
 
 from payees import TRANSFER_OR_BANK_ENTRY_HINTS, describe
-from util import add_days, days_between, same_day_next_month
+from util import add_days, days_between, last_day, month_of, same_day_next_month
 
 TOLERANCE = 0.06      # how far a currency-billed price wobbles and still counts as the same
 CADENCES = {"weekly": (6, 8, 7), "monthly": (25, 38, 30.44), "yearly": (350, 380, 365.25)}
@@ -83,11 +83,18 @@ def monthly_equivalent(amount, cadence):
     return round(amount * {"weekly": 52 / 12, "monthly": 1, "yearly": 1 / 12}.get(cadence, 1))
 
 
-def next_due(last_date, cadence, first_date=None):
-    """When the next charge is due. A monthly one keeps the day of the month it first fell on
-    (`first_date`'s: the 31st), clamped to each month's end."""
+def next_due(last_date, cadence, earlier=()):
+    """When the next charge is due. A monthly one falls on the day of the month the last charge did:
+    billing days move, and a first bill is often part of a month. The exception is a last charge on
+    its month's last day when an earlier one (`earlier`: the dates of the charges before it) fell on
+    a later day: a short month moved it (Jan 31, Feb 28), so the earlier day is used (Mar 31).
+    Either way clamped to the next month's end."""
     if cadence == "monthly":
-        return same_day_next_month(last_date, int(first_date[8:10]) if first_date else None)
+        anchor = None
+        if last_date == last_day(month_of(last_date)):
+            later = [d for d in earlier if d < last_date and int(d[8:10]) > int(last_date[8:10])]
+            anchor = int(max(later)[8:10]) if later else None  # the latest charge on a later day
+        return same_day_next_month(last_date, anchor)
     return add_days(last_date, round(CADENCES.get(cadence, CADENCES["monthly"])[2]))
 
 
@@ -188,7 +195,7 @@ def detect(conn, today):
                 last = run[-1]
                 found.append({
                     "payee_id": payee_id, "name": last["name"], "amount": typical, "cadence": "monthly",
-                    "count": len(run), "last_date": last["date"], "next_date": next_due(last["date"], "monthly", run[0]["date"]),
+                    "count": len(run), "last_date": last["date"], "next_date": next_due(last["date"], "monthly", [t["date"] for t in run[:-1]]),
                     "previous_amount": None, "pricing": "varies", "low": min(amounts), "high": max(amounts),
                     "last_amount": amounts[-1], "account_id": last["account_id"], "category_id": last["category_id"],
                     "transaction_ids": [t["id"] for t in run], "kind": "bill", "monthly": typical,
@@ -218,7 +225,7 @@ def detect(conn, today):
             found.append({
                 "payee_id": payee_id, "name": last["name"], "amount": amounts[-1], "cadence": chain["cadence"],
                 "count": len(amounts), "last_date": last["date"],
-                "next_date": next_due(last["date"], chain["cadence"], first["date"]),
+                "next_date": next_due(last["date"], chain["cadence"], [t["date"] for t in chain["txns"][:-1]]),
                 "previous_amount": previous_price(pricing, amounts), "pricing": pricing,
                 "low": min(amounts), "high": max(amounts), "account_id": last["account_id"],
                 "category_id": last["category_id"], "transaction_ids": [t["id"] for t in chain["txns"]],
@@ -307,11 +314,6 @@ def _link_ids(conn, sub_id, ids):
         conn.execute("UPDATE transactions SET subscription_id = ? WHERE id = ?", (sub_id, txn_id))
 
 
-def _last_charge(conn, sub_id):
-    row = conn.execute("SELECT MAX(date) FROM transactions WHERE subscription_id = ?", (sub_id,)).fetchone()
-    return row[0] if row else None
-
-
 def _charges(conn, sub_id):
     return conn.execute("SELECT id, date, -amount AS amt, account_id, bank_category FROM transactions "
                         "WHERE subscription_id = ? ORDER BY date, id", (sub_id,)).fetchall()
@@ -354,9 +356,8 @@ def price_change_choices(conn, txn):
     out = []
     for s in conn.execute("SELECT * FROM subscriptions WHERE payee_id = ? AND status = 'active' "
                           "AND pricing != 'varies'", (txn["payee_id"],)).fetchall():
-        last = _last_charge(conn, s["id"])
-        first = conn.execute("SELECT MIN(date) FROM transactions WHERE subscription_id = ?", (s["id"],)).fetchone()[0]
-        expected = next_due(last, s["cadence"], first) if last else None
+        dates = [c["date"] for c in _charges(conn, s["id"])]
+        expected = next_due(dates[-1], s["cadence"], dates[:-1]) if dates else None
         off_by = abs(days_between(expected, txn["date"])) if expected else 99
         out.append({"id": s["id"], "name": s["name"], "amount": s["amount"], "expected": expected,
                     "due_now": off_by <= 5, "_rank": (off_by > 5, abs(s["amount"] - amount))})
@@ -475,7 +476,7 @@ def _tracked(conn, today, where="", params=()):
         pricing = effective_pricing(conn, s)
         amount = _typical(amounts) if pricing == "varies" and amounts else (last["amt"] if last else s["amount"])
         recent = amounts[-RECENT_CHARGES:]
-        next_date = next_due(last["date"], s["cadence"], charges[0]["date"]) if last else None
+        next_date = next_due(last["date"], s["cadence"], [c["date"] for c in charges[:-1]]) if last else None
         ended = bool(s["ends_on"] and today > s["ends_on"])
         if next_date and s["ends_on"] and next_date > s["ends_on"]:
             next_date = None  # no more charges expected

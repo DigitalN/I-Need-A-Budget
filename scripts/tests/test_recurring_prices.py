@@ -77,11 +77,12 @@ def test_the_wobble_is_measured_against_the_old_price(b):
     assert not subscriptions.close(1000, 1063) and subscriptions.close(1000, 1060)
 
 
-def test_the_next_charge_keeps_the_original_day_of_the_month():
-    assert subscriptions.next_due("2026-02-28", "monthly", first_date="2026-01-31") == "2026-03-31"
-    assert subscriptions.next_due("2026-01-31", "monthly", first_date="2026-01-31") == "2026-02-28"
-    assert subscriptions.next_due("2026-03-15", "monthly") == "2026-04-15"  # no first date: the last one's day
-    assert subscriptions.next_due("2026-04-30", "monthly", first_date="2026-01-31") == "2026-05-31"
+def test_the_next_charge_follows_the_last_charges_day_unless_a_short_month_moved_it():
+    assert subscriptions.next_due("2026-02-28", "monthly", ["2026-01-31"]) == "2026-03-31"
+    assert subscriptions.next_due("2026-01-31", "monthly") == "2026-02-28"
+    assert subscriptions.next_due("2026-03-15", "monthly") == "2026-04-15"  # no earlier charges: the last one's day
+    assert subscriptions.next_due("2026-04-30", "monthly", ["2026-01-31", "2026-03-31"]) == "2026-05-31"
+    assert subscriptions.next_due("2026-04-28", "monthly", ["2026-01-31"]) == "2026-05-28"  # not on a month's last day
 
 
 def test_a_subscription_charged_on_the_31st_is_due_on_the_31st_after_february(b):
