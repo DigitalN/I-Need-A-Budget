@@ -9,13 +9,38 @@ from datetime import date, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 
+_DECIMAL_COMMA = re.compile(r"\d+,\d{1,2}")            # 12,34
+_THOUSANDS_COMMAS = re.compile(r"\d+(?:,\d{3})+(?:\.\d+)?")  # 1,234  1,234,567.89
+_EUROPEAN = re.compile(r"\d{1,3}(?:\.\d{3})+,\d{1,2}")    # 1.234,56
+
+
+def _with_decimal_point(s):
+    """The digits of an amount written with a decimal point, or None when its commas and dots
+    don't make sense. A comma then one or two digits is the decimal comma of a French-language
+    file; a comma then exactly three is a thousands separator; 1.234,56 is European."""
+    sign = s[0] if s[:1] in ("+", "-") else ""
+    digits = s[len(sign):]
+    if "," not in digits:
+        return s
+    if _DECIMAL_COMMA.fullmatch(digits):
+        return sign + digits.replace(",", ".")
+    if _THOUSANDS_COMMAS.fullmatch(digits):
+        return sign + digits.replace(",", "")
+    if _EUROPEAN.fullmatch(digits):
+        return sign + digits.replace(".", "").replace(",", ".")
+    return None
+
+
 def to_cents(text):
-    """'−1,259.99', '(4.08)', '$12', '-10.4900' → int cents. Raises ValueError."""
-    s = str(text).strip().replace(",", "").replace("$", "").replace("−", "-").replace(" ", "")
+    """'−1,259.99', '(4.08)', '$12', '-10.4900', '-12,34' → int cents. Raises ValueError."""
+    s = re.sub(r"\s+", "", str(text)).replace("$", "").replace("−", "-")
     negative = False
     if s.startswith("(") and s.endswith(")"):
         s, negative = s[1:-1], True
+    s = _with_decimal_point(s)
     try:
+        if s is None:
+            raise InvalidOperation
         value = Decimal(s)
     except InvalidOperation:
         raise ValueError(f"Not an amount: {text!r}") from None
