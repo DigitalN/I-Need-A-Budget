@@ -92,7 +92,8 @@ def test_amount_boxes_do_math():
     node = shutil.which("node")
     if not node:
         pytest.skip("needs Node")
-    source = re.search(r"^function parseMoney\(.*?^}$", PAGE, re.S | re.M).group(0)
+    source = re.search(r"^const MAX_CENTS = [^\n]*$", PAGE, re.M).group(0) + "\n" + \
+        re.search(r"^function parseMoney\(.*?^}$", PAGE, re.S | re.M).group(0)
     cases = [  # (typed, what the box had before, cents)
         ("120.00", None, 12000), ("1,234.56", None, 123456), ("$45", None, 4500), ("", None, None),
         ("-45", None, -4500), ("−45", None, -4500), ("+50", None, 5000), ("abc", None, "NaN"),
@@ -102,6 +103,13 @@ def test_amount_boxes_do_math():
         ("+50", 12000, 17000), ("-20", 12000, 10000), ("−20", 12000, 10000), ("*2", 12000, 24000),
         ("/2", 12000, 6000), ("÷4", 12000, 3000), ("80", 12000, 8000), ("+10+5", 12000, 13500),
         ("-50", 0, -5000), ("+25.25", -1000, 1525),
+        # Issue #69: a comma is only a thousands separator; 12,34 is no amount rather than $1,234.00
+        ("12,34", None, "NaN"), ("1,234.56", None, 123456), ("1,234", None, 123400), ("1,23,4", None, "NaN"),
+        ("1,234,567.89", None, 123456789), ("120,00+5", None, "NaN"), ("1,000+2,000", None, 300000),
+        ("$1,234.56", None, 123456), ("-1,234.56", None, -123456),
+        # ...and an amount has a ceiling: $1,000,000,000.00
+        ("1000000000", None, 100000000000), ("1,000,000,000.01", None, "NaN"), ("90071992547409.93", None, "NaN"),
+        ("-1000000000.01", None, "NaN"), ("999999999*2", None, "NaN"),
     ]
     script = (source + f"\nconsole.log(JSON.stringify({json.dumps(cases)}.map(([text, base]) => "
               "parseMoney(text, base === null ? undefined : base)).map(v => Number.isNaN(v) ? 'NaN' : v)));")
