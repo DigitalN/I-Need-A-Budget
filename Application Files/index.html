@@ -433,13 +433,18 @@ const moneyPlain = c => c ? (c / 100).toLocaleString('en-CA', { minimumFractionD
 // For a box you type an amount into: nothing yet is an empty box (its placeholder shows
 // 0.00), so there's no 0.00 to type into the middle of.
 const moneyOrBlank = c => c ? moneyPlain(c) : '';
+const MAX_CENTS = 100000000000;  // $1,000,000,000.00: Python refuses more too (service._amount)
 // What's typed in an amount box, in cents: an amount, or a sum of them (120+35.50, 3*45,
 // 300/4, brackets too). Given `base`, what the box held before you typed (an Assigned or
 // Budgeted amount), one that starts with + − * or / works on that: +50 adds 50 to it.
 // Anywhere else a leading minus is a negative amount. null for an empty box, NaN for
 // anything that isn't an amount. No eval(): a typed amount is never run as code.
 function parseMoney(text, base) {
-  let t = String(text ?? '').replace(/[$,\s]/g, '').replace(/−/g, '-').replace(/×/g, '*').replace(/÷/g, '/');
+  let t = String(text ?? '').replace(/[$\s]/g, '').replace(/−/g, '-').replace(/×/g, '*').replace(/÷/g, '/');
+  // A comma is a thousands separator (1,234.56) and nothing else: 12,34 isn't guessed at.
+  let badComma = false;
+  t = t.replace(/[\d,]+(?:\.\d*)?/g, n => n.includes(',') && !/^\d{1,3}(,\d{3})+(\.\d*)?$/.test(n) ? (badComma = true, n) : n.replace(/,/g, ''));
+  if (badComma || t.includes(',')) return NaN;
   if (t === '') return null;
   if (base !== undefined && /^[-+*/]/.test(t)) t = `(${(base || 0) / 100})${t}`;
   let i = 0;
@@ -465,6 +470,7 @@ function parseMoney(text, base) {
   const v = sum();
   if (i !== t.length || !Number.isFinite(v)) return NaN;
   const cents = Math.round(Number((Math.abs(v) * 100).toFixed(6)));  // 1.005 is 101¢, not 100
+  if (cents > MAX_CENTS) return NaN;  // beyond $1,000,000,000.00 isn't an amount the app can hold
   return v < 0 && cents ? -cents : cents;
 }
 // What an amount box holds, in cents. The text in a box is either what the page (or a
@@ -606,6 +612,10 @@ function dialog({ title, body, actions, wide = false, onOpen }) {
     };
     // True once the pop-up has closed with the action's value.
     const run = async a => {
+      if (a.primary) {  // an amount box holding something that isn't an amount: say so rather than drop it
+        const bad = $$(AMOUNT_BOXES, d).find(el => !el.disabled && !el.readOnly && Number.isNaN(amountIn(el)));
+        if (bad) { d.querySelector('.dlg-error').textContent = 'That isn\'t an amount'; bad.focus(); return false; }
+      }
       if (a.check) {
         const err = await a.check(d);
         if (err) { d.querySelector('.dlg-error').textContent = err; return false; }
@@ -2774,7 +2784,9 @@ async function accountAction(btn) {
   } else if (act === 'save-debt') {
     const apr = $(`[data-apr="${id}"]`).value.trim();
     const pay = parseMoney($(`[data-payment="${id}"]`).value);
-    await call('update_account', [id, { apr: apr === '' ? null : Number(apr), planned_payment: Number.isNaN(pay) ? null : pay }]);
+    if (apr !== '' && !(/^\d+(\.\d+)?$/.test(apr) && Number(apr) <= 100)) { toast('That isn\'t a rate: type it like 20.99', { error: true }); return; }
+    if (Number.isNaN(pay)) { toast('That isn\'t an amount', { error: true }); return; }
+    await call('update_account', [id, { apr: apr === '' ? null : Number(apr), planned_payment: pay }]);
     toast('Saved');
   } else if (act === 'add-account') {
     const banks = await call('bank_names');

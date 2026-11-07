@@ -10,6 +10,7 @@ page shows its message.
 """
 
 import logging
+import math
 import os
 import re
 import shutil
@@ -59,6 +60,35 @@ def _balance_sign(kind, cents, in_favour=False):
     if not ledger.is_debt(kind):
         return cents
     return abs(cents) if in_favour else -abs(cents)
+
+
+MAX_CENTS = 100_000_000_000  # $1,000,000,000.00: the page refuses more too (parseMoney)
+
+
+def _amount(value, what="amount"):
+    """An amount of money as whole cents, or a UserError: not a number, or beyond what the app holds."""
+    try:
+        if isinstance(value, bool) or (isinstance(value, float) and not math.isfinite(value)):
+            raise ValueError
+        cents = int(float(value.strip())) if isinstance(value, str) else int(value)
+    except (TypeError, ValueError, OverflowError):
+        raise UserError(f"That isn't an {what}.") from None
+    if abs(cents) > MAX_CENTS:
+        raise UserError("That's more than the app can hold: $1,000,000,000.00 is the most.")
+    return cents
+
+
+def _rate(value):
+    """An interest rate in percent, or a UserError."""
+    try:
+        if isinstance(value, bool):
+            raise ValueError
+        rate = float(value.strip() if isinstance(value, str) else value)
+    except (TypeError, ValueError, OverflowError):
+        raise UserError("That isn't a rate.") from None
+    if not math.isfinite(rate) or not 0 <= rate <= 100:
+        raise UserError("That isn't a rate: type it like 20.99.")
+    return rate
 
 
 def _rows(cursor):
@@ -818,7 +848,7 @@ class BudgetService:
 
     @exposed
     def set_monthly_budget(self, category_id, cents):
-        value = None if cents in (None, "") else int(cents)
+        value = None if cents in (None, "") else _amount(cents)
         if value is not None and value < 0:
             raise UserError("A budgeted amount can't be negative.")
         with self.db.write("Change budgeted amount") as c:
@@ -873,13 +903,14 @@ class BudgetService:
 
     @exposed
     def set_assigned(self, month, category_id, cents):
+        cents = _amount(cents)
         with self.db.write("Assign money") as c:
             self._set_assigned(c, month, category_id, cents)
         return self.month(month)
 
     @exposed
     def move_money(self, month, from_id, to_id, cents):
-        cents = int(cents)
+        cents = _amount(cents)
         if cents <= 0:
             raise UserError("Enter an amount to move.")
         with self.db.write("Move money") as c:
@@ -1129,7 +1160,7 @@ class BudgetService:
             category_id = int(category_id) if category_id else txn["category_id"]
             if category_id:
                 ledger.check_category(c, category_id)
-            price = abs(int(amount)) if amount else -txn["amount"]
+            price = abs(_amount(amount, "price")) if amount else -txn["amount"]
             sub_id = subscriptions.create(c, txn["payee_id"], name, price, cadence, kind, category_id, pricing,
                                           _end_date(ends_on))
             if note:
@@ -1279,15 +1310,16 @@ class BudgetService:
                 if changes.get("date"):
                     c.execute("UPDATE transactions SET date = ? WHERE id = ?", (changes["date"], txn_id))
                 if changes.get("amount") is not None:
+                    new_amount = _amount(changes["amount"])
                     now = c.execute("SELECT amount, is_split, transfer_id FROM transactions WHERE id = ?",
                                     (txn_id,)).fetchone()
-                    if int(changes["amount"]) != now["amount"]:
+                    if new_amount != now["amount"]:
                         # Its split lines and its other half would be left at the old amount.
                         if now["is_split"]:
                             raise UserError("Unsplit it first, then change the amount.")
                         if now["transfer_id"]:
                             raise UserError("This is a transfer: change it as Not a transfer first.")
-                    c.execute("UPDATE transactions SET amount = ? WHERE id = ?", (int(changes["amount"]), txn_id))
+                    c.execute("UPDATE transactions SET amount = ? WHERE id = ?", (new_amount, txn_id))
             if "transfer_account_id" in changes:
                 if changes["transfer_account_id"]:
                     inbox.mark_transfer(txn_id, int(changes["transfer_account_id"]))
@@ -1314,7 +1346,7 @@ class BudgetService:
         question is "What's this for?" when its category makes it look recurring."""
         if not date:
             raise UserError("Enter a date.")
-        amount = int(amount)
+        amount = _amount(amount)
         if amount == 0:
             raise UserError("Enter an amount.")
         with self.db.write("Add transaction") as c:
@@ -1373,7 +1405,7 @@ class BudgetService:
                 raise UserError("There's already an account with that name.")
             account_id = ledger.create_account(c, name, kind, bank=bank)
             if balance not in (None, ""):
-                cents = int(balance)
+                cents = _amount(balance)
                 c.execute("UPDATE accounts SET anchor_date = ?, anchor_balance = ? WHERE id = ?",
                           (date or self.today(), _balance_sign(kind, cents, in_favour), account_id))
         return account_id
@@ -1396,11 +1428,11 @@ class BudgetService:
                 c.execute("UPDATE accounts SET bank = ? WHERE id = ?", (_clean_bank(changes["bank"]), account_id))
             if "apr" in changes:
                 apr = changes["apr"]
-                c.execute("UPDATE accounts SET apr = ? WHERE id = ?", (None if apr in (None, "") else float(apr), account_id))
+                c.execute("UPDATE accounts SET apr = ? WHERE id = ?", (None if apr in (None, "") else _rate(apr), account_id))
             if "planned_payment" in changes:
                 p = changes["planned_payment"]
                 c.execute("UPDATE accounts SET planned_payment = ? WHERE id = ?",
-                          (None if p in (None, "") else int(p), account_id))
+                          (None if p in (None, "") else _amount(p), account_id))
             if "closed" in changes:
                 c.execute("UPDATE accounts SET closed = ? WHERE id = ?", (1 if changes["closed"] else 0, account_id))
         return True
@@ -1414,8 +1446,9 @@ class BudgetService:
             acct = c.execute("SELECT kind FROM accounts WHERE id = ?", (account_id,)).fetchone()
             if acct is None:
                 raise UserError("That account no longer exists.")
+            value = _balance_sign(acct["kind"], _amount(cents), in_favour)
             c.execute("UPDATE accounts SET anchor_date = ?, anchor_balance = ? WHERE id = ?",
-                      (date or self.today(), _balance_sign(acct["kind"], int(cents), in_favour), account_id))
+                      (date or self.today(), value, account_id))
         return self.accounts()
 
     @exposed
@@ -1423,7 +1456,7 @@ class BudgetService:
         """The bank shows a different balance: add an adjustment for the difference today."""
         with self.db.write("Balance adjustment") as c:
             acct = c.execute("SELECT kind FROM accounts WHERE id = ?", (account_id,)).fetchone()
-            target = _balance_sign(acct["kind"], int(cents), in_favour)
+            target = _balance_sign(acct["kind"], _amount(cents), in_favour)
             ours = ledger.account_balance(c, account_id)
             if ours is None:
                 raise UserError("Set this account's balance first.")
@@ -1497,7 +1530,7 @@ class BudgetService:
                          pricing="fixed", ends_on=None):
         """Tracks a subscription by hand: "Apple Music, $11.99 a month, from Apple"."""
         name = _clean_name(name)
-        amount = abs(int(amount))
+        amount = abs(_amount(amount, "price"))
         if not amount:
             raise UserError("Enter the price.")
         if cadence not in ("weekly", "monthly", "yearly") or kind not in ("subscription", "bill"):
@@ -1531,7 +1564,7 @@ class BudgetService:
                         continue
                     c.execute(f"UPDATE subscriptions SET {field} = ? WHERE id = ?", (value, sub_id))
             if changes.get("amount"):
-                c.execute("UPDATE subscriptions SET amount = ? WHERE id = ?", (abs(int(changes["amount"])), sub_id))
+                c.execute("UPDATE subscriptions SET amount = ? WHERE id = ?", (abs(_amount(changes["amount"], "price")), sub_id))
             if "category_id" in changes:
                 cid = int(changes["category_id"]) if changes["category_id"] else None
                 if cid:
