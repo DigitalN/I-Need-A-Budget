@@ -39,7 +39,9 @@ every download), so a FITID counts for the same amount within FITID_DAYS days, o
 within a file counts for nothing, and one already on another row of the account isn't stored
 again. A bank's CSV and its Quicken file can describe the
 same transaction differently, so a row is also the same as one from a *different kind*
-of file in that account with the same date and amount (each matched once).
+of file in that account with the same date and amount (each matched once), and so is one
+you added by hand (no fingerprint, ID or import) with the same amount within MANUAL_DAYS days:
+it takes the bank's date, text and IDs and keeps what you decided.
 
 New rows are only added here: each Result's `new_ids` then arrive in the inbox
 (inbox.Inbox.arrive), which categorizes what it can.
@@ -68,6 +70,7 @@ RBC_HEADER = ["account type", "account number", "transaction date", "cheque numb
               "description 2", "cad$"]
 ACTUAL_HEADER = ["account", "date", "payee", "notes", "category_group", "category", "amount"]
 FITID_DAYS = 7  # a bank's transaction ID matches a row of the same amount this many days either side
+MANUAL_DAYS = 3  # a transaction added by hand is the bank's row of the same amount this many days either side
 SUPPORTED_SUFFIXES = {".csv", ".ofx", ".qfx", ".qbo"}
 BANK_FORMATS = ("ofx", "tangerine_card", "tangerine_bank", "rbc", "csv")
 
@@ -725,6 +728,22 @@ def _import_part(conn, fmt, part, filename, sha, archived_path, account_id=None)
             result.duplicates += 1
             continue
         desc = describe(row.name, row.memo, acct["kind"])
+        # One you added by hand (no fingerprint, bank ID or import) is the same transaction when
+        # the bank's file brings it: same amount, a few days either side, each matched once.
+        mine = conn.execute(
+            "SELECT id FROM transactions WHERE account_id = ? AND fingerprint IS NULL AND fitid IS NULL "
+            "AND import_id IS NULL AND amount = ? AND date BETWEEN date(?, ?) AND date(?, ?) "
+            "ORDER BY abs(julianday(date) - julianday(?)), id LIMIT 1",
+            (account_id, row.amount, row.date, f"-{MANUAL_DAYS} days", row.date, f"+{MANUAL_DAYS} days", row.date)).fetchone()
+        if mine is not None:
+            # It takes what the bank says and keeps what you decided (category, split, note, payee, by_you).
+            payee_id, similar = ledger.resolve_payee(conn, desc)
+            conn.execute("UPDATE transactions SET date = ?, raw_name = ?, raw_memo = ?, bank_type = ?, bank_category = ?, "
+                         "hint = ?, fingerprint = ?, fitid = ?, import_id = ?, payee_id = COALESCE(payee_id, ?) WHERE id = ?",
+                         (row.date, row.name, row.memo, row.bank_type, row.bank_category, transaction_hint(desc), fp,
+                          keep_fitid, import_id, payee_id, mine["id"]))
+            result.duplicates += 1
+            continue
         payee_id, similar = ledger.resolve_payee(conn, desc)
         result.new_ids.append(conn.execute(
             "INSERT INTO transactions (account_id, date, amount, payee_id, raw_name, raw_memo, bank_type, "
