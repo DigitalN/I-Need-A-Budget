@@ -1,0 +1,20 @@
+#!/bin/bash
+# Refuses a commit message that could put private banking data on GitHub (commit messages are
+# public): a card number, or a word listed in .git-denylist. The same checks as pre-commit's
+# (scripts/hooks/privacy_check.py). Lines git will drop (# comments) aren't looked at.
+#
+# Only ever bypass with `git commit --no-verify` after checking the message yourself.
+
+set -uo pipefail
+ROOT=$(git rev-parse --show-toplevel)
+
+if ! command -v python3 >/dev/null; then
+    echo "✗ python3 is needed for the card number and .git-denylist checks." >&2
+    exit 1
+fi
+if ! grep -v '^#' "$1" | python3 "$(dirname "$0")/privacy_check.py" --denylist "$ROOT/.git-denylist" --what "In the commit message"; then
+    echo "" >&2
+    echo "Commit refused to keep private data off GitHub. Reword the message and try again." >&2
+    exit 1
+fi
+exit 0
