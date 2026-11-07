@@ -108,11 +108,15 @@ def same_kind_of_file(a, b):
     return "csv" in (a, b) and a.startswith("csv") and b.startswith("csv")
 
 
-def files_overlap(a_first, a_last, b_first, b_last):
-    """Whether two files cover any day in common (their first and last dates; None when not known,
-    which counts as overlapping). Two downloads that only meet, one ending the day before the other
-    starts, can't hold the same transaction twice, whatever else about two rows looks alike."""
-    return not ((a_first and b_last and a_first > b_last) or (b_first and a_last and b_first > a_last))
+def one_transaction_in_two_files(a, b):
+    """Whether two rows (dicts with `date`, and `first` / `last`: the dates of the file each came in,
+    None when not known, which counts as inside) can be one transaction seen in two kinds of file:
+    at least one of them falls within the other's file dates. Rows that are both outside it sit at
+    the edges of two downloads (a CSV ending Oct 15, a Quicken file starting Oct 16): two
+    transactions, however alike they look."""
+    def inside(row, other):
+        return (not other["first"] or row["date"] >= other["first"]) and (not other["last"] or row["date"] <= other["last"])
+    return inside(a, b) or inside(b, a)
 
 
 @lru_cache(maxsize=None)
@@ -155,7 +159,8 @@ def pair_nearest(wanted, offered, days=OTHER_KIND_DAYS, allowed=None):
 def cross_kind_pairs(conn, a_id, b_id, days=OTHER_KIND_DAYS, skip_a=(), skip_b=()):
     """[(a's transaction id, b's)]: rows of two accounts that are the same transaction seen in
     different kinds of file (a bank's CSV and its Quicken file, or a CSV set up again), by
-    pair_nearest, and only where the two rows' files overlap (files_overlap). `skip_a` / `skip_b`:
+    pair_nearest, and only where one of the two rows falls within the other's file dates
+    (one_transaction_in_two_files). `skip_a` / `skip_b`:
     rows that already have an exact twin (the same fingerprint or bank ID), which pair with nothing
     else. Only the rows of one account within `days` of the other's dates are looked at."""
     def span(account_id):
@@ -172,7 +177,7 @@ def cross_kind_pairs(conn, a_id, b_id, days=OTHER_KIND_DAYS, skip_a=(), skip_b=(
         return []
     return pair_nearest(rows(a_id, set(skip_a), b_span), rows(b_id, set(skip_b), a_span), days,
                         allowed=lambda a, b: not same_kind_of_file(a["kind"], b["kind"])
-                        and files_overlap(a["first"], a["last"], b["first"], b["last"]))
+                        and one_transaction_in_two_files(a, b))
 
 
 def duplicate_accounts(conn):

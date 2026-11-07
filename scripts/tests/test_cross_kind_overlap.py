@@ -39,6 +39,30 @@ def test_the_other_way_round_too(app):
     assert fares(app) == ["2026-10-15", "2026-10-16"]
 
 
+def test_a_one_day_overlap_keeps_the_fares_either_side(app):
+    call(app, "import_files", [str(write(app.test_downloads, "Chequing.CSV", bank_csv([
+        ("10/15/2026", "SAMPLE TRANSIT", "SAMPLE TRANSIT", "-3.50"),
+        ("10/14/2026", "SAMPLE TRANSIT", "SAMPLE TRANSIT", "-3.50"),
+        ("10/13/2026", "SAMPLE EMPLOYER PAY", "SAMPLE EMPLOYER PAY", "1500.00")])))])
+    call(app, "import_files", [str(write(app.test_downloads, "Chequing.QFX", qfx([
+        ("20261015", "-3.50", "SAMPLE TRANSIT", "T15"),
+        ("20261016", "-3.50", "SAMPLE TRANSIT", "T16"),
+        ("20261017", "-12.00", "SAMPLE CAFE", "C17")], "1477.50", "20261017")))])
+    assert fares(app) == ["2026-10-14", "2026-10-15", "2026-10-16"]
+
+
+def test_a_one_day_overlap_the_other_way_round_too(app):
+    call(app, "import_files", [str(write(app.test_downloads, "Chequing.QFX", qfx([
+        ("20261013", "1500.00", "SAMPLE EMPLOYER PAY", "P13"),
+        ("20261014", "-3.50", "SAMPLE TRANSIT", "T14"),
+        ("20261015", "-3.50", "SAMPLE TRANSIT", "T15")], "1493.00", "20261015")))])
+    call(app, "import_files", [str(write(app.test_downloads, "Chequing.CSV", bank_csv([
+        ("10/17/2026", "SAMPLE CAFE", "SAMPLE CAFE", "-12.00"),
+        ("10/16/2026", "SAMPLE TRANSIT", "SAMPLE TRANSIT", "-3.50"),
+        ("10/15/2026", "SAMPLE TRANSIT", "SAMPLE TRANSIT", "-3.50")])))])
+    assert fares(app) == ["2026-10-14", "2026-10-15", "2026-10-16"]
+
+
 def test_files_that_overlap_still_match_a_shifted_date(app):
     """The same fare, dated a day later in the second file, where the files cover the same days."""
     call(app, "import_files", [str(write(app.test_downloads, "Chequing.CSV", bank_csv([
@@ -76,3 +100,14 @@ def test_merging_and_the_imported_twice_check_use_the_same_rule(app):
     overlap_b = _account(app, "Sample D", [("2026-10-16", -350, "ofx", "2026-10-15", "2026-10-18")])
     with app.db.read() as c:
         assert len(ledger.cross_kind_pairs(c, overlap_a, overlap_b)) == 1
+
+
+def test_merging_keeps_the_fares_at_the_edges_of_a_one_day_overlap(app):
+    a = _account(app, "Sample E", [("2026-10-14", -350, "tangerine_bank", "2026-10-13", "2026-10-15"),
+                                   ("2026-10-15", -350, "tangerine_bank", "2026-10-13", "2026-10-15")])
+    b = _account(app, "Sample F", [("2026-10-15", -350, "ofx", "2026-10-15", "2026-10-17"),
+                                   ("2026-10-16", -350, "ofx", "2026-10-15", "2026-10-17")])
+    with app.db.read() as c:
+        [(from_a, into_b)] = ledger.cross_kind_pairs(c, a, b)
+        dates = [c.execute("SELECT date FROM transactions WHERE id = ?", (i,)).fetchone()[0] for i in (from_a, into_b)]
+    assert dates == ["2026-10-15", "2026-10-15"]  # the 14th and the 16th are two more fares
