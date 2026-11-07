@@ -7,6 +7,7 @@ commits. Amounts are cents.
 """
 
 import transfers
+from errors import UserError
 from payees import describe, find_similar, merchant_key, transaction_hint
 from util import day_before
 
@@ -128,9 +129,9 @@ def merge_accounts(conn, from_id, into_id):
     a = conn.execute("SELECT * FROM accounts WHERE id = ?", (from_id,)).fetchone()
     b = conn.execute("SELECT * FROM accounts WHERE id = ?", (into_id,)).fetchone()
     if a is None or b is None or from_id == into_id:
-        raise ValueError("Pick another account to merge into.")
+        raise UserError("Pick another account to merge into.")
     if is_debt(a["kind"]) != is_debt(b["kind"]):
-        raise ValueError("A card or line of credit can only be merged with another one.")
+        raise UserError("A card or line of credit can only be merged with another one.")
     moved = dropped = 0
     for t in conn.execute("SELECT * FROM transactions WHERE account_id = ? ORDER BY date, id", (from_id,)).fetchall():
         twin = None
@@ -397,7 +398,7 @@ def rename_payee(conn, payee_id, new_name):
     """Renames a payee, or merges it into the payee that already has that name."""
     new_name = " ".join(str(new_name).split())
     if not new_name:
-        raise ValueError("A payee needs a name.")
+        raise UserError("A payee needs a name.")
     other = conn.execute("SELECT id FROM payees WHERE name = ? COLLATE NOCASE AND id != ?",
                          (new_name, payee_id)).fetchone()
     if other is None:

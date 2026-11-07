@@ -61,7 +61,7 @@ All in `Application Files/`:
   `call(name, args)`, to the page. `VERSION` here is the app's only version number.
 - `service.py`: everything the page can ask for. `BudgetService.dispatch()` runs only
   methods marked `@exposed`; results are `{"ok": true, "result": …}` or
-  `{"ok": false, "error": "…"}`. Raise `UserError` for messages the user should see.
+  `{"ok": false, "error": "…"}`. Raise `UserError` (`errors.py`) for messages the user should see, in service.py, ledger.py and inbox.py alike; any other exception is logged with its traceback and shown as "Something went wrong (…). Details are in the log." Months and dates from the page are checked on the way in.
   The preview and most tests drive this same class.
 - `db.py`: schema, upgrades, the shared connection behind a lock, **undo** (triggers record
   inverse SQL; `db.write("Label")` makes one undoable step; updates only record changed

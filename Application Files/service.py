@@ -13,7 +13,7 @@ import logging
 import os
 import re
 import shutil
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 import banks
@@ -22,6 +22,7 @@ import importer
 import ledger
 import subscriptions
 import transfers
+from errors import UserError
 from figures import Figures
 from inbox import Inbox
 from payees import TRANSFER_OR_BANK_ENTRY_HINTS
@@ -38,10 +39,6 @@ def exposed(fn):
     return fn
 
 
-class UserError(Exception):
-    """Something the person can fix; the message is shown on the page."""
-
-
 # What a group made by hand starts with, to rename (numbered if it's taken).
 NEW_CATEGORY_NAME = "New Spending Category"
 
@@ -50,6 +47,23 @@ STARTER_CATEGORIES = [
     ("Everyday", ["Groceries", "Eating Out", "Transportation", "Household", "Fun Money"]),
     ("Saving", ["Emergency Fund"]),
 ]
+
+
+def _month(value):
+    """A month from the page ('2026-10'), or a UserError: 01 to 12, not whatever text arrives."""
+    if not (isinstance(value, str) and re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", value)):
+        raise UserError("That isn't a month: pick one from the list.")
+    return value
+
+
+def _date(value):
+    """A date from the page ('2026-10-05'), or a UserError."""
+    try:
+        if not (isinstance(value, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", value)):
+            raise ValueError
+        return date.fromisoformat(value).isoformat()
+    except ValueError:
+        raise UserError("That isn't a date: use year-month-day, like 2026-10-05.") from None
 
 
 def _rows(cursor):
@@ -77,9 +91,9 @@ class BudgetService:
             else:
                 result = fn(self, *(args or []))
             return {"ok": True, "result": result}
-        except (UserError, importer.ImportError_, ValueError) as e:  # LayoutError is a ValueError
+        except (UserError, importer.ImportError_, csvlayout.LayoutError) as e:  # messages for the person
             return {"ok": False, "error": str(e)}
-        except Exception as e:
+        except Exception as e:  # anything else is a bug: logged, and no raw Python on the page
             log.exception("%s failed", name)
             return {"ok": False, "error": f"Something went wrong ({type(e).__name__}). Details are in the log."}
 
@@ -586,8 +600,8 @@ class BudgetService:
 
     @exposed
     def set_budget_start(self, month):
-        if not (isinstance(month, str) and len(month) == 7):
-            raise UserError("Pick a month to start the budget in.")
+        if not isinstance(month, str) or not re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", month):
+            raise UserError("That isn't a month: pick a month to start the budget in.")
         self.db.set_meta("budget_start", month)
         return month
 
@@ -780,6 +794,7 @@ class BudgetService:
 
     @exposed
     def month(self, month=None):
+        month = _month(month) if month is not None else month
         month = month or self.current_month()
         current = self.current_month()
         with self.db.read() as c:
@@ -818,12 +833,14 @@ class BudgetService:
 
     @exposed
     def set_assigned(self, month, category_id, cents):
+        month = _month(month)
         with self.db.write("Assign money") as c:
             self._set_assigned(c, month, category_id, cents)
         return self.month(month)
 
     @exposed
     def move_money(self, month, from_id, to_id, cents):
+        month = _month(month)
         cents = int(cents)
         if cents <= 0:
             raise UserError("Enter an amount to move.")
@@ -836,6 +853,7 @@ class BudgetService:
 
     @exposed
     def assign_plan(self, month, amount=None):
+        month = _month(month)
         """How to share out money (a paycheque, or everything ready to assign): see
         Figures.assign_plan."""
         with self.db.read() as c:
@@ -852,6 +870,7 @@ class BudgetService:
 
     @exposed
     def apply_plan(self, month, allocations):
+        month = _month(month)
         with self.db.write("Assign paycheque") as c:
             for a in allocations:
                 cents = int(a["amount"])
@@ -862,6 +881,7 @@ class BudgetService:
 
     @exposed
     def catch_up(self, month):
+        month = _month(month)
         """Assigns exactly what was spent, so no category ends the month overspent. For
         catching up on months gone by."""
         with self.db.write("Catch up month") as c:
@@ -887,6 +907,7 @@ class BudgetService:
 
     @exposed
     def category_detail(self, category_id, month=None):
+        month = _month(month) if month is not None else month
         month = month or self.current_month()
         with self.db.read() as c:
             cat = c.execute("SELECT * FROM categories WHERE id = ?", (category_id,)).fetchone()
@@ -902,6 +923,7 @@ class BudgetService:
 
     @exposed
     def spent_detail(self, month, category_id=None, group_id=None):
+        month = _month(month)
         """What makes up a category's (or a group's) Spent on the Budget page in a month:
         every transaction and split line, adding up to that figure."""
         with self.db.read() as c:
@@ -1204,7 +1226,7 @@ class BudgetService:
                 c.execute("UPDATE transactions SET note = ? WHERE id = ?", (str(changes["note"] or ""), txn_id))
             if manual:
                 if changes.get("date"):
-                    c.execute("UPDATE transactions SET date = ? WHERE id = ?", (changes["date"], txn_id))
+                    c.execute("UPDATE transactions SET date = ? WHERE id = ?", (_date(changes["date"]), txn_id))
                 if changes.get("amount") is not None:
                     c.execute("UPDATE transactions SET amount = ? WHERE id = ?", (int(changes["amount"]), txn_id))
             if "transfer_account_id" in changes:
@@ -1231,6 +1253,7 @@ class BudgetService:
     def add_transaction(self, account_id, date, payee, amount, category_id=None, note=""):
         if not date:
             raise UserError("Enter a date.")
+        date = _date(date)
         amount = int(amount)
         if amount == 0:
             raise UserError("Enter an amount.")
@@ -1288,6 +1311,7 @@ class BudgetService:
 
     @exposed
     def add_account(self, name, kind, balance=None, date=None, bank=None):
+        date = _date(date) if date else date
         name, bank = _name_with_bank(name, bank)
         with self.db.write(f"Add account {name}") as c:
             if c.execute("SELECT 1 FROM accounts WHERE name = ? COLLATE NOCASE", (name,)).fetchone():
@@ -1328,6 +1352,7 @@ class BudgetService:
 
     @exposed
     def set_balance(self, account_id, cents, date=None):
+        date = _date(date) if date else date
         """The balance the bank shows (for a card or line of credit: what you owe, as a
         positive number). Every other balance is worked out from this one."""
         with self.db.write("Set balance") as c:
