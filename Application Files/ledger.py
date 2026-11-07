@@ -121,10 +121,10 @@ def duplicate_accounts(conn):
 
 def merge_accounts(conn, from_id, into_id):
     """`from_id` turned out to be the same account as `into_id`. Its transactions that
-    `into_id` already has are dropped (keeping anything you decided about the copy), the
-    rest move over, and `from_id` goes. Returns (moved, dropped, ids): `ids` were a
-    transfer between the two copies, both halves now in one account, for the inbox to
-    ask about again."""
+    `into_id` already has are dropped (see _drop_copy: what you decided stays), the rest
+    move over, and `from_id` goes. Returns (moved, dropped, unlinked, asked): `unlinked` were
+    a transfer between the two copies, both halves now in one account, and `asked` are the
+    other halves of dropped copies that no longer have one: the inbox asks about both again."""
     a = conn.execute("SELECT * FROM accounts WHERE id = ?", (from_id,)).fetchone()
     b = conn.execute("SELECT * FROM accounts WHERE id = ?", (into_id,)).fetchone()
     if a is None or b is None or from_id == into_id:
@@ -132,6 +132,7 @@ def merge_accounts(conn, from_id, into_id):
     if is_debt(a["kind"]) != is_debt(b["kind"]):
         raise ValueError("A card or line of credit can only be merged with another one.")
     moved = dropped = 0
+    asked = []
     for t in conn.execute("SELECT * FROM transactions WHERE account_id = ? ORDER BY date, id", (from_id,)).fetchall():
         twin = None
         if t["fingerprint"]:
@@ -147,7 +148,7 @@ def merge_accounts(conn, from_id, into_id):
             conn.execute("UPDATE transactions SET account_id = ? WHERE id = ?", (into_id, t["id"]))
             moved += 1
         else:
-            _drop_copy(conn, t, twin)
+            asked += _drop_copy(conn, t, twin)
             dropped += 1
     conn.execute("UPDATE transactions SET transfer_account_id = ? WHERE transfer_account_id = ?", (into_id, from_id))
     unlinked = [t["id"] for t in conn.execute("SELECT id FROM transactions WHERE account_id = ? AND "
@@ -166,34 +167,48 @@ def merge_accounts(conn, from_id, into_id):
             conn.execute("INSERT INTO budget (month, category_id, assigned) VALUES (?, ?, ?) ON CONFLICT(month, "
                          "category_id) DO UPDATE SET assigned = assigned + excluded.assigned", (r["month"], new, r["assigned"]))
     conn.execute("DELETE FROM accounts WHERE id = ?", (from_id,))
-    return moved, dropped, unlinked
+    return moved, dropped, unlinked, [i for i in dict.fromkeys(asked) if i not in unlinked]
 
 
 def _drop_copy(conn, copy, twin):
-    """Deletes `copy`, a second copy of `twin`, moving onto `twin` what only the copy has:
-    what you decided about it (a category, a split, sending it back), a note, its
-    subscription, its transfer, its bank ID."""
-    if copy["by_you"] and not twin["by_you"] and not copy["transfer_account_id"] and not twin["transfer_account_id"]:
+    """Deletes `copy`, a second copy of `twin`, moving onto `twin` what only the copy has: a
+    note, its subscription, its bank ID, and what you decided about it. What you decided
+    stays decided (docs/adr/0005): if `twin` is yours it's kept as it is; if only the copy is
+    yours, `twin` takes the whole decision (a category, a split, sending it back, being a
+    transfer or not). Nothing the app did replaces a decision of yours. Returns the ids of
+    other halves of transfers that lost their partner and are the app's to decide again."""
+    asked = []
+    partner = copy["transfer_id"]
+    if copy["by_you"] and not twin["by_you"]:
+        if twin["transfer_id"] and twin["transfer_id"] != partner:
+            asked += transfers.unlink(conn, twin["id"])[1:]  # the app's pairing of the original goes
         conn.execute("UPDATE transactions SET category_id = ?, is_split = ?, status = ?, reason = ?, refund_of = ?, "
-                     "by_you = 1 WHERE id = ?", (copy["category_id"], copy["is_split"], copy["status"], copy["reason"],
-                                                 copy["refund_of"], twin["id"]))
+                     "transfer_account_id = ?, transfer_id = ?, by_you = 1 WHERE id = ?",
+                     (copy["category_id"], copy["is_split"], copy["status"], copy["reason"], copy["refund_of"],
+                      copy["transfer_account_id"], partner, twin["id"]))
+        conn.execute("DELETE FROM splits WHERE transaction_id = ?", (twin["id"],))
         if copy["is_split"]:
-            conn.execute("DELETE FROM splits WHERE transaction_id = ?", (twin["id"],))
             conn.execute("UPDATE splits SET transaction_id = ? WHERE transaction_id = ?", (twin["id"], copy["id"]))
+        if partner:
+            conn.execute("UPDATE transactions SET transfer_id = ? WHERE id = ?", (twin["id"], partner))
+        twin = conn.execute("SELECT * FROM transactions WHERE id = ?", (twin["id"],)).fetchone()
+        partner = None  # it has a partner now (or never had one)
     if copy["note"] and not twin["note"]:
         conn.execute("UPDATE transactions SET note = ? WHERE id = ?", (copy["note"], twin["id"]))
     if copy["subscription_id"] and not twin["subscription_id"]:
         conn.execute("UPDATE transactions SET subscription_id = ? WHERE id = ?", (copy["subscription_id"], twin["id"]))
     conn.execute("UPDATE transactions SET refund_of = ? WHERE refund_of = ?", (twin["id"], copy["id"]))
-    other = conn.execute("SELECT * FROM transactions WHERE id = ?", (copy["transfer_id"],)).fetchone() \
-        if copy["transfer_id"] else None
     conn.execute("DELETE FROM transactions WHERE id = ?", (copy["id"],))
     if copy["fitid"] and not twin["fitid"] and not conn.execute(
             "SELECT 1 FROM transactions WHERE account_id = ? AND fitid = ?", (twin["account_id"], copy["fitid"])).fetchone():
         conn.execute("UPDATE transactions SET fitid = ? WHERE id = ?", (copy["fitid"], twin["id"]))
-    if other is not None and not twin["transfer_id"]:
-        transfers.link(conn, conn.execute("SELECT * FROM transactions WHERE id = ?", (twin["id"],)).fetchone(),
-                       conn.execute("SELECT * FROM transactions WHERE id = ?", (other["id"],)).fetchone())
+    if partner is not None:  # the copy was paired by the app (or the original is yours)
+        if twin["by_you"] or twin["transfer_id"]:
+            asked.append(partner)  # never paired with yours; one already paired has its own
+        else:
+            transfers.link(conn, conn.execute("SELECT * FROM transactions WHERE id = ?", (twin["id"],)).fetchone(),
+                           conn.execute("SELECT * FROM transactions WHERE id = ?", (partner,)).fetchone())
+    return asked
 
 
 # ── special categories ───────────────────────────────────────
