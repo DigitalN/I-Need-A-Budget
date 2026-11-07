@@ -4,8 +4,10 @@
 <meta charset="utf-8">
 <!-- No network access of any kind: everything is inline and data comes from the
      pywebview bridge (window.pywebview.api), which is not an HTTP connection.
-     'unsafe-eval' is required because pywebview delivers API return values with
-     eval(); this page never evaluates strings itself. -->
+     'unsafe-eval' is there only because the app hands the page events with pywebview's
+     evaluate_js, which runs its script through eval(). This page never evaluates strings
+     itself, and text from files and banks goes in through esc(): with inline script and
+     eval both allowed, an unescaped file name would run. -->
 <meta http-equiv="Content-Security-Policy"
       content="default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval'; style-src 'unsafe-inline'; img-src data:; font-src 'none'; connect-src 'none'; media-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
@@ -435,7 +437,7 @@ const moneyOrBlank = c => c ? moneyPlain(c) : '';
 // 300/4, brackets too). Given `base`, what the box held before you typed (an Assigned or
 // Budgeted amount), one that starts with + − * or / works on that: +50 adds 50 to it.
 // Anywhere else a leading minus is a negative amount. null for an empty box, NaN for
-// anything that isn't an amount. No eval(): the page's CSP doesn't allow it anyway.
+// anything that isn't an amount. No eval(): a typed amount is never run as code.
 function parseMoney(text, base) {
   let t = String(text ?? '').replace(/[$,\s]/g, '').replace(/−/g, '-').replace(/×/g, '*').replace(/÷/g, '/');
   if (t === '') return null;
@@ -2985,7 +2987,7 @@ async function renderOnboarding() {
           <div><b>${esc(f.account_name || f.filename)}</b> <span class="muted small">${esc(f.filename)}</span><div class="small muted">${f.format === 'actual' ? 'Learn your categories and which payees go where' : `${plural(f.rows, 'transaction')}, ${dayYear(f.first_date)} – ${dayYear(f.last_date)}`}${f.already_imported ? ' · already imported' : ''}</div></div>
           <span class="tag ${f.format === 'actual' ? 'info' : ''}">${f.format === 'actual' ? 'Actual Budget' : f.format === 'ofx' ? 'OFX' : 'CSV'}</span></label>`).join('')
         : `<div class="empty"><b>No bank files in ${esc(ob.files.folder)}</b>Download some, then look again.</div>`}</div>
-      ${ob.results ? `<div class="notice info" style="margin-top:12px">${ob.results}</div>` : ''}
+      ${ob.results ? `<div class="notice info" style="margin-top:12px">${esc(ob.results)}</div>` : ''}
       <div class="row" style="margin-top:16px"><button class="btn" data-ob="rescan">Look again</button><button class="btn" data-ob="choose">Choose files…</button><span class="spacer"></span>
         <button class="btn primary" data-ob="import">${files.some(f => !f.already_imported) ? 'Import and continue' : 'Continue'}</button></div>`;
   } else if (ob.step === 1) {

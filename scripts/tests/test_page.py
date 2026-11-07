@@ -15,6 +15,196 @@ import pytest
 PAGE = (Path(__file__).resolve().parents[2] / "Application Files" / "index.html").read_text(encoding="utf-8")
 
 
+# ── text from files and banks is never put in the page as HTML ─────────────────
+
+_TEXT_FIELDS = re.compile(r"\b(filename|account_name|payee_name|raw_name|raw_memo|error|note|results|reason|memo|"
+                          r"subscription_name|category_name|transfer_account_name|bank_category|name)\b")
+
+
+def _skip_literal(js, i):
+    """If a string, comment or regex literal starts at js[i], the index after it, else None."""
+    c = js[i]
+    if c in "'\"":
+        j = i + 1
+        while js[j] != c:
+            j += 2 if js[j] == "\\" else 1
+        return j + 1
+    if js.startswith("//", i):
+        return js.index("\n", i)
+    if js.startswith("/*", i):
+        return js.index("*/", i) + 2
+    if c == "/":  # a regex literal, if what comes before can't end an expression
+        before = js[:i].rstrip()[-1:]
+        if before == "" or before in "(,=:[!&|?{};+-*%<>~^":
+            j, in_class = i + 1, False
+            while in_class or js[j] != "/":
+                if js[j] == "\\":
+                    j += 1
+                elif js[j] == "[":
+                    in_class = True
+                elif js[j] == "]":
+                    in_class = False
+                j += 1
+            return j + 1
+    return None
+
+
+def _parse_template(js, i):
+    """(index after the closing backtick, (static text, [expressions])) for a template
+    literal whose opening backtick is just before js[i]. An expression is (offset, its text
+    with nested templates blanked, [nested templates])."""
+    static, exprs = [], []
+    while js[i] != "`":
+        if js[i] == "\\":
+            static.append(js[i:i + 2])
+            i += 2
+        elif js.startswith("${", i):
+            start, depth, i, text, nested = i, 1, i + 2, [], []
+            while True:
+                c = js[i]
+                if c == "`":
+                    i, t = _parse_template(js, i + 1)
+                    nested.append(t)
+                    text.append("``")
+                    continue
+                skip = _skip_literal(js, i)
+                if skip is not None:
+                    text.append(js[i:skip])
+                    i = skip
+                    continue
+                depth += (c == "{") - (c == "}")
+                i += 1
+                if depth == 0:
+                    break
+                text.append(c)
+            exprs.append((start, "".join(text), nested))
+        else:
+            static.append(js[i])
+            i += 1
+    return i + 1, ("".join(static), exprs)
+
+
+def _templates(js):
+    """Every top-level template literal in the page's script."""
+    found, i = [], 0
+    while i < len(js):
+        if js[i] == "`":
+            i, t = _parse_template(js, i + 1)
+            found.append(t)
+            continue
+        skip = _skip_literal(js, i)
+        i = i + 1 if skip is None else skip
+    return found
+
+
+def _top_level(text):
+    """(index, character) for each character of `text` outside brackets and literals."""
+    depth, i = 0, 0
+    while i < len(text):
+        skip = _skip_literal(text, i)
+        if skip is not None:
+            i = skip
+            continue
+        c = text[i]
+        if c in ")]}":
+            depth -= 1
+        if depth == 0:
+            yield i, c
+        if c in "([{":
+            depth += 1
+        i += 1
+
+
+def _after_condition(item):
+    """What a conditional can print: `a && b ? c : d` prints c or d, and `a && b` prints b."""
+    ternary = last_and = None
+    for i, c in _top_level(item):
+        if ternary is None and c == "?" and item[i + 1:i + 2] not in (".", "?") and item[i - 1:i] != "?":
+            ternary = i + 1
+        elif ternary is None and item.startswith("&&", i):
+            last_and = i + 2
+    if ternary is not None:
+        return item[ternary:]
+    return item[last_and:] if last_and is not None else item
+
+
+def _printed(expr):
+    """The part of an expression whose value can reach the page: inside every bracket and at
+    every comma, only what follows the condition."""
+    flat, i = [], 0
+    while i < len(expr):
+        skip = _skip_literal(expr, i)
+        if skip is not None:
+            flat.append(expr[i:skip])
+            i = skip
+        elif expr[i] in "([{":
+            depth, j = 1, i + 1
+            while depth:
+                skip = _skip_literal(expr, j)
+                if skip is not None:
+                    j = skip
+                    continue
+                depth += (expr[j] in "([{") - (expr[j] in ")]}")
+                j += 1
+            flat.append(expr[i] + _printed(expr[i + 1:j - 1]) + expr[j - 1])
+            i = j
+        else:
+            flat.append(expr[i])
+            i += 1
+    flat = "".join(flat)
+    cuts = [0] + [i + 1 for i, c in _top_level(flat) if c == ","] + [len(flat) + 1]
+    return ",".join(_after_condition(flat[a:b - 1]) for a, b in zip(cuts, cuts[1:]))
+
+
+def _without_esc(expr):
+    """What of the expression can reach the page unescaped: its esc(…) calls are cut out,
+    and so is what's only tested."""
+    while True:
+        m = re.search(r"\besc\(", expr)
+        if not m:
+            break
+        depth, j = 1, m.end()
+        while depth:
+            skip = _skip_literal(expr, j)
+            if skip is not None:
+                j = skip
+                continue
+            depth += (expr[j] == "(") - (expr[j] == ")")
+            j += 1
+        expr = expr[:m.start()] + " " + expr[j:]
+    return _printed(expr)
+
+
+def _unescaped_text(templates, in_html=False):
+    """Interpolations of a text field, without esc(), in a template that is HTML (it has a
+    tag in it, or it's inside one that does)."""
+    bad = []
+    for static, exprs in templates:
+        html = in_html or bool(re.search(r"<[a-zA-Z/]", static))
+        for _, text, nested in exprs:
+            if html and _TEXT_FIELDS.search(_without_esc(text)):
+                bad.append(text.strip())
+            bad += _unescaped_text(nested, html)
+    return bad
+
+
+def test_text_from_files_and_banks_is_escaped_before_it_becomes_html():
+    """Issue #46: a file name, an import error ("Not an amount: '<cell>'"), a payee, a memo or
+    a note can hold <img onerror=…>. Every interpolation of one in an HTML template goes
+    through esc() (toasts and dialog titles are set as text, so they don't need it)."""
+    templates = _templates(PAGE[PAGE.index("<script>"):PAGE.rindex("</script>")])
+    assert sum(len(e) for _, e in templates) > 500  # the scan found the page's templates
+    assert _unescaped_text(templates) == []
+
+
+def test_the_escape_check_sees_what_it_should():
+    html = _templates("const a = `<b>${ob.results}</b>`; const b = `<b>${esc(ob.results)}</b>`; "
+                      "const c = `<b>${x.note ? `<i>${x.note}</i>` : ''}</b>`; const d = `${r.filename} 1`; "
+                      "const e = `<td>${t.payee_name || t.raw_name}${t.note ? ` ${esc(t.note)}` : ''}</td>`; "
+                      "const f = `<td>${t.note ? ` ${t.note}` : ''}${/['\"]/.test(a) ? '' : esc(t.name)}</td>`;")
+    assert _unescaped_text(html) == ["ob.results", "x.note", "t.payee_name || t.raw_name", "t.note"]
+
+
 def test_every_action_name_is_handled():
     acts = set(re.findall(r'data-act="([a-z-]+)"', PAGE))
     assert acts, "no actions found"
