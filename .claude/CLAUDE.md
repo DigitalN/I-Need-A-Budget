@@ -176,7 +176,10 @@ All in `Application Files/`:
 - **Optional end date** on a subscription: a charge after it (or after it was marked
   cancelled) goes to the inbox with a "charged you again" warning, worked out each time:
   reactivating it or moving the end date clears it, and its waiting charges are re-checked.
-- A charge more than 3× the payee's biggest past charge always asks.
+- A charge more than 3× the payee's biggest past charge, and over $10.00 (`learn.UNUSUAL_FLOOR`: pocket change
+  from a $2 payee isn't a question), always asks: its own item, no guess (so not in Accept all), even for a
+  mixed payee or a "Fluctuates Every Time" bill (`learn.unusual`, checked first for a tracked charge in
+  `Inbox._settle`). Money in counts too.
 - **The updater is the only network access.** No HTTP server in the app (the dev preview
   is a separate script), no analytics, no CDNs or remote fonts. (Settings → Release notes
   opens GitHub in the browser; the app itself doesn't fetch it.) The CSP in `index.html`

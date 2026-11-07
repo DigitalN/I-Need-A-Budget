@@ -36,8 +36,8 @@ from dataclasses import dataclass
 import ledger
 import subscriptions
 import transfers
-from learn import always_ask, analyze, guess
-from payees import describe
+from learn import always_ask, analyze, guess, unusual, unusual_reason
+from payees import BANK_ENTRY_HINTS, describe
 
 SENT_BACK = "You sent this back"
 NOT_A_TRANSFER = "You said this isn't a transfer"
@@ -132,6 +132,9 @@ class Inbox:
             warning = subscriptions.charged_when_it_shouldnt(sub, txn["date"])
             if warning:
                 return self._wait(txn, warning)
+            biggest = None if txn["hint"] in BANK_ENTRY_HINTS else unusual(c, txn)
+            if biggest:  # even a bill that's different every time asks about one this much bigger
+                return self._wait(txn, unusual_reason(txn, biggest))
             if sub["category_id"] and sub["status"] == "active" and not always_ask(c, txn):
                 if self._hidden_category_of(sub):
                     return self._wait(txn, self._hidden_category_of(sub))
