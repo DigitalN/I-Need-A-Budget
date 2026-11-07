@@ -65,7 +65,7 @@ All in `Application Files/`:
   The preview and most tests drive this same class.
 - `db.py`: schema, upgrades, the shared connection behind a lock, **undo** (triggers record
   inverse SQL; `db.write("Label")` makes one undoable step; updates only record changed
-  columns), daily backups. Schema is at version 6. To change it: raise `SCHEMA_VERSION`,
+  columns), daily backups. Schema is at version 7. To change it: raise `SCHEMA_VERSION`,
   add the column to `SCHEMA` *and* an `ALTER TABLE` step in `_migrate` for existing
   databases. Upgrades copy the database to `Backups/budget-before-upgrade-…` first. The
   user's real database has real data in it: test every upgrade on a copy of it first.
