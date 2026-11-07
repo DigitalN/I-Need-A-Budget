@@ -493,17 +493,25 @@ class BudgetService:
             if parsed.format in ("actual", "csv"):
                 raise UserError("That isn't a file the app asks this about.")
             accounts = [a for a in self._accounts(c) if not a["closed"]]
+            asks_for_new = {q["index"] for q in importer.balance_questions(c, parsed)}
             parts = []
             for i, part in enumerate(parsed.parts):
                 hint = part.account
                 found = importer.find_account(c, hint, part.rows, importer.fingerprints(part.rows))
+                # A card balance above zero whose sign isn't known (issue #126): asked in the same pop-up
+                # as the account, for a new account and for the accounts that have no balance yet, so
+                # declining leaves nothing behind. `balance` is the file's amount.
+                balance = part.balance[1] if part.card_file and part.balance and part.balance[1] > 0 else None
                 parts.append({
                     "index": i, "account_id": found, "name": importer.suggested_name(c, hint), "kind": hint.kind,
                     "kind_label": ledger.KIND_LABELS.get(hint.kind, hint.kind), "bank": hint.bank,
                     "last4": hint.last4, "rows": len(part.rows), "first_date": part.first_date,
-                    "last_date": part.last_date,
-                    "choices": [{"id": a["id"], "name": a["name"]} for a in sorted(
-                        accounts, key=lambda a: a["is_debt"] != ledger.is_debt(hint.kind))],
+                    "last_date": part.last_date, "balance": balance,
+                    "asks_for_new": found is None and i in asks_for_new,
+                    "choices": [{"id": a["id"], "name": a["name"],
+                                 "asks": balance is not None and a["is_debt"] and any(
+                                     q["index"] == i for q in importer.balance_questions(c, parsed, {i: a["id"]}))}
+                                for a in sorted(accounts, key=lambda a: a["is_debt"] != ledger.is_debt(hint.kind))],
                 })
         return {"path": str(path), "filename": path.name, "parts": parts}
 
@@ -511,8 +519,28 @@ class BudgetService:
     def set_file_accounts(self, path, choices):
         """Which account each new account in a bank file is, then imports it. `choices`:
         [{'index', 'account_id'}] for one you have (it remembers the file's account number,
-        so the next file goes there on its own) or [{'index', 'name'}] for a new account."""
+        so the next file goes there on its own) or [{'index', 'name'}] for a new account. A card
+        balance whose sign the app can't read comes with its choice, 'balance': 'owed' or 'favour'
+        (file_accounts says which): none is created until that is answered."""
         path = Path(path)
+        picked, answers, asked = {}, {}, set()
+        with self.db.read() as c:
+            parsed = importer.parse(path, c)
+            for choice in choices or []:
+                i = int(choice["index"])
+                if not 0 <= i < len(parsed.parts):
+                    continue
+                asked.add(i)
+                if choice.get("account_id"):
+                    picked[i] = int(choice["account_id"])
+                if choice.get("balance") in ("owed", "favour"):
+                    answers[i] = choice["balance"]
+            # Before anything is made: a question still open for what was chosen (a new account's
+            # balance, or a card's that has none yet) is asked here, never after the account exists.
+            unanswered = [q for q in self._balance_questions(c, parsed, picked, answers) if q["index"] in asked]
+            if unanswered:
+                q = unanswered[0]
+                raise UserError(f"Is ${q['amount'] / 100:,.2f} what you owe on {q['name']}, or in your favour?")
         picked = {}
         with self.db.write() as c:
             parsed = importer.parse(path, c)
@@ -533,7 +561,8 @@ class BudgetService:
                     picked[i] = importer.create_account_for(c, hint, name)
         self._forget_file_status()
         downloads = self.settings.downloads_dir().resolve()
-        return self._import_files([str(path)], archive=path.resolve().parent == downloads, chosen={str(path): picked})
+        return self._import_files([str(path)], archive=path.resolve().parent == downloads, chosen={str(path): picked},
+                                  answers={str(path): answers})
 
     @exposed
     def file_balance_question(self, path):

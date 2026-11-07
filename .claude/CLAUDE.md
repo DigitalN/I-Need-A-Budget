@@ -133,7 +133,9 @@ All in `Application Files/`:
   would stop matching and every overlapping file would import twice. Two identical rows in
   one file are both kept (the occurrence count is part of the fingerprint). A row is also
   a duplicate of one from a *different kind* of file in the same account with the same
-  date and amount (each matched once): a bank's CSV and Quicken file word things differently.
+  date and amount (each matched once, nearest first) but only where the two files overlap:
+  a CSV ending Oct 15 and a Quicken file starting Oct 16 can't hold one fare twice (issue #124).
+  A bank's CSV and Quicken file word things differently.
 - **Never change what `payees.describe()` returns for text it already handles**: a
   changed key splits a payee in two. Add other banks' wording after Tangerine's rules,
   and check it on a copy of real data (every existing transaction must describe the same).
@@ -287,7 +289,9 @@ Don't undo these without asking:
   The answer is remembered by the file's account number. Its drop-down offers every
   open account, the file's sort first: what a file says it is can be wrong (Tangerine's
   card QFX once read as chequing and the card wasn't offered). During onboarding every
-  account is simply created.
+  account is simply created. A card file whose balance is above zero but whose sign the
+  app can't read also asks "What I owe / In my favour" in this same pop-up, so declining
+  leaves no account behind (issue #126).
 - **Any bank, not just Tangerine.** Quicken/Money/QuickBooks files are suggested
   wherever the app explains downloads (they need no setup and carry the balance). Other
   CSVs are **set up once** in a pop-up (columns, date order, money out sign, account);

@@ -433,6 +433,9 @@ const moneyPlain = c => c ? (c / 100).toLocaleString('en-CA', { minimumFractionD
 // For a box you type an amount into: nothing yet is an empty box (its placeholder shows
 // 0.00), so there's no 0.00 to type into the middle of.
 const moneyOrBlank = c => c ? moneyPlain(c) : '';
+// What a card or line of credit is worth, in words. `owing` is Python's figure: below zero is a card
+// in your favour (overpaid, or a refund bigger than what was owed), "$112.65 in your favour", never "owing −$112.65".
+const owingText = (owing, owed = m => `${m} owing`) => owing < 0 ? `${money(-owing)} in your favour` : owed(money(owing));
 const MAX_CENTS = 100000000000;  // $1,000,000,000.00: Python refuses more too (service._amount)
 // What's typed in an amount box, in cents: an amount, or a sum of them (120+35.50, 3*45,
 // 300/4, brackets too). Given `base`, what the box held before you typed (an Assigned or
@@ -830,7 +833,7 @@ async function renderBudget() {
       const pillClass = avail === null ? 'zero' : (avail < 0 ? 'neg' : (avail > 0 ? 'pos' : 'zero'));
       let monthly;
       if (c.debt_account_id) {
-        monthly = c.owing ? `<span class="sub-note">owe ${money(c.owing)}${c.not_covered ? ` · <span class="warn">${money(c.not_covered)} not set aside</span>` : ''}</span>` : '';
+        monthly = c.owing ? `<span class="sub-note">${owingText(c.owing, m => `owe ${m}`)}${c.not_covered ? ` · <span class="warn">${money(c.not_covered)} not set aside</span>` : ''}</span>` : '';
       } else if (c.monthly_budget !== null) {
         monthly = `<span class="monthly num" data-cat="${c.id}">${money(c.monthly_budget)}</span>`;
       } else if (c.usual) {
@@ -1132,7 +1135,7 @@ async function editFromDrawer(txId, close, reopen) {
 function envelopeSummary(c) {
   if (!c || c.owing === undefined) return '';
   const line = (label, amount, cls = '') => `<div class="row" style="padding:3px 0"><span class="muted">${label}</span><span class="spacer"></span><b class="num ${cls}">${money(amount)}</b></div>`;
-  return `<div class="card" style="margin-top:12px">${line('You owe on the card', c.owing)}${line('Set aside here to pay it', c.set_aside)}${line('Not set aside yet', c.not_covered, c.not_covered ? 'warn' : '')}</div>`;
+  return `<div class="card" style="margin-top:12px">${c.owing < 0 ? line('In your favour on the card', -c.owing) : line('You owe on the card', c.owing)}${line('Set aside here to pay it', c.set_aside)}${line('Not set aside yet', c.not_covered, c.not_covered ? 'warn' : '')}</div>`;
 }
 
 async function openCategory(id) {
@@ -1730,7 +1733,7 @@ function drawDashboard() {
       d.overspent.length ? 'neg' : ''),
     tile('accounts', 'Cash', money(d.cash),
       `<span class="small muted">${d.missing_balances.length ? `Set the balance of ${esc(d.missing_balances.join(' and '))}`
-        : d.has_debt ? `You owe ${money(d.owed)}` : ''}</span>`),
+        : d.has_debt ? owingText(d.owed, m => `You owe ${m}`) : ''}</span>`),
   ].join('');
 
   const head = cols.map((m, i) => `<th class="r ${m.so_far ? 'so-far' : ''} ${m.complete ? '' : 'partial'}"${m.complete ? '' : ' title="Not every account has data for this month"'}>
@@ -2470,16 +2473,27 @@ async function chooseAccounts(path) {
     title: unknown.length === 1 ? 'A new account?' : 'New accounts?',
     body: `<p class="small muted" style="margin-top:0">${esc(info.filename)} is for ${unknown.length === 1 ? 'an account' : 'accounts'} the app hasn't seen. If it's one you have (a new card number, say), pick it.</p>
       ${unknown.map(p => `<div class="field"><label>${esc(p.name)}${p.last4 && !p.name.includes(p.last4) ? ` ••${esc(p.last4)}` : ''} · ${plural(p.rows, 'transaction')}${p.first_date ? `, ${dayYear(p.first_date)} – ${dayYear(p.last_date)}` : ''}</label>
-        <div class="row"><select data-part="${p.index}" style="width:220px;flex:none"><option value="">New account</option>${p.choices.map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join('')}</select>
-          <input data-part-name="${p.index}" value="${esc(p.name)}" placeholder="Name" style="flex:1;min-width:0"></div></div>`).join('')}`,
+        <div class="row"><select data-part="${p.index}" style="width:220px;flex:none"><option value="" data-asks="${p.asks_for_new ? 1 : 0}">New account</option>${p.choices.map(a => `<option value="${a.id}" data-asks="${a.asks ? 1 : 0}">${esc(a.name)}</option>`).join('')}</select>
+          <input data-part-name="${p.index}" value="${esc(p.name)}" placeholder="Name" style="flex:1;min-width:0"></div>
+        ${p.balance === null ? '' : `<div class="row wrap" data-part-balance="${p.index}" style="margin-top:6px;gap:4px 14px" hidden><span class="small">Is <b>${esc(money(p.balance))}</b> what you owe, or in your favour?</span>
+          <label class="small" style="white-space:nowrap;display:inline-flex;gap:4px;align-items:center"><input type="radio" name="balance-${p.index}" value="owed"> What I owe</label>
+          <label class="small" style="white-space:nowrap;display:inline-flex;gap:4px;align-items:center"><input type="radio" name="balance-${p.index}" value="favour"> In my favour</label></div>`}</div>`).join('')}`,
     actions: [
       { label: 'Don\'t import', value: 'ignore', left: true },
       { label: 'Cancel', value: null },
       { label: 'Import', value: 'import', primary: true, check: async d => {
-        const choices = unknown.map(p => {
+        const choices = [];
+        for (const p of unknown) {
           const picked = $(`[data-part="${p.index}"]`, d).value;
-          return picked ? { index: p.index, account_id: Number(picked) } : { index: p.index, name: $(`[data-part-name="${p.index}"]`, d).value };
-        });
+          const choice = picked ? { index: p.index, account_id: Number(picked) } : { index: p.index, name: $(`[data-part-name="${p.index}"]`, d).value };
+          const asking = $(`[data-part-balance="${p.index}"]`, d);
+          if (asking && !asking.hidden) {  // a balance above zero whose sign isn't known: answered here, before anything is made
+            const answer = $(`input[name="balance-${p.index}"]:checked`, d);
+            if (!answer) return `Say whether ${money(p.balance)} is what you owe or in your favour.`;
+            choice.balance = answer.value;
+          }
+          choices.push(choice);
+        }
         const r = await tryCall('set_file_accounts', [path, choices]);
         if (!r.ok) return r.error;
         outcome = r.result;
@@ -2487,7 +2501,11 @@ async function chooseAccounts(path) {
       } },
     ],
     onOpen: d => $$('[data-part]', d).forEach(sel => {
-      const sync = () => { $(`[data-part-name="${sel.dataset.part}"]`, d).hidden = !!sel.value; };
+      const sync = () => {
+        $(`[data-part-name="${sel.dataset.part}"]`, d).hidden = !!sel.value;
+        const asking = $(`[data-part-balance="${sel.dataset.part}"]`, d);
+        if (asking) asking.hidden = sel.selectedOptions[0].dataset.asks !== '1';
+      };
       sel.addEventListener('change', sync);
       sync();
     }),
@@ -2699,8 +2717,8 @@ async function renderAccounts() {
       <div class="row"><b>${esc(a.name)}</b><span class="faint small">${[a.bank && !a.name.toLowerCase().includes(a.bank.toLowerCase()) && esc(a.bank), a.last4 && `••${esc(a.last4)}`].filter(Boolean).join(' · ')}</span><span class="spacer"></span><span class="tag">${esc(a.kind_label)}</span></div>
       ${a.balance === null ? `<div class="notice" style="margin:10px 0">What ${owe ? 'do you owe on' : 'is the balance of'} this account right now?</div>
           <div class="row"><input style="width:150px;text-align:right" placeholder="${owe ? 'Amount owing' : 'Balance'}" data-balance-for="${a.id}">${owe ? favourBox(a.id) : ''}<button class="btn primary small" data-act="save-balance" data-account="${a.id}">Save</button></div>`
-        : `<div class="bal num ${owe && a.balance < 0 ? 'neg' : ''}">${owe ? money(-a.balance) : money(a.balance)}</div>
-           <div class="small muted">${owe ? 'owing' : 'balance'}${a.last_date ? ` · up to ${dayYear(a.last_date)}` : ''}</div>`}
+        : `<div class="bal num ${owe && a.balance < 0 ? 'neg' : ''}">${owe ? money(Math.abs(a.balance)) : money(a.balance)}</div>
+           <div class="small muted">${owe ? (a.balance > 0 ? 'in your favour' : 'owing') : 'balance'}${a.last_date ? ` · up to ${dayYear(a.last_date)}` : ''}</div>`}
       <div class="small muted" style="margin-top:8px">${plural(a.transactions, 'transaction')}${a.first_date ? ` since ${dayYear(a.first_date)}` : ''}${a.last_import ? ` · last import ${esc(a.last_import.slice(0, 10))}` : ''}</div>
       ${a.duplicate_of ? `<div style="margin-top:10px">${duplicateNotice(a.duplicate_of)}</div>` : ''}
       <div class="row" style="margin-top:10px">
@@ -2713,7 +2731,7 @@ async function renderAccounts() {
   }).join('');
   const closedRows = accounts.filter(a => a.closed).map(a => `<tr><td><b>${esc(a.name)}</b> <span class="faint small">${esc(a.kind_label)}</span></td>
       <td class="small muted">${plural(a.transactions, 'transaction')}${a.last_date ? ` · up to ${dayYear(a.last_date)}` : ''}</td>
-      <td class="r num">${a.balance ? (a.is_debt ? `${money(-a.balance)} owing` : money(a.balance)) : ''}</td>
+      <td class="r num">${a.balance ? (a.is_debt ? owingText(-a.balance) : money(a.balance)) : ''}</td>
       <td class="r"><button class="btn small" data-act="edit-account" data-account="${a.id}">Edit…</button></td></tr>`).join('');
   const debtCards = debt.accounts.map(d => {
     const maxI = Math.max(1, ...d.interest.map(i => i.amount));
@@ -2722,7 +2740,7 @@ async function renderAccounts() {
     return `<div class="card">
       <div class="row"><b>${esc(d.name)}</b><span class="spacer"></span><span class="tag ${d.not_covered ? 'warn' : 'good'}">${d.not_covered ? money(d.not_covered) + ' not set aside' : 'All set aside'}</span></div>
       <div class="grid2" style="margin-top:10px">
-        <div><div class="muted small">You owe</div><div class="bal num">${money(d.owing)}</div>
+        <div><div class="muted small">${d.owing < 0 ? 'In your favour' : 'You owe'}</div><div class="bal num">${money(Math.abs(d.owing))}</div>
           <div class="small muted">Set aside to pay it: <b>${money(d.set_aside)}</b></div></div>
         <div><div class="muted small">Interest & fees, last 6 months</div>
           <div class="mini-bars" title="${esc(d.interest.map(i => monthShort(i.month) + ' ' + money(i.amount)).join(', '))}">${d.interest.map(i => `<div style="height:${i.amount / maxI * 100}%"></div>`).join('')}</div>
@@ -2777,7 +2795,7 @@ async function accountAction(btn) {
   if (act === 'check-balance') {
     const v = await dialog({
       title: `Check ${a.name}`,
-      body: `<p class="muted">The app says ${a.is_debt ? 'you owe' : 'the balance is'} <b>${money(a.is_debt ? -a.balance : a.balance)}</b> after the last imported transaction (${dayYear(a.last_date)}).
+      body: `<p class="muted">The app says ${a.is_debt ? (a.balance > 0 ? `<b>${money(a.balance)}</b> is in your favour` : `you owe <b>${money(-a.balance)}</b>`) : `the balance is <b>${money(a.balance)}</b>`} after the last imported transaction (${dayYear(a.last_date)}).
         If ${esc(a.bank || 'your bank')} shows something else, enter it: the app adds an adjustment for the difference${a.is_debt ? '' : ' (you choose its category in the Inbox)'}.</p>
         <div class="field"><label>${a.is_debt ? 'Amount owing' : 'Balance'} at ${esc(a.bank || 'the bank')}</label><div class="row"><input id="rec-amount" style="text-align:right">${a.is_debt ? favourBox('rec') : ''}</div></div>`,
       actions: [{ label: 'Cancel', value: null }, { label: 'Match it', value: 'ok', primary: true }],

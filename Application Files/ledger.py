@@ -6,10 +6,14 @@ Every function takes an open connection (`db.write()` / `db.read()`); none of th
 commits. Amounts are cents.
 """
 
+from bisect import bisect_left, bisect_right
+from datetime import date
+from functools import lru_cache
+
 import transfers
 from errors import UserError
 from payees import describe, find_similar, merchant_key, transaction_hint
-from util import day_before, days_between
+from util import add_days, day_before
 
 CASH_KINDS = ("chequing", "savings", "cash")
 DEBT_KINDS = ("credit_card", "line_of_credit")
@@ -111,17 +115,34 @@ def files_overlap(a_first, a_last, b_first, b_last):
     return not ((a_first and b_last and a_first > b_last) or (b_first and a_last and b_first > a_last))
 
 
+@lru_cache(maxsize=None)
+def _day_number(day):
+    return date.fromisoformat(day).toordinal()
+
+
 def pair_nearest(wanted, offered, days=OTHER_KIND_DAYS, allowed=None):
     """[(wanted id, offered id)]: rows (dicts with id, date, amount) that are the same transaction,
     seen in two kinds of file: the same amount, dates up to `days` apart, each used once, the
     nearest dates first over all of them at once (a tie goes to the lower ids), not in the order
-    the rows come. `allowed(w, o)` can rule a pair out."""
+    the rows come. `allowed(w, o)` can rule a pair out. Each wanted row meets only the offered rows
+    of its amount within `days` of it (found in dates sorted per amount), never all of them: a
+    long history repeats the same amounts for years."""
     by_amount = {}
     for o in offered:
-        by_amount.setdefault(o["amount"], []).append(o)
-    candidates = sorted(
-        (gap, w["id"], o["id"]) for w in wanted for o in by_amount.get(w["amount"], ())
-        for gap in [abs(days_between(w["date"], o["date"]))] if gap <= days and (allowed is None or allowed(w, o)))
+        by_amount.setdefault(o["amount"], []).append((_day_number(o["date"]), o))
+    for rows in by_amount.values():
+        rows.sort(key=lambda r: r[0])
+    day_numbers = {amount: [d for d, _ in rows] for amount, rows in by_amount.items()}
+    candidates = []
+    for w in wanted:
+        rows = by_amount.get(w["amount"])
+        if not rows:
+            continue
+        day, numbers = _day_number(w["date"]), day_numbers[w["amount"]]
+        for other_day, o in rows[bisect_left(numbers, day - days):bisect_right(numbers, day + days)]:
+            if allowed is None or allowed(w, o):
+                candidates.append((abs(other_day - day), w["id"], o["id"]))
+    candidates.sort()
     used_w, used_o, out = set(), set(), []
     for _, w, o in candidates:
         if w not in used_w and o not in used_o:
@@ -135,13 +156,21 @@ def cross_kind_pairs(conn, a_id, b_id, days=OTHER_KIND_DAYS, skip_a=(), skip_b=(
     """[(a's transaction id, b's)]: rows of two accounts that are the same transaction seen in
     different kinds of file (a bank's CSV and its Quicken file, or a CSV set up again), by
     pair_nearest, and only where the two rows' files overlap (files_overlap). `skip_a` / `skip_b`:
-    rows that already have an exact twin (the same fingerprint or bank ID), which pair with nothing else."""
-    def rows(account_id, skip):
+    rows that already have an exact twin (the same fingerprint or bank ID), which pair with nothing
+    else. Only the rows of one account within `days` of the other's dates are looked at."""
+    def span(account_id):
+        return conn.execute("SELECT MIN(date), MAX(date) FROM transactions WHERE account_id = ?", (account_id,)).fetchone()
+
+    def rows(account_id, skip, within):
         return [dict(r) for r in conn.execute(
             "SELECT t.id, t.date, t.amount, COALESCE(i.format, '') AS kind, i.first_date AS first, i.last_date AS last "
-            "FROM transactions t LEFT JOIN imports i ON i.id = t.import_id WHERE t.account_id = ?", (account_id,))
-            if r["id"] not in skip]
-    return pair_nearest(rows(a_id, set(skip_a)), rows(b_id, set(skip_b)), days,
+            "FROM transactions t LEFT JOIN imports i ON i.id = t.import_id "
+            "WHERE t.account_id = ? AND t.date BETWEEN ? AND ?",
+            (account_id, add_days(within[0], -days), add_days(within[1], days))) if r["id"] not in skip]
+    a_span, b_span = span(a_id), span(b_id)
+    if a_span[0] is None or b_span[0] is None:
+        return []
+    return pair_nearest(rows(a_id, set(skip_a), b_span), rows(b_id, set(skip_b), a_span), days,
                         allowed=lambda a, b: not same_kind_of_file(a["kind"], b["kind"])
                         and files_overlap(a["first"], a["last"], b["first"], b["last"]))
 
