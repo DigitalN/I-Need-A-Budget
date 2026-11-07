@@ -116,7 +116,7 @@ def test_relative_boxes_and_escape():
     assert 'id="monthly-input"' in PAGE and re.search(r'id="monthly-input"[^>]*data-relative', PAGE)
     assert 'data-i="${i}" data-relative' in PAGE
     assert "const cents = amountIn(input);" in PAGE and "const cents = amountIn(monthlyInput);" in PAGE
-    assert "amount: amountIn(el) || 0" in PAGE
+    assert "amount: amountIn(b) || 0" in PAGE and "call('assign_left'" in PAGE  # Left over is Python's
     assert "e.target.value = e.target.defaultValue;" in PAGE
 
 

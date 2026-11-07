@@ -160,6 +160,13 @@ class Inbox:
         names = ledger.category_names(c)
         items = [self._look(txn, names) for txn in c.execute(
             "SELECT * FROM transactions WHERE status = 'review' ORDER BY date DESC, id DESC LIMIT 1000").fetchall()]
+        # What a group adds up to (its card shows it), and each item's own amount when it's alone.
+        totals = {}
+        for item in items:
+            if item["group"]:
+                totals[item["group"]] = totals.get(item["group"], 0) + item["amount"]
+        for item in items:
+            item["group_total"] = totals.get(item["group"], item["amount"]) if item["group"] else item["amount"]
         recent = [r["id"] for r in c.execute("SELECT id FROM imports ORDER BY id DESC LIMIT 10")]
         categorized = [r["id"] for r in c.execute(
             f"SELECT id FROM transactions WHERE status = 'done' AND by_you = 0 AND import_id IN "
@@ -174,7 +181,7 @@ class Inbox:
         yours = bool(txn["by_you"])
         if self._income is None:
             self._income = ledger.income_category(c)
-        item = {"id": txn["id"], "suggestions": [{"id": cid, "name": names.get(cid, "?")} for cid in s.options],
+        item = {"id": txn["id"], "amount": txn["amount"], "suggestions": [{"id": cid, "name": names.get(cid, "?")} for cid in s.options],
                 "guess": guess(txn, s, self._income), "mixed": s.mixed, "group": s.group,
                 "yours": yours}
         reasons = [txn["reason"] or SENT_BACK] if yours else []

@@ -73,6 +73,11 @@ def same_price_for(pricing, a, b):
     return same_price(a, b)
 
 
+def yearly_equivalent(amount, cadence):
+    """What a year of charges costs: the price itself for a yearly one, 52 weeks, 12 months."""
+    return amount * {"weekly": 52, "monthly": 12, "yearly": 1}.get(cadence, 12)
+
+
 def monthly_equivalent(amount, cadence):
     return round(amount * {"weekly": 52 / 12, "monthly": 1, "yearly": 1 / 12}.get(cadence, 1))
 
@@ -416,6 +421,8 @@ def listing(conn, today):
         "suggested": detect(conn, today),
         "monthly_subscriptions": sum(s["monthly"] for s in active if s["kind"] == "subscription"),
         "monthly_bills": sum(s["monthly"] for s in active if s["kind"] == "bill"),
+        "yearly_subscriptions": sum(s["yearly"] for s in active if s["kind"] == "subscription"),
+        "yearly_bills": sum(s["yearly"] for s in active if s["kind"] == "bill"),
     }
 
 
@@ -459,7 +466,8 @@ def _tracked(conn, today, where="", params=()):
             "previous_amount": previous_price(pricing, amounts),
             "last_amount": last["amt"] if last else None,
             "low": min(recent) if recent else None, "high": max(recent) if recent else None,
-            "monthly": monthly_equivalent(amount, s["cadence"]), "last_date": last["date"] if last else None,
+            "monthly": monthly_equivalent(amount, s["cadence"]), "yearly": yearly_equivalent(amount, s["cadence"]),
+            "last_date": last["date"] if last else None,
             "next_date": next_date if s["status"] == "active" else None, "overdue": overdue,
             "account_id": (last["account_id"] if last else s["account_id"]), "note": s["note"],
             "cancelled_on": s["cancelled_on"], "charged_after_cancel": charged_after_cancel,
