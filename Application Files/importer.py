@@ -17,11 +17,15 @@ Formats (detected from the content, not the file name):
   Description 2,CAD$,USD$`, every account in one file, told apart by number.
 - Any other bank's CSV, once the person has shown the app its columns (csvlayout.py).
   The layout is saved and found again by the file's header; which account a file is for
-  is saved by its file name (dates taken out), and asked when the name is new.
+  is saved by its file name (dates taken out), and asked when the name is new, or when the
+  file doesn't look like that account (some banks name every download the same: csv_fit).
 - Actual Budget's transaction export: not imported as transactions, only learnt from
   (its categories and which payees went where). See `learn_from_actual()`.
 
-Which account: from what the file says (see each format), else the one existing account
+Which account: from what the file says (see each format; an account number counts by its whole
+number first, then its last four digits, and only for an account of the same sort (card or bank
+account) at the same bank: two accounts can end in the same four digits, and a file that doesn't
+name its bank never joins an account at a named one by number alone), else the one existing account
 that already has most of the file's rows, else a new account (or, for a set-up CSV, a
 question). A file never lands in an account just because it's the only one of its kind:
 with more than one bank that would put one bank's file in another bank's account. Once the
@@ -33,9 +37,22 @@ how many identical rows came before it in the same file. Exports overlap freely,
 row whose fingerprint is already in the account is skipped, while two identical coffees
 on the same day in one file are both kept. **Never change `fingerprint()`**: rows
 already imported would stop matching and every overlapping file would import twice.
-OFX rows are also matched on FITID. A bank's CSV and its Quicken file can describe the
+OFX rows are also matched on FITID, as a hint only: banks repeat them (one per day, 1, 2, 3… in
+every download), so a FITID counts for the same amount within FITID_DAYS days, one that repeats
+within a file counts for nothing, and one already on another row of the account isn't stored
+again. A bank's CSV and its Quicken file can describe the
 same transaction differently, so a row is also the same as one from a *different kind*
-of file in that account with the same date and amount (each matched once).
+of file in that account (a CSV set up again counts as another kind: imports.format is
+`csv:<layout id>:<its shape>`; plain `csv`, from before that, is the same kind as any of
+them) with the same amount and a date up to OTHER_KIND_DAYS either side, each matched once.
+It's matched over the whole file, not row by row: every row's exact twin first (fingerprint,
+then FITID), then the rest by nearest date first, so a new row never takes the place of an old
+one's twin (ledger.pair_nearest). Only where one of the two rows falls within the other's file
+dates, though: the rows at the edges of two downloads (one ends Oct 15, the next starts Oct 16, or
+they overlap by a day) are different transactions. Accounts holding the same transactions that way are
+flagged and merged like those with shared fingerprints (ledger.cross_kind_pairs). So is one
+you added by hand (no fingerprint, ID or import) with the same amount within MANUAL_DAYS days:
+it takes the bank's date, text and IDs and keeps what you decided.
 
 New rows are only added here: each Result's `new_ids` then arrive in the inbox
 (inbox.Inbox.arrive), which categorizes what it can.
@@ -46,14 +63,15 @@ import hashlib
 import io
 import logging
 import re
-from dataclasses import dataclass, field
+from collections import Counter
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import banks
 import csvlayout
 import ledger
 from payees import describe, transaction_hint
-from util import parse_date, to_cents
+from util import day_before, parse_date, to_cents
 
 log = logging.getLogger("inab")
 
@@ -62,6 +80,8 @@ BANK_HEADER = ["date", "transaction", "name", "memo", "amount"]
 RBC_HEADER = ["account type", "account number", "transaction date", "cheque number", "description 1",
               "description 2", "cad$"]
 ACTUAL_HEADER = ["account", "date", "payee", "notes", "category_group", "category", "amount"]
+FITID_DAYS = 7  # a bank's transaction ID matches a row of the same amount this many days either side
+MANUAL_DAYS = 3  # a transaction added by hand is the bank's row of the same amount this many days either side
 SUPPORTED_SUFFIXES = {".csv", ".ofx", ".qfx", ".qbo"}
 BANK_FORMATS = ("ofx", "tangerine_card", "tangerine_bank", "rbc", "csv")
 
@@ -74,8 +94,9 @@ class NeedsSetup(ImportError_):
     """A CSV the app hasn't been shown how to read yet ('layout'), or whose account it
     doesn't know yet ('account'). The page asks, then calls the import again."""
 
-    def __init__(self, what):
-        super().__init__("This file needs setting up first." if what == "layout" else "Which account is this file for?")
+    def __init__(self, what, message=None):
+        super().__init__(message or ("This file needs setting up first." if what == "layout"
+                                     else "Which account is this file for?"))
         self.what = what
 
 
@@ -99,6 +120,9 @@ class AccountHint:
     legacy_keys: list = field(default_factory=list)  # looked up after `keys`, never saved
     bank: str = None
     create: bool = True   # False: ask which account rather than make one
+    account_id: int = None  # the account the file is known to be for (found by looking at the file)
+    number_key: str = None  # the key made of the account number's last four digits (see find_account)
+    full_key: str = None    # the key made of the whole number, when the file has it: tried first
 
 
 @dataclass
@@ -106,7 +130,10 @@ class Part:
     """One account's rows in a file (most files have one; RBC's CSV has every account)."""
     account: AccountHint
     rows: list
-    balance: tuple = None  # (date, cents) when the file states one (OFX)
+    balance: tuple = None  # (date, cents) when the file states one (OFX), as the file writes it
+    notes: list = field(default_factory=list)  # what was changed about the file to read it (shown with the import)
+    card_file: bool = False  # a card or credit line's file: its signs are settled when the account is known (_flip, _positive_balance)
+    flip_guess: bool = None  # from the rows alone: do they write purchases as positive? None: too few purchases to tell
 
     @property
     def first_date(self):
@@ -122,6 +149,7 @@ class Parsed:
     format: str           # one of BANK_FORMATS, or actual
     parts: list = field(default_factory=list)
     actual_rows: list = field(default_factory=list)
+    kind: str = None      # the kind of file, to tell it from another kind's: `format`, or a CSV's layout
 
     @property
     def rows(self):
@@ -139,10 +167,13 @@ class Parsed:
 # ── reading files ────────────────────────────────────────────
 
 def read_text(path):
+    """The file's text. UTF-16 (Excel's "Unicode text") is told by its byte order mark, and a
+    lone carriage return (Excel's "CSV (Macintosh)") ends a line like any other."""
     data = Path(path).read_bytes()
-    for encoding in ("utf-8-sig", "cp1252", "latin-1"):
+    encodings = ("utf-16",) if data[:2] in (b"\xff\xfe", b"\xfe\xff") else ("utf-8-sig", "cp1252", "latin-1")
+    for encoding in encodings:
         try:
-            return data.decode(encoding)
+            return re.sub(r"\r(?!\n)", "\n", data.decode(encoding))
         except UnicodeDecodeError:
             continue
     raise ImportError_("The file isn't text.")
@@ -167,7 +198,7 @@ def detect(text):
         return "ofx"
     try:
         first = next(csv.reader(io.StringIO(text)))
-    except StopIteration:
+    except (StopIteration, csv.Error):  # empty, or not a table the csv module can read
         return None
     header = [h.strip().lower() for h in first]
     if header[:5] == CARD_HEADER:
@@ -184,9 +215,16 @@ def detect(text):
 
 
 def parse(path, conn=None):
-    """Reads one file. Raises ImportError_ if it isn't a format we know, NeedsSetup for a
-    CSV whose layout hasn't been set up (looked up through `conn`)."""
-    path = Path(path)
+    """Reads one file. Raises ImportError_ if it isn't a format we know or can read,
+    NeedsSetup for a CSV whose layout hasn't been set up, or no longer fits (looked up
+    through `conn`)."""
+    try:
+        return _parse(Path(path), conn)
+    except csv.Error as e:  # a cell over the size limit, a stray quote...
+        raise ImportError_(f"This file can't be read as a table of transactions ({e}).") from None
+
+
+def _parse(path, conn):
     text = read_text(path)
     fmt = detect(text)
     if fmt == "tangerine_card":
@@ -233,9 +271,22 @@ def _parse_tangerine(text, filename, card):
 
 
 def account_number_key(bank, last4):
-    """The account_sources key for an account number, the same whichever kind of file
-    from that bank it came in."""
+    """The account_sources key for an account number's last four digits, the same whichever
+    kind of file from that bank it came in."""
     return f"number:{banks.slug(bank) or 'unknown'}:{last4}"
+
+
+def full_number_key(bank, digits):
+    """The key for the whole account number (more than its last four digits), which keeps two
+    accounts that end in the same four digits apart."""
+    return f"number-full:{banks.slug(bank) or 'unknown'}:{digits}"
+
+
+def _number_keys(bank, digits):
+    """(last-four key, whole-number key or None, the last four digits) for an account number."""
+    last4 = digits[-4:] if len(digits) >= 4 else None
+    return (account_number_key(bank, last4) if last4 else None,
+            full_number_key(bank, digits) if len(digits) > 4 else None, last4)
 
 
 def _tangerine_bank_account(filename):
@@ -275,14 +326,15 @@ def _parse_rbc(text):
         except ValueError as e:
             raise ImportError_(f"Couldn't read a row ({e}).") from None
         digits = re.sub(r"\D", "", number)
-        last4 = digits[-4:] if len(digits) >= 4 else None
-        if (acct_type.lower(), last4) not in parts:
+        number_key, full_key, last4 = _number_keys("RBC", digits)
+        if (acct_type.lower(), digits) not in parts:
             kind = _kind_from_label(acct_type)
             label = {"chequing": "Chequing", "savings": "Savings", "line_of_credit": "Line of Credit"}.get(kind) or \
                 ("Mastercard" if re.search(r"master ?card", acct_type, re.I) else acct_type.title() or "Card")
-            keys = [account_number_key("RBC", last4)] if last4 else []
-            parts[(acct_type.lower(), last4)] = Part(AccountHint(keys, kind, f"RBC {label}", last4, bank="RBC"), [])
-        parts[(acct_type.lower(), last4)].rows.append(row)
+            keys = [k for k in (full_key, number_key) if k]
+            parts[(acct_type.lower(), digits)] = Part(
+                AccountHint(keys, kind, f"RBC {label}", last4, bank="RBC", number_key=number_key, full_key=full_key), [])
+        parts[(acct_type.lower(), digits)].rows.append(row)
     return Parsed("rbc", list(parts.values()))
 
 
@@ -324,29 +376,33 @@ def _ofx_statement(text, bank, filename):
     acct_id = _ofx_value(acct_block.group(1) if acct_block else text, "ACCTID") or ""
     acct_type = ((_ofx_value(acct_block.group(1), "ACCTTYPE") if acct_block else None) or "").upper()
     digits = re.sub(r"\D", "", acct_id)
-    last4 = digits[-4:] if len(digits) >= 4 else None
+    number_key, full_key, last4 = _number_keys(bank, digits)
     # Tangerine sends its Mastercard as a bank statement: a credit line whose number is a
     # card number. Any bank could, so it's the card number that decides.
     is_card = re.search(r"<CCACCTFROM>", text, re.IGNORECASE) is not None or \
         (acct_type == "CREDITLINE" and _is_card_number(digits))
     tangerine = bank == "Tangerine"
-    number_keys = [account_number_key(bank, last4)] if last4 else []
+    number_keys = [k for k in (full_key, number_key) if k]
+    numbers = {"number_key": number_key, "full_key": full_key}
     if is_card:
         keys = number_keys + (([f"tangerine-card:{last4}"] if last4 else []) + ["tangerine-card"] if tangerine else [])
         hint = AccountHint(keys, "credit_card", "Tangerine Mastercard" if tangerine else f"{bank} card" if bank else "Credit card",
-                           last4, bank=bank)
+                           last4, bank=bank, **numbers)
     else:
-        kind = "savings" if acct_type in ("SAVINGS", "MONEYMRKT") else \
+        # Tangerine says SAVINGS for every bank account, chequing too: ACCTTYPE isn't trusted
+        # for it (the file name decides below; without one it's a bank account, told by its number).
+        kind = "savings" if acct_type in ("SAVINGS", "MONEYMRKT") and not tangerine else \
             "line_of_credit" if acct_type == "CREDITLINE" else "chequing"
         legacy = [f"ofx:{kind}:{last4}"] if last4 else []  # how version 1.0 keyed OFX accounts
         if tangerine and filename:
             # The file name only tells chequing from savings (both say SAVINGS).
             key, named, name = _tangerine_bank_account(filename)
             kind = kind if kind == "line_of_credit" else named
-            hint = AccountHint(number_keys + [key], kind, name, last4, legacy, bank=bank)
+            hint = AccountHint(number_keys + [key], kind, name, last4, legacy, bank=bank, **numbers)
         else:
-            label = kind.replace("_", " ").title()
-            hint = AccountHint(number_keys, kind, f"{bank} {label}" if bank else label, last4, legacy, bank=bank)
+            # Tangerine calls chequing and savings alike, and without a file name there's nothing to tell them by.
+            label = "account" if tangerine and kind == "chequing" else kind.replace("_", " ").title()
+            hint = AccountHint(number_keys, kind, f"{bank} {label}" if bank else label, last4, legacy, bank=bank, **numbers)
     balance = None
     ledger_block = re.search(r"<LEDGERBAL>(.*?)(?:</LEDGERBAL>|<AVAILBAL>|$)", text, re.IGNORECASE | re.DOTALL)
     if ledger_block:
@@ -356,7 +412,114 @@ def _ofx_statement(text, bank, filename):
                 balance = (parse_date(as_of), to_cents(amount))
         except ValueError:
             balance = None
+    if is_card or hint.kind in ("credit_card", "line_of_credit"):
+        return Part(hint, rows, balance, card_file=True, flip_guess=_flip_guess(rows))
     return Part(hint, rows, balance)
+
+
+_PAYMENT_WORDS = re.compile(r"PAYMENT|PAIEMENT|THANK YOU|MERCI|REFUND|RETURN|REVERSAL|CREDIT|REWARD|CASH ?BACK|INTEREST PAID",
+                            re.IGNORECASE)
+
+
+def _flip_guess(rows):
+    """From a card or credit line file's rows alone: does it write purchases as positive? True or False
+    when there are enough purchases to tell (TRNTYPE says which rows are purchases when it can), else None."""
+    typed = [r for r in rows if r.bank_type.upper() in ("DEBIT", "CREDIT")]
+    if typed:
+        purchases = [r for r in typed if r.bank_type.upper() == "DEBIT"]
+    else:
+        purchases = [r for r in rows if not _PAYMENT_WORDS.search(r.name)]
+    if len(purchases) < 2:
+        return None
+    return sum(r.amount > 0 for r in purchases) >= 0.7 * len(purchases)
+
+
+# What the app remembers about how an account's files are signed, kept in account_sources under keys
+# of its own (they go with the account if it's merged away or deleted): signs:<account id>:<topic>:<value>.
+def _remembered(conn, account_id, topic):
+    row = conn.execute("SELECT key FROM account_sources WHERE account_id = ? AND key LIKE ?",
+                       (account_id, f"signs:{account_id}:{topic}:%")).fetchone()
+    return row["key"].rsplit(":", 1)[1] if row else None
+
+
+def _remember(conn, account_id, topic, value):
+    conn.execute("DELETE FROM account_sources WHERE account_id = ? AND key LIKE ?",
+                 (account_id, f"signs:{account_id}:{topic}:%"))
+    conn.execute("INSERT OR IGNORE INTO account_sources (key, account_id) VALUES (?, ?)",
+                 (f"signs:{account_id}:{topic}:{value}", account_id))
+
+
+def _flip(conn, part, account_id):
+    """(flip, worth remembering): does this card file write purchases as positive, so its amounts and
+    balance are flipped? Decided once per account. First by the rows the account already holds (the
+    file's row with the same date and amount, or with the opposite sign), then by what was decided
+    before, then by how the file looks."""
+    if account_id is not None and part.rows:
+        have = Counter((r["date"], r["amount"]) for r in conn.execute(
+            "SELECT date, amount FROM transactions WHERE account_id = ? AND date BETWEEN ? AND ?",
+            (account_id, part.first_date, part.last_date)))
+        same = opposite = 0
+        for r in part.rows:
+            if have[(r.date, r.amount)] > 0:
+                have[(r.date, r.amount)] -= 1
+                same += 1
+            elif have[(r.date, -r.amount)] > 0:
+                have[(r.date, -r.amount)] -= 1
+                opposite += 1
+        if opposite >= 2 and opposite > same:  # one pair could be a purchase and its refund
+            return True, True
+        if same > opposite:
+            return False, True
+        kept = _remembered(conn, account_id, "flip")
+        if kept:
+            return kept == "yes", False
+    return bool(part.flip_guess), part.flip_guess is not None
+
+
+def _positive_balance(conn, account_id, balance, ours, answer):
+    """A card file whose charges are negative and whose balance is above zero: what you owe written
+    as positive, or a card in your favour (overpaid, or a refund bigger than the balance)? What
+    you answered, else the sign that agrees with the balance the app has for that date (`ours`, with
+    this file's rows counted), else what the account's earlier files were. With none of those, as
+    the file writes it: a real difference between the file and the app."""
+    if answer in ("owed", "favour"):
+        _remember(conn, account_id, "positive", answer)
+        return -balance if answer == "owed" else balance
+    if ours is not None:
+        if ours == balance:
+            return balance
+        if ours == -balance:
+            return -balance
+    return -balance if _remembered(conn, account_id, "positive") == "owed" else balance
+
+
+def _match_rows(part):
+    """The rows to find a card file's account by: as the app will have them if the file is flipped."""
+    return [replace(r, amount=-r.amount) for r in part.rows] if part.flip_guess else part.rows
+
+
+def balance_questions(conn, parsed, chosen=None):
+    """[{index, name, amount}]: the card or credit line balances in this file the app can't read the
+    sign of. Charges negative and a balance above zero is a card in your favour for most banks, and
+    what you owe for some, so for an account with no balance yet (and no earlier answer) it asks:
+    a balance the app already has settles it (see _positive_balance)."""
+    out = []
+    for i, part in enumerate(parsed.parts):
+        if not (part.card_file and part.balance and part.balance[1] > 0):
+            continue
+        rows = _match_rows(part)
+        account_id = (chosen or {}).get(i) or find_account(conn, part.account, rows, fingerprints(rows))
+        name = suggested_name(conn, part.account)
+        if account_id is not None:
+            acct = conn.execute("SELECT name, kind, anchor_date FROM accounts WHERE id = ?", (account_id,)).fetchone()
+            if acct is None or not ledger.is_debt(acct["kind"]) or acct["anchor_date"] is not None or \
+                    _remembered(conn, account_id, "positive"):
+                continue
+            name = acct["name"]
+        if _flip(conn, part, account_id)[0]:
+            continue
+        out.append({"index": i, "name": name, "amount": part.balance[1]})
+    return out
 
 
 def _is_card_number(digits):
@@ -388,13 +551,33 @@ def csv_name_key(filename):
     return " ".join(re.sub(r"[^a-z0-9]+", " ", stem).split()) or "file"
 
 
+def layout_kind(layout):
+    """The kind of file a set-up CSV is, kept on its import: a bank that changes its columns, or a
+    layout set up again, gives files worded differently, which count as another kind of file
+    (the same date and amount is the same transaction: see _import_part)."""
+    shape = repr([layout.get(k) for k in csvlayout.LAYOUT_KEYS])
+    return f"csv:{layout['id']}:{hashlib.sha1(shape.encode()).hexdigest()[:8]}"
+
+
 def csv_account_key(layout_id, filename):
     return f"csv:{layout_id}:{csv_name_key(filename)}"
 
 
+def remember_csv_account(conn, layout_id, filename, account_id):
+    """Files with this name (dates taken out) go to this account from now on. The account is
+    also kept on record, under a key of its own, as one that gets files with this layout:
+    banks reuse a file name for every account, so the name will point at whichever account
+    answered last, and csv_account() looks for the others."""
+    key = csv_account_key(layout_id, filename)
+    conn.execute("INSERT INTO account_sources (key, account_id) VALUES (?, ?) ON CONFLICT(key) DO UPDATE "
+                 "SET account_id = excluded.account_id", (key, account_id))
+    conn.execute("INSERT OR IGNORE INTO account_sources (key, account_id) VALUES (?, ?)", (f"{key}#{account_id}", account_id))
+
+
 def saved_layout(conn, sniffed):
     """The layout saved for files like this one, or None."""
-    row = conn.execute("SELECT * FROM csv_layouts WHERE signature = ?", (csvlayout.signature(sniffed),)).fetchone()
+    row = conn.execute("SELECT * FROM csv_layouts WHERE signature = ?", (csvlayout.signature(sniffed),)).fetchone() \
+        or conn.execute("SELECT * FROM csv_layouts WHERE signature = ?", (csvlayout.legacy_signature(sniffed),)).fetchone()
     if row is None:
         return None
     layout = {k: row[k] for k in csvlayout.LAYOUT_KEYS if k != "desc_cols"}
@@ -425,10 +608,100 @@ def _parse_csv(text, filename, conn):
         raise NeedsSetup("layout")
     try:
         rows = [Row(day, cents, description) for day, cents, description in csvlayout.read(text, layout)]
-    except csvlayout.LayoutError as e:
-        raise ImportError_(f"{e}. Set the file up again from the Inbox.") from None
-    hint = AccountHint([csv_account_key(layout["id"], filename)], "chequing", base_name(filename), create=False)
-    return Parsed("csv", [Part(hint, rows)])
+        balance = csvlayout.running_balance(text, layout)
+    except csvlayout.LayoutError as e:  # the bank changed its file: show the app its columns again
+        raise NeedsSetup("layout", f"{e}. Set the file up again from the Inbox.") from None
+    key = csv_account_key(layout["id"], filename)
+    account_id = csv_account(conn, layout["id"], key, rows, balance)
+    note = csv_balance_note(conn, account_id or ledger.account_by_key(conn, [key]), balance)
+    hint = AccountHint([key], "chequing", base_name(filename), create=False, account_id=account_id)
+    return Parsed("csv", [Part(hint, rows, notes=[note] if note else [])], kind=layout_kind(layout))
+
+
+# How well a set-up CSV fits an account (csv_fit), from -1 to 1.
+CONTRADICTS, UNLIKELY, UNKNOWN, FITS = -1, -0.5, 0, 1
+OVERLAP_ROWS = 3  # rows inside an account's dates before a file is judged by whether they match
+
+
+def csv_fit(conn, account_id, rows, balance, trusted=False):
+    """Whether a set-up CSV looks like this account's file: FITS, CONTRADICTS, UNLIKELY (maybe
+    another sort of account) or UNKNOWN. Banks reuse one file name for every account, and a
+    wrong account is silent wrong money. The evidence: rows inside the account's dates that
+    are (or aren't) in it, a running-balance column that moves the way this sort of account's
+    does (a bank account's rises with money in; a card's can go either way, by bank), and one
+    that continues the balance the app has. `trusted`: the person already said this file name
+    is this account, so a balance that doesn't continue (a missed download, a balance typed a
+    little wrong) isn't held against it: csv_balance_note says so instead."""
+    acct = conn.execute("SELECT kind FROM accounts WHERE id = ?", (account_id,)).fetchone()
+    if acct is None:
+        return UNKNOWN
+    scores = []
+    if balance is not None:
+        if ledger.is_debt(acct["kind"]):
+            scores.append(FITS if balance["sign"] == -1 else UNLIKELY)
+        else:
+            scores.append(FITS if balance["sign"] == 1 else CONTRADICTS)
+        ours = ledger.account_balance(conn, account_id, day_before(balance["date"]))
+        if ours is not None and not trusted:
+            scores.append(FITS if ours == balance["sign"] * balance["opening"] else CONTRADICTS)
+    span = conn.execute("SELECT MIN(date) AS first, MAX(date) AS last FROM transactions WHERE account_id = ?",
+                        (account_id,)).fetchone()
+    inside = [r for r in rows if span["first"] and span["first"] <= r.date <= span["last"]]
+    if len(inside) >= OVERLAP_ROWS:
+        have = Counter((t["date"], t["amount"]) for t in conn.execute(
+            "SELECT date, amount FROM transactions WHERE account_id = ? AND date BETWEEN ? AND ?",
+            (account_id, min(r.date for r in inside), max(r.date for r in inside))))
+        matched = 0
+        for r in inside:
+            if have[(r.date, r.amount)] > 0:
+                have[(r.date, r.amount)] -= 1
+                matched += 1
+        scores.append(FITS if matched >= 0.5 * len(inside) else CONTRADICTS)
+    if CONTRADICTS in scores:
+        return CONTRADICTS
+    if FITS in scores:
+        return FITS
+    return UNLIKELY if UNLIKELY in scores else UNKNOWN
+
+
+def csv_balance_note(conn, account_id, balance):
+    """What's off when a set-up CSV's running balance doesn't continue the account's: 'This file's
+    balance on Oct 3 was $1,070.00; the app has $1,060.00'. '' when it continues, or there's
+    nothing to compare."""
+    if account_id is None or balance is None:
+        return ""
+    day = day_before(balance["date"])
+    ours, theirs = ledger.account_balance(conn, account_id, day), balance["sign"] * balance["opening"]
+    if ours is None or ours == theirs:
+        return ""
+    def money(cents):
+        return f"{'-' if cents < 0 else ''}${abs(cents) / 100:,.2f}"
+    month, number = int(day[5:7]), int(day[8:])
+    when = f"{('Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec')[month - 1]} {number}"
+    return f"This file's balance on {when} was {money(theirs)}; the app has {money(ours)}"
+
+
+def csv_account(conn, layout_id, key, rows, balance):
+    """The account a set-up CSV is for when looking at the file settles it, else None (the
+    name, `key`, and the rows decide, as for any file). The account the name points to,
+    unless the file contradicts it, or doesn't fit it while it fits exactly one other
+    account that files with this layout go to; raises NeedsSetup('account') when the name's
+    account is contradicted and no other fits: ask which account."""
+    named = ledger.account_by_key(conn, [key])
+    if named is None:
+        return None
+    fit = csv_fit(conn, named, rows, balance, trusted=True)
+    if fit >= UNKNOWN:
+        return None
+    others = [r["account_id"] for r in conn.execute(
+        "SELECT DISTINCT account_id FROM account_sources WHERE key LIKE ? AND account_id != ?",
+        (f"csv:{layout_id}:%", named))]
+    fitting = [a for a in others if csv_fit(conn, a, rows, balance) == FITS]
+    if len(fitting) == 1:
+        return fitting[0]
+    if fit == CONTRADICTS:
+        raise NeedsSetup("account")
+    return None
 
 
 def _parse_actual(text):
@@ -491,8 +764,39 @@ class Result:
 def find_account(conn, hint, rows=(), fps=()):
     """The existing account a file's rows belong to, or None: by what the file says
     (`hint.keys`), else the one account that already has the file's rows."""
-    return ledger.account_by_key(conn, hint.keys) or ledger.account_by_key(conn, hint.legacy_keys) \
+    return hint.account_id or _account_by_keys(conn, hint) or ledger.account_by_key(conn, hint.legacy_keys) \
         or account_with_rows(conn, hint.kind, rows, fps)
+
+
+def _account_by_keys(conn, hint):
+    """The account a file's keys find, most specific first. One found by the last four digits
+    of its number alone has to be an account this file can be: the same sort (a card isn't a
+    chequing account), at the same bank (a file that doesn't name its bank doesn't join an
+    account at a named one), and without another whole number on record (two accounts can
+    end in the same four digits)."""
+    for key in hint.keys:
+        found = ledger.account_by_key(conn, [key])
+        if found is None:
+            continue
+        if key != hint.number_key or _same_number_account(conn, hint, found):
+            return found
+    return None
+
+
+def _same_number_account(conn, hint, account_id):
+    acct = conn.execute("SELECT kind, bank FROM accounts WHERE id = ?", (account_id,)).fetchone()
+    if acct is None:
+        return False
+    if ledger.is_debt(acct["kind"]) != ledger.is_debt(hint.kind):
+        return False
+    if hint.bank is None and acct["bank"] is not None:
+        return False
+    if hint.full_key:
+        prefix = hint.full_key.rsplit(":", 1)[0] + ":"
+        if conn.execute("SELECT 1 FROM account_sources WHERE account_id = ? AND key LIKE ? AND key != ?",
+                        (account_id, prefix + "%", hint.full_key)).fetchone():
+            return False
+    return True
 
 
 def find_or_create_account(conn, hint, rows=(), fps=()):
@@ -561,66 +865,124 @@ def account_with_rows(conn, kind, rows, fps):
     return matches[0] if len(matches) == 1 else None
 
 
-def import_parsed(conn, parsed, filename, sha, archived_path=None, accounts=None):
+def import_parsed(conn, parsed, filename, sha, archived_path=None, accounts=None, answers=None):
     """Adds the new rows of a parsed bank file, one Result per account in the file; their
     `new_ids` are for the inbox. `accounts`: {part index: account id} for parts whose
-    account the person chose. Call inside db.write()."""
+    account the person chose. `answers`: {part index: 'owed' or 'favour'} for a card balance the
+    person said the sign of (see balance_questions). Call inside db.write()."""
     if parsed.format == "actual":
         raise ImportError_("Actual Budget exports are learnt from, not imported.")
-    accounts = accounts or {}
-    return [_import_part(conn, parsed.format, part, filename, sha, archived_path, accounts.get(i))
+    accounts, answers = accounts or {}, answers or {}
+    return [_import_part(conn, parsed.format, part, filename, sha, archived_path, accounts.get(i), parsed.kind,
+                         answers.get(i))
             for i, part in enumerate(parsed.parts)]
 
 
-def _import_part(conn, fmt, part, filename, sha, archived_path, account_id=None):
+def _import_part(conn, fmt, part, filename, sha, archived_path, account_id=None, kind=None, answer=None):
+    kind = kind or fmt
     result = Result(filename, fmt, total=len(part.rows), first_date=part.first_date, last_date=part.last_date)
-    fps = fingerprints(part.rows)
+    notes = list(part.notes)
+    rows = _match_rows(part)
     if account_id is None:
-        account_id, created = find_or_create_account(conn, part.account, part.rows, fps)
+        account_id, created = find_or_create_account(conn, part.account, rows, fingerprints(rows))
     else:
         learn_keys(conn, part.account, account_id, chosen=True)
         created = False
     acct = conn.execute("SELECT * FROM accounts WHERE id = ?", (account_id,)).fetchone()
+    flipped = False
+    if part.card_file and ledger.is_debt(acct["kind"]):
+        # Purchases negative, what you owe a negative balance: some banks write them the other way round.
+        flipped, remember = _flip(conn, part, account_id)
+        if remember:
+            _remember(conn, account_id, "flip", "yes" if flipped else "no")
+        if flipped:
+            part = replace(part, rows=[replace(r, amount=-r.amount) for r in part.rows],
+                           balance=(part.balance[0], -part.balance[1]) if part.balance else None)
+            notes.append("This file shows purchases as positive: the signs were flipped")
+    fps = fingerprints(part.rows)
     result.account_id, result.account_name, result.new_account = account_id, acct["name"], created
     import_id = conn.execute(
         "INSERT INTO imports (filename, sha256, account_id, format, rows_total, first_date, last_date, archived_path) "
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        (filename, sha, account_id, fmt, len(part.rows), part.first_date, part.last_date, archived_path)).lastrowid
+        (filename, sha, account_id, kind, len(part.rows), part.first_date, part.last_date, archived_path)).lastrowid
     result.import_id = import_id
 
-    # Rows from a different kind of file (this bank's CSV, when this is its Quicken file):
-    # the same date and amount is the same transaction, whatever each file called it.
-    others = {}
-    for r in conn.execute("SELECT t.id, t.date, t.amount FROM transactions t JOIN imports i ON i.id = t.import_id "
-                          "WHERE t.account_id = ? AND i.format != ? AND t.date BETWEEN ? AND ? ORDER BY t.id",
-                          (account_id, fmt, part.first_date or "", part.last_date or "")):
-        others.setdefault((r["date"], r["amount"]), []).append(r["id"])
+    # A bank's transaction ID is a hint, not proof: banks repeat them (one per day, 1, 2, 3…
+    # in every download, one for two identical coffees). One that repeats within the file says
+    # nothing about its rows, which the fingerprint tells apart (it counts identical rows).
+    repeated = {f for f, n in Counter(r.fitid for r in part.rows if r.fitid).items() if n > 1}
+    fitids = [None if row.fitid in repeated else row.fitid for row in part.rows]
 
-    for row, fp in zip(part.rows, fps):
-        same = others.get((row.date, row.amount), [])
+    # First every row's exact twin: its fingerprint, else its bank ID. Those old rows leave the pool.
+    twins = {}
+    for i, (row, fp) in enumerate(zip(part.rows, fps)):
         existing = conn.execute("SELECT id, fitid FROM transactions WHERE account_id = ? AND fingerprint = ?",
                                 (account_id, fp)).fetchone()
-        if existing is None and row.fitid:
-            existing = conn.execute("SELECT id, fitid FROM transactions WHERE account_id = ? AND fitid = ?",
-                                    (account_id, row.fitid)).fetchone()
-        if existing is None and same:
-            existing = conn.execute("SELECT id, fitid FROM transactions WHERE id = ?", (same[0],)).fetchone()
+        if existing is None and fitids[i]:
+            # The same ID counts only for the same amount, about when it was (posting moves a date).
+            existing = conn.execute(
+                "SELECT id, fitid FROM transactions WHERE account_id = ? AND fitid = ? AND amount = ? "
+                "AND date BETWEEN date(?, ?) AND date(?, ?)",
+                (account_id, fitids[i], row.amount, row.date, f"-{FITID_DAYS} days", row.date, f"+{FITID_DAYS} days")
+            ).fetchone()
         if existing is not None:
-            if existing["id"] in same:
-                same.remove(existing["id"])
-            if row.fitid and not existing["fitid"] and not conn.execute(
-                    "SELECT 1 FROM transactions WHERE account_id = ? AND fitid = ?", (account_id, row.fitid)).fetchone():
-                conn.execute("UPDATE transactions SET fitid = ? WHERE id = ?", (row.fitid, existing["id"]))
+            twins[i] = existing
+
+    # Then, over every row left at once, the rows from a different kind of file (this bank's CSV, when
+    # this is its Quicken file, or a layout set up again): the same amount, a day or two either side,
+    # is the same transaction, whatever each file called it and whenever it was dated (posting moves a
+    # date). Each is matched once, nearest date first: not in the order of the file, where a new
+    # row would take the twin of an old one. Only where one of the two rows falls within the other's
+    # file dates: the rows at the edges of two downloads (one ending Oct 15, the next starting Oct 16,
+    # or overlapping by a day) are different transactions, and a fare on the 16th isn't the 14th's
+    # (issue #124; ledger.one_transaction_in_two_files).
+    gone = {t["id"] for t in twins.values()}
+    others = [dict(r) for r in conn.execute(
+        "SELECT t.id, t.date, t.amount, i.format AS kind, i.first_date AS first, i.last_date AS last "
+        "FROM transactions t JOIN imports i ON i.id = t.import_id "
+        "WHERE t.account_id = ? AND t.date BETWEEN date(?, ?) AND date(?, ?)",
+        (account_id, part.first_date or "", f"-{ledger.OTHER_KIND_DAYS} days",
+         part.last_date or "", f"+{ledger.OTHER_KIND_DAYS} days"))
+        if r["id"] not in gone and not ledger.same_kind_of_file(r["kind"], kind)]
+    left = [{"id": i, "date": row.date, "amount": row.amount, "first": part.first_date, "last": part.last_date}
+            for i, row in enumerate(part.rows) if i not in twins]
+    for i, other_id in ledger.pair_nearest(left, others, allowed=ledger.one_transaction_in_two_files):
+        twins[i] = conn.execute("SELECT id, fitid FROM transactions WHERE id = ?", (other_id,)).fetchone()
+
+    for i, (row, fp) in enumerate(zip(part.rows, fps)):
+        fitid, existing = fitids[i], twins.get(i)
+        # The ID is kept only where no other transaction in the account has it (it's unique there).
+        keep_fitid = fitid if fitid and not conn.execute(
+            "SELECT 1 FROM transactions WHERE account_id = ? AND fitid = ?", (account_id, fitid)).fetchone() else None
+        if existing is not None:
+            if keep_fitid and not existing["fitid"]:
+                conn.execute("UPDATE transactions SET fitid = ? WHERE id = ?", (keep_fitid, existing["id"]))
             result.duplicates += 1
             continue
         desc = describe(row.name, row.memo, acct["kind"])
+        # One you added by hand (no fingerprint, bank ID or import) is the same transaction when
+        # the bank's file brings it: same amount, a few days either side, each matched once.
+        mine = conn.execute(
+            "SELECT id FROM transactions WHERE account_id = ? AND fingerprint IS NULL AND fitid IS NULL "
+            "AND import_id IS NULL AND amount = ? AND date BETWEEN date(?, ?) AND date(?, ?) "
+            "ORDER BY abs(julianday(date) - julianday(?)), id LIMIT 1",
+            (account_id, row.amount, row.date, f"-{MANUAL_DAYS} days", row.date, f"+{MANUAL_DAYS} days", row.date)).fetchone()
+        if mine is not None:
+            # It takes what the bank says and keeps what you decided (category, split, note, payee, by_you).
+            payee_id, similar = ledger.resolve_payee(conn, desc)
+            conn.execute("UPDATE transactions SET date = ?, raw_name = ?, raw_memo = ?, bank_type = ?, bank_category = ?, "
+                         "hint = ?, fingerprint = ?, fitid = ?, import_id = ?, payee_id = COALESCE(payee_id, ?) WHERE id = ?",
+                         (row.date, row.name, row.memo, row.bank_type, row.bank_category, transaction_hint(desc), fp,
+                          keep_fitid, import_id, payee_id, mine["id"]))
+            result.duplicates += 1
+            continue
         payee_id, similar = ledger.resolve_payee(conn, desc)
         result.new_ids.append(conn.execute(
             "INSERT INTO transactions (account_id, date, amount, payee_id, raw_name, raw_memo, bank_type, "
             "bank_category, hint, fingerprint, fitid, import_id, similar_payee_id) "
             "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (account_id, row.date, row.amount, payee_id, row.name, row.memo, row.bank_type, row.bank_category,
-             transaction_hint(desc), fp, row.fitid, import_id, similar)).lastrowid)
+             transaction_hint(desc), fp, keep_fitid, import_id, similar)).lastrowid)
     result.added = len(result.new_ids)
     conn.execute("UPDATE imports SET rows_new = ? WHERE id = ?", (result.added, import_id))
 
@@ -630,9 +992,17 @@ def _import_part(conn, fmt, part, filename, sha, archived_path, account_id=None)
         # this one. So a file's balance replaces any as old as it, or older.
         as_of, balance = part.balance
         ours = ledger.account_balance(conn, account_id, as_of)
+        if part.card_file and ledger.is_debt(acct["kind"]) and not flipped and balance > 0:
+            balance = _positive_balance(conn, account_id, balance, ours, answer)
+            if balance < 0:
+                notes.append("The file's balance read as what you owe")
         if acct["anchor_date"] is None or as_of >= acct["anchor_date"]:
             conn.execute("UPDATE accounts SET anchor_date = ?, anchor_balance = ? WHERE id = ?",
                          (as_of, balance, account_id))
+            # Remembered so that removing this import puts the balance it replaced back.
+            conn.execute("UPDATE imports SET anchor_before_date = ?, anchor_before_balance = ?, anchor_after_date = ?, "
+                         "anchor_after_balance = ? WHERE id = ?",
+                         (acct["anchor_date"], acct["anchor_balance"], as_of, balance, import_id))
             if ours != balance:
                 result.balance_note = "Balance taken from the file"
                 if ours is not None:
@@ -641,6 +1011,9 @@ def _import_part(conn, fmt, part, filename, sha, archived_path, account_id=None)
         elif ours is not None and ours != balance:
             result.balance_note = (f"The file says the balance was {balance / 100:,.2f} on {as_of}, "
                                    f"but the app has {ours / 100:,.2f}")
+    if notes:
+        result.balance_note = ". ".join([*notes, result.balance_note] if result.balance_note else notes)
+        log.info("%s: %s", filename, result.balance_note)
     return result
 
 
@@ -649,8 +1022,9 @@ def learn_from_actual(conn, parsed):
 
     Categories are matched by name, including names they used to have (so renaming
     "Eating Out" to "Food" here still matches Actual's "Eating Out"); missing ones are
-    created. Returns {'examples': n, 'categories_created': [...]}."""
-    created, examples = [], 0
+    created. Returns {'examples': n (new ones), 'already_learnt': n, 'categories_created': [...]}."""
+    created, examples, already = [], 0, 0
+    seen = {}  # (payee, category, amount, date) → how many of those this file has had so far
     income_id = ledger.income_category(conn)
     income_group = conn.execute("SELECT group_id FROM categories WHERE id = ?", (income_id,)).fetchone()["group_id"]
     for r in parsed.actual_rows:
@@ -677,10 +1051,19 @@ def learn_from_actual(conn, parsed):
         if desc.hint == "transfer":
             continue
         payee_id, _ = ledger.resolve_payee(conn, desc)
-        conn.execute("INSERT INTO examples (payee_id, category_id, amount, date, source) VALUES (?, ?, ?, ?, 'actual')",
-                     (payee_id, category_id, r["amount"], r["date"]))
+        # Each example once: one this file taught before (or an earlier export that had it) isn't added
+        # again, which would double its weight in every suggestion. Identical rows in one file
+        # (two $4.00 coffees on a day) are each an example.
+        key = (payee_id, category_id, r["amount"], r["date"])
+        seen[key] = seen.get(key, 0) + 1
+        have = conn.execute("SELECT COUNT(*) FROM examples WHERE payee_id = ? AND category_id = ? AND amount = ? "
+                            "AND date = ? AND source = 'actual'", key).fetchone()[0]
+        if have >= seen[key]:
+            already += 1
+            continue
+        conn.execute("INSERT INTO examples (payee_id, category_id, amount, date, source) VALUES (?, ?, ?, ?, 'actual')", key)
         examples += 1
-    return {"examples": examples, "categories_created": created}
+    return {"examples": examples, "already_learnt": already, "categories_created": created}
 
 
 def _actual_description(notes):

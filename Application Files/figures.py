@@ -19,7 +19,8 @@ import budget
 import ledger
 from util import add_months, first_day, last_day, month_of, months_between
 
-ABOVE_USUAL_CENTS = 2500  # a whole month is "above usual" at least $25 and 25% over its Usual
+ABOVE_USUAL_CENTS = 2500  # a whole month is "above usual" at least $25 ...
+ABOVE_USUAL_PERCENT = 25  # ... and 25% over its Usual
 
 
 class Figures:
@@ -203,7 +204,8 @@ class Figures:
                     if not cat["debt_account_id"] else None,
                 }
                 if cat["debt_account_id"] in accounts:
-                    owing = -(self._balance(cat["debt_account_id"]) or 0)
+                    as_of = last_day(month) if month < self.current else None
+                    owing = -(self._balance(cat["debt_account_id"], as_of) or 0)
                     row["owing"] = owing
                     row["set_aside"] = max(row["available"] or 0, 0)
                     row["not_covered"] = max(0, owing - row["set_aside"])
@@ -274,7 +276,7 @@ class Figures:
         if they spent, and a group only with a category in it."""
         def above(spent, usual, month):
             return (self.coverage <= month < self.current and bool(usual) and spent >= usual + ABOVE_USUAL_CENTS
-                    and spent * 4 >= usual * 5)
+                    and spent * 100 >= usual * (100 + ABOVE_USUAL_PERCENT))
 
         income, total, groups = [0] * len(months), [0] * len(months), []
         for g in self.tree:
@@ -292,15 +294,18 @@ class Figures:
                 if cat["hidden"] and not any(spent):
                     continue
                 usuals = [budget.usual_spending(history, m, self.coverage, self.usual_months) for m in months]
-                cats.append({"id": cat["id"], "spent": spent, "usual": usuals,
-                             "above": [above(s, u, m) for s, u, m in zip(spent, usuals, months)]})
+                flags = [above(s, u, m) for s, u, m in zip(spent, usuals, months)]
+                cats.append({"id": cat["id"], "spent": spent, "usual": usuals, "above": flags,
+                             "above_by": [s - u if f else None for s, u, f in zip(spent, usuals, flags)]})
             if not cats:
                 continue
             spent = [sum(x["spent"][i] for x in cats) for i in range(len(months))]
             total = [x + y for x, y in zip(total, spent)]
             groups.append({"id": g["id"], "spent": spent, "categories": cats,
                            "above": [any(x["above"][i] for x in cats) for i in range(len(months))]})
-        return {"income": income, "total": total, "groups": groups}
+        return {"income": income, "total": total, "groups": groups,
+                "difference": [i - t for i, t in zip(income, total)],
+                "above_usual": {"cents": ABOVE_USUAL_CENTS, "percent": ABOVE_USUAL_PERCENT}}
 
     def balances(self):
         """Cash now (None while an open cash account has no balance) and what's owed, from
@@ -390,6 +395,20 @@ class Figures:
                              "assigned": f["assigned"], "has": has, "amount": give, "covered": covered})
         return {"month": month, "amount": amount, "ready_to_assign": available, "plan": plan, "left_over": remaining}
 
+    def assign_left(self, month, amount, allocations):
+        """What's left of `amount` to share out once these allocations ([{category_id, amount}], as
+        typed so far in Assign money…) are taken from it: the same sum assign_plan() starts from
+        (never less than nothing to share), counting only what isn't covering this month's
+        overspending (`covered`), which costs nothing."""
+        view = self.month(month)
+        covered = {cid: f["overspent_cash"] for cid, f in view["categories"].items()} \
+            if self.overspending == "this_month" else {}
+        used = 0
+        for a in allocations:
+            cents = int(a["amount"])
+            used += max(0, cents - covered.get(int(a["category_id"]), 0)) if cents > 0 else cents
+        return max(0, int(amount)) - used
+
     def catch_up(self, months):
         """Assigned for each category in each of `months` (in order) so none ends it below
         zero: {(month, category): Assigned}, ordinary categories first, then payment
@@ -407,6 +426,30 @@ class Figures:
                     if roles.get(cid) == role and cat["available"] < 0:
                         assigned[(month, cid)] = changes[(month, cid)] = cat["assigned"] - cat["available"]
         return changes
+
+
+def rows_total(conn, rows_sql, params, category_id=None):
+    """(how many, what they add up to) for every transaction a Transactions-page filter
+    matches, not just those the page shows. `rows_sql` is the filter's FROM and WHERE. With a
+    `category_id`, a split counts only its lines in that category, as Spent does."""
+    amount = ("COALESCE((SELECT SUM(s.amount) FROM splits s WHERE s.transaction_id = t.id AND s.category_id = ?), 0)"
+              if category_id else "t.amount")
+    row = conn.execute(f"SELECT COUNT(*) AS n, COALESCE(SUM(CASE WHEN t.is_split THEN {amount} ELSE t.amount END), 0) "
+                       f"AS total {rows_sql}", ([int(category_id)] if category_id else []) + list(params)).fetchone()
+    return row["n"], row["total"]
+
+
+def category_amount(splits, category_id):
+    """What a split transaction puts in one category: the sum of its lines there (`splits`: dicts
+    with category_id and amount)."""
+    return sum(x["amount"] for x in splits if x["category_id"] == int(category_id))
+
+
+def transactions_total(conn, txn_ids):
+    """What these transactions add up to."""
+    ids = list(txn_ids)
+    return sum(conn.execute(f"SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE id IN ({','.join('?' * len(chunk))})",
+                            chunk).fetchone()[0] for chunk in (ids[i:i + 500] for i in range(0, len(ids), 500)))
 
 
 def payoff(owing, apr, payment):

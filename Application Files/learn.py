@@ -46,6 +46,7 @@ class Suggestion:
     mixed: bool = False   # this payee goes to different categories, so never filed without asking
     group: str = ""       # inbox items with the same group are shown as one (see analyze())
     individual: bool = False  # this one is its own inbox item (a refund, an unusual amount, Always ask...)
+    unusual: bool = False  # much bigger than this payee's biggest before: asked, and left out of Accept all
 
 
 def _amount_similarity(a, b):
@@ -72,6 +73,33 @@ def _history(conn, txn):
     return (same, True) if same else (rows, False)
 
 
+UNUSUAL_TIMES = 3     # a charge this many times the payee's biggest before always asks...
+UNUSUAL_FLOOR = 1000  # ...when it's also over $10.00: pocket change from a $2 payee isn't a question
+
+
+def _unusual_beside(rows, txn):
+    """The biggest amount in `rows` (a payee's past transactions) when `txn` is unusual beside it, else None."""
+    if not rows:
+        return None
+    biggest = max(abs(r["amount"]) for r in rows)
+    return biggest if abs(txn["amount"]) > UNUSUAL_TIMES * biggest and abs(txn["amount"]) > UNUSUAL_FLOOR else None
+
+
+def unusual(conn, txn):
+    """The payee's biggest past amount, in cents, when this transaction is more than 3 times it
+    (and over $10.00), whatever else the app knows about it (even a bill that's different every
+    time); else None. "A $576 Apple purchase isn't another $14 subscription." Money in counts too."""
+    if txn["payee_id"] is None:
+        return None
+    rows, _ = _history(conn, txn)
+    allowed = assignable_category_ids(conn) | {income_category(conn)}
+    return _unusual_beside([r for r in rows if r["category_id"] in allowed], txn)
+
+
+def unusual_reason(txn, biggest):
+    return f"Much bigger than usual for this payee ({_money(-abs(txn['amount']))} vs at most {_money(-biggest)} before)"
+
+
 def _from_history(conn, txn, names, allowed):
     rows, same_direction = _history(conn, txn)
     rows = [r for r in rows if r["category_id"] in allowed]
@@ -91,10 +119,9 @@ def _from_history(conn, txn, names, allowed):
     mixed = sum(1 for c in counts if counts[c] / n >= MIXED_SHARE) >= 2
     always_ask = _always_ask(conn, txn)
     from_actual = all(r["source"] == "example" for r in rows)
-    biggest = max(abs(r["amount"]) for r in rows)
+    biggest = _unusual_beside(rows, txn)
     # A $576 Apple purchase isn't another $14 subscription, even if Apple always went there.
-    unusual = abs(txn["amount"]) > 3 * biggest and abs(txn["amount"]) > 5000
-    sure = same_direction and not mixed and not always_ask and not unusual and share >= SURE_SHARE
+    sure = same_direction and not mixed and not always_ask and not biggest and share >= SURE_SHARE
     if always_ask and txn["hint"] == "etransfer":
         if not same_direction:
             reason = ("You've only sent this payee money before" if txn["amount"] > 0
@@ -106,10 +133,9 @@ def _from_history(conn, txn, names, allowed):
                       f"Usually {names.get(top, '?')} ({counts[top]} of {n})")
         reason += ". E-transfers start with Always ask on"
         return Suggestion(ranked[:4], False, reason, mixed=True, individual=True)
-    if unusual and not mixed:
-        reason = (f"Much bigger than usual for this payee ({_money(-abs(txn['amount']))} vs at most "
-                  f"{_money(-biggest)} before). {names.get(top, '?')}?")
-        return Suggestion(ranked[:4], False, reason, mixed=True, individual=True)
+    if biggest:  # even a mixed payee's: its own item, no guess
+        reason = f"{unusual_reason(txn, biggest)}. {names.get(top, '?')}?"
+        return Suggestion(ranked[:4], False, reason, mixed=True, individual=True, unusual=True)
     if mixed:
         parts = " · ".join(f"{names.get(c, '?')} {counts[c]}×" for c in sorted(counts, key=lambda c: -counts[c])[:3])
         reason = f"Goes to more than one category ({parts}); closest by amount first"
@@ -217,6 +243,18 @@ def match_reimbursement(conn, txn, names):
                       f"Back to {names.get(r['category_id'], '?')}?", group=group)
 
 
+def match_subscription(conn, txn, names):
+    """A charge of a tracked recurring charge, waiting because its payee has Always ask on: its
+    category is the suggestion ("Music subscription: Fun Money?"), asked rather than filed."""
+    if not txn["subscription_id"]:
+        return None
+    sub = conn.execute("SELECT name, category_id, status FROM subscriptions WHERE id = ?",
+                       (txn["subscription_id"],)).fetchone()
+    if sub is None or sub["status"] != "active" or sub["category_id"] not in names:
+        return None
+    return Suggestion([sub["category_id"]], False, f"{sub['name']} subscription: {names[sub['category_id']]}?")
+
+
 def analyze(conn, txn):
     """The best guess for a transaction (a transactions row)."""
     names = category_names(conn)
@@ -225,8 +263,9 @@ def analyze(conn, txn):
     if hint in BANK_ENTRY_HINTS:
         return _bank_entry(conn, txn, names, allowed)
 
+    always_ask = _always_ask(conn, txn)
     refund = match_refund(conn, txn, names)
-    if refund and refund.sure:
+    if refund and refund.sure and not always_ask:  # an Always-ask payee's refund is a question too
         return refund
     share = match_reimbursement(conn, txn, names)
     learnt = _from_history(conn, txn, names, allowed)
@@ -234,7 +273,11 @@ def analyze(conn, txn):
         return learnt
 
     options, reasons, group = [], [], ""
-    for candidate in (refund, share, learnt, _from_bank_category(conn, txn, names, allowed)):
+    candidates = (match_subscription(conn, txn, names), refund, share, learnt,
+                  _from_bank_category(conn, txn, names, allowed))
+    if learnt and learnt.unusual:  # "Much bigger than usual" comes first, even for a recurring charge
+        candidates = (learnt, *candidates)
+    for candidate in candidates:
         if candidate:
             if not reasons:
                 reasons.append(candidate.reason)
@@ -246,7 +289,6 @@ def analyze(conn, txn):
         reasons.append("Cash: which category did it come out of?")
     if not reasons:
         reasons.append("New payee")
-    always_ask = _always_ask(conn, txn)
     mixed = bool(learnt and learnt.mixed) or bool(refund) or (always_ask and hint == "etransfer")
     # One group per payee in the inbox (even a mixed one like Amazon: "One at a time"
     # splits it), except payees with Always ask on (anyone you e-transfer with, at first)
@@ -257,14 +299,15 @@ def analyze(conn, txn):
         group = "" if individual or not txn["payee_id"] else \
             f"payee:{txn['payee_id']}:{'in' if txn['amount'] > 0 else 'out'}"
     return Suggestion(options[:4], False, reasons[0], refund_of=refund.refund_of if refund else None,
-                      mixed=mixed, group=group, individual=individual)
+                      mixed=mixed, group=group, individual=individual, unusual=bool(learnt and learnt.unusual))
 
 
 def guess(txn, suggestion, income_id):
     """The category "Accept all" in the inbox gives an inbox item: its top suggestion.
     None for an e-transfer, whatever its payee's Always ask (each is its own question),
-    and for money in the app can only call Income (unknown money in is asked about)."""
-    if not suggestion.options or txn["hint"] == "etransfer":
+    an unusually big charge, and for money in the app can only call Income (unknown money in is
+    asked about)."""
+    if not suggestion.options or txn["hint"] == "etransfer" or suggestion.unusual:
         return None
     if txn["amount"] > 0 and suggestion.options == [income_id]:
         return None
@@ -274,6 +317,9 @@ def guess(txn, suggestion, income_id):
 def _always_ask(conn, txn):
     payee = conn.execute("SELECT always_ask FROM payees WHERE id = ?", (txn["payee_id"],)).fetchone()
     return bool(payee and payee["always_ask"])
+
+
+always_ask = _always_ask  # for the inbox: a payee with Always ask on never has an item filed without asking
 
 
 # Where each kind of bank entry (payees.BANK_ENTRY_HINTS) starts, and why.

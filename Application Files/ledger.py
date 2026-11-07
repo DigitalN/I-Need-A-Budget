@@ -6,9 +6,14 @@ Every function takes an open connection (`db.write()` / `db.read()`); none of th
 commits. Amounts are cents.
 """
 
+from bisect import bisect_left, bisect_right
+from datetime import date
+from functools import lru_cache
+
 import transfers
+from errors import UserError
 from payees import describe, find_similar, merchant_key, transaction_hint
-from util import day_before
+from util import add_days, day_before
 
 CASH_KINDS = ("chequing", "savings", "cash")
 DEBT_KINDS = ("credit_card", "line_of_credit")
@@ -91,6 +96,90 @@ def opening_cash(conn, start_month):
     return total, missing
 
 
+OTHER_KIND_DAYS = 2  # a bank's CSV and its Quicken file can date one transaction this many days apart
+
+
+def same_kind_of_file(a, b):
+    """Whether two imports' formats are the same kind of file. A set-up CSV is stored as
+    `csv:<layout id>:<its shape>`; one imported before that was stored as plain `csv`, and counts
+    as the same kind as any of them."""
+    if a == b:
+        return True
+    return "csv" in (a, b) and a.startswith("csv") and b.startswith("csv")
+
+
+def one_transaction_in_two_files(a, b):
+    """Whether two rows (dicts with `date`, and `first` / `last`: the dates of the file each came in,
+    None when not known, which counts as inside) can be one transaction seen in two kinds of file:
+    at least one of them falls within the other's file dates. Rows that are both outside it sit at
+    the edges of two downloads (a CSV ending Oct 15, a Quicken file starting Oct 16): two
+    transactions, however alike they look."""
+    def inside(row, other):
+        return (not other["first"] or row["date"] >= other["first"]) and (not other["last"] or row["date"] <= other["last"])
+    return inside(a, b) or inside(b, a)
+
+
+@lru_cache(maxsize=None)
+def _day_number(day):
+    return date.fromisoformat(day).toordinal()
+
+
+def pair_nearest(wanted, offered, days=OTHER_KIND_DAYS, allowed=None):
+    """[(wanted id, offered id)]: rows (dicts with id, date, amount) that are the same transaction,
+    seen in two kinds of file: the same amount, dates up to `days` apart, each used once, the
+    nearest dates first over all of them at once (a tie goes to the lower ids), not in the order
+    the rows come. `allowed(w, o)` can rule a pair out. Each wanted row meets only the offered rows
+    of its amount within `days` of it (found in dates sorted per amount), never all of them: a
+    long history repeats the same amounts for years."""
+    by_amount = {}
+    for o in offered:
+        by_amount.setdefault(o["amount"], []).append((_day_number(o["date"]), o))
+    for rows in by_amount.values():
+        rows.sort(key=lambda r: r[0])
+    day_numbers = {amount: [d for d, _ in rows] for amount, rows in by_amount.items()}
+    candidates = []
+    for w in wanted:
+        rows = by_amount.get(w["amount"])
+        if not rows:
+            continue
+        day, numbers = _day_number(w["date"]), day_numbers[w["amount"]]
+        for other_day, o in rows[bisect_left(numbers, day - days):bisect_right(numbers, day + days)]:
+            if allowed is None or allowed(w, o):
+                candidates.append((abs(other_day - day), w["id"], o["id"]))
+    candidates.sort()
+    used_w, used_o, out = set(), set(), []
+    for _, w, o in candidates:
+        if w not in used_w and o not in used_o:
+            used_w.add(w)
+            used_o.add(o)
+            out.append((w, o))
+    return out
+
+
+def cross_kind_pairs(conn, a_id, b_id, days=OTHER_KIND_DAYS, skip_a=(), skip_b=()):
+    """[(a's transaction id, b's)]: rows of two accounts that are the same transaction seen in
+    different kinds of file (a bank's CSV and its Quicken file, or a CSV set up again), by
+    pair_nearest, and only where one of the two rows falls within the other's file dates
+    (one_transaction_in_two_files). `skip_a` / `skip_b`:
+    rows that already have an exact twin (the same fingerprint or bank ID), which pair with nothing
+    else. Only the rows of one account within `days` of the other's dates are looked at."""
+    def span(account_id):
+        return conn.execute("SELECT MIN(date), MAX(date) FROM transactions WHERE account_id = ?", (account_id,)).fetchone()
+
+    def rows(account_id, skip, within):
+        return [dict(r) for r in conn.execute(
+            "SELECT t.id, t.date, t.amount, COALESCE(i.format, '') AS kind, i.first_date AS first, i.last_date AS last "
+            "FROM transactions t LEFT JOIN imports i ON i.id = t.import_id "
+            "WHERE t.account_id = ? AND t.date BETWEEN ? AND ?",
+            (account_id, add_days(within[0], -days), add_days(within[1], days))) if r["id"] not in skip]
+    a_span, b_span = span(a_id), span(b_id)
+    if a_span[0] is None or b_span[0] is None:
+        return []
+    return pair_nearest(rows(a_id, set(skip_a), b_span), rows(b_id, set(skip_b), a_span), days,
+                        allowed=lambda a, b: not same_kind_of_file(a["kind"], b["kind"])
+                        and one_transaction_in_two_files(a, b))
+
+
 def duplicate_accounts(conn):
     """Accounts that look like a second copy of another one (a file was imported into a
     new account when it belonged to an existing one): nearly all of the newer account's
@@ -105,6 +194,17 @@ def duplicate_accounts(conn):
     accounts = {r["id"]: r for r in conn.execute(
         "SELECT a.id, a.name, a.kind, MIN(t.date) AS first, MAX(t.date) AS last, COUNT(t.id) AS n FROM accounts a "
         "JOIN transactions t ON t.account_id = a.id GROUP BY a.id")}
+    # The same transactions in different kinds of file (a CSV and a Quicken file worded differently) share
+    # no fingerprint: pair them by date and amount.
+    ids = sorted(accounts)
+    for i, older in enumerate(ids):
+        for newer in ids[i + 1:]:
+            a, b = accounts[older], accounts[newer]
+            if is_debt(a["kind"]) != is_debt(b["kind"]) or a["first"] > b["last"] or b["first"] > a["last"]:
+                continue
+            shared = len(cross_kind_pairs(conn, older, newer))
+            if shared > pairs.get((newer, older), 0):
+                pairs[(newer, older)] = shared
     out, seen = [], set()
     for (newer, older), shared in sorted(pairs.items(), key=lambda kv: -kv[1]):
         a, b = accounts.get(newer), accounts.get(older)
@@ -121,18 +221,24 @@ def duplicate_accounts(conn):
 
 def merge_accounts(conn, from_id, into_id):
     """`from_id` turned out to be the same account as `into_id`. Its transactions that
-    `into_id` already has are dropped (keeping anything you decided about the copy), the
-    rest move over, and `from_id` goes. Returns (moved, dropped, ids): `ids` were a
-    transfer between the two copies, both halves now in one account, for the inbox to
-    ask about again."""
+    `into_id` already has are dropped (see _drop_copy: what you decided stays), the rest
+    move over, and `from_id` goes. Returns (moved, dropped, unlinked, asked): `unlinked` were
+    a transfer between the two copies, both halves now in one account, and `asked` are the
+    other halves of dropped copies that no longer have one: the inbox asks about both again."""
     a = conn.execute("SELECT * FROM accounts WHERE id = ?", (from_id,)).fetchone()
     b = conn.execute("SELECT * FROM accounts WHERE id = ?", (into_id,)).fetchone()
     if a is None or b is None or from_id == into_id:
-        raise ValueError("Pick another account to merge into.")
+        raise UserError("Pick another account to merge into.")
     if is_debt(a["kind"]) != is_debt(b["kind"]):
-        raise ValueError("A card or line of credit can only be merged with another one.")
+        raise UserError("A card or line of credit can only be merged with another one.")
     moved = dropped = 0
-    for t in conn.execute("SELECT * FROM transactions WHERE account_id = ? ORDER BY date, id", (from_id,)).fetchall():
+    asked = []
+    copies = conn.execute("SELECT * FROM transactions WHERE account_id = ? ORDER BY date, id", (from_id,)).fetchall()
+    # As in an import: a copy's exact twin first (the same fingerprint, then the same bank ID), and
+    # those rows leave the pool. Rows seen in a different kind of file share neither, so the rest pair
+    # by date and amount, nearest first, from what's left.
+    twins = {}
+    for t in copies:
         twin = None
         if t["fingerprint"]:
             twin = conn.execute("SELECT * FROM transactions WHERE account_id = ? AND fingerprint = ?",
@@ -140,6 +246,13 @@ def merge_accounts(conn, from_id, into_id):
         if twin is None and t["fitid"]:
             twin = conn.execute("SELECT * FROM transactions WHERE account_id = ? AND fitid = ?",
                                 (into_id, t["fitid"])).fetchone()
+        if twin is not None:
+            twins[t["id"]] = twin
+    paired = cross_kind_pairs(conn, from_id, into_id, skip_a=set(twins), skip_b={t["id"] for t in twins.values()})
+    for copy_id, twin_id in paired:
+        twins[copy_id] = conn.execute("SELECT * FROM transactions WHERE id = ?", (twin_id,)).fetchone()
+    for t in copies:
+        twin = twins.get(t["id"])
         if twin is None:
             if t["fitid"] and conn.execute("SELECT 1 FROM transactions WHERE account_id = ? AND fitid = ?",
                                            (into_id, t["fitid"])).fetchone():
@@ -147,7 +260,7 @@ def merge_accounts(conn, from_id, into_id):
             conn.execute("UPDATE transactions SET account_id = ? WHERE id = ?", (into_id, t["id"]))
             moved += 1
         else:
-            _drop_copy(conn, t, twin)
+            asked += _drop_copy(conn, t, twin)
             dropped += 1
     conn.execute("UPDATE transactions SET transfer_account_id = ? WHERE transfer_account_id = ?", (into_id, from_id))
     unlinked = [t["id"] for t in conn.execute("SELECT id FROM transactions WHERE account_id = ? AND "
@@ -166,34 +279,48 @@ def merge_accounts(conn, from_id, into_id):
             conn.execute("INSERT INTO budget (month, category_id, assigned) VALUES (?, ?, ?) ON CONFLICT(month, "
                          "category_id) DO UPDATE SET assigned = assigned + excluded.assigned", (r["month"], new, r["assigned"]))
     conn.execute("DELETE FROM accounts WHERE id = ?", (from_id,))
-    return moved, dropped, unlinked
+    return moved, dropped, unlinked, [i for i in dict.fromkeys(asked) if i not in unlinked]
 
 
 def _drop_copy(conn, copy, twin):
-    """Deletes `copy`, a second copy of `twin`, moving onto `twin` what only the copy has:
-    what you decided about it (a category, a split, sending it back), a note, its
-    subscription, its transfer, its bank ID."""
-    if copy["by_you"] and not twin["by_you"] and not copy["transfer_account_id"] and not twin["transfer_account_id"]:
+    """Deletes `copy`, a second copy of `twin`, moving onto `twin` what only the copy has: a
+    note, its subscription, its bank ID, and what you decided about it. What you decided
+    stays decided (docs/adr/0005): if `twin` is yours it's kept as it is; if only the copy is
+    yours, `twin` takes the whole decision (a category, a split, sending it back, being a
+    transfer or not). Nothing the app did replaces a decision of yours. Returns the ids of
+    other halves of transfers that lost their partner and are the app's to decide again."""
+    asked = []
+    partner = copy["transfer_id"]
+    if copy["by_you"] and not twin["by_you"]:
+        if twin["transfer_id"] and twin["transfer_id"] != partner:
+            asked += transfers.unlink(conn, twin["id"])[1:]  # the app's pairing of the original goes
         conn.execute("UPDATE transactions SET category_id = ?, is_split = ?, status = ?, reason = ?, refund_of = ?, "
-                     "by_you = 1 WHERE id = ?", (copy["category_id"], copy["is_split"], copy["status"], copy["reason"],
-                                                 copy["refund_of"], twin["id"]))
+                     "transfer_account_id = ?, transfer_id = ?, by_you = 1 WHERE id = ?",
+                     (copy["category_id"], copy["is_split"], copy["status"], copy["reason"], copy["refund_of"],
+                      copy["transfer_account_id"], partner, twin["id"]))
+        conn.execute("DELETE FROM splits WHERE transaction_id = ?", (twin["id"],))
         if copy["is_split"]:
-            conn.execute("DELETE FROM splits WHERE transaction_id = ?", (twin["id"],))
             conn.execute("UPDATE splits SET transaction_id = ? WHERE transaction_id = ?", (twin["id"], copy["id"]))
+        if partner:
+            conn.execute("UPDATE transactions SET transfer_id = ? WHERE id = ?", (twin["id"], partner))
+        twin = conn.execute("SELECT * FROM transactions WHERE id = ?", (twin["id"],)).fetchone()
+        partner = None  # it has a partner now (or never had one)
     if copy["note"] and not twin["note"]:
         conn.execute("UPDATE transactions SET note = ? WHERE id = ?", (copy["note"], twin["id"]))
     if copy["subscription_id"] and not twin["subscription_id"]:
         conn.execute("UPDATE transactions SET subscription_id = ? WHERE id = ?", (copy["subscription_id"], twin["id"]))
     conn.execute("UPDATE transactions SET refund_of = ? WHERE refund_of = ?", (twin["id"], copy["id"]))
-    other = conn.execute("SELECT * FROM transactions WHERE id = ?", (copy["transfer_id"],)).fetchone() \
-        if copy["transfer_id"] else None
     conn.execute("DELETE FROM transactions WHERE id = ?", (copy["id"],))
     if copy["fitid"] and not twin["fitid"] and not conn.execute(
             "SELECT 1 FROM transactions WHERE account_id = ? AND fitid = ?", (twin["account_id"], copy["fitid"])).fetchone():
         conn.execute("UPDATE transactions SET fitid = ? WHERE id = ?", (copy["fitid"], twin["id"]))
-    if other is not None and not twin["transfer_id"]:
-        transfers.link(conn, conn.execute("SELECT * FROM transactions WHERE id = ?", (twin["id"],)).fetchone(),
-                       conn.execute("SELECT * FROM transactions WHERE id = ?", (other["id"],)).fetchone())
+    if partner is not None:  # the copy was paired by the app (or the original is yours)
+        if twin["by_you"] or twin["transfer_id"]:
+            asked.append(partner)  # never paired with yours; one already paired has its own
+        else:
+            transfers.link(conn, conn.execute("SELECT * FROM transactions WHERE id = ?", (twin["id"],)).fetchone(),
+                           conn.execute("SELECT * FROM transactions WHERE id = ?", (partner,)).fetchone())
+    return asked
 
 
 # ── special categories ───────────────────────────────────────
@@ -242,6 +369,35 @@ def payment_categories(conn):
     """{debt account id: its payment envelope's category id}"""
     return {r["debt_account_id"]: r["id"] for r in conn.execute(
         "SELECT id, debt_account_id FROM categories WHERE debt_account_id IS NOT NULL")}
+
+
+def category_problem(conn, category_id, hidden_ok=False):
+    """Why a transaction (or a recurring charge) can't go in this category, as (name, why) with
+    why 'missing', 'payment' (a card's payment category: set-aside money, not spending) or
+    'hidden' (not for a choice of yours); None when it can."""
+    row = conn.execute("SELECT name, hidden, debt_account_id FROM categories WHERE id = ?", (category_id,)).fetchone()
+    if row is None:
+        return "", "missing"
+    if row["debt_account_id"]:
+        return row["name"], "payment"
+    if row["hidden"] and not hidden_ok:
+        return row["name"], "hidden"
+    return None
+
+
+def check_category(conn, category_id, hidden_ok=False):
+    """Raises UserError, with a message to show, unless something can be filed in this
+    category (see category_problem). The page only offers such categories; this is what keeps
+    the budget's rules true for anything else that asks."""
+    problem = category_problem(conn, category_id, hidden_ok)
+    if problem is None:
+        return
+    name, why = problem
+    if why == "missing":
+        raise UserError("That category no longer exists.")
+    if why == "payment":
+        raise UserError(f"{name} is where the card's payments are set aside: pick a category for what was bought.")
+    raise UserError(f"{name} is hidden: show it again, or pick another category.")
 
 
 def interest_category(conn):
@@ -397,7 +553,7 @@ def rename_payee(conn, payee_id, new_name):
     """Renames a payee, or merges it into the payee that already has that name."""
     new_name = " ".join(str(new_name).split())
     if not new_name:
-        raise ValueError("A payee needs a name.")
+        raise UserError("A payee needs a name.")
     other = conn.execute("SELECT id FROM payees WHERE name = ? COLLATE NOCASE AND id != ?",
                          (new_name, payee_id)).fetchone()
     if other is None:

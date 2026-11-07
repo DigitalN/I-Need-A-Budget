@@ -25,7 +25,8 @@ that are local businesses, category names that reveal finances, and real amounts
 - `.gitignore` excludes bank files and databases. `scripts/hooks/pre-commit` (switched on
   with `git config core.hooksPath scripts/hooks`; First Time Setup does it) refuses
   commits with those files, card-number shapes, or any word in `.git-denylist`, a local,
-  ignored list of private words. `scripts/tests/test_privacy.py` checks the working tree the same
+  ignored list of private words (it lives in the main checkout: the hooks and the test find
+  it from a git worktree too). `scripts/tests/test_privacy.py` checks the working tree the same
   way. Never bypass the hook, and never weaken these checks.
 - Tests and examples use made-up data only ("SAMPLE CAFE CALGARY AB", made-up amounts).
   Build card file names in code (`scripts/tests/helpers.CARD_FILE`) so no card-number shape
@@ -61,11 +62,11 @@ All in `Application Files/`:
   `call(name, args)`, to the page. `VERSION` here is the app's only version number.
 - `service.py`: everything the page can ask for. `BudgetService.dispatch()` runs only
   methods marked `@exposed`; results are `{"ok": true, "result": …}` or
-  `{"ok": false, "error": "…"}`. Raise `UserError` for messages the user should see.
+  `{"ok": false, "error": "…"}`. Raise `UserError` (`errors.py`) for messages the user should see, in service.py, ledger.py and inbox.py alike; any other exception is logged with its traceback and shown as "Something went wrong (…). Details are in the log." Months and dates from the page are checked on the way in.
   The preview and most tests drive this same class.
 - `db.py`: schema, upgrades, the shared connection behind a lock, **undo** (triggers record
   inverse SQL; `db.write("Label")` makes one undoable step; updates only record changed
-  columns), daily backups. Schema is at version 6. To change it: raise `SCHEMA_VERSION`,
+  columns), daily backups. Schema is at version 7. To change it: raise `SCHEMA_VERSION`,
   add the column to `SCHEMA` *and* an `ALTER TABLE` step in `_migrate` for existing
   databases. Upgrades copy the database to `Backups/budget-before-upgrade-…` first. The
   user's real database has real data in it: test every upgrade on a copy of it first.
@@ -104,7 +105,7 @@ All in `Application Files/`:
 - `transfers.py`: pairing the two halves of a transfer between own accounts, for the inbox.
 - `subscriptions.py`: detection (steady rhythm; same price, or a once-a-month bill that
   varies), tracking with a name, category, price type and optional end date, price-change
-  questions, "charged you again" alerts (after cancelling or after the end date). It links
+  questions, "charged you again" alerts (after cancelling or after the end date, at any price). It links
   charges and keeps prices; what happens to a charge in the inbox is inbox.py's.
 - `budget.py`: pure envelope math, credit cards included, and the three ways overspending
   is paid for (the Overspending setting). Its docstring states the rules and the
@@ -132,7 +133,11 @@ All in `Application Files/`:
   would stop matching and every overlapping file would import twice. Two identical rows in
   one file are both kept (the occurrence count is part of the fingerprint). A row is also
   a duplicate of one from a *different kind* of file in the same account with the same
-  date and amount (each matched once): a bank's CSV and Quicken file word things differently.
+  amount, up to `ledger.OTHER_KIND_DAYS` days apart (each matched once, nearest first),
+  when at least one of the two falls within the other's file dates: the rows at the edges
+  of two downloads (one ending Oct 15, the next starting Oct 16, or overlapping by a day)
+  are two transactions (issue #124). A bank's CSV and Quicken file word and date things
+  differently.
 - **Never change what `payees.describe()` returns for text it already handles**: a
   changed key splits a payee in two. Add other banks' wording after Tangerine's rules,
   and check it on a copy of real data (every existing transaction must describe the same).
@@ -143,6 +148,15 @@ All in `Application Files/`:
   its OFX/QFX files (chequing too): ACCTTYPE isn't trusted for Tangerine.
 - **A file's own balance (OFX LEDGERBAL) replaces any balance as old or older**: a
   balance typed in during the day misses what the bank adds later that day.
+- **A card file's signs are settled at import, when the account is known** (`importer._flip`,
+  `_positive_balance`, `balance_questions`). Charges negative and a balance above zero is a card in
+  your favour for most banks and what you owe for some. With a balance in the account, the sign that
+  agrees with the app's own balance for that date (this file's rows counted) wins; neither agreeing is
+  a real difference, kept as the file wrote it. An account with no balance yet asks once ("Is $120.50
+  what you owe…", `needs: 'balance_sign'`; not during onboarding, where the balance is read as
+  written) and remembers the answer (`account_sources` keys `signs:<id>:…`). Whether a file writes
+  purchases as positive is decided once per account: by rows the account already holds, then the
+  earlier decision, then how the file looks.
 - **Learning only uses `status = 'done'` transactions** (plus Actual examples). Rows waiting
   in the inbox never teach the app anything, and count in no category: no tentative
   category, Spent/Usual/the budget only count `status = 'done'`
@@ -169,14 +183,17 @@ All in `Application Files/`:
   "Same Price, Different Currency" and "Fluctuates Every Time", their wording): `fixed` (exact price ±2¢;
   any other price from that payee is a question: "new price for X, a new subscription, or
   a one-off?", because Apple bills several things under one name), `currency` (billed in
-  US$: a wobble within 6% is the same price, not a change; set automatically from the
-  card's "Foreign Currency Spend" tag or repeated drift), and `varies` (a power bill: any
+  US$: a wobble within 6% of the old price is the same price, not a change; set automatically from the
+  card's "Foreign Currency Spend" tag or repeated drift of a few percent: prices you chose with "New price for…" never count), and `varies` (a power bill: any
   amount from that payee; the page shows the typical amount and range). Detection
   suggests `varies` for a once-a-month payee whose amount moved at least twice.
 - **Optional end date** on a subscription: a charge after it (or after it was marked
   cancelled) goes to the inbox with a "charged you again" warning, worked out each time:
   reactivating it or moving the end date clears it, and its waiting charges are re-checked.
-- A charge more than 3× the payee's biggest past charge always asks.
+- A charge more than 3× the payee's biggest past charge, and over $10.00 (`learn.UNUSUAL_FLOOR`: pocket change
+  from a $2 payee isn't a question), always asks: its own item, no guess (so not in Accept all), even for a
+  mixed payee or a "Fluctuates Every Time" bill (`learn.unusual`, checked first for a tracked charge in
+  `Inbox._settle`). Money in counts too.
 - **The updater is the only network access.** No HTTP server in the app (the dev preview
   is a separate script), no analytics, no CDNs or remote fonts. (Settings → Release notes
   opens GitHub in the browser; the app itself doesn't fetch it.) The CSP in `index.html`
@@ -248,7 +265,7 @@ with months it didn't exist).
 - After testing, quit test copies and delete their folders.
 - To try the interface on real data: copy the database with SQLite's backup API (read-only
   source) into `~/Library/Caches/I Need A Budget-preview/`, write a `settings.json` there
-  whose `downloads_dir` is an empty folder, run the `preview` launch entry, and delete the
+  whose `downloads_dir` is an empty folder (the preview sets `<data>/downloads` itself if there isn't one, and refuses `~/Downloads`), run the `preview` launch entry, and delete the
   folder afterwards. The preview loads `service.py` once: restart it after Python changes.
 
 ## Git
@@ -274,7 +291,9 @@ Don't undo these without asking:
   The answer is remembered by the file's account number. Its drop-down offers every
   open account, the file's sort first: what a file says it is can be wrong (Tangerine's
   card QFX once read as chequing and the card wasn't offered). During onboarding every
-  account is simply created.
+  account is simply created. A card file whose balance is above zero but whose sign the
+  app can't read also asks "What I owe / In my favour" in this same pop-up, so declining
+  leaves no account behind (issue #126).
 - **Any bank, not just Tangerine.** Quicken/Money/QuickBooks files are suggested
   wherever the app explains downloads (they need no setup and carry the balance). Other
   CSVs are **set up once** in a pop-up (columns, date order, money out sign, account);

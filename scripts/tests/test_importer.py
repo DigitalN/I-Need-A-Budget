@@ -1,6 +1,9 @@
 """Reading Tangerine exports and importing them without duplicates."""
 
+import csvlayout
 import importer
+import pytest
+from util import to_cents
 from helpers import CARD_FILE, bank_csv, call, card_csv, card_number, categories, txns, write
 
 
@@ -138,6 +141,50 @@ def ofx_file(org, rows, acct="SAVINGS", acct_id="000123456789", card=False, bank
     return (f"OFXHEADER:100\nDATA:OFXSGML\nVERSION:102\n\n<OFX>{fi}<BANKMSGSRSV1><STMTTRNRS><STMTRS><CURDEF>CAD\n"
             f"{acct_block}\n<BANKTRANLIST>\n{txns_}</BANKTRANLIST><LEDGERBAL><BALAMT>{balance}<DTASOF>20260930"
             f"</LEDGERBAL></STMTRS></STMTTRNRS></BANKMSGSRSV1></OFX>\n")
+
+
+def ofx_with_balance(rows, balance, as_of, acct_id="000111222333", org="SAMPLE CU"):
+    """A made-up OFX download whose amounts are written as given. rows: (YYYYMMDD, amount, name, fitid)"""
+    trn = "".join(f"<STMTTRN><TRNTYPE>OTHER<DTPOSTED>{d}<TRNAMT>{a}<FITID>{f}<NAME>{n}</STMTTRN>\n" for d, a, n, f in rows)
+    return ("OFXHEADER:100\nDATA:OFXSGML\nVERSION:102\n\n<OFX><SIGNONMSGSRSV1><SONRS><FI><ORG>" + org +
+            "<FID>00000</FI></SONRS></SIGNONMSGSRSV1><BANKMSGSRSV1><STMTTRNRS><STMTRS><CURDEF>CAD\n"
+            f"<BANKACCTFROM><BANKID>0000<ACCTID>{acct_id}<ACCTTYPE>CHECKING</BANKACCTFROM>\n<BANKTRANLIST>\n{trn}"
+            f"</BANKTRANLIST><LEDGERBAL><BALAMT>{balance}<DTASOF>{as_of}</LEDGERBAL></STMTRS></STMTTRNRS></BANKMSGSRSV1></OFX>\n")
+
+
+def test_a_decimal_comma_is_a_decimal():
+    """Issue #48: a French-language download writes -12,34 for -$12.34."""
+    assert to_cents("-12,34") == -1234
+    assert to_cents("1234,56") == 123456
+    assert to_cents("0,5") == 50 and to_cents("(12,34)") == -1234 and to_cents("+12,34") == 1234
+    assert to_cents("1,234.56") == 123456 and to_cents("1,234") == 123400 and to_cents("1,234,567.89") == 123456789
+    assert to_cents("1.234,56") == 123456 and to_cents("1 234,56") == 123456 and to_cents("-1\u202f234,56") == -123456
+    assert to_cents("$12") == 1200 and to_cents("−1,259.99") == -125999 and to_cents("-10.4900") == -1049
+    for ambiguous in ("1,23,4", "12,3456", "1.234,567", "1,234,56", "1.2.3", "1,,5", ","):
+        with pytest.raises(ValueError, match="Not an amount"):
+            to_cents(ambiguous)
+
+
+def test_a_comma_decimal_ofx_imports_the_right_amounts(app):
+    f = write(app.test_downloads, "releve.ofx", ofx_with_balance(
+        [("20261003", "-12,34", "SAMPLE EPICERIE", "D1")], "1234,56", "20261005"))
+    call(app, "import_files", [str(f)])
+    assert [t["amount"] for t in call(app, "transactions", {})["items"]] == [-1234]
+    assert call(app, "accounts")[0]["balance"] == 123456
+
+
+def test_a_comma_decimal_csv_imports_the_right_amounts(app):
+    """Tangerine-shaped file whose amounts use a decimal comma, and a set-up CSV with a
+    semicolon delimiter and amounts like 1.234,56."""
+    f = write(app.test_downloads, "Chequing.CSV", 'Date,Transaction,Name,Memo,Amount\n'
+                                                  '10/03/2026,OTHER,SAMPLE EPICERIE,SAMPLE EPICERIE,"-12,34"\n')
+    assert [r.amount for r in importer.parse(f).rows] == [-1234]
+    text = ("Date;Description;Debit;Credit\n2026-10-01;SAMPLE EPICERIE;12,34;\n2026-10-02;SAMPLE PAIE;;1.234,56\n"
+            "2026-10-03;SAMPLE CAFE;4,50;\n")
+    sniffed = csvlayout.sniff(text)
+    assert sniffed is not None
+    assert csvlayout.read(text, sniffed["guess"]) == [
+        ("2026-10-01", -1234, "SAMPLE EPICERIE"), ("2026-10-02", 123456, "SAMPLE PAIE"), ("2026-10-03", -450, "SAMPLE CAFE")]
 
 
 CHEQUING_ROWS = [
@@ -360,7 +407,8 @@ def test_a_new_account_from_downloads_waits_for_its_name(app):
     app.db.set_meta("onboarded", "1")
     # No card yet, so a card's file has nothing it could be: no question.
     card = write(app.test_downloads, "Card.QFX", ofx_file(
-        "Sample Credit Union", [("20260911", "-8.00", "SAMPLE DINER", "", "C1")], card=True, acct_id="0009876"))
+        "Sample Credit Union", [("20260911", "-8.00", "SAMPLE DINER", "", "C1")], card=True, acct_id="0009876",
+        balance="-8.00"))  # owing: a positive balance on a card would ask which sign it is (issue #119)
     [result] = call(app, "import_files", [str(card)])["results"]
     assert (result["account_name"], result["new_account"]) == ("Sample Credit Union card", True)
 

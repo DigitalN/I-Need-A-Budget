@@ -10,18 +10,21 @@ page shows its message.
 """
 
 import logging
+import math
 import os
 import re
 import shutil
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 import banks
 import csvlayout
+import figures
 import importer
 import ledger
 import subscriptions
 import transfers
+from errors import UserError
 from figures import Figures
 from inbox import Inbox
 from payees import TRANSFER_OR_BANK_ENTRY_HINTS
@@ -38,10 +41,6 @@ def exposed(fn):
     return fn
 
 
-class UserError(Exception):
-    """Something the person can fix; the message is shown on the page."""
-
-
 # What a group made by hand starts with, to rename (numbered if it's taken).
 NEW_CATEGORY_NAME = "New Spending Category"
 
@@ -50,6 +49,60 @@ STARTER_CATEGORIES = [
     ("Everyday", ["Groceries", "Eating Out", "Transportation", "Household", "Fun Money"]),
     ("Saving", ["Emergency Fund"]),
 ]
+
+
+def _balance_sign(kind, cents, in_favour=False):
+    """A balance as the app keeps it. For a card or line of credit the amount typed is what you
+    owe (kept negative), or what you're owed with `in_favour` (an overpaid card, kept positive)."""
+    if not ledger.is_debt(kind):
+        return cents
+    return abs(cents) if in_favour else -abs(cents)
+
+
+MAX_CENTS = 100_000_000_000  # $1,000,000,000.00: the page refuses more too (parseMoney)
+
+
+def _amount(value, what="amount"):
+    """An amount of money as whole cents, or a UserError: not a number, or beyond what the app holds."""
+    try:
+        if isinstance(value, bool) or (isinstance(value, float) and not math.isfinite(value)):
+            raise ValueError
+        cents = int(float(value.strip())) if isinstance(value, str) else int(value)
+    except (TypeError, ValueError, OverflowError):
+        raise UserError(f"That isn't an {what}.") from None
+    if abs(cents) > MAX_CENTS:
+        raise UserError("That's more than the app can hold: $1,000,000,000.00 is the most.")
+    return cents
+
+
+def _rate(value):
+    """An interest rate in percent, or a UserError."""
+    try:
+        if isinstance(value, bool):
+            raise ValueError
+        rate = float(value.strip() if isinstance(value, str) else value)
+    except (TypeError, ValueError, OverflowError):
+        raise UserError("That isn't a rate.") from None
+    if not math.isfinite(rate) or not 0 <= rate <= 100:
+        raise UserError("That isn't a rate: type it like 20.99.")
+    return rate
+
+
+def _month(value):
+    """A month from the page ('2026-10'), or a UserError: 01 to 12, not whatever text arrives."""
+    if not (isinstance(value, str) and re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", value)):
+        raise UserError("That isn't a month: pick one from the list.")
+    return value
+
+
+def _date(value):
+    """A date from the page ('2026-10-05'), or a UserError."""
+    try:
+        if not (isinstance(value, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", value)):
+            raise ValueError
+        return date.fromisoformat(value).isoformat()
+    except ValueError:
+        raise UserError("That isn't a date: use year-month-day, like 2026-10-05.") from None
 
 
 def _rows(cursor):
@@ -77,9 +130,9 @@ class BudgetService:
             else:
                 result = fn(self, *(args or []))
             return {"ok": True, "result": result}
-        except (UserError, importer.ImportError_, ValueError) as e:  # LayoutError is a ValueError
+        except (UserError, importer.ImportError_, csvlayout.LayoutError) as e:  # messages for the person
             return {"ok": False, "error": str(e)}
-        except Exception as e:
+        except Exception as e:  # anything else is a bug: logged, and no raw Python on the page
             log.exception("%s failed", name)
             return {"ok": False, "error": f"Something went wrong ({type(e).__name__}). Details are in the log."}
 
@@ -151,6 +204,9 @@ class BudgetService:
             needs, parsed = "layout", None
         except (importer.ImportError_, OSError) as e:
             return {**item, "format": None, "error": str(e)}
+        except Exception as e:  # one odd file must not stop the others being listed
+            log.warning("Couldn't read %s: %s", path.name, e, exc_info=True)
+            return {**item, "format": None, "error": "Couldn't read this file. Details are in the log."}
         if needs:
             return {**item, "format": "csv", "needs_setup": needs, **self._csv_summary(path)}
         item.update(format=parsed.format)
@@ -176,11 +232,14 @@ class BudgetService:
     def _needs(self, c, path, parsed):
         """What a parsed file needs before it can be imported: 'account' for a set-up CSV
         whose account the app doesn't know yet, 'new_account' for any other bank file with
-        an account the app should ask about (see _accounts_to_ask), else None."""
+        an account the app should ask about (see _accounts_to_ask), 'balance_sign' for one with
+        a card balance whose sign it should ask about (see _balance_questions), else None."""
         if parsed.format == "actual":
             return None
         if parsed.format != "csv":
-            return "new_account" if self._accounts_to_ask(c, parsed) else None
+            if self._accounts_to_ask(c, parsed):
+                return "new_account"
+            return "balance_sign" if self._balance_questions(c, parsed) else None
         part = parsed.parts[0]
         found = importer.find_account(c, part.account, part.rows, importer.fingerprints(part.rows))
         return None if found else "account"
@@ -200,6 +259,14 @@ class BudgetService:
             if not importer.find_account(c, part.account, part.rows, importer.fingerprints(part.rows)):
                 out.append(i)
         return out
+
+    def _balance_questions(self, c, parsed, chosen=None, answered=()):
+        """The card balances in a bank file the app can't read the sign of (importer.balance_questions),
+        except the parts in `answered`. Not while setting up the budget: a balance there is only the
+        starting point, read as the file writes it."""
+        if self.db.get_meta("onboarded") != "1":
+            return []
+        return [q for q in importer.balance_questions(c, parsed, chosen) if q["index"] not in answered]
 
     def _csv_summary(self, path):
         sniffed = csvlayout.sniff(importer.read_text(path))
@@ -240,9 +307,11 @@ class BudgetService:
         moved into the app's Imported Files folder afterwards."""
         return self._import_files(paths, archive)
 
-    def _import_files(self, paths, archive=True, chosen=None):
-        """`chosen`: {path: {part index: account id}} for accounts the person picked."""
+    def _import_files(self, paths, archive=True, chosen=None, answers=None):
+        """`chosen`: {path: {part index: account id}} for accounts the person picked. `answers`:
+        {path: {part index: 'owed' or 'favour'}} for card balances they said the sign of."""
         chosen = {str(Path(k)): v for k, v in (chosen or {}).items()}
+        answers = {str(Path(k)): v for k, v in (answers or {}).items()}
         downloads = self.settings.downloads_dir().resolve()
         results, learnt, errors, needs_setup = [], None, [], []
         parsed_files = []
@@ -255,13 +324,16 @@ class BudgetService:
                 needs_setup.append({"path": str(path), "filename": path.name, "needs": e.what})
             except (importer.ImportError_, OSError) as e:
                 errors.append({"filename": path.name, "error": str(e)})
+            except Exception as e:  # one odd file must not stop the others
+                log.warning("Couldn't read %s: %s", path.name, e, exc_info=True)
+                errors.append({"filename": path.name, "error": "Couldn't read this file. Details are in the log."})
         # Learn from Actual first, then bank files oldest first, so refunds and transfers
         # find what they belong to.
         parsed_files.sort(key=lambda pf: (pf[1].format != "actual", pf[1].first_date or ""))
         for path, parsed in parsed_files:
             in_downloads = path.resolve().parent == downloads
             if parsed.format == "actual":
-                with self.db.write() as c:
+                with self.db.write("Learn from Actual") as c:  # one undo step: its examples and categories go with it
                     outcome = importer.learn_from_actual(c, parsed)
                 learnt = {"filename": path.name, **outcome}
                 continue
@@ -271,8 +343,12 @@ class BudgetService:
                     if self._accounts_to_ask(c, parsed, accounts):
                         needs_setup.append({"path": str(path), "filename": path.name, "needs": "new_account"})
                         continue
+            with self.db.read() as c:
+                if self._balance_questions(c, parsed, accounts, answers.get(str(path), {})):
+                    needs_setup.append({"path": str(path), "filename": path.name, "needs": "balance_sign"})
+                    continue
             try:
-                file_results = self._import_one(path, parsed, archive and in_downloads, accounts)
+                file_results = self._import_one(path, parsed, archive and in_downloads, accounts, answers.get(str(path)))
             except importer.NeedsSetup as e:
                 needs_setup.append({"path": str(path), "filename": path.name, "needs": e.what})
                 continue
@@ -281,10 +357,10 @@ class BudgetService:
         return {"results": results, "learnt": learnt, "errors": errors, "needs_setup": needs_setup,
                 "rechecked": rechecked, "counts": self.counts()}
 
-    def _import_one(self, path, parsed, archive, accounts=None):
+    def _import_one(self, path, parsed, archive, accounts=None, answers=None):
         sha = importer.sha256_of(path)
         with self.db.write() as c:
-            file_results = importer.import_parsed(c, parsed, path.name, sha, accounts=accounts)
+            file_results = importer.import_parsed(c, parsed, path.name, sha, accounts=accounts, answers=answers)
             inbox = self._inbox(c)
             for result in file_results:
                 arrived = inbox.arrive(result.new_ids)
@@ -331,6 +407,9 @@ class BudgetService:
             try:
                 fmt = importer.detect(importer.read_text(path))
             except (importer.ImportError_, OSError):
+                continue
+            except Exception as e:  # logged by name (once per version of the file); the others still import
+                log.warning("Couldn't look at %s in Downloads: %s", path.name, e, exc_info=True)
                 continue
             if fmt in importer.BANK_FORMATS:
                 ready.append(str(path))
@@ -387,8 +466,13 @@ class BudgetService:
             with self.db.read() as c:
                 return self._needs(c, path, importer.parse(path, c))
         except importer.NeedsSetup as e:
+            if e.what == "layout" and "fit" in str(e):
+                log.info("%s no longer fits its saved layout: %s", path.name, e)
             return e.what
         except (importer.ImportError_, OSError, ValueError):
+            return None
+        except Exception as e:  # one odd file must not hide the others from the Inbox
+            log.warning("Couldn't look at %s in Downloads: %s", path.name, e, exc_info=True)
             return None
 
     def _forget_file_status(self):
@@ -409,17 +493,25 @@ class BudgetService:
             if parsed.format in ("actual", "csv"):
                 raise UserError("That isn't a file the app asks this about.")
             accounts = [a for a in self._accounts(c) if not a["closed"]]
+            asks_for_new = {q["index"] for q in importer.balance_questions(c, parsed)}
             parts = []
             for i, part in enumerate(parsed.parts):
                 hint = part.account
                 found = importer.find_account(c, hint, part.rows, importer.fingerprints(part.rows))
+                # A card balance above zero whose sign isn't known (issue #126): asked in the same pop-up
+                # as the account, for a new account and for the accounts that have no balance yet, so
+                # declining leaves nothing behind. `balance` is the file's amount.
+                balance = part.balance[1] if part.card_file and part.balance and part.balance[1] > 0 else None
                 parts.append({
                     "index": i, "account_id": found, "name": importer.suggested_name(c, hint), "kind": hint.kind,
                     "kind_label": ledger.KIND_LABELS.get(hint.kind, hint.kind), "bank": hint.bank,
                     "last4": hint.last4, "rows": len(part.rows), "first_date": part.first_date,
-                    "last_date": part.last_date,
-                    "choices": [{"id": a["id"], "name": a["name"]} for a in sorted(
-                        accounts, key=lambda a: a["is_debt"] != ledger.is_debt(hint.kind))],
+                    "last_date": part.last_date, "balance": balance,
+                    "asks_for_new": found is None and i in asks_for_new,
+                    "choices": [{"id": a["id"], "name": a["name"],
+                                 "asks": balance is not None and a["is_debt"] and any(
+                                     q["index"] == i for q in importer.balance_questions(c, parsed, {i: a["id"]}))}
+                                for a in sorted(accounts, key=lambda a: a["is_debt"] != ledger.is_debt(hint.kind))],
                 })
         return {"path": str(path), "filename": path.name, "parts": parts}
 
@@ -427,8 +519,28 @@ class BudgetService:
     def set_file_accounts(self, path, choices):
         """Which account each new account in a bank file is, then imports it. `choices`:
         [{'index', 'account_id'}] for one you have (it remembers the file's account number,
-        so the next file goes there on its own) or [{'index', 'name'}] for a new account."""
+        so the next file goes there on its own) or [{'index', 'name'}] for a new account. A card
+        balance whose sign the app can't read comes with its choice, 'balance': 'owed' or 'favour'
+        (file_accounts says which): none is created until that is answered."""
         path = Path(path)
+        picked, answers, asked = {}, {}, set()
+        with self.db.read() as c:
+            parsed = importer.parse(path, c)
+            for choice in choices or []:
+                i = int(choice["index"])
+                if not 0 <= i < len(parsed.parts):
+                    continue
+                asked.add(i)
+                if choice.get("account_id"):
+                    picked[i] = int(choice["account_id"])
+                if choice.get("balance") in ("owed", "favour"):
+                    answers[i] = choice["balance"]
+            # Before anything is made: a question still open for what was chosen (a new account's
+            # balance, or a card's that has none yet) is asked here, never after the account exists.
+            unanswered = [q for q in self._balance_questions(c, parsed, picked, answers) if q["index"] in asked]
+            if unanswered:
+                q = unanswered[0]
+                raise UserError(f"Is ${q['amount'] / 100:,.2f} what you owe on {q['name']}, or in your favour?")
         picked = {}
         with self.db.write() as c:
             parsed = importer.parse(path, c)
@@ -449,7 +561,31 @@ class BudgetService:
                     picked[i] = importer.create_account_for(c, hint, name)
         self._forget_file_status()
         downloads = self.settings.downloads_dir().resolve()
-        return self._import_files([str(path)], archive=path.resolve().parent == downloads, chosen={str(path): picked})
+        return self._import_files([str(path)], archive=path.resolve().parent == downloads, chosen={str(path): picked},
+                                  answers={str(path): answers})
+
+    @exposed
+    def file_balance_question(self, path):
+        """For the "is that what you owe?" pop-up: each card balance in a bank file whose sign the
+        app can't read. [] once an earlier answer or balance has settled it."""
+        path = Path(path)
+        with self.db.read() as c:
+            questions = self._balance_questions(c, importer.parse(path, c))
+        return {"path": str(path), "filename": path.name, "questions": questions}
+
+    @exposed
+    def answer_balance(self, path, answer):
+        """Whether a card balance in a bank file is what you owe ('owed') or in your favour
+        ('favour'), then imports it. The account remembers the answer."""
+        if answer not in ("owed", "favour"):
+            raise UserError("Pick one: what you owe, or in your favour.")
+        path = Path(path)
+        with self.db.read() as c:
+            questions = self._balance_questions(c, importer.parse(path, c))
+        self._forget_file_status()
+        downloads = self.settings.downloads_dir().resolve()
+        return self._import_files([str(path)], archive=path.resolve().parent == downloads,
+                                  answers={str(path): {q["index"]: answer for q in questions}})
 
     @exposed
     def csv_setup(self, path):
@@ -461,15 +597,24 @@ class BudgetService:
             raise UserError("This doesn't look like a bank file: no column of dates and amounts.")
         with self.db.read() as c:
             saved = importer.saved_layout(c, sniffed)
+            if saved:
+                try:
+                    csvlayout.read(importer.read_text(path), csvlayout.clean_layout(saved, sniffed["width"]))
+                except ValueError:  # the bank changed its file: show the columns again
+                    saved = None
             suggested_account = None
             if saved:
-                key = importer.csv_account_key(saved["id"], path.name)
-                suggested_account = ledger.account_by_key(c, [key])
+                try:  # not the account the name points to when the file doesn't look like it
+                    part = importer.parse(path, c).parts[0]
+                    suggested_account = importer.find_account(c, part.account, part.rows, importer.fingerprints(part.rows))
+                except importer.ImportError_:
+                    pass
         width = sniffed["width"]
         header = sniffed["header"] or [f"Column {i + 1}" for i in range(width)]
         layout = {k: v for k, v in (saved or sniffed["guess"]).items() if k != "id"}
         return {"path": str(path), "filename": path.name, "header": header, "has_header": bool(sniffed["header"]),
                 "sample": sniffed["rows"][:6], "rows": len(sniffed["rows"]), "layout": layout,
+                "mostly_positive": sniffed["mostly_positive"],
                 "saved": saved is not None, "account_id": suggested_account,
                 "suggested_name": importer.base_name(path.name)}
 
@@ -507,8 +652,7 @@ class BudgetService:
                 if account.get("kind") not in ledger.ACCOUNT_KINDS:
                     raise UserError("Pick the type of account.")
                 account_id = ledger.create_account(c, name, account["kind"], bank=bank)
-            c.execute("INSERT INTO account_sources (key, account_id) VALUES (?, ?) ON CONFLICT(key) DO UPDATE "
-                      "SET account_id = excluded.account_id", (importer.csv_account_key(layout_id, path.name), account_id))
+            importer.remember_csv_account(c, layout_id, path.name, account_id)
         self._forget_file_status()
         downloads = self.settings.downloads_dir().resolve()
         return self.import_files([str(path)], archive=path.resolve().parent == downloads)
@@ -538,9 +682,26 @@ class BudgetService:
             ids = {r["id"] for r in rows}
             others = [r["transfer_id"] for r in rows if r["transfer_id"] and r["transfer_id"] not in ids]
             c.execute("DELETE FROM transactions WHERE import_id = ?", (import_id,))
+            imp = c.execute("SELECT * FROM imports WHERE id = ?", (import_id,)).fetchone()
+            if imp is not None and imp["anchor_after_date"] is not None:
+                self._take_back_balance(c, imp)
             c.execute("DELETE FROM imports WHERE id = ?", (import_id,))
             self._inbox(c).ask_again(others, "Its other half was removed with its import")
         return {"removed": len(ids), "counts": self.counts()}
+
+    def _take_back_balance(self, c, imp):
+        """The balance a removed import set goes, and the one it replaced comes back, if it's
+        still the account's: one a later file or you set since is left alone (and a later
+        import that replaced this one's balance now remembers what this one had before)."""
+        before = (imp["anchor_before_date"], imp["anchor_before_balance"])
+        after = (imp["anchor_after_date"], imp["anchor_after_balance"])
+        current = c.execute("SELECT anchor_date, anchor_balance FROM accounts WHERE id = ?",
+                            (imp["account_id"],)).fetchone()
+        if current is not None and (current["anchor_date"], current["anchor_balance"]) == after:
+            c.execute("UPDATE accounts SET anchor_date = ?, anchor_balance = ? WHERE id = ?", (*before, imp["account_id"]))
+        c.execute("UPDATE imports SET anchor_before_date = ?, anchor_before_balance = ? WHERE account_id = ? AND id != ? "
+                  "AND anchor_after_date IS NOT NULL AND anchor_before_date IS ? AND anchor_before_balance IS ?",
+                  (*before, imp["account_id"], imp["id"], *after))
 
     # ── onboarding ──
 
@@ -571,7 +732,7 @@ class BudgetService:
 
     @exposed
     def finish_onboarding(self, start_month):
-        self.set_budget_start(start_month)
+        self._set_budget_start(start_month)
         with self.db.write() as c:
             ledger.income_category(c)
             # Files already in Downloads count as looked at; only new downloads auto-import.
@@ -586,9 +747,15 @@ class BudgetService:
 
     @exposed
     def set_budget_start(self, month):
-        if not (isinstance(month, str) and len(month) == 7):
-            raise UserError("Pick a month to start the budget in.")
-        self.db.set_meta("budget_start", month)
+        """Moves the budget's start (the Budget page's "Start the budget in…"): one undo step.
+        Onboarding's own start (finish_onboarding) isn't a step of its own."""
+        return self._set_budget_start(month, "Change budget start")
+
+    def _set_budget_start(self, month, label=None):
+        month = _month(month)
+        with self.db.write(label) as c:
+            c.execute("INSERT INTO meta (key, value) VALUES ('budget_start', ?) "
+                      "ON CONFLICT(key) DO UPDATE SET value = excluded.value", (month,))
         return month
 
     # ── categories ──
@@ -763,7 +930,7 @@ class BudgetService:
 
     @exposed
     def set_monthly_budget(self, category_id, cents):
-        value = None if cents in (None, "") else int(cents)
+        value = None if cents in (None, "") else _amount(cents)
         if value is not None and value < 0:
             raise UserError("A budgeted amount can't be negative.")
         with self.db.write("Change budgeted amount") as c:
@@ -780,6 +947,7 @@ class BudgetService:
 
     @exposed
     def month(self, month=None):
+        month = _month(month) if month is not None else month
         month = month or self.current_month()
         current = self.current_month()
         with self.db.read() as c:
@@ -818,13 +986,16 @@ class BudgetService:
 
     @exposed
     def set_assigned(self, month, category_id, cents):
+        month = _month(month)
+        cents = _amount(cents)
         with self.db.write("Assign money") as c:
             self._set_assigned(c, month, category_id, cents)
         return self.month(month)
 
     @exposed
     def move_money(self, month, from_id, to_id, cents):
-        cents = int(cents)
+        month = _month(month)
+        cents = _amount(cents)
         if cents <= 0:
             raise UserError("Enter an amount to move.")
         with self.db.write("Move money") as c:
@@ -836,6 +1007,7 @@ class BudgetService:
 
     @exposed
     def assign_plan(self, month, amount=None):
+        month = _month(month)
         """How to share out money (a paycheque, or everything ready to assign): see
         Figures.assign_plan."""
         with self.db.read() as c:
@@ -851,7 +1023,14 @@ class BudgetService:
         return plan
 
     @exposed
+    def assign_left(self, month, amount, allocations):
+        """Assign money…'s "Left over" as you type: see Figures.assign_left."""
+        with self.db.read() as c:
+            return {"left_over": self._figures(c).assign_left(month, _amount(amount), allocations or [])}
+
+    @exposed
     def apply_plan(self, month, allocations):
+        month = _month(month)
         with self.db.write("Assign paycheque") as c:
             for a in allocations:
                 cents = int(a["amount"])
@@ -862,6 +1041,7 @@ class BudgetService:
 
     @exposed
     def catch_up(self, month):
+        month = _month(month)
         """Assigns exactly what was spent, so no category ends the month overspent. For
         catching up on months gone by."""
         with self.db.write("Catch up month") as c:
@@ -887,6 +1067,7 @@ class BudgetService:
 
     @exposed
     def category_detail(self, category_id, month=None):
+        month = _month(month) if month is not None else month
         month = month or self.current_month()
         with self.db.read() as c:
             cat = c.execute("SELECT * FROM categories WHERE id = ?", (category_id,)).fetchone()
@@ -902,6 +1083,7 @@ class BudgetService:
 
     @exposed
     def spent_detail(self, month, category_id=None, group_id=None):
+        month = _month(month)
         """What makes up a category's (or a group's) Spent on the Budget page in a month:
         every transaction and split line, adding up to that figure."""
         with self.db.read() as c:
@@ -1003,7 +1185,8 @@ class BudgetService:
             "cash": now["cash"], "owed": now["owed"], "has_debt": now["has_debt"],
             "missing_balances": missing, "net_worth": worth,
             "spending": {"range": months, "usual_months": f.usual_months, "income": spending["income"],
-                         "total": spending["total"], "groups": groups,
+                         "total": spending["total"], "difference": spending["difference"],
+                         "above_usual": spending["above_usual"], "groups": groups,
                          "income_group": next((g["id"] for g in tree if g["role"] == "income"), None),
                          "months": [{"month": m, "so_far": m == current, "complete": m >= coverage} for m in cols]},
         }
@@ -1017,15 +1200,15 @@ class BudgetService:
         imports, and the notices above them."""
         with self.db.read() as c:
             view = self._inbox(c).view()
-            rows = {t["id"]: t for t in self._transactions(c, {"status": "review"}, limit=1000)}
+            rows = {t["id"]: t for t in self._transactions(c, {"status": "review"}, limit=-1)}  # all of them
             items = [{**rows[item["id"]], **item} for item in view["items"] if item["id"] in rows]
             categorized = self._transactions(c, {"ids": view["categorized"]}, limit=300) if view["categorized"] else []
             alerts = [{"type": "duplicate", **d} for d in ledger.duplicate_accounts(c)]
             copies = {a["account_id"] for a in alerts}
-            for a in c.execute("SELECT id, name FROM accounts WHERE anchor_date IS NULL AND closed = 0"):
+            for a in c.execute("SELECT id, name, kind FROM accounts WHERE anchor_date IS NULL AND closed = 0"):
                 if a["id"] in copies:
                     continue  # merge it rather than give it a balance
-                alerts.append({"type": "balance", "account_id": a["id"],
+                alerts.append({"type": "balance", "account_id": a["id"], "is_debt": ledger.is_debt(a["kind"]),
                                "text": f"What's the balance of {a['name']}? The app needs it once to show balances."})
         return {"items": items, "categorized": categorized, "alerts": alerts, "files": self.pending_files(),
                 "counts": self.counts()}
@@ -1039,7 +1222,8 @@ class BudgetService:
         label = "Categorize transaction" if len(txn_ids) == 1 else f"Categorize {len(txn_ids)} transactions"
         with self.db.write(label) as c:
             out = self._inbox(c).categorize(txn_ids, category_id, recheck_payee)
-        return {**self.counts(), "also_categorized": out.also, "question": out.question}
+            total = figures.transactions_total(c, txn_ids)
+        return {**self.counts(), "also_categorized": out.also, "question": out.question, "total": total}
 
     @exposed
     def accept_all(self, txn_ids):
@@ -1072,7 +1256,9 @@ class BudgetService:
             if txn is None or txn["amount"] >= 0 or txn["payee_id"] is None:
                 raise UserError("Only a charge can start a subscription.")
             category_id = int(category_id) if category_id else txn["category_id"]
-            price = abs(int(amount)) if amount else -txn["amount"]
+            if category_id:
+                ledger.check_category(c, category_id)
+            price = abs(_amount(amount, "price")) if amount else -txn["amount"]
             sub_id = subscriptions.create(c, txn["payee_id"], name, price, cadence, kind, category_id, pricing,
                                           _end_date(ends_on))
             if note:
@@ -1107,7 +1293,16 @@ class BudgetService:
 
     # ── transactions ──
 
-    def _transactions(self, c, filters, limit=500, order="t.date DESC, t.id DESC"):
+    # The Transactions page's rows: one FROM for the list and for its total (figures.rows_total).
+    _ROWS_FROM = """FROM transactions t
+              LEFT JOIN payees p ON p.id = t.payee_id
+              JOIN accounts a ON a.id = t.account_id
+              LEFT JOIN categories cat ON cat.id = t.category_id
+              LEFT JOIN accounts ta ON ta.id = t.transfer_account_id
+              LEFT JOIN subscriptions sub ON sub.id = t.subscription_id AND sub.status != 'ignored'"""
+
+    def _transaction_filter(self, filters):
+        """(the FROM and WHERE, their parameters) for a Transactions-page filter."""
         where, params = ["1 = 1"], []
         f = filters or {}
         if f.get("account_id"):
@@ -1130,18 +1325,17 @@ class BudgetService:
             where.append("(p.name LIKE ? OR t.raw_name LIKE ? OR t.raw_memo LIKE ? OR t.note LIKE ? "
                          "OR sub.name LIKE ? OR printf('%.2f', abs(t.amount) / 100.0) LIKE ?)")
             params += [q, q, q, q, q, q]
+        return f"{self._ROWS_FROM} WHERE {' AND '.join(where)}", params
+
+    def _transactions(self, c, filters, limit=500, order="t.date DESC, t.id DESC"):
+        f = filters or {}
+        rows_sql, params = self._transaction_filter(f)
         rows = c.execute(
             f"""
             SELECT t.*, p.name AS payee_name, p.always_ask, a.name AS account_name,
                    a.kind AS account_kind, cat.name AS category_name, ta.name AS transfer_account_name,
                    sub.name AS subscription_name
-              FROM transactions t
-              LEFT JOIN payees p ON p.id = t.payee_id
-              JOIN accounts a ON a.id = t.account_id
-              LEFT JOIN categories cat ON cat.id = t.category_id
-              LEFT JOIN accounts ta ON ta.id = t.transfer_account_id
-              LEFT JOIN subscriptions sub ON sub.id = t.subscription_id AND sub.status != 'ignored'
-             WHERE {' AND '.join(where)}
+              {rows_sql}
              ORDER BY {order} LIMIT {int(limit)}
             """, params).fetchall()
         out = []
@@ -1159,14 +1353,22 @@ class BudgetService:
                     "SELECT s.id, s.category_id, s.amount, s.note, cat.name AS category_name FROM splits s "
                     "LEFT JOIN categories cat ON cat.id = s.category_id WHERE s.transaction_id = ? ORDER BY s.id",
                     (r["id"],)))
+                if f.get("category_id"):  # looking at one category: this split's line in it
+                    d["category_amount"] = figures.category_amount(d["splits"], f["category_id"])
             out.append(d)
         return out
 
     @exposed
     def transactions(self, filters=None):
+        """The newest `limit` (default 500) transactions a filter matches, how many it matches
+        in all (`count`) and what they add up to (`total`: all of them, and a split counts only
+        its line in the category being looked at; see figures.rows_total)."""
+        f = filters or {}
         with self.db.read() as c:
-            items = self._transactions(c, filters or {}, limit=(filters or {}).get("limit", 500))
-        return {"items": items, "total": sum(i["amount"] for i in items)}
+            items = self._transactions(c, f, limit=f.get("limit", 500))
+            rows_sql, params = self._transaction_filter(f)
+            count, total = figures.rows_total(c, rows_sql, params, f.get("category_id"))
+        return {"items": items, "total": total, "count": count}
 
     @exposed
     def rename_payee(self, payee_id, name):
@@ -1204,9 +1406,18 @@ class BudgetService:
                 c.execute("UPDATE transactions SET note = ? WHERE id = ?", (str(changes["note"] or ""), txn_id))
             if manual:
                 if changes.get("date"):
-                    c.execute("UPDATE transactions SET date = ? WHERE id = ?", (changes["date"], txn_id))
+                    c.execute("UPDATE transactions SET date = ? WHERE id = ?", (_date(changes["date"]), txn_id))
                 if changes.get("amount") is not None:
-                    c.execute("UPDATE transactions SET amount = ? WHERE id = ?", (int(changes["amount"]), txn_id))
+                    new_amount = _amount(changes["amount"])
+                    now = c.execute("SELECT amount, is_split, transfer_id FROM transactions WHERE id = ?",
+                                    (txn_id,)).fetchone()
+                    if new_amount != now["amount"]:
+                        # Its split lines and its other half would be left at the old amount.
+                        if now["is_split"]:
+                            raise UserError("Unsplit it first, then change the amount.")
+                        if now["transfer_id"]:
+                            raise UserError("This is a transfer: change it as Not a transfer first.")
+                    c.execute("UPDATE transactions SET amount = ? WHERE id = ?", (new_amount, txn_id))
             if "transfer_account_id" in changes:
                 if changes["transfer_account_id"]:
                     inbox.mark_transfer(txn_id, int(changes["transfer_account_id"]))
@@ -1229,9 +1440,12 @@ class BudgetService:
 
     @exposed
     def add_transaction(self, account_id, date, payee, amount, category_id=None, note=""):
+        """Adds a transaction by hand (Inbox.add_by_hand). Returns {'id', 'question'}: the
+        question is "What's this for?" when its category makes it look recurring."""
         if not date:
             raise UserError("Enter a date.")
-        amount = int(amount)
+        date = _date(date)
+        amount = _amount(amount)
         if amount == 0:
             raise UserError("Enter an amount.")
         with self.db.write("Add transaction") as c:
@@ -1240,13 +1454,9 @@ class BudgetService:
                 raise UserError("That account no longer exists.")
             if acct["closed"]:
                 raise UserError(f"{acct['name']} is closed.")
-            payee_id = ledger.get_or_create_payee(c, _clean_name(payee)) if payee else None
-            txn_id = c.execute(
-                "INSERT INTO transactions (account_id, date, amount, payee_id, category_id, status, reason, note, by_you) "
-                "VALUES (?, ?, ?, ?, ?, ?, 'Added by you', ?, 1)",
-                (int(account_id), date, amount, payee_id, category_id or None, "done" if category_id else "review",
-                 str(note or ""))).lastrowid
-        return txn_id
+            added = self._inbox(c).add_by_hand(int(account_id), date, _clean_name(payee) if payee else None, amount,
+                                               category_id or None, note)
+        return {"id": added.id, "question": added.question}
 
     @exposed
     def delete_transaction(self, txn_id):
@@ -1287,16 +1497,17 @@ class BudgetService:
         return used + [b for b in banks.SUGGESTED if b not in used]
 
     @exposed
-    def add_account(self, name, kind, balance=None, date=None, bank=None):
+    def add_account(self, name, kind, balance=None, date=None, bank=None, in_favour=False):
+        date = _date(date) if date else date
         name, bank = _name_with_bank(name, bank)
         with self.db.write(f"Add account {name}") as c:
             if c.execute("SELECT 1 FROM accounts WHERE name = ? COLLATE NOCASE", (name,)).fetchone():
                 raise UserError("There's already an account with that name.")
             account_id = ledger.create_account(c, name, kind, bank=bank)
             if balance not in (None, ""):
-                cents = int(balance)
+                cents = _amount(balance)
                 c.execute("UPDATE accounts SET anchor_date = ?, anchor_balance = ? WHERE id = ?",
-                          (date or self.today(), -abs(cents) if ledger.is_debt(kind) else cents, account_id))
+                          (date or self.today(), _balance_sign(kind, cents, in_favour), account_id))
         return account_id
 
     @exposed
@@ -1317,38 +1528,36 @@ class BudgetService:
                 c.execute("UPDATE accounts SET bank = ? WHERE id = ?", (_clean_bank(changes["bank"]), account_id))
             if "apr" in changes:
                 apr = changes["apr"]
-                c.execute("UPDATE accounts SET apr = ? WHERE id = ?", (None if apr in (None, "") else float(apr), account_id))
+                c.execute("UPDATE accounts SET apr = ? WHERE id = ?", (None if apr in (None, "") else _rate(apr), account_id))
             if "planned_payment" in changes:
                 p = changes["planned_payment"]
                 c.execute("UPDATE accounts SET planned_payment = ? WHERE id = ?",
-                          (None if p in (None, "") else int(p), account_id))
+                          (None if p in (None, "") else _amount(p), account_id))
             if "closed" in changes:
                 c.execute("UPDATE accounts SET closed = ? WHERE id = ?", (1 if changes["closed"] else 0, account_id))
         return True
 
     @exposed
-    def set_balance(self, account_id, cents, date=None):
+    def set_balance(self, account_id, cents, date=None, in_favour=False):
         """The balance the bank shows (for a card or line of credit: what you owe, as a
-        positive number). Every other balance is worked out from this one."""
+        positive number, or with `in_favour` what you're owed: an overpaid card). Every other
+        balance is worked out from this one."""
+        date = _date(date) if date else date
         with self.db.write("Set balance") as c:
             acct = c.execute("SELECT kind FROM accounts WHERE id = ?", (account_id,)).fetchone()
             if acct is None:
                 raise UserError("That account no longer exists.")
-            value = int(cents)
-            if ledger.is_debt(acct["kind"]):
-                value = -abs(value)
+            value = _balance_sign(acct["kind"], _amount(cents), in_favour)
             c.execute("UPDATE accounts SET anchor_date = ?, anchor_balance = ? WHERE id = ?",
                       (date or self.today(), value, account_id))
         return self.accounts()
 
     @exposed
-    def reconcile(self, account_id, cents):
+    def reconcile(self, account_id, cents, in_favour=False):
         """The bank shows a different balance: add an adjustment for the difference today."""
         with self.db.write("Balance adjustment") as c:
             acct = c.execute("SELECT kind FROM accounts WHERE id = ?", (account_id,)).fetchone()
-            target = int(cents)
-            if ledger.is_debt(acct["kind"]):
-                target = -abs(target)
+            target = _balance_sign(acct["kind"], _amount(cents), in_favour)
             ours = ledger.account_balance(c, account_id)
             if ours is None:
                 raise UserError("Set this account's balance first.")
@@ -1367,8 +1576,10 @@ class BudgetService:
         """`from_id` is the same account as `into_id`: see ledger.merge_accounts()."""
         with self.db.write("Merge accounts") as c:
             name = c.execute("SELECT name FROM accounts WHERE id = ?", (into_id,)).fetchone()
-            moved, dropped, unpaired = ledger.merge_accounts(c, int(from_id), int(into_id))
-            self._inbox(c).ask_again(unpaired, f"No longer a transfer: both halves are in {name['name'] if name else 'one account'}")
+            moved, dropped, unpaired, asked = ledger.merge_accounts(c, int(from_id), int(into_id))
+            inbox = self._inbox(c)
+            inbox.ask_again(unpaired, f"No longer a transfer: both halves are in {name['name'] if name else 'one account'}")
+            inbox.ask_again(asked, "Its other half is a duplicate of one you decided about")
         log.info("Merged account %s into %s: %d moved, %d duplicates dropped", from_id, into_id, moved, dropped)
         return {"into": name["name"] if name else "", "moved": moved, "dropped": dropped, "counts": self.counts()}
 
@@ -1420,12 +1631,14 @@ class BudgetService:
                          pricing="fixed", ends_on=None):
         """Tracks a subscription by hand: "Apple Music, $11.99 a month, from Apple"."""
         name = _clean_name(name)
-        amount = abs(int(amount))
+        amount = abs(_amount(amount, "price"))
         if not amount:
             raise UserError("Enter the price.")
         if cadence not in ("weekly", "monthly", "yearly") or kind not in ("subscription", "bill"):
             raise UserError("Pick how often it charges.")
         with self.db.write(f"Add subscription {name}") as c:
+            if category_id:
+                ledger.check_category(c, int(category_id))
             payee_id = payee if isinstance(payee, int) else ledger.get_or_create_payee(c, _clean_name(payee))
             sub_id = subscriptions.create(c, payee_id, name, amount, cadence, kind,
                                           int(category_id) if category_id else None, pricing, _end_date(ends_on))
@@ -1452,9 +1665,11 @@ class BudgetService:
                         continue
                     c.execute(f"UPDATE subscriptions SET {field} = ? WHERE id = ?", (value, sub_id))
             if changes.get("amount"):
-                c.execute("UPDATE subscriptions SET amount = ? WHERE id = ?", (abs(int(changes["amount"])), sub_id))
+                c.execute("UPDATE subscriptions SET amount = ? WHERE id = ?", (abs(_amount(changes["amount"], "price")), sub_id))
             if "category_id" in changes:
                 cid = int(changes["category_id"]) if changes["category_id"] else None
+                if cid:
+                    ledger.check_category(c, cid)
                 c.execute("UPDATE subscriptions SET category_id = ? WHERE id = ?", (cid, sub_id))
             if changes.get("pricing") in subscriptions.PRICINGS:
                 subscriptions.set_pricing(c, sub_id, changes["pricing"])

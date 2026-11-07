@@ -4,8 +4,10 @@
 <meta charset="utf-8">
 <!-- No network access of any kind: everything is inline and data comes from the
      pywebview bridge (window.pywebview.api), which is not an HTTP connection.
-     'unsafe-eval' is required because pywebview delivers API return values with
-     eval(); this page never evaluates strings itself. -->
+     'unsafe-eval' is there only because the app hands the page events with pywebview's
+     evaluate_js, which runs its script through eval(). This page never evaluates strings
+     itself, and text from files and banks goes in through esc(): with inline script and
+     eval both allowed, an unescaped file name would run. -->
 <meta http-equiv="Content-Security-Policy"
       content="default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval'; style-src 'unsafe-inline'; img-src data:; font-src 'none'; connect-src 'none'; media-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
@@ -431,13 +433,21 @@ const moneyPlain = c => c ? (c / 100).toLocaleString('en-CA', { minimumFractionD
 // For a box you type an amount into: nothing yet is an empty box (its placeholder shows
 // 0.00), so there's no 0.00 to type into the middle of.
 const moneyOrBlank = c => c ? moneyPlain(c) : '';
+// What a card or line of credit is worth, in words. `owing` is Python's figure: below zero is a card
+// in your favour (overpaid, or a refund bigger than what was owed), "$112.65 in your favour", never "owing −$112.65".
+const owingText = (owing, owed = m => `${m} owing`) => owing < 0 ? `${money(-owing)} in your favour` : owed(money(owing));
+const MAX_CENTS = 100000000000;  // $1,000,000,000.00: Python refuses more too (service._amount)
 // What's typed in an amount box, in cents: an amount, or a sum of them (120+35.50, 3*45,
 // 300/4, brackets too). Given `base`, what the box held before you typed (an Assigned or
 // Budgeted amount), one that starts with + − * or / works on that: +50 adds 50 to it.
 // Anywhere else a leading minus is a negative amount. null for an empty box, NaN for
-// anything that isn't an amount. No eval(): the page's CSP doesn't allow it anyway.
+// anything that isn't an amount. No eval(): a typed amount is never run as code.
 function parseMoney(text, base) {
-  let t = String(text ?? '').replace(/[$,\s]/g, '').replace(/−/g, '-').replace(/×/g, '*').replace(/÷/g, '/');
+  let t = String(text ?? '').replace(/[$\s]/g, '').replace(/−/g, '-').replace(/×/g, '*').replace(/÷/g, '/');
+  // A comma is a thousands separator (1,234.56) and nothing else: 12,34 isn't guessed at.
+  let badComma = false;
+  t = t.replace(/[\d,]+(?:\.\d*)?/g, n => n.includes(',') && !/^\d{1,3}(,\d{3})+(\.\d*)?$/.test(n) ? (badComma = true, n) : n.replace(/,/g, ''));
+  if (badComma || t.includes(',')) return NaN;
   if (t === '') return null;
   if (base !== undefined && /^[-+*/]/.test(t)) t = `(${(base || 0) / 100})${t}`;
   let i = 0;
@@ -463,17 +473,42 @@ function parseMoney(text, base) {
   const v = sum();
   if (i !== t.length || !Number.isFinite(v)) return NaN;
   const cents = Math.round(Number((Math.abs(v) * 100).toFixed(6)));  // 1.005 is 101¢, not 100
+  if (cents > MAX_CENTS) return NaN;  // beyond $1,000,000,000.00 isn't an amount the app can hold
   return v < 0 && cents ? -cents : cents;
 }
-// What an amount box holds, in cents. A box marked data-relative (Assigned, Budgeted,
-// Assign money…'s Assign column) works +50 out from the amount it had when you clicked
-// into it (data-base), or else the amount it was drawn with: a redraw puts back what you'd
-// typed into a new box.
-const amountIn = el => parseMoney(el.value, !el.matches('[data-relative]') ? undefined
-  : el.dataset.base !== undefined ? Number(el.dataset.base) : parseMoney(el.defaultValue) || 0);
-// Whether what's in a box is math (120+35.50, or +50 in a relative box) rather than an amount.
-const isMath = el => /[*/()×÷]|.[-+−]/.test(el.value.replace(/[$,\s]/g, ''))
-  || (el.matches('[data-relative]') && /^\s*[-+−*/×÷]/.test(el.value));
+// What an amount box holds, in cents. The text in a box is either what the page (or a
+// button) put there, or what you typed. A box marked data-relative (Assigned, Budgeted,
+// Assign money…'s Assign column) works typed math like +50 out from `before`: the amount it
+// held when you clicked into it (data-base), or else the amount it was drawn with. Text the
+// page put there is an amount, whatever its first character: a drawn -50.00 is -$50.00.
+const isRelative = el => el.matches('[data-relative]');
+const shownIn = el => el.dataset.shown ?? el.defaultValue;  // the text the page last put in
+const typedIn = el => el.value !== shownIn(el);
+// The page (not you) writes into a box: a button, or the amount your math came to.
+function putIn(el, text, cents) {
+  el.value = text;
+  el.dataset.shown = text;
+  el.dataset.base = cents || 0;
+}
+// Escape: back to what the page drew.
+function putBack(el) {
+  el.value = el.defaultValue;
+  delete el.dataset.shown;
+  delete el.dataset.base;
+}
+// Clicking into a box: what it holds now is what typed math works from.
+function noteBefore(el) {
+  if (isRelative(el) && !typedIn(el)) el.dataset.base = parseMoney(el.value) || 0;
+}
+function amountIn(el) {
+  const before = el.dataset.base !== undefined ? Number(el.dataset.base) : parseMoney(el.defaultValue) || 0;
+  return parseMoney(el.value, isRelative(el) && typedIn(el) ? before : undefined);
+}
+// Whether what's in a box is math (120+35.50, or +50 typed in a relative box) rather than an amount.
+function isMath(el) {
+  return /[*/()×÷]|.[-+−]/.test(el.value.replace(/[$,\s]/g, ''))
+    || (isRelative(el) && typedIn(el) && /^\s*[-+−*/×÷]/.test(el.value));
+}
 const monthLong = m => new Date(m + '-15T12:00').toLocaleDateString('en-CA', { month: 'long', year: 'numeric' });
 const monthShort = m => new Date(m + '-15T12:00').toLocaleDateString('en-CA', { month: 'short' });
 const monthOnly = m => new Date(m + '-15T12:00').toLocaleDateString('en-CA', { month: 'long' });
@@ -580,6 +615,10 @@ function dialog({ title, body, actions, wide = false, onOpen }) {
     };
     // True once the pop-up has closed with the action's value.
     const run = async a => {
+      if (a.primary) {  // an amount box holding something that isn't an amount: say so rather than drop it
+        const bad = $$(AMOUNT_BOXES, d).find(el => !el.disabled && !el.readOnly && Number.isNaN(amountIn(el)));
+        if (bad) { d.querySelector('.dlg-error').textContent = 'That isn\'t an amount'; bad.focus(); return false; }
+      }
       if (a.check) {
         const err = await a.check(d);
         if (err) { d.querySelector('.dlg-error').textContent = err; return false; }
@@ -686,7 +725,7 @@ function pickCategory(anchor, { income = true, title = '' } = {}) {
 // ── state ───────────────────────────────────────────────
 const state = {
   page: 'budget', month: null, boot: null, categories: [], accounts: [], counts: {},
-  inboxSel: 0, txFilters: { month: null }, expanded: new Set(), update: null, inboxFind: { text: '', payee: null },
+  inboxSel: 0, txFilters: { month: null }, txLimit: 1000, expanded: new Set(), update: null, inboxFind: { text: '', payee: null },
   dash: null, dashOpen: new Set(), showHidden: false, dragging: false,
 };
 
@@ -728,9 +767,15 @@ function frame(html) {
 }
 
 // ── budget ──────────────────────────────────────────────
+// Every Budget render has a number, and only the newest is drawn: pressing ‹ › quickly could draw
+// month A over month B while the page wrote to B. Writes use the month that's on screen.
+let budgetSeq = 0;
+const shownMonth = () => (state.view && state.view.month) || state.month;
 async function renderBudget() {
   if (!state.month) state.month = state.boot.current_month;
+  const seq = ++budgetSeq;
   const [view] = await Promise.all([call('month', [state.month]), state.categories.length ? null : loadCategories()]);
+  if (seq !== budgetSeq) return;  // a newer one is on its way
   state.view = view;
   const s = view.summary;
   const prev = addMonths(view.month, -1);
@@ -788,7 +833,7 @@ async function renderBudget() {
       const pillClass = avail === null ? 'zero' : (avail < 0 ? 'neg' : (avail > 0 ? 'pos' : 'zero'));
       let monthly;
       if (c.debt_account_id) {
-        monthly = c.owing ? `<span class="sub-note">owe ${money(c.owing)}${c.not_covered ? ` · <span class="warn">${money(c.not_covered)} not set aside</span>` : ''}</span>` : '';
+        monthly = c.owing ? `<span class="sub-note">${owingText(c.owing, m => `owe ${m}`)}${c.not_covered ? ` · <span class="warn">${money(c.not_covered)} not set aside</span>` : ''}</span>` : '';
       } else if (c.monthly_budget !== null) {
         monthly = `<span class="monthly num" data-cat="${c.id}">${money(c.monthly_budget)}</span>`;
       } else if (c.usual) {
@@ -1032,8 +1077,8 @@ async function saveAssigned(input) {
   if (Number.isNaN(cents)) { toast('That isn\'t an amount', { error: true }); return; }
   const id = Number(input.dataset.assign);
   const current = findCat(id);
-  if (current && (cents ?? 0) === current.assigned) { input.value = moneyOrBlank(current.assigned); return; }
-  await call('set_assigned', [state.month, id, cents ?? 0]);
+  if (current && (cents ?? 0) === current.assigned) { putIn(input, moneyOrBlank(current.assigned), current.assigned); return; }
+  await call('set_assigned', [shownMonth(), id, cents ?? 0]);
   await renderBudget();
   toast(`Assigned ${money(cents ?? 0)} to ${catName(id) || 'category'}`, { action: undoAction });
 }
@@ -1053,7 +1098,7 @@ async function assignFromArrow(id, which) {
   if (!c) return;
   const cents = which === 'spent' ? -c.activity : c.monthly_budget;
   if (!cents || cents < 0) return;
-  await call('set_assigned', [state.month, id, cents]);
+  await call('set_assigned', [shownMonth(), id, cents]);
   await renderBudget();
   toast(`Assigned ${money(cents)} to ${c.name}`, { action: undoAction });
 }
@@ -1090,11 +1135,11 @@ async function editFromDrawer(txId, close, reopen) {
 function envelopeSummary(c) {
   if (!c || c.owing === undefined) return '';
   const line = (label, amount, cls = '') => `<div class="row" style="padding:3px 0"><span class="muted">${label}</span><span class="spacer"></span><b class="num ${cls}">${money(amount)}</b></div>`;
-  return `<div class="card" style="margin-top:12px">${line('You owe on the card', c.owing)}${line('Set aside here to pay it', c.set_aside)}${line('Not set aside yet', c.not_covered, c.not_covered ? 'warn' : '')}</div>`;
+  return `<div class="card" style="margin-top:12px">${c.owing < 0 ? line('In your favour on the card', -c.owing) : line('You owe on the card', c.owing)}${line('Set aside here to pay it', c.set_aside)}${line('Not set aside yet', c.not_covered, c.not_covered ? 'warn' : '')}</div>`;
 }
 
 async function openCategory(id) {
-  const d = await call('category_detail', { category_id: id, month: state.month });
+  const d = await call('category_detail', { category_id: id, month: shownMonth() });
   const hist = d.history.slice(-12);
   const max = Math.max(1, ...hist.map(h => h.spent));
   const bars = hist.map(h => `<div class="bar ${h.complete ? '' : 'partial'}" title="${monthLong(h.month)}: ${money(h.spent)}">
@@ -1102,7 +1147,7 @@ async function openCategory(id) {
   // What it spent last month, then the averages (one of a single month would repeat it).
   const useRow = (label, amount, title = '') => `<div class="row" style="padding:4px 0"${title ? ` title="${esc(title)}"` : ''}>
       <span class="muted">${label}</span><span class="spacer"></span><b class="num">${money(amount)}</b>
-      <button class="btn small" data-act="use-amount" data-amount="${amount}">Use</button></div>`;
+      ${amount > 0 ? `<button class="btn small" data-act="use-amount" data-amount="${amount}">Use</button>` : ''}</div>`;
   const rec = d.recurring, recAll = [...rec.subscriptions, ...rec.bills];
   const meta = editorCat(d.id);  // used, own (Income and Interest & Fees: Hide only)
   const spentRows = useRow('Last month', d.last_month.amount, `What ${d.name} actually spent in ${monthLong(d.last_month.month)}`) +
@@ -1234,7 +1279,8 @@ async function openCategory(id) {
     if (!btn) return;
     const act = btn.dataset.act, cat = Number(btn.dataset.cat);
     if (act === 'use-amount') {
-      monthlyInput.value = btn.dataset.amount === '' ? '' : moneyPlain(Number(btn.dataset.amount));
+      const used = btn.dataset.amount === '' ? null : Number(btn.dataset.amount);
+      putIn(monthlyInput, used === null ? '' : moneyPlain(used), used);
       await saveMonthly();
     } else if (act === 'cat-hide') {
       await call('set_category_hidden', [d.id, !d.hidden]);
@@ -1258,7 +1304,7 @@ async function openCategory(id) {
       const other = await pickCategory(btn, { income: false, title: act === 'move-to' ? 'Move to…' : 'Take from…' });
       if (!other) return;
       const [from, to] = act === 'move-to' ? [cat, other] : [other, cat];
-      await call('move_money', [state.month, from, to, cents]);
+      await call('move_money', [shownMonth(), from, to, cents]);
       changed = true;
       await close();
       toast(`Moved ${money(cents)} from ${catName(from)} to ${catName(to)}`, { action: undoAction });
@@ -1287,7 +1333,8 @@ async function openSpent(which, { total = 'Spent' } = {}) {
 }
 
 async function openAssign(amount) {
-  const plan = await call('assign_plan', { month: state.month, amount: amount ?? null });
+  const month = shownMonth();
+  const plan = await call('assign_plan', { month, amount: amount ?? null });
   const rows = plan.plan.map((p, i) => `<tr><td>${esc(p.name)} <span class="faint small">${esc(p.group)}</span>${p.covered ? ` <span class="tag warn" title="Already spent, so it came out of Ready to assign: assigning up to this costs nothing">overspent ${money(p.covered)}</span>` : ''}</td>
       <td class="r num muted">${money(p.monthly_budget)}</td>
       <td class="r num ${p.has < 0 ? 'neg' : 'muted'}">${money(p.has)}</td>
@@ -1302,22 +1349,25 @@ async function openAssign(amount) {
       : `<div class="notice info">No category has a budgeted amount yet. Click a category on the Budget page to set one (it shows what it actually spent), or type amounts straight into the Assigned column.</div>`}
     ${plan.without_monthly_amount.length && plan.plan.length ? `<p class="small faint">Not budgeted: ${esc(plan.without_monthly_amount.join(', '))}</p>` : ''}`;
   const result = await dialog({
-    title: `Assign money in ${monthOnly(state.month)}`, body, wide: true,
+    title: `Assign money in ${monthOnly(month)}`, body, wide: true,
     actions: plan.plan.length ? [{ label: 'Cancel', value: null }, { label: 'Assign', value: 'go', primary: true }] : [{ label: 'OK', value: null, primary: true }],
     onOpen: d => {
-      const left = () => {
-        const total = parseMoney($('#assign-amount', d).value) || 0;
-        const used = $$('[data-i]', d).reduce((s, el) => {  // covering overspending is already paid for
-          const v = amountIn(el) || 0;
-          return s + (v > 0 ? Math.max(0, v - plan.plan[Number(el.dataset.i)].covered) : v);
-        }, 0);
-        const el = $('#assign-left', d); if (el) el.innerHTML = `Left over: <b class="${total - used < 0 ? 'neg' : ''}">${money(total - used)}</b>`;
-      };
+      // Left over is worked out in Python (figures.assign_left) from what's typed so far.
+      const left = debounce(async () => {
+        const el = $('#assign-left', d);
+        const total = parseMoney($('#assign-amount', d).value);
+        const boxes = $$('[data-i]', d);
+        if (!el) return;
+        if (Number.isNaN(total) || boxes.some(b => Number.isNaN(amountIn(b)))) { el.innerHTML = 'Left over: <b class="neg">That isn\'t an amount</b>'; return; }
+        const r = await call('assign_left', { month, amount: total || 0,
+          allocations: boxes.map(b => ({ category_id: plan.plan[Number(b.dataset.i)].category_id, amount: amountIn(b) || 0 })) });
+        el.innerHTML = `Left over: <b class="${r.left_over < 0 ? 'neg' : ''}">${money(r.left_over)}</b>`;
+      }, 120);
       $$('[data-i]', d).forEach(el => el.addEventListener('input', left));
       const recalc = $('#assign-recalc', d);
       recalc.onclick = async () => {
         const v = parseMoney($('#assign-amount', d).value);
-        if (Number.isNaN(v)) return;
+        if (Number.isNaN(v)) { d.querySelector('.dlg-error').textContent = 'That isn\'t an amount'; return; }
         d.close();
         openAssign(v);
       };
@@ -1326,7 +1376,7 @@ async function openAssign(amount) {
   if (result !== 'go') return;
   const allocations = $$('#dlg [data-i]').map(el => ({ category_id: plan.plan[Number(el.dataset.i)].category_id, amount: amountIn(el) || 0 })).filter(a => a.amount);
   if (!allocations.length) return;
-  await call('apply_plan', [state.month, allocations]);
+  await call('apply_plan', [month, allocations]);
   await renderBudget();
   toast(`Assigned ${money(allocations.reduce((s, a) => s + a.amount, 0))}`, { action: undoAction });
 }
@@ -1683,14 +1733,14 @@ function drawDashboard() {
       d.overspent.length ? 'neg' : ''),
     tile('accounts', 'Cash', money(d.cash),
       `<span class="small muted">${d.missing_balances.length ? `Set the balance of ${esc(d.missing_balances.join(' and '))}`
-        : d.has_debt ? `You owe ${money(d.owed)}` : ''}</span>`),
+        : d.has_debt ? owingText(d.owed, m => `You owe ${m}`) : ''}</span>`),
   ].join('');
 
   const head = cols.map((m, i) => `<th class="r ${m.so_far ? 'so-far' : ''} ${m.complete ? '' : 'partial'}"${m.complete ? '' : ' title="Not every account has data for this month"'}>
       ${monthShort(m.month)}${i === 0 || m.month.endsWith('-01') ? ` ${m.month.slice(0, 4)}` : ''}${m.so_far ? '<div class="tiny">so far</div>' : ''}</th>`).join('');
-  const cells = (amounts, attrs, { above = [], usual = [], click = true } = {}) => amounts.map((a, i) => {
+  const cells = (amounts, attrs, { above = [], usual = [], aboveBy = [], click = true } = {}) => amounts.map((a, i) => {
     const m = cols[i];
-    const tip = above[i] ? (usual[i] !== undefined ? `${money(a - usual[i])} above usual (${money(usual[i])})` : 'Above usual in here')
+    const tip = above[i] ? (usual[i] !== undefined ? `${money(aboveBy[i] ?? a - usual[i])} above usual (${money(usual[i])})` : 'Above usual in here')
       : (usual[i] && !m.so_far ? `Usually ${money(usual[i])}` : '');
     const text = `${above[i] ? '↑ ' : ''}${money(a)}`;
     return `<td class="r num ${m.so_far ? 'so-far' : ''} ${m.complete ? '' : 'partial'} ${above[i] ? 'above' : ''}">${!a ? '<span class="faint">—</span>'
@@ -1706,7 +1756,7 @@ function drawDashboard() {
     if (!open) continue;
     for (const c of g.categories) {
       rows.push(`<tr class="cat ${c.hidden ? 'hidden-cat' : ''}"><td>${esc(c.name)}</td>
-        ${cells(c.spent, `data-cat="${c.id}"`, { above: c.above, usual: c.usual })}</tr>`);
+        ${cells(c.spent, `data-cat="${c.id}"`, { above: c.above, usual: c.usual, aboveBy: c.above_by })}</tr>`);
     }
   }
   const ranges = [[3, '3 months'], [6, '6 months'], [12, '12 months'], ['all', 'All']];
@@ -1731,7 +1781,7 @@ function drawDashboard() {
     <div class="card" style="padding:12px 16px">
       <div class="row" style="margin-bottom:6px"><h2 style="margin:0">Spending</h2></div>
       ${sp.groups.length || sp.income.some(Boolean) ? `<div class="spend-wrap"><table class="spend"><thead><tr><th></th>${head}</tr></thead><tbody>${rows.join('')}</tbody></table></div>
-        <p class="small muted" style="margin:8px 0 0">↑ Above usual: at least $25 and 25% more than its average in the ${plural(sp.usual_months, 'whole month')} before.</p>`
+        <p class="small muted" style="margin:8px 0 0">↑ Above usual: at least ${money(sp.above_usual.cents)} and ${sp.above_usual.percent}% more than its average in the ${plural(sp.usual_months, 'whole month')} before.</p>`
         : '<div class="empty"><b>No spending yet</b>Categorized transactions show here, month by month.</div>'}
     </div>`);
   main.scrollTop = scrolled;
@@ -1864,7 +1914,7 @@ function drawCharts() {
       months: sp.months.map(m => m.month),
       series: [{ cls: 's1', values: sp.income }, { cls: 's2', values: sp.total }],
       faded: i => sp.months[i].so_far || !sp.months[i].complete,
-      tip: i => `<b>${monthName(sp.months[i].month, sp.months[i].so_far)}</b>${tipRow('s1', 'Income', sp.income[i])}${tipRow('s2', 'Spending', sp.total[i])}${tipRow('', 'Difference', sp.income[i] - sp.total[i])}${sp.months[i].complete ? '' : '<div class="small faint">Not every account has data</div>'}`,
+      tip: i => `<b>${monthName(sp.months[i].month, sp.months[i].so_far)}</b>${tipRow('s1', 'Income', sp.income[i])}${tipRow('s2', 'Spending', sp.total[i])}${tipRow('', 'Difference', sp.difference[i])}${sp.months[i].complete ? '' : '<div class="small faint">Not every account has data</div>'}`,
     });
   }
 }
@@ -1938,10 +1988,10 @@ function drawInbox() {
   state.blocks = blocks.flatMap(b => (b.items.length > 1 && !state.expanded.has(b.group)) ? [b] : b.items.map(i => ({ group: null, items: [i] })));
   state.inboxSel = Math.min(state.inboxSel, Math.max(0, state.blocks.length - 1));
   const alerts = data.alerts.map(a => a.type === 'balance' ? `<div class="notice">${esc(a.text)}<span class="spacer"></span>
-      <input style="width:130px;text-align:right" placeholder="Balance" data-balance-for="${a.account_id}"><button class="btn small" data-act="save-balance" data-account="${a.account_id}">Save</button></div>`
+      <input style="width:130px;text-align:right" placeholder="Balance" data-balance-for="${a.account_id}">${a.is_debt ? favourBox(a.account_id) : ''}<button class="btn small" data-act="save-balance" data-account="${a.account_id}">Save</button></div>`
     : a.type === 'duplicate' ? duplicateNotice(a) : '').join('') +
-    (data.files || []).map((f, i) => `<div class="notice info"><span><b>${esc(f.filename)}</b> ${f.needs === 'layout' ? 'needs setting up once.' : f.needs === 'new_account' ? 'is for an account the app hasn\'t seen: a new one, or one you have?' : 'is from a bank the app knows: which account is it for?'}</span><span class="spacer"></span>
-      <button class="btn small" data-act="ignore-file" data-index="${i}">${f.needs === 'new_account' ? 'Don\'t import' : 'Not a bank file'}</button><button class="btn small primary" data-act="setup-file" data-index="${i}">${f.needs === 'layout' ? 'Set up…' : 'Choose…'}</button></div>`).join('');
+    (data.files || []).map((f, i) => `<div class="notice info"><span><b>${esc(f.filename)}</b> ${f.needs === 'layout' ? 'needs setting up once.' : f.needs === 'new_account' ? 'is for an account the app hasn\'t seen: a new one, or one you have?' : f.needs === 'balance_sign' ? 'has a card balance the app can\'t read: is it what you owe?' : 'is from a bank the app knows: which account is it for?'}</span><span class="spacer"></span>
+      <button class="btn small" data-act="ignore-file" data-index="${i}">${f.needs === 'new_account' || f.needs === 'balance_sign' ? 'Don\'t import' : 'Not a bank file'}</button><button class="btn small primary" data-act="setup-file" data-index="${i}">${f.needs === 'layout' ? 'Set up…' : f.needs === 'balance_sign' ? 'Answer…' : 'Choose…'}</button></div>`).join('');
   const cards = state.blocks.map((b, i) => b.items.length > 1 ? groupCard(b, i) : itemCard(b.items[0], i)).join('');
   const filedRows = data.categorized.map(t => `<tr><td class="muted nowrap">${day(t.date)}</td><td>${esc(t.payee_name || t.raw_name)}${t.subscription_name ? ` <span class="tag info">${esc(t.subscription_name)}</span>` : ''}</td>
       <td>${t.transfer_account_name ? `<span class="tag">Transfer</span>` : `<button class="link" data-act="recat" data-id="${t.id}">${esc(t.category_name || (t.is_split ? 'Split' : 'No category'))}</button>`}</td>
@@ -2003,7 +2053,7 @@ function itemCard(t, i) {
 
 function groupCard(b, i) {
   const first = b.items[0];
-  const total = b.items.reduce((s, t) => s + t.amount, 0);
+  const total = first.group_total;  // what the group adds up to, from Python
   const dates = b.items.map(t => t.date).sort();
   const share = b.group.startsWith('share:');
   const title = share ? `${b.items.length} e-transfers that look like shares of one expense` : `${esc(first.payee_name || first.raw_name)} · ${b.items.length} transactions`;
@@ -2043,7 +2093,7 @@ async function fileBlock(index, categoryId) {
   const name = t.payee_name || t.raw_name;
   let msg = `${ids.length > 1 ? plural(ids.length, 'transaction') : name} → ${catName(categoryId)}`;
   if (r.also_categorized) msg += ` · also categorized ${r.also_categorized} more like it`;
-  const total = b.items.reduce((s, x) => s + x.amount, 0);
+  const total = r.total;  // what these came to, from Python
   if (incomeIds().includes(categoryId) && total > 0) {
     toast(msg, { action: { label: `Assign ${money(total)}`, run: () => { state.month = t.date.slice(0, 7); navigate('budget').then(() => openAssign(total)); } } });
   } else toast(msg, { action: undoAction });
@@ -2300,6 +2350,9 @@ async function setupFile(path) {
   const lower = info.filename.toLowerCase();
   const brand = /visa/.test(lower) ? 'Visa' : /master ?card|\bmc\b/.test(lower) ? 'Mastercard' : /amex/.test(lower) ? 'Amex' : '';
   const kindGuess = brand || /card|credit/.test(lower) ? 'credit_card' : /saving/.test(lower) ? 'savings' : 'chequing';
+  const isCard = kind => kind === 'credit_card' || kind === 'line_of_credit';
+  // A card file of mostly positive amounts shows its purchases that way: money out is "Positive".
+  const startsPositive = L.negate || (!info.saved && info.mostly_positive && isCard(kindGuess));
   const two = L.amount_col === null || L.amount_col === undefined;
   let outcome = null, nameTouched = false, readLayout = () => ({}), readAccount = () => ({});
   const v = await dialog({
@@ -2311,14 +2364,14 @@ async function setupFile(path) {
       <div id="su-columns" ${info.saved ? 'hidden' : ''}>
         <div class="grid2">
           <div class="field"><label>Date</label><select id="su-date">${colOptions(L.date_col)}</select></div>
-          <div class="field"><label>Dates are</label><select id="su-order">${[['mdy', 'Month/Day/Year'], ['dmy', 'Day/Month/Year'], ['ymd', 'Year-Month-Day']].map(([v, t]) => `<option value="${v}" ${L.date_order === v ? 'selected' : ''}>${t}</option>`).join('')}</select></div>
+          <div class="field"><label>Dates are</label><select id="su-order">${L.date_order ? '' : '<option value="">Pick…</option>'}${[['mdy', 'Month/Day/Year'], ['dmy', 'Day/Month/Year'], ['ymd', 'Year-Month-Day']].map(([v, t]) => `<option value="${v}" ${L.date_order === v ? 'selected' : ''}>${t}</option>`).join('')}</select></div>
           <div class="field"><label>Description</label><select id="su-desc">${colOptions(L.desc_cols[0])}</select></div>
           <div class="field"><label>More description</label><select id="su-desc2">${colOptions(L.desc_cols[1], 'None')}</select></div>
         </div>
         <div class="field"><label>Amounts</label><div class="seg" id="su-mode"><button type="button" data-mode="one" aria-pressed="${!two}">One column</button><button type="button" data-mode="two" aria-pressed="${two}">Money out and money in</button></div></div>
         <div class="grid2" id="su-one" ${two ? 'hidden' : ''}>
           <div class="field"><label>Amount</label><select id="su-amount">${colOptions(L.amount_col)}</select></div>
-          <div class="field"><label>Money out shows as</label><select id="su-negate"><option value="0" ${L.negate ? '' : 'selected'}>Negative (−12.50)</option><option value="1" ${L.negate ? 'selected' : ''}>Positive (12.50)</option></select></div>
+          <div class="field"><label>Money out shows as</label><select id="su-negate"><option value="0" ${startsPositive ? '' : 'selected'}>Negative (−12.50)</option><option value="1" ${startsPositive ? 'selected' : ''}>Positive (12.50)</option></select></div>
         </div>
         <div class="grid2" id="su-two" ${two ? '' : 'hidden'}>
           <div class="field"><label>Money out</label><select id="su-out">${colOptions(L.out_col)}</select></div>
@@ -2390,7 +2443,14 @@ async function setupFile(path) {
       const syncAccount = () => { $('#su-new', d).hidden = !!$('#su-account', d).value; };
       $('#su-account', d).addEventListener('change', syncAccount);
       $('#su-bank', d).addEventListener('input', autoName);
-      $('#su-kind', d).addEventListener('change', autoName);
+      $('#su-kind', d).addEventListener('change', () => {
+        autoName();
+        // Choosing a card for a file of mostly positive amounts: its purchases are the positive ones.
+        if (!info.saved && info.mostly_positive && !L.negate && !$('#su-negate', d).dataset.touched && mode() === 'one')
+          $('#su-negate', d).value = isCard($('#su-kind', d).value) ? '1' : '0';
+        preview();
+      });
+      $('#su-negate', d).addEventListener('change', e => { e.target.dataset.touched = '1'; });
       $('#su-name', d).addEventListener('input', () => { nameTouched = true; });
       syncAccount(); autoName(); preview();
     },
@@ -2413,16 +2473,27 @@ async function chooseAccounts(path) {
     title: unknown.length === 1 ? 'A new account?' : 'New accounts?',
     body: `<p class="small muted" style="margin-top:0">${esc(info.filename)} is for ${unknown.length === 1 ? 'an account' : 'accounts'} the app hasn't seen. If it's one you have (a new card number, say), pick it.</p>
       ${unknown.map(p => `<div class="field"><label>${esc(p.name)}${p.last4 && !p.name.includes(p.last4) ? ` ••${esc(p.last4)}` : ''} · ${plural(p.rows, 'transaction')}${p.first_date ? `, ${dayYear(p.first_date)} – ${dayYear(p.last_date)}` : ''}</label>
-        <div class="row"><select data-part="${p.index}" style="width:220px;flex:none"><option value="">New account</option>${p.choices.map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join('')}</select>
-          <input data-part-name="${p.index}" value="${esc(p.name)}" placeholder="Name" style="flex:1;min-width:0"></div></div>`).join('')}`,
+        <div class="row"><select data-part="${p.index}" style="width:220px;flex:none"><option value="" data-asks="${p.asks_for_new ? 1 : 0}">New account</option>${p.choices.map(a => `<option value="${a.id}" data-asks="${a.asks ? 1 : 0}">${esc(a.name)}</option>`).join('')}</select>
+          <input data-part-name="${p.index}" value="${esc(p.name)}" placeholder="Name" style="flex:1;min-width:0"></div>
+        ${p.balance === null ? '' : `<div class="row wrap" data-part-balance="${p.index}" style="margin-top:6px;gap:4px 14px" hidden><span class="small">Is <b>${esc(money(p.balance))}</b> what you owe, or in your favour?</span>
+          <label class="small" style="white-space:nowrap;display:inline-flex;gap:4px;align-items:center"><input type="radio" name="balance-${p.index}" value="owed"> What I owe</label>
+          <label class="small" style="white-space:nowrap;display:inline-flex;gap:4px;align-items:center"><input type="radio" name="balance-${p.index}" value="favour"> In my favour</label></div>`}</div>`).join('')}`,
     actions: [
       { label: 'Don\'t import', value: 'ignore', left: true },
       { label: 'Cancel', value: null },
       { label: 'Import', value: 'import', primary: true, check: async d => {
-        const choices = unknown.map(p => {
+        const choices = [];
+        for (const p of unknown) {
           const picked = $(`[data-part="${p.index}"]`, d).value;
-          return picked ? { index: p.index, account_id: Number(picked) } : { index: p.index, name: $(`[data-part-name="${p.index}"]`, d).value };
-        });
+          const choice = picked ? { index: p.index, account_id: Number(picked) } : { index: p.index, name: $(`[data-part-name="${p.index}"]`, d).value };
+          const asking = $(`[data-part-balance="${p.index}"]`, d);
+          if (asking && !asking.hidden) {  // a balance above zero whose sign isn't known: answered here, before anything is made
+            const answer = $(`input[name="balance-${p.index}"]:checked`, d);
+            if (!answer) return `Say whether ${money(p.balance)} is what you owe or in your favour.`;
+            choice.balance = answer.value;
+          }
+          choices.push(choice);
+        }
         const r = await tryCall('set_file_accounts', [path, choices]);
         if (!r.ok) return r.error;
         outcome = r.result;
@@ -2430,7 +2501,11 @@ async function chooseAccounts(path) {
       } },
     ],
     onOpen: d => $$('[data-part]', d).forEach(sel => {
-      const sync = () => { $(`[data-part-name="${sel.dataset.part}"]`, d).hidden = !!sel.value; };
+      const sync = () => {
+        $(`[data-part-name="${sel.dataset.part}"]`, d).hidden = !!sel.value;
+        const asking = $(`[data-part-balance="${sel.dataset.part}"]`, d);
+        if (asking) asking.hidden = sel.selectedOptions[0].dataset.asks !== '1';
+      };
       sel.addEventListener('change', sync);
       sync();
     }),
@@ -2439,21 +2514,46 @@ async function chooseAccounts(path) {
   return v === 'import' ? outcome : null;
 }
 
+// A card file with charges negative and a balance above zero, for an account with no balance yet: owed, or in your favour?
+async function askBalanceSign(f) {
+  const r = await tryCall('file_balance_question', [f.path]);
+  if (!r.ok) { toast(r.error, { error: true }); return null; }
+  const questions = r.result.questions;
+  if (!questions.length) return call('answer_balance', [f.path, 'favour']);  // settled by an earlier answer: nothing to ask
+  const v = await dialog({
+    title: 'Is that what you owe?',
+    body: questions.map(q => `<p style="margin-top:0">Is <b>${esc(money(q.amount))}</b> what you owe on ${esc(q.name)}, or in your favour?</p>`).join(''),
+    actions: [
+      { label: 'Don\'t import', value: 'ignore', left: true },
+      { label: 'Cancel', value: null },
+      { label: 'In my favour', value: 'favour' },
+      { label: 'What I owe', value: 'owed', primary: true },
+    ],
+  });
+  if (v === 'ignore') { await call('ignore_file', [f.path]); toast(`${f.filename} won't be imported`); return null; }
+  return v ? call('answer_balance', [f.path, v]) : null;
+}
+
 // One after another: each pop-up waits for the one before.
 async function setupFiles(files) {
   for (const f of files) {
-    const outcome = await (f.needs === 'new_account' ? chooseAccounts(f.path) : setupFile(f.path));
+    const outcome = await (f.needs === 'new_account' ? chooseAccounts(f.path) : f.needs === 'balance_sign' ? askBalanceSign(f) : setupFile(f.path));
     if (outcome) window.appEvent('imported', outcome);
   }
   await refresh();
 }
+
+// A card or line of credit's balance is what you owe, unless this says it's in your favour
+// (an overpaid card): the choice next to the amount.
+const favourBox = (id, checked = false) => `<label class="small muted" style="white-space:nowrap;display:inline-flex;gap:4px;align-items:center"><input type="checkbox" data-favour="${id}" ${checked ? 'checked' : ''}> In your favour</label>`;
+const inFavour = id => { const el = $(`[data-favour="${id}"]`); return !!(el && el.checked); };
 
 async function saveBalanceFrom(btn) {
   const acct = Number(btn.dataset.account);
   const input = $(`[data-balance-for="${acct}"]`);
   const cents = parseMoney(input.value);
   if (cents === null || Number.isNaN(cents)) return toast('Enter the balance your bank shows', { error: true });
-  await call('set_balance', [acct, cents]);
+  await call('set_balance', { account_id: acct, cents, in_favour: inFavour(acct) });
   toast('Balance saved', { action: undoAction });
   await refresh();
 }
@@ -2477,7 +2577,7 @@ async function renderTransactions() {
   if (!state.categories.length) await loadCategories();
   await loadAccounts();
   const f = state.txFilters;
-  const data = await call('transactions', [{ ...f, limit: 1000 }]);
+  const data = await call('transactions', [{ ...f, limit: state.txLimit }]);
   state.txns = data;
   const months = state.view ? state.view.months : [];
   const catOptions = state.categories.map(g => `<optgroup label="${esc(g.name)}">${g.categories.map(c => `<option value="${c.id}" ${f.category_id == c.id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</optgroup>`).join('');
@@ -2488,7 +2588,8 @@ async function renderTransactions() {
       <td>${t.transfer_account_name ? `<span class="tag">${t.amount < 0 ? 'To' : 'From'} ${esc(t.transfer_account_name)}</span>` :
             t.is_split ? `<span class="tag">Split</span> <span class="small muted">${esc(t.splits.map(s => s.category_name).join(', '))}</span>` :
             `<button class="link" data-act="tx-cat" data-id="${t.id}">${esc(t.category_name || 'No category')}</button>`}</td>
-      <td class="r num ${t.amount > 0 ? 'pos' : ''}">${money(t.amount)}</td></tr>`).join('');
+      <td class="r num ${(t.category_amount ?? t.amount) > 0 ? 'pos' : ''}">${t.category_amount !== undefined ? `${money(t.category_amount)} <span class="faint small">of ${money(t.amount)}</span>` : money(t.amount)}</td></tr>`).join('');
+  const more = data.count > data.items.length;  // the page shows the newest rows only; the total is of all of them
   frame(`
     <div class="page-head"><h1>Transactions</h1><span class="spacer"></span><button class="btn" data-act="add-tx">Add transaction…</button></div>
     <div class="row wrap" style="margin-bottom:12px">
@@ -2499,14 +2600,15 @@ async function renderTransactions() {
     </div>
     <div class="card" style="padding:4px 8px">
       ${data.items.length ? `<table><thead><tr><th>Date</th><th>Account</th><th>Payee</th><th>Category</th><th class="r">Amount</th></tr></thead><tbody>${rows}</tbody></table>
-        <p class="small muted" style="padding:4px 10px">${plural(data.items.length, 'transaction')} · total ${money(data.total)}</p>`
+        <p class="small muted" style="padding:4px 10px">${more ? `Showing the newest ${data.items.length.toLocaleString('en-CA')} of ${data.count.toLocaleString('en-CA')}` : plural(data.count, 'transaction')} · ${more ? `total of all ${data.count.toLocaleString('en-CA')}` : 'total'} ${money(data.total)}
+          ${more ? ' <button class="link" data-act="tx-more">Show more</button> or pick a month' : ''}</p>`
         : '<div class="empty"><b>No transactions</b>Nothing matches these filters.</div>'}
     </div>`);
   const refetch = debounce(() => renderTransactions(), 250);
-  $('#tx-search').addEventListener('input', e => { f.search = e.target.value; refetch(); });
-  $('#tx-account').addEventListener('change', e => { f.account_id = e.target.value || null; renderTransactions(); });
-  $('#tx-month').addEventListener('change', e => { f.month = e.target.value || null; renderTransactions(); });
-  $('#tx-category').addEventListener('change', e => { f.category_id = e.target.value || null; renderTransactions(); });
+  $('#tx-search').addEventListener('input', e => { f.search = e.target.value; state.txLimit = 1000; refetch(); });
+  $('#tx-account').addEventListener('change', e => { f.account_id = e.target.value || null; state.txLimit = 1000; renderTransactions(); });
+  $('#tx-month').addEventListener('change', e => { f.month = e.target.value || null; state.txLimit = 1000; renderTransactions(); });
+  $('#tx-category').addEventListener('change', e => { f.category_id = e.target.value || null; state.txLimit = 1000; renderTransactions(); });
   if (f.search) { const s = $('#tx-search'); s.focus(); s.setSelectionRange(s.value.length, s.value.length); }
 }
 
@@ -2598,10 +2700,11 @@ async function addTransaction() {
   });
   if (v !== 'ok') return;
   const dir = Number($('#add-dir [aria-pressed="true"]').dataset.dir);
-  await call('add_transaction', { account_id: Number($('#add-acct').value), date: $('#add-date').value, payee: $('#add-payee').value,
+  const r = await call('add_transaction', { account_id: Number($('#add-acct').value), date: $('#add-date').value, payee: $('#add-payee').value,
     amount: dir * Math.abs(parseMoney($('#add-amount').value)), category_id: catId });
   toast('Added', { action: undoAction });
   await refresh();
+  if (r.question) { await subscriptionPrompt(r.question); await refresh(); }
 }
 
 // ── accounts ────────────────────────────────────────────
@@ -2613,9 +2716,9 @@ async function renderAccounts() {
     return `<div class="card acct">
       <div class="row"><b>${esc(a.name)}</b><span class="faint small">${[a.bank && !a.name.toLowerCase().includes(a.bank.toLowerCase()) && esc(a.bank), a.last4 && `••${esc(a.last4)}`].filter(Boolean).join(' · ')}</span><span class="spacer"></span><span class="tag">${esc(a.kind_label)}</span></div>
       ${a.balance === null ? `<div class="notice" style="margin:10px 0">What ${owe ? 'do you owe on' : 'is the balance of'} this account right now?</div>
-          <div class="row"><input style="width:150px;text-align:right" placeholder="${owe ? 'Amount owing' : 'Balance'}" data-balance-for="${a.id}"><button class="btn primary small" data-act="save-balance" data-account="${a.id}">Save</button></div>`
-        : `<div class="bal num ${owe && a.balance < 0 ? 'neg' : ''}">${owe ? money(-a.balance) : money(a.balance)}</div>
-           <div class="small muted">${owe ? 'owing' : 'balance'}${a.last_date ? ` · up to ${dayYear(a.last_date)}` : ''}</div>`}
+          <div class="row"><input style="width:150px;text-align:right" placeholder="${owe ? 'Amount owing' : 'Balance'}" data-balance-for="${a.id}">${owe ? favourBox(a.id) : ''}<button class="btn primary small" data-act="save-balance" data-account="${a.id}">Save</button></div>`
+        : `<div class="bal num ${owe && a.balance < 0 ? 'neg' : ''}">${owe ? money(Math.abs(a.balance)) : money(a.balance)}</div>
+           <div class="small muted">${owe ? (a.balance > 0 ? 'in your favour' : 'owing') : 'balance'}${a.last_date ? ` · up to ${dayYear(a.last_date)}` : ''}</div>`}
       <div class="small muted" style="margin-top:8px">${plural(a.transactions, 'transaction')}${a.first_date ? ` since ${dayYear(a.first_date)}` : ''}${a.last_import ? ` · last import ${esc(a.last_import.slice(0, 10))}` : ''}</div>
       ${a.duplicate_of ? `<div style="margin-top:10px">${duplicateNotice(a.duplicate_of)}</div>` : ''}
       <div class="row" style="margin-top:10px">
@@ -2628,7 +2731,7 @@ async function renderAccounts() {
   }).join('');
   const closedRows = accounts.filter(a => a.closed).map(a => `<tr><td><b>${esc(a.name)}</b> <span class="faint small">${esc(a.kind_label)}</span></td>
       <td class="small muted">${plural(a.transactions, 'transaction')}${a.last_date ? ` · up to ${dayYear(a.last_date)}` : ''}</td>
-      <td class="r num">${a.balance ? (a.is_debt ? `${money(-a.balance)} owing` : money(a.balance)) : ''}</td>
+      <td class="r num">${a.balance ? (a.is_debt ? owingText(-a.balance) : money(a.balance)) : ''}</td>
       <td class="r"><button class="btn small" data-act="edit-account" data-account="${a.id}">Edit…</button></td></tr>`).join('');
   const debtCards = debt.accounts.map(d => {
     const maxI = Math.max(1, ...d.interest.map(i => i.amount));
@@ -2637,7 +2740,7 @@ async function renderAccounts() {
     return `<div class="card">
       <div class="row"><b>${esc(d.name)}</b><span class="spacer"></span><span class="tag ${d.not_covered ? 'warn' : 'good'}">${d.not_covered ? money(d.not_covered) + ' not set aside' : 'All set aside'}</span></div>
       <div class="grid2" style="margin-top:10px">
-        <div><div class="muted small">You owe</div><div class="bal num">${money(d.owing)}</div>
+        <div><div class="muted small">${d.owing < 0 ? 'In your favour' : 'You owe'}</div><div class="bal num">${money(Math.abs(d.owing))}</div>
           <div class="small muted">Set aside to pay it: <b>${money(d.set_aside)}</b></div></div>
         <div><div class="muted small">Interest & fees, last 6 months</div>
           <div class="mini-bars" title="${esc(d.interest.map(i => monthShort(i.month) + ' ' + money(i.amount)).join(', '))}">${d.interest.map(i => `<div style="height:${i.amount / maxI * 100}%"></div>`).join('')}</div>
@@ -2692,15 +2795,15 @@ async function accountAction(btn) {
   if (act === 'check-balance') {
     const v = await dialog({
       title: `Check ${a.name}`,
-      body: `<p class="muted">The app says ${a.is_debt ? 'you owe' : 'the balance is'} <b>${money(a.is_debt ? -a.balance : a.balance)}</b> after the last imported transaction (${dayYear(a.last_date)}).
+      body: `<p class="muted">The app says ${a.is_debt ? (a.balance > 0 ? `<b>${money(a.balance)}</b> is in your favour` : `you owe <b>${money(-a.balance)}</b>`) : `the balance is <b>${money(a.balance)}</b>`} after the last imported transaction (${dayYear(a.last_date)}).
         If ${esc(a.bank || 'your bank')} shows something else, enter it: the app adds an adjustment for the difference${a.is_debt ? '' : ' (you choose its category in the Inbox)'}.</p>
-        <div class="field"><label>${a.is_debt ? 'Amount owing' : 'Balance'} at ${esc(a.bank || 'the bank')}</label><input id="rec-amount" style="text-align:right"></div>`,
+        <div class="field"><label>${a.is_debt ? 'Amount owing' : 'Balance'} at ${esc(a.bank || 'the bank')}</label><div class="row"><input id="rec-amount" style="text-align:right">${a.is_debt ? favourBox('rec') : ''}</div></div>`,
       actions: [{ label: 'Cancel', value: null }, { label: 'Match it', value: 'ok', primary: true }],
     });
     if (v !== 'ok') return;
     const cents = parseMoney($('#rec-amount').value);
     if (cents === null || Number.isNaN(cents)) return;
-    const r = await call('reconcile', [id, cents]);
+    const r = await call('reconcile', { account_id: id, cents, in_favour: a.is_debt && inFavour('rec') });
     toast(r.adjusted ? `Adjusted by ${money(r.adjusted)}` : 'It already matches', { action: r.adjusted ? undoAction : undefined });
   } else if (act === 'edit-account') {
     const banks = await call('bank_names');
@@ -2729,7 +2832,9 @@ async function accountAction(btn) {
   } else if (act === 'save-debt') {
     const apr = $(`[data-apr="${id}"]`).value.trim();
     const pay = parseMoney($(`[data-payment="${id}"]`).value);
-    await call('update_account', [id, { apr: apr === '' ? null : Number(apr), planned_payment: Number.isNaN(pay) ? null : pay }]);
+    if (apr !== '' && !(/^\d+(\.\d+)?$/.test(apr) && Number(apr) <= 100)) { toast('That isn\'t a rate: type it like 20.99', { error: true }); return; }
+    if (Number.isNaN(pay)) { toast('That isn\'t an amount', { error: true }); return; }
+    await call('update_account', [id, { apr: apr === '' ? null : Number(apr), planned_payment: pay }]);
     toast('Saved');
   } else if (act === 'add-account') {
     const banks = await call('bank_names');
@@ -2739,12 +2844,18 @@ async function accountAction(btn) {
         <div class="grid2"><div class="field"><label>Name</label><input id="na-name" placeholder="Line of credit"></div>
         <div class="field"><label>Bank</label><input id="na-bank" list="bank-list" placeholder="Search or type a name" autocomplete="off">${bankList(banks)}</div></div>
         <div class="grid2"><div class="field"><label>Type</label><select id="na-kind"><option value="line_of_credit">Line of credit</option><option value="credit_card">Credit card</option><option value="chequing">Chequing</option><option value="savings">Savings</option><option value="cash">Wallet</option></select></div>
-        <div class="field"><label>Balance now (owing, for credit)</label><input id="na-balance" placeholder="0.00" style="text-align:right"></div></div>`,
+        <div class="field"><label>Balance now (owing, for credit)</label><div class="row"><input id="na-balance" placeholder="0.00" style="text-align:right"><span id="na-favour">${favourBox('new')}</span></div></div></div>`,
       actions: [{ label: 'Cancel', value: null }, { label: 'Add', value: 'ok', primary: true, check: d => $('#na-name', d).value.trim() ? null : 'Give it a name.' }],
+      onOpen: d => {
+        const show = () => { $('#na-favour', d).hidden = !['line_of_credit', 'credit_card'].includes($('#na-kind', d).value); };
+        $('#na-kind', d).addEventListener('change', show);
+        show();
+      },
     });
     if (v !== 'ok') return;
     const bal = parseMoney($('#na-balance').value);
-    await call('add_account', { name: $('#na-name').value, kind: $('#na-kind').value, balance: Number.isNaN(bal) ? null : bal, bank: $('#na-bank').value });
+    await call('add_account', { name: $('#na-name').value, kind: $('#na-kind').value, balance: Number.isNaN(bal) ? null : bal, bank: $('#na-bank').value,
+      in_favour: ['line_of_credit', 'credit_card'].includes($('#na-kind').value) && inFavour('new') });
     await loadCategories();
     toast('Account added', { action: undoAction });
   } else if (act === 'undo-import') {
@@ -2803,8 +2914,8 @@ async function renderSubscriptions() {
     <div class="page-head"><h1>Subscriptions</h1><span class="spacer"></span><button class="btn" data-act="sub-add">Add one…</button></div>
     <div class="stack">
       <div class="grid2">
-        <div class="card"><div class="muted">Subscriptions</div><div class="rta num">${money(s.monthly_subscriptions)}<span class="muted" style="font-size:15px"> a month</span></div><div class="small muted">${money(s.monthly_subscriptions * 12)} a year</div></div>
-        <div class="card"><div class="muted">Bills</div><div class="rta num">${money(s.monthly_bills)}<span class="muted" style="font-size:15px"> a month</span></div><div class="small muted">${money(s.monthly_bills * 12)} a year</div></div>
+        <div class="card"><div class="muted">Subscriptions</div><div class="rta num">${money(s.monthly_subscriptions)}<span class="muted" style="font-size:15px"> a month</span></div><div class="small muted">${money(s.yearly_subscriptions)} a year</div></div>
+        <div class="card"><div class="muted">Bills</div><div class="rta num">${money(s.monthly_bills)}<span class="muted" style="font-size:15px"> a month</span></div><div class="small muted">${money(s.yearly_bills)} a year</div></div>
       </div>
       ${s.cancelled.some(x => x.charged_after_cancel.length) ? `<div class="notice bad">Something you cancelled has charged you again. See Cancelled below.</div>` : ''}
       ${[...s.subscriptions, ...s.bills].filter(x => x.charged_after_end.length).map(x => `<div class="notice bad"><b>${esc(x.name)}</b>&nbsp;should have ended on ${dayYear(x.ends_on)}, but charged ${x.charged_after_end.map(c => money(c.amt) + ' on ' + day(c.date)).join(', ')}. Time to call ${esc(x.payee_name || 'them')}, or change its end date.</div>`).join('')}
@@ -2956,7 +3067,8 @@ async function settingsAction(btn) {
   } else if (act === 'open') { await call('window_action', [btn.dataset.what]); return; }
   else if (act === 'learn-actual') {
     const r = await call('learn_actual_file');
-    if (r && r.learnt) toast(`Learnt ${r.learnt.examples} examples${r.rechecked ? `, and categorized ${r.rechecked} waiting transactions` : ''}`);
+    if (r && r.learnt) toast(r.learnt.examples ? `Learnt ${r.learnt.examples} examples${r.rechecked ? `, and categorized ${r.rechecked} waiting transactions` : ''}`
+      : 'Nothing new: it had already learnt from this', r.learnt.examples ? { action: undoAction } : {});
   }
   await renderSettings();
 }
@@ -2985,7 +3097,7 @@ async function renderOnboarding() {
           <div><b>${esc(f.account_name || f.filename)}</b> <span class="muted small">${esc(f.filename)}</span><div class="small muted">${f.format === 'actual' ? 'Learn your categories and which payees go where' : `${plural(f.rows, 'transaction')}, ${dayYear(f.first_date)} – ${dayYear(f.last_date)}`}${f.already_imported ? ' · already imported' : ''}</div></div>
           <span class="tag ${f.format === 'actual' ? 'info' : ''}">${f.format === 'actual' ? 'Actual Budget' : f.format === 'ofx' ? 'OFX' : 'CSV'}</span></label>`).join('')
         : `<div class="empty"><b>No bank files in ${esc(ob.files.folder)}</b>Download some, then look again.</div>`}</div>
-      ${ob.results ? `<div class="notice info" style="margin-top:12px">${ob.results}</div>` : ''}
+      ${ob.results ? `<div class="notice info" style="margin-top:12px">${esc(ob.results)}</div>` : ''}
       <div class="row" style="margin-top:16px"><button class="btn" data-ob="rescan">Look again</button><button class="btn" data-ob="choose">Choose files…</button><span class="spacer"></span>
         <button class="btn primary" data-ob="import">${files.some(f => !f.already_imported) ? 'Import and continue' : 'Continue'}</button></div>`;
   } else if (ob.step === 1) {
@@ -3001,7 +3113,7 @@ async function renderOnboarding() {
     body = `<h3>3. Balances</h3>
       <p class="muted">What does your bank show for each account right now? The app works out every past balance from this one number, so it only asks once.</p>
       <div class="card">${state.accounts.map(a => `<div class="settings-row"><div class="what"><b>${esc(a.name)}</b><span>${a.is_debt ? 'Amount owing (the balance on the card)' : 'Balance'}${a.last_date ? ` · transactions up to ${dayYear(a.last_date)}` : ''}</span></div>
-          <input style="width:150px;text-align:right" data-ob-balance="${a.id}" value="${a.balance !== null ? moneyPlain(a.is_debt ? -a.balance : a.balance) : ''}" placeholder="0.00"></div>`).join('') || '<p class="faint">No accounts yet: go back and import a file.</p>'}</div>
+          <span class="row"><input style="width:150px;text-align:right" data-ob-balance="${a.id}" value="${a.balance !== null ? moneyPlain(a.is_debt ? Math.abs(a.balance) : a.balance) : ''}" placeholder="0.00">${a.is_debt ? favourBox(a.id, a.balance > 0) : ''}</span></div>`).join('') || '<p class="faint">No accounts yet: go back and import a file.</p>'}</div>
       <div class="row" style="margin-top:16px"><button class="btn" data-ob="back">Back</button><span class="spacer"></span><button class="btn primary" data-ob="save-balances">Continue</button></div>`;
   } else {
     const os = await call('onboarding_state');
@@ -3047,7 +3159,7 @@ async function onboardingAction(btn) {
       const cents = parseMoney(el.value);
       if (cents === null) continue;
       if (Number.isNaN(cents)) return toast('One of the balances isn\'t an amount', { error: true });
-      await call('set_balance', [Number(el.dataset.obBalance), cents]);
+      await call('set_balance', { account_id: Number(el.dataset.obBalance), cents, in_favour: inFavour(el.dataset.obBalance) });
     }
     ob.step = 3;
   } else if (a === 'finish') {
@@ -3147,6 +3259,19 @@ function askInDialog(d) {
 }
 
 // ── events from Python ──────────────────────────────────
+// An import (or an update) redraws the page, but not under a box you're typing in (the Accounts page's
+// balance, rate and payment boxes, the Inbox's balance box and search, the GitHub token box), nor in a
+// pop-up, a drag or a name being typed: it waits, and runs when you leave the box.
+const typingInMain = () => {
+  const el = document.activeElement;
+  return !!(el && el.closest && el.closest('#main') && el.matches('input:not([type=checkbox]):not([type=radio]):not([type=button]), textarea, select'));
+};
+function refreshWhenIdle() {
+  const busy = $('#dlg').open || $('.drawer') || $('.popover') || state.dragging || $('#main .inline-name') || typingInMain();
+  state.refreshLater = !!busy;
+  if (!busy) refresh();
+}
+document.addEventListener('focusout', () => setTimeout(() => { if (state.refreshLater) refreshWhenIdle(); }, 60));
 window.appEvent = (name, payload) => {
   if (name === 'imported') {
     if (payload.error) return toast(payload.error, { error: true });
@@ -3165,7 +3290,7 @@ window.appEvent = (name, payload) => {
     toast(added ? `Imported ${plural(added, 'new transaction')} from ${results.map(r => r.filename).join(', ')}${review ? ` · ${review} in the Inbox` : ''}`
       : `Nothing new in ${results.map(r => r.filename).join(', ')}`,
       review ? { action: { label: 'Open Inbox', run: () => navigate('inbox') } } : {});
-    if (!$('#dlg').open && !$('.drawer') && !$('.popover') && !state.dragging && !$('#main .inline-name')) refresh();
+    refreshWhenIdle();
   } else if (name === 'update') {
     state.update = payload;
     if (state.checkingByHand && payload.status !== 'checking') {
@@ -3176,7 +3301,7 @@ window.appEvent = (name, payload) => {
       else if (payload.status === 'idle') toast(`You're up to date: ${payload.current} is the latest version.`);
     }
     if (state.page === 'settings') renderSettings();
-    else if (payload.status === 'ready' && !state.dragging && !$('#main .inline-name')) refresh();
+    else if (payload.status === 'ready') refreshWhenIdle();
   }
 };
 
@@ -3202,7 +3327,7 @@ document.addEventListener('click', async e => {
   const groupX = e.target.closest('.btable [data-group-x]');
   if (groupX) return deleteGroupAsked(Number(groupX.dataset.groupX));
   const spentGroup = e.target.closest('.btable [data-spent-group]');
-  if (spentGroup) return openSpent({ month: state.month, group_id: Number(spentGroup.dataset.spentGroup) });
+  if (spentGroup) return openSpent({ month: shownMonth(), group_id: Number(spentGroup.dataset.spentGroup) });
   const spent = e.target.closest('.btable [data-spent]');
   if (spent) return openCategory(Number(spent.dataset.spent));
   const copy = e.target.closest('.btable [data-copy-budget]');
@@ -3223,13 +3348,17 @@ document.addEventListener('click', async e => {
     if (act === 'restart-update') await call('window_action', ['install_update']);
     else if (act === 'assign') await openAssign();
     else if (act === 'catch-up') {
-      if (await confirmBox(`Catch up ${monthOnly(state.month)}?`, 'Assigns exactly what each category spent this month, so nothing ends it overspent. Good for months gone by.', 'Catch up')) {
-        await call('catch_up', [state.month]); await renderBudget(); toast(`${monthOnly(state.month)} caught up`, { action: undoAction });
+      const month = shownMonth();
+      if (await confirmBox(`Catch up ${monthOnly(month)}?`, 'Assigns exactly what each category spent this month, so nothing ends it overspent. Good for months gone by.', 'Catch up')) {
+        await call('catch_up', [month]); await renderBudget(); toast(`${monthOnly(month)} caught up`, { action: undoAction });
       }
     } else if (act === 'start-here') {
-      await call('set_budget_start', [state.month]); state.boot.budget_start = state.month; await renderBudget();
-      toast(`The budget now starts in ${monthLong(state.month)}`);
+      if (await confirmBox(`Start the budget in ${monthOnly(state.month)}?`, `Every month from ${monthOnly(state.month)} counts, and its spending shows in its categories.`, 'Start here')) {
+        await call('set_budget_start', [state.month]); state.boot.budget_start = state.month; await renderBudget();
+        toast(`The budget now starts in ${monthLong(state.month)}`, { action: undoAction });
+      }
     } else if (act === 'toggle-hidden') { state.showHidden = !state.showHidden; await renderBudget(); }
+    else if (act === 'tx-more') { state.txLimit += 1000; await renderTransactions(); }
     else if (act === 'tx-cat') {
       const cid = await pickCategory(btn);
       if (cid) {
@@ -3263,7 +3392,7 @@ document.addEventListener('click', async e => {
 document.addEventListener('keydown', e => {
   if (e.target.dataset && e.target.dataset.assign !== undefined && e.key === 'Escape') {  // puts it back, saves nothing
     e.preventDefault();
-    e.target.value = e.target.defaultValue;
+    putBack(e.target);
     e.target.blur();
     return;
   }
@@ -3302,7 +3431,7 @@ document.addEventListener('mousedown', e => {
 document.addEventListener('focusin', e => {
   const el = e.target;
   if (!el.matches || !el.matches(AMOUNT_BOXES)) return;
-  if (el.matches('[data-relative]') && !isMath(el)) el.dataset.base = parseMoney(el.value) || 0;
+  noteBefore(el);
   el.select();
 });
 document.addEventListener('focusout', e => { if (e.target === clickedInto) clickedInto = null; });
@@ -3312,7 +3441,7 @@ document.addEventListener('focusout', e => {
   const el = e.target;
   if (!el.matches || !el.matches(AMOUNT_BOXES) || !isMath(el)) return;
   const cents = amountIn(el);
-  if (cents !== null && !Number.isNaN(cents)) el.value = moneyPlain(cents);
+  if (cents !== null && !Number.isNaN(cents)) putIn(el, moneyPlain(cents), cents);
 });
 let dragDepth = 0;
 document.addEventListener('dragenter', e => { if (e.dataTransfer && [...e.dataTransfer.types].includes('Files')) { dragDepth++; document.body.classList.add('dragging'); } });

@@ -36,8 +36,9 @@ from dataclasses import dataclass
 import ledger
 import subscriptions
 import transfers
-from learn import analyze, guess
-from payees import describe
+from errors import UserError
+from learn import always_ask, analyze, guess, unusual, unusual_reason
+from payees import BANK_ENTRY_HINTS, describe
 
 SENT_BACK = "You sent this back"
 NOT_A_TRANSFER = "You said this isn't a transfer"
@@ -47,6 +48,12 @@ NOT_A_TRANSFER = "You said this isn't a transfer"
 class Arrived:
     categorized: int = 0  # without asking
     waiting: int = 0      # in the inbox
+
+
+@dataclass
+class Added:
+    id: int                # a transaction you added by hand
+    question: dict = None  # "What's this for?", as for Outcome
 
 
 @dataclass
@@ -126,11 +133,19 @@ class Inbox:
             warning = subscriptions.charged_when_it_shouldnt(sub, txn["date"])
             if warning:
                 return self._wait(txn, warning)
-            if sub["category_id"] and sub["status"] == "active":
+            biggest = None if txn["hint"] in BANK_ENTRY_HINTS else unusual(c, txn)
+            if biggest:  # even a bill that's different every time asks about one this much bigger
+                return self._wait(txn, unusual_reason(txn, biggest))
+            if sub["category_id"] and sub["status"] == "active" and not always_ask(c, txn):
+                if self._hidden_category_of(sub):
+                    return self._wait(txn, self._hidden_category_of(sub))
                 c.execute("UPDATE transactions SET category_id = ?, status = 'done', reason = ?, refund_of = NULL "
                           "WHERE id = ?", (sub["category_id"], f"{sub['name']} subscription", txn["id"]))
                 return True
         else:
+            again = subscriptions.charged_again(c, txn)  # cancelled or ended, at a new price
+            if again:
+                return self._wait(txn, again)
             question = subscriptions.unmatched_question(c, txn)
             if question:
                 return self._wait(txn, question)  # a new price? Always asked
@@ -141,6 +156,13 @@ class Inbox:
                       (s.options[0], reason, s.refund_of, txn["id"]))
             return True
         return self._wait(txn, reason)
+
+    def _hidden_category_of(self, sub):
+        """"Music's category is hidden" when a recurring charge's category can't take charges
+        any more (hidden since it was set): its charges wait for you rather than go there."""
+        if sub and sub["status"] == "active" and sub["category_id"] and ledger.category_problem(self.conn, sub["category_id"]):
+            return f"{sub['name']}'s category is hidden"
+        return None
 
     def _wait(self, txn, reason):
         """It waits in the inbox, in no category (docs/adr/0002). Returns False: not settled."""
@@ -158,8 +180,25 @@ class Inbox:
         own from the recent imports."""
         c = self.conn
         names = ledger.category_names(c)
-        items = [self._look(txn, names) for txn in c.execute(
-            "SELECT * FROM transactions WHERE status = 'review' ORDER BY date DESC, id DESC LIMIT 1000").fetchall()]
+        waiting = c.execute("SELECT * FROM transactions WHERE status = 'review' ORDER BY date DESC, id DESC").fetchall()
+        items = [self._look(txn, names) for txn in waiting]
+        # Shares of one shared expense are different people chipping in: one person's two e-transfers
+        # aren't two shares, so only the first joins the group (the other is its own item).
+        seen = set()
+        for txn, item in zip(waiting, items):
+            if item["group"].startswith("share:"):
+                key = (item["group"], txn["payee_id"])
+                if key in seen:
+                    item["group"], item["guess"] = "", None
+                else:
+                    seen.add(key)
+        # What a group adds up to (its card shows it), and each item's own amount when it's alone.
+        totals = {}
+        for item in items:
+            if item["group"]:
+                totals[item["group"]] = totals.get(item["group"], 0) + item["amount"]
+        for item in items:
+            item["group_total"] = totals.get(item["group"], item["amount"]) if item["group"] else item["amount"]
         recent = [r["id"] for r in c.execute("SELECT id FROM imports ORDER BY id DESC LIMIT 10")]
         categorized = [r["id"] for r in c.execute(
             f"SELECT id FROM transactions WHERE status = 'done' AND by_you = 0 AND import_id IN "
@@ -174,21 +213,22 @@ class Inbox:
         yours = bool(txn["by_you"])
         if self._income is None:
             self._income = ledger.income_category(c)
-        item = {"id": txn["id"], "suggestions": [{"id": cid, "name": names.get(cid, "?")} for cid in s.options],
+        item = {"id": txn["id"], "amount": txn["amount"], "suggestions": [{"id": cid, "name": names.get(cid, "?")} for cid in s.options],
                 "guess": guess(txn, s, self._income), "mixed": s.mixed, "group": s.group,
                 "yours": yours}
         reasons = [txn["reason"] or SENT_BACK] if yours else []
         alone = yours  # its own item, outside Accept all
         sub = c.execute("SELECT * FROM subscriptions WHERE id = ?", (txn["subscription_id"],)).fetchone() \
             if txn["subscription_id"] else None
-        warning = subscriptions.charged_when_it_shouldnt(sub, txn["date"]) if sub else None
+        warning = subscriptions.charged_when_it_shouldnt(sub, txn["date"]) if sub else subscriptions.charged_again(c, txn)
+        hidden = self._hidden_category_of(sub)
         choices = subscriptions.price_change_choices(c, txn)
         mine = None if yours else transfers.find_counterpart(c, txn, yours=True)
         if mine is not None:
             reasons.append(self._other_half_of(mine, names))
             alone = True
-        elif warning:
-            reasons.append(warning)
+        elif warning or hidden:
+            reasons.append(warning or hidden)
             alone = True
         elif choices:
             item["subscription_choices"] = choices
@@ -232,6 +272,24 @@ class Inbox:
 
     # ── your decisions (all marked yours) ──
 
+    def add_by_hand(self, account_id, date, payee, amount, category_id=None, note=""):
+        """A transaction you add by hand (cash, or an account the app can't import): yours, in
+        `category_id` when you give one (asking "What's this for?" if that looks like a
+        recurring charge, as any categorizing does), else waiting for you in the inbox."""
+        c = self.conn
+        if category_id:
+            ledger.check_category(c, int(category_id))
+        payee_id = ledger.get_or_create_payee(c, payee) if payee else None
+        txn_id = c.execute(
+            "INSERT INTO transactions (account_id, date, amount, payee_id, status, reason, note, by_you) "
+            "VALUES (?, ?, ?, ?, 'review', 'Added by you', ?, 1)",
+            (int(account_id), date, int(amount), payee_id, str(note or ""))).lastrowid
+        question = None
+        if category_id:
+            question = self.categorize([txn_id], category_id).question
+            c.execute("UPDATE transactions SET reason = 'Added by you' WHERE id = ?", (txn_id,))
+        return Added(txn_id, question)
+
     def categorize(self, txn_ids, category_id, recheck_payee=False):
         """You put these transactions in `category_id` (replacing a split, or a transfer:
         its other half then waits for you). Money back for a purchase is linked to it as a
@@ -240,7 +298,8 @@ class Inbox:
         inbox's way, where categorizing re-checks the rest of the payee (not One at a time,
         and never outside the inbox)."""
         if category_id in (None, ""):
-            raise ValueError("Pick a category first.")
+            raise UserError("Pick a category first.")
+        ledger.check_category(self.conn, int(category_id))
         txns = [self._yours(txn_id) for txn_id in txn_ids]
         learnt = [self._categorize(txn, int(category_id)) for txn in txns]
         also = self._follow(learnt)
@@ -297,14 +356,16 @@ class Inbox:
         c = self.conn
         txn = self._txn(txn_id)
         if txn is None:
-            raise ValueError("That transaction no longer exists.")
+            raise UserError("That transaction no longer exists.")
         parts = [p for p in parts if int(p.get("amount") or 0) != 0]
         if len(parts) < 2:
-            raise ValueError("A split needs at least two parts.")
+            raise UserError("A split needs at least two parts.")
         if sum(int(p["amount"]) for p in parts) != txn["amount"]:
-            raise ValueError("The parts have to add up to the transaction's amount.")
+            raise UserError("The parts have to add up to the transaction's amount.")
         if any(not p.get("category_id") for p in parts):
-            raise ValueError("Every part needs a category.")
+            raise UserError("Every part needs a category.")
+        for p in parts:
+            ledger.check_category(c, int(p["category_id"]))
         txn = self._yours(txn_id)
         c.execute("DELETE FROM splits WHERE transaction_id = ?", (txn_id,))
         for p in parts:
@@ -320,7 +381,7 @@ class Inbox:
         c = self.conn
         txn = self._txn(txn_id)
         if txn is None:
-            raise ValueError("That transaction no longer exists.")
+            raise UserError("That transaction no longer exists.")
         before = txn["transfer_id"]
         transfers.make_transfer(c, txn_id, int(account_id))
         after = self._txn(txn_id)["transfer_id"]
@@ -338,7 +399,7 @@ class Inbox:
         Not a transfer). It waits for you, as its own inbox item."""
         txn = self._txn(txn_id)
         if txn is None:
-            raise ValueError("That transaction no longer exists.")
+            raise UserError("That transaction no longer exists.")
         if txn["transfer_account_id"]:
             self.not_a_transfer(txn_id)
         else:
@@ -369,7 +430,7 @@ class Inbox:
         its other half waits for you."""
         txn = self._txn(txn_id)
         if txn is None:
-            raise ValueError("That transaction no longer exists.")
+            raise UserError("That transaction no longer exists.")
         if txn["transfer_account_id"]:
             for other in transfers.unlink(self.conn, txn_id)[1:]:
                 self._send_back(other, NOT_A_TRANSFER)

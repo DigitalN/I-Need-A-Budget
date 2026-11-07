@@ -51,8 +51,9 @@ the real page drives the real engine (`BudgetService.dispatch`) over localhost. 
 look at and click through the interface in a browser (Claude: the `preview` entry in
 `.claude/launch.json`, in the browser pane). It's a development tool only, never bundled,
 and it refuses to use the app's real data folder. The default data folder is
-`~/Library/Caches/I Need A Budget-preview`; put copies of bank files in a `downloads`
-folder there and set `downloads_dir` in its `settings.json` to try onboarding.
+`~/Library/Caches/I Need A Budget-preview`, and its Downloads folder is `downloads` inside
+it (created empty; the preview never uses your real `~/Downloads` and refuses to start if its
+`settings.json` points there). Put copies of bank files in it to try onboarding.
 
 ## README screenshots
 

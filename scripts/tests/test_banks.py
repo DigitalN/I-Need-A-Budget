@@ -1,9 +1,11 @@
 """Files from banks other than Tangerine: RBC's CSV, any bank's Quicken file, and CSVs
 set up once by showing the app their columns. Made-up data only."""
 
+from pathlib import Path
+
 import csvlayout
 import importer
-from helpers import call, txns, write
+from helpers import bank_csv, call, txns, write
 
 RBC = """"Account Type","Account Number","Transaction Date","Cheque Number","Description 1","Description 2","CAD$","USD$"
 Chequing,00000-0004321,10/1/2026,,"e-Transfer sent","SAMPLE PERSON 4XYZ12",-40.00,,
@@ -131,6 +133,100 @@ def test_a_new_kind_of_csv_waits_in_the_inbox_until_its_set_up(app):
     _settled(app)
     [auto] = app.watch_downloads()["results"]
     assert (auto["account_name"], auto["added"], auto["duplicates"]) == ("Sample CU Visa", 1, 2)
+
+
+def _with_a_known_bank_csv(app):
+    """A set-up account with one imported file, onboarding finished: the state in which the
+    watcher looks at Downloads."""
+    call(app, "import_files", [str(write(app.test_downloads, "Chequing.CSV",
+                                         bank_csv([("09/01/2026", "SAMPLE GYM", "SAMPLE GYM", "-30.00")])))])
+    _onboarded(app)
+
+
+def test_an_unreadable_csv_doesnt_stop_the_app(app):
+    """Issue #47: a UTF-16 file (Excel's "Unicode text"), one with old Mac line endings, one
+    with a cell over the csv module's size limit: the app still loads, the rest of Downloads
+    still imports, and the odd file is skipped by name."""
+    _with_a_known_bank_csv(app)
+    write(app.test_downloads, "Chequing-2.CSV", bank_csv([("10/05/2026", "SAMPLE BAKERY", "SAMPLE BAKERY", "-4.50")]))
+    (app.test_downloads / "export.csv").write_bytes(
+        "\ufeffDate,Description,Amount\r\n2026-10-01,SAMPLE,-1.00\r\n".encode("utf-16-le"))
+    (app.test_downloads / "mac.csv").write_bytes(b"Date,Description,Amount\r2026-10-01,SAMPLE,-1.00\r")
+    (app.test_downloads / "huge.csv").write_text("Date,Description,Amount\n2026-10-01," + "x" * 200_000 + ",-1.00\n")
+    _settled(app)
+    assert app.dispatch("bootstrap", [])["ok"]
+    for request in ("counts", "inbox", "scan_downloads"):
+        assert app.dispatch(request, [])["ok"], request
+    app.watch_downloads()
+    assert not (app.test_downloads / "Chequing-2.CSV").exists()  # imported and moved
+    assert len(txns(app)) == 2
+
+
+def test_a_csv_with_old_mac_line_endings_is_read(tmp_path):
+    """Issue #47: Excel's "CSV (Macintosh)" ends lines with a lone CR."""
+    path = tmp_path / "Chequing.CSV"
+    path.write_bytes(bank_csv([("10/05/2026", "SAMPLE BAKERY", "SAMPLE BAKERY", "-4.50"),
+                               ("10/06/2026", "SAMPLE GYM", "SAMPLE GYM", "-30.00")]).replace("\n", "\r").encode())
+    assert [(r.date, r.amount) for r in importer.parse(path).rows] == [("2026-10-05", -450), ("2026-10-06", -3000)]
+
+
+def test_a_utf16_file_is_decoded_by_its_byte_order_mark(tmp_path):
+    text = "\ufeff" + bank_csv([("10/05/2026", "SAMPLE BAKERY", "SAMPLE BAKERY", "-4.50")])
+    for encoding in ("utf-16-le", "utf-16-be"):
+        path = tmp_path / f"{encoding}.csv"
+        path.write_bytes(text.encode(encoding))
+        assert [(r.date, r.amount) for r in importer.parse(path).rows] == [("2026-10-05", -450)], encoding
+
+
+def test_a_file_the_csv_module_cant_read_is_not_a_bank_file_with_a_plain_message(tmp_path):
+    path = tmp_path / "Chequing.CSV"
+    path.write_text("Date,Transaction,Name,Memo,Amount\n10/05/2026,OTHER," + "x" * 200_000 + ",,-4.50\n")
+    try:
+        importer.parse(path)
+    except importer.ImportError_ as e:
+        assert "Something went wrong" not in str(e)
+    else:
+        raise AssertionError("expected an ImportError_")
+    path.write_text("Date,Description,Amount\n2026-10-01," + "x" * 200_000 + ",-1.00\n")
+    assert importer.detect(path.read_text()) is None
+
+
+def test_one_bad_file_doesnt_stop_the_rest_of_downloads(app, monkeypatch):
+    """Issue #47: whatever one file does, the others are still looked at, and it's logged by name."""
+    _with_a_known_bank_csv(app)
+    write(app.test_downloads, "Chequing-2.CSV", bank_csv([("10/05/2026", "SAMPLE BAKERY", "SAMPLE BAKERY", "-4.50")]))
+    write(app.test_downloads, "a-broken-one.csv", "Date,Description,Amount\n")
+    _settled(app)
+    real = importer.read_text
+
+    def read_text(path):
+        if Path(path).name == "a-broken-one.csv":
+            raise RuntimeError("something nobody planned for")
+        return real(path)
+
+    monkeypatch.setattr(importer, "read_text", read_text)
+    assert [f["filename"] for f in call(app, "inbox")["files"]] == []
+    assert [r["added"] for r in app.watch_downloads()["results"]] == [1]
+
+
+def test_a_csv_that_no_longer_fits_its_layout_waits_in_the_inbox_to_be_set_up_again(app):
+    """Issue #47: a bank changes a date format, so the saved layout doesn't fit the next file.
+    The file is listed as needing set-up ("layout"), as its error promises, not left unread."""
+    _onboarded(app)
+    first = write(app.test_downloads, "chequing.csv", DEBIT_CREDIT)
+    setup = call(app, "csv_setup", str(first))
+    call(app, "setup_csv", str(first), setup["layout"], {"name": "Sample Chequing", "kind": "chequing", "bank": "ATB"})
+    rows = [f"2026-10-{day:02d},SAMPLE SHOP {day},{day}.00,," for day in range(1, 21)]
+    rows[9] = "sometime in October,SAMPLE SHOP 10,10.00,,"  # one row in twenty: still a bank file, but it doesn't fit
+    changed = write(app.test_downloads, "chequing-2.csv", "Date,Description,Debit,Credit,Balance\n" + "\n".join(rows) + "\n")
+    _settled(app)
+    waiting = app.watch_downloads()
+    assert waiting is not None and [(f["filename"], f["needs"]) for f in waiting["needs_setup"]] == [("chequing-2.csv", "layout")]
+    assert [(f["filename"], f["needs"]) for f in call(app, "inbox")["files"]] == [("chequing-2.csv", "layout")]
+    assert changed.exists()
+    # Setting it up again shows its columns (the saved layout doesn't fit, so it isn't offered as known)
+    again = call(app, "csv_setup", str(changed))
+    assert not again["saved"]
 
 
 def test_same_layout_different_name_only_asks_which_account(app):

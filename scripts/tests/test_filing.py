@@ -308,7 +308,7 @@ def test_always_ask_separates_a_payee_and_turning_it_off_groups_it_again(app):
     call(app, "categorize", txn_ids=[second["id"]], category_id=ids["Fun Money"])  # now a mixed payee
     imp(app, CARD_FILE.replace(".CSV", "-2.CSV"), card_csv([
         ("08/02/2026", "AMZN Mktp CA*5N17737T1 TORONTO O", "-16.47", "Other"),
-        ("08/03/2026", "AMZN Mktp CA*569BD7OE0 TORONTO O", "-97.48", "Other"),
+        ("08/03/2026", "AMZN Mktp CA*569BD7OE0 TORONTO O", "-58.48", "Other"),  # under 3× the biggest before: not unusual
     ]))
     groups = lambda: [i["group"] for i in call(app, "inbox")["items"]]
     assert len(groups()) == 3 and len(set(groups())) == 1 and groups()[0]  # one card, even though it's mixed

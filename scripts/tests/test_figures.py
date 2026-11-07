@@ -9,6 +9,7 @@ import random
 
 import ledger
 from db import Database
+from helpers import call
 from figures import Figures
 from util import months_between
 
@@ -274,3 +275,13 @@ def test_cash(tmp_path):
         assert f.month("2026-10")["summary"]["cash"] is None and f.month("2026-10")["summary"]["off"] is None
         assert f.balances()["cash"] is None
         assert f.without_balance == ["New Savings"]
+
+def test_a_past_months_card_row_owes_what_it_owed_then(app):
+    card = call(app, "add_account", "Card", "credit_card", 0, "2026-07-31")
+    call(app, "add_account", "Wallet", "cash", 100000, "2026-07-31")
+    call(app, "finish_onboarding", "2026-08")
+    gid = call(app, "add_group", "Everyday"); call(app, "add_category", gid, "Food")
+    food = next(c["id"] for g in call(app, "categories") for c in g["categories"] if c["name"] == "Food")
+    call(app, "add_transaction", card, "2026-10-05", "SAMPLE STORE", -200000, food)
+    row = next(x for g in call(app, "month", "2026-08")["groups"] for x in g["categories"] if x["debt_account_id"] == card)
+    assert row["owing"] == 0

@@ -23,7 +23,7 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 APP_NAME = "I Need A Budget"
-VERSION = "1.2.6"  # the build reads it from here; see the release checklist in docs/DEVELOPMENT.md
+VERSION = "1.3.0"  # the build reads it from here; see the release checklist in docs/DEVELOPMENT.md
 if os.environ.get("INAB_DATA_DIR"):  # for development/testing against a throwaway folder
     DATA_DIR = Path(os.environ["INAB_DATA_DIR"]).expanduser()
     LOG_DIR = DATA_DIR / "Logs"
@@ -191,7 +191,7 @@ class BudgetApp:
         try:
             return self._updater.check_now()
         except UpdateError as e:
-            from service import UserError
+            from errors import UserError
             raise UserError(str(e)) from None
 
     def _restart_into_update(self):
@@ -204,7 +204,7 @@ class BudgetApp:
         return True
 
     def _set_github_token(self, token):
-        from service import UserError
+        from errors import UserError
         from updater import UpdateError, save_keychain_token
 
         try:

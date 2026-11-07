@@ -9,13 +9,38 @@ from datetime import date, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 
+_DECIMAL_COMMA = re.compile(r"\d+,\d{1,2}")            # 12,34
+_THOUSANDS_COMMAS = re.compile(r"\d+(?:,\d{3})+(?:\.\d+)?")  # 1,234  1,234,567.89
+_EUROPEAN = re.compile(r"\d{1,3}(?:\.\d{3})+,\d{1,2}")    # 1.234,56
+
+
+def _with_decimal_point(s):
+    """The digits of an amount written with a decimal point, or None when its commas and dots
+    don't make sense. A comma then one or two digits is the decimal comma of a French-language
+    file; a comma then exactly three is a thousands separator; 1.234,56 is European."""
+    sign = s[0] if s[:1] in ("+", "-") else ""
+    digits = s[len(sign):]
+    if "," not in digits:
+        return s
+    if _DECIMAL_COMMA.fullmatch(digits):
+        return sign + digits.replace(",", ".")
+    if _THOUSANDS_COMMAS.fullmatch(digits):
+        return sign + digits.replace(",", "")
+    if _EUROPEAN.fullmatch(digits):
+        return sign + digits.replace(".", "").replace(",", ".")
+    return None
+
+
 def to_cents(text):
-    """'−1,259.99', '(4.08)', '$12', '-10.4900' → int cents. Raises ValueError."""
-    s = str(text).strip().replace(",", "").replace("$", "").replace("−", "-").replace(" ", "")
+    """'−1,259.99', '(4.08)', '$12', '-10.4900', '-12,34' → int cents. Raises ValueError."""
+    s = re.sub(r"\s+", "", str(text)).replace("$", "").replace("−", "-")
     negative = False
     if s.startswith("(") and s.endswith(")"):
         s, negative = s[1:-1], True
+    s = _with_decimal_point(s)
     try:
+        if s is None:
+            raise InvalidOperation
         value = Decimal(s)
     except InvalidOperation:
         raise ValueError(f"Not an amount: {text!r}") from None
@@ -73,6 +98,10 @@ def parse_date(text, order="mdy"):
     `order` is 'dmy'), '2026-10-08', '2026/10/08', OFX's '20261008' / '20261008120000[-5:EST]',
     'Oct 8, 2026', '8 Oct 2026', '08-OCT-26'. Two-digit years are 20xx."""
     s = str(text).strip()
+    if order == "ymd":  # 2026-10-08, or 26-10-08 (a two-digit year first)
+        m = re.fullmatch(r"(\d{4}|\d{2})[/.-](\d{1,2})[/.-](\d{1,2})", s)
+        if m:
+            return date(_year(m.group(1)), int(m.group(2)), int(m.group(3))).isoformat()
     m = re.fullmatch(r"(\d{1,2})[/.-](\d{1,2})[/.-](\d{4}|\d{2})", s)
     if m:
         a, b, year = int(m.group(1)), int(m.group(2)), _year(m.group(3))
@@ -107,9 +136,11 @@ def now():
     return datetime.now().isoformat(timespec="seconds")
 
 
-def same_day_next_month(day):
-    """The same day of the month a month later, clamped to the month's end."""
+def same_day_next_month(day, anchor_day=None):
+    """The same day of the month a month later, clamped to the month's end. With `anchor_day`
+    (the day a monthly charge belongs on: the 31st), that day instead of `day`'s, so a charge
+    clamped to the 28th in February is due on the 31st again in March."""
     d = date.fromisoformat(day)
     month = add_months(month_of(day), 1)
     last = date.fromisoformat(last_day(month)).day
-    return f"{month}-{min(d.day, last):02d}"
+    return f"{month}-{min(anchor_day or d.day, last):02d}"

@@ -24,7 +24,7 @@ from pathlib import Path
 
 log = logging.getLogger("inab")
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 BACKUPS_KEPT = 14
 
 SCHEMA = """
@@ -123,7 +123,11 @@ CREATE TABLE IF NOT EXISTS imports (
     rows_new INTEGER NOT NULL DEFAULT 0,
     first_date TEXT,
     last_date TEXT,
-    archived_path TEXT
+    archived_path TEXT,
+    anchor_before_date TEXT,             -- the balance this import replaced (none: the account had none) ...
+    anchor_before_balance INTEGER,
+    anchor_after_date TEXT,              -- ... and the one it set (none: it didn't move the balance)
+    anchor_after_balance INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS subscriptions (
@@ -302,7 +306,15 @@ class Database:
                     "'Split by you', 'Added by you') OR (status = 'review' AND reason IN ('No longer a transfer', ''))")
                 self.conn.execute("UPDATE transactions SET reason = 'You sent this back' "
                                   "WHERE status = 'review' AND reason = '' AND by_you = 1")
-            # Next upgrade: `if version is not None and version < 7: ...`, then raise SCHEMA_VERSION.
+            if version is not None and version < 7:
+                # Removing an import puts back the balance it replaced. Imports made before this
+                # remember nothing, so removing one leaves the balance where it is, as it did.
+                columns = [r["name"] for r in self.conn.execute("PRAGMA table_info(imports)")]
+                for column, kind in (("anchor_before_date", "TEXT"), ("anchor_before_balance", "INTEGER"),
+                                     ("anchor_after_date", "TEXT"), ("anchor_after_balance", "INTEGER")):
+                    if column not in columns:
+                        self.conn.execute(f"ALTER TABLE imports ADD COLUMN {column} {kind}")
+            # Next upgrade: `if version is not None and version < 8: ...`, then raise SCHEMA_VERSION.
             self.conn.execute("INSERT INTO meta (key, value) VALUES ('schema_version', ?) "
                               "ON CONFLICT(key) DO UPDATE SET value = excluded.value", (str(SCHEMA_VERSION),))
             if version is not None and version < SCHEMA_VERSION:
@@ -442,7 +454,9 @@ class Database:
             finally:
                 dest.close()
         shutil.move(str(tmp), str(target))
-        for old in sorted(folder.glob("budget-*.db"))[:-BACKUPS_KEPT]:
+        # Only the dated daily copies: the one made before each upgrade (budget-before-upgrade-…)
+        # is kept for good and mustn't use up a slot.
+        for old in sorted(folder.glob("budget-[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9].db"))[:-BACKUPS_KEPT]:
             old.unlink(missing_ok=True)
         log.info("Backed up the database to %s", target)
         return target

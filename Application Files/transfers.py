@@ -7,8 +7,10 @@ A transfer shows up twice, once in each account's export, often a day or two apa
 once both are imported, `transfer_id` (each other). Transfers have no category: they
 aren't spending. The budget counts a card payment once, from the cash side.
 
-If only one half is imported so far, it's still marked as a transfer to the obvious
-account, and the other half pairs with it when it arrives.
+If only one half is imported so far and the bank's wording says which account it is
+("credit card payment", or an account's name in the text), it's still marked as a transfer
+to it, and the other half pairs with it when it arrives (a guess gives way to a real other
+half). Any other own-account transfer waits in the inbox for its other half, or for you.
 
 The inbox (inbox.py) decides when to pair; this module only pairs. It never pairs with a
 transaction you decided about (docs/adr/0005): one you categorized, split or sent back,
@@ -16,6 +18,8 @@ or said isn't a transfer. A half arriving for one of those waits in the inbox in
 """
 
 import re
+
+from payees import describe
 
 PAIR_WINDOW_DAYS = 7
 
@@ -26,18 +30,28 @@ def _accounts(conn):
 
 def find_counterpart(conn, txn, window=PAIR_WINDOW_DAYS, yours=False):
     """The other half of a transfer: the opposite amount in another account, within a
-    week, not paired yet, and looking like a transfer on at least one side. Not one you
-    decided about, unless you marked it as a transfer to this account. With `yours`, only
-    one you decided about that isn't a transfer: the inbox asks about those."""
-    mine = "by_you = 1 AND transfer_account_id IS NULL" if yours else "(by_you = 0 OR transfer_account_id = :account)"
+    week, not paired yet, and looking like a transfer on at least one side. When only
+    `txn` looks like one, the other must still be waiting in the inbox (a categorized
+    purchase of the same amount isn't the other half). One whose account was only guessed
+    (the app's, its other half wasn't imported) may be paired with the real other half.
+    Not one you decided about, unless you marked it as a transfer to this account. With
+    `yours`, only one you decided about that isn't a transfer: the inbox asks about those."""
+    if yours:
+        mine = "by_you = 1 AND transfer_account_id IS NULL"
+        looks = "(hint = 'transfer' OR :hint = 'transfer' OR transfer_account_id = :account OR :target = account_id)"
+        other_account = "(transfer_account_id IS NULL OR transfer_account_id = :account)"
+    else:
+        mine = "(by_you = 0 OR transfer_account_id = :account)"
+        looks = ("(hint = 'transfer' OR transfer_account_id = :account "
+                 "OR (status = 'review' AND (:hint = 'transfer' OR :target = account_id)))")
+        other_account = "(transfer_account_id IS NULL OR transfer_account_id = :account OR by_you = 0)"
     return conn.execute(
         f"""
         SELECT * FROM transactions
          WHERE account_id != :account AND amount = :opposite AND transfer_id IS NULL AND id != :id
            AND date BETWEEN date(:date, :minus) AND date(:date, :plus)
-           AND (hint = 'transfer' OR :hint = 'transfer' OR transfer_account_id = :account
-                OR :target = account_id)
-           AND (transfer_account_id IS NULL OR transfer_account_id = :account)
+           AND {looks}
+           AND {other_account}
            AND {mine}
          ORDER BY abs(julianday(date) - julianday(:date)), id
          LIMIT 1
@@ -60,22 +74,38 @@ def link(conn, a, b):
 
 
 def guess_other_account(conn, txn, accounts=None):
-    """For a transfer whose other half isn't imported: the one account it can be."""
+    """For a transfer whose other half isn't imported: the one account it can be, when the
+    bank's wording says so. "Credit card payment" from a bank account is a payment to the one
+    card there is (the one the text names, if there are several); so is "line of credit". Any
+    other own-account transfer ("ONLINE BANKING TRANSFER") is to an account only when the
+    text names exactly one: with no way to tell, it waits in the inbox, where Transfer…
+    pairs it. (A payment on a card is from the one chequing account there is.)"""
     accounts = accounts or _accounts(conn)
     here = accounts.get(txn["account_id"])
     if here is None:
         return None
     text = f"{txn['raw_name']} {txn['raw_memo']}".upper()
+    others = [a for a in accounts.values() if a["id"] != here["id"]]
     if here["kind"] in ("chequing", "savings", "cash"):
-        wanted = ("credit_card",) if "CREDIT CARD" in text else \
-            ("line_of_credit",) if "LINE OF CREDIT" in text else ("credit_card", "line_of_credit")
+        key = describe(txn["raw_name"] or "", txn["raw_memo"] or "", here["kind"]).key
+        if key == "creditcardpayment" or "CREDIT CARD" in text:
+            options = [a for a in others if a["kind"] == "credit_card"]
+        elif key == "lineofcredittransfer" or "LINE OF CREDIT" in text:
+            options = [a for a in others if a["kind"] == "line_of_credit"]
+        else:
+            return next(iter(_the_one_named(others, text)), None)
     else:
-        wanted = ("chequing",)
-    options = [a for a in accounts.values() if a["kind"] in wanted and a["id"] != here["id"]]
+        options = [a for a in others if a["kind"] == "chequing"]
     if len(options) > 1:
         # Several cards (at different banks): only one the text names, never a guess.
-        options = [a for a in options if _named_in(a, text)]
+        options = _the_one_named(options, text)
     return options[0] if len(options) == 1 else None
+
+
+def _the_one_named(accounts, text):
+    """[account] if exactly one of `accounts` is named in `text`, else []."""
+    named = [a for a in accounts if _named_in(a, text)]
+    return named if len(named) == 1 else []
 
 
 def _named_in(account, text):

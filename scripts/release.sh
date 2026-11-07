@@ -32,6 +32,8 @@ if [[ -n "$NOTES" ]]; then
     case "$(cd "$(dirname "$NOTES")" && pwd -P)/" in
         "$(pwd -P)/"*) fail "Write the release notes outside the repository." ;;
     esac
+    # Release notes are public: the same checks as a commit's (card numbers, .git-denylist).
+    python3 scripts/hooks/privacy_check.py --what "In the release notes" "$NOTES" || fail "The release notes have something private in them."
 elif [[ $DRY == 0 ]]; then
     fail "Give the release notes file: scripts/release.sh NOTES.md"
 fi
