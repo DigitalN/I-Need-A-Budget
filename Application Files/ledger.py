@@ -95,39 +95,46 @@ def opening_cash(conn, start_month):
 OTHER_KIND_DAYS = 2  # a bank's CSV and its Quicken file can date one transaction this many days apart
 
 
-def nearest_row(candidates, day, amount, days=OTHER_KIND_DAYS):
-    """Of `candidates` (dicts with id, date, amount), the one with this amount whose date is
-    nearest `day`, within `days` (the lower id on a tie), or None."""
-    best = None
-    for c in candidates:
-        gap = abs(days_between(c["date"], day))
-        if c["amount"] == amount and gap <= days and (best is None or (gap, c["id"]) < best[0]):
-            best = ((gap, c["id"]), c)
-    return best[1] if best else None
+def same_kind_of_file(a, b):
+    """Whether two imports' formats are the same kind of file. A set-up CSV is stored as
+    `csv:<layout id>:<its shape>`; one imported before that was stored as plain `csv`, and counts
+    as the same kind as any of them."""
+    if a == b:
+        return True
+    return "csv" in (a, b) and a.startswith("csv") and b.startswith("csv")
 
 
-def cross_kind_pairs(conn, a_id, b_id, days=OTHER_KIND_DAYS):
+def pair_nearest(wanted, offered, days=OTHER_KIND_DAYS, allowed=None):
+    """[(wanted id, offered id)]: rows (dicts with id, date, amount) that are the same transaction,
+    seen in two kinds of file: the same amount, dates up to `days` apart, each used once, the
+    nearest dates first over all of them at once (a tie goes to the lower ids), not in the order
+    the rows come. `allowed(w, o)` can rule a pair out."""
+    by_amount = {}
+    for o in offered:
+        by_amount.setdefault(o["amount"], []).append(o)
+    candidates = sorted(
+        (gap, w["id"], o["id"]) for w in wanted for o in by_amount.get(w["amount"], ())
+        for gap in [abs(days_between(w["date"], o["date"]))] if gap <= days and (allowed is None or allowed(w, o)))
+    used_w, used_o, out = set(), set(), []
+    for _, w, o in candidates:
+        if w not in used_w and o not in used_o:
+            used_w.add(w)
+            used_o.add(o)
+            out.append((w, o))
+    return out
+
+
+def cross_kind_pairs(conn, a_id, b_id, days=OTHER_KIND_DAYS, skip_a=(), skip_b=()):
     """[(a's transaction id, b's)]: rows of two accounts that are the same transaction seen in
-    different kinds of file (a bank's CSV and its Quicken file, or a CSV set up again): the same
-    amount, dates up to `days` apart, each matched once, nearest first."""
-    def rows(account_id):
+    different kinds of file (a bank's CSV and its Quicken file, or a CSV set up again), by
+    pair_nearest. `skip_a` / `skip_b`: rows that already have an exact twin (the same
+    fingerprint or bank ID), which pair with nothing else."""
+    def rows(account_id, skip):
         return [dict(r) for r in conn.execute(
             "SELECT t.id, t.date, t.amount, COALESCE(i.format, '') AS kind FROM transactions t "
-            "LEFT JOIN imports i ON i.id = t.import_id WHERE t.account_id = ?", (account_id,))]
-    a_rows, b_rows = rows(a_id), rows(b_id)
-    by_amount = {}
-    for b in b_rows:
-        by_amount.setdefault(b["amount"], []).append(b)
-    candidates = sorted(
-        (abs(days_between(a["date"], b["date"])), a["id"], b["id"]) for a in a_rows
-        for b in by_amount.get(a["amount"], ()) if a["kind"] != b["kind"] and abs(days_between(a["date"], b["date"])) <= days)
-    used_a, used_b, out = set(), set(), []
-    for _, a, b in candidates:
-        if a not in used_a and b not in used_b:
-            used_a.add(a)
-            used_b.add(b)
-            out.append((a, b))
-    return out
+            "LEFT JOIN imports i ON i.id = t.import_id WHERE t.account_id = ?", (account_id,)) if r["id"] not in skip]
+    return pair_nearest(rows(a_id, set(skip_a)), rows(b_id, set(skip_b)), days,
+                        allowed=lambda a, b: not same_kind_of_file(a["kind"], b["kind"]))
 
 
 def duplicate_accounts(conn):
@@ -184,22 +191,25 @@ def merge_accounts(conn, from_id, into_id):
     moved = dropped = 0
     asked = []
     copies = conn.execute("SELECT * FROM transactions WHERE account_id = ? ORDER BY date, id", (from_id,)).fetchall()
-    # Rows seen in a different kind of file have no shared fingerprint: they pair by date and amount
-    # (the rows with a twin by fingerprint or bank ID keep that one).
-    taken = {r["id"] for t in copies for r in [conn.execute(
-        "SELECT id FROM transactions WHERE account_id = ? AND (fingerprint = ? OR fitid = ?)",
-        (into_id, t["fingerprint"], t["fitid"])).fetchone()] if r}
-    paired = {a: b for a, b in cross_kind_pairs(conn, from_id, into_id) if b not in taken}
+    # As in an import: a copy's exact twin first (the same fingerprint, then the same bank ID), and
+    # those rows leave the pool. Rows seen in a different kind of file share neither, so the rest pair
+    # by date and amount, nearest first, from what's left.
+    twins = {}
     for t in copies:
         twin = None
-        if t["id"] in paired:
-            twin = conn.execute("SELECT * FROM transactions WHERE id = ?", (paired[t["id"]],)).fetchone()
-        if t["fingerprint"] and twin is None:
+        if t["fingerprint"]:
             twin = conn.execute("SELECT * FROM transactions WHERE account_id = ? AND fingerprint = ?",
                                 (into_id, t["fingerprint"])).fetchone()
         if twin is None and t["fitid"]:
             twin = conn.execute("SELECT * FROM transactions WHERE account_id = ? AND fitid = ?",
                                 (into_id, t["fitid"])).fetchone()
+        if twin is not None:
+            twins[t["id"]] = twin
+    paired = cross_kind_pairs(conn, from_id, into_id, skip_a=set(twins), skip_b={t["id"] for t in twins.values()})
+    for copy_id, twin_id in paired:
+        twins[copy_id] = conn.execute("SELECT * FROM transactions WHERE id = ?", (twin_id,)).fetchone()
+    for t in copies:
+        twin = twins.get(t["id"])
         if twin is None:
             if t["fitid"] and conn.execute("SELECT 1 FROM transactions WHERE account_id = ? AND fitid = ?",
                                            (into_id, t["fitid"])).fetchone():

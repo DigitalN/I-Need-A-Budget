@@ -43,8 +43,11 @@ within a file counts for nothing, and one already on another row of the account 
 again. A bank's CSV and its Quicken file can describe the
 same transaction differently, so a row is also the same as one from a *different kind*
 of file in that account (a CSV set up again counts as another kind: imports.format is
-`csv:<layout id>:<its shape>`) with the same amount and a date up to OTHER_KIND_DAYS either
-side, each matched once, nearest first. Accounts holding the same transactions that way are
+`csv:<layout id>:<its shape>`; plain `csv`, from before that, is the same kind as any of
+them) with the same amount and a date up to OTHER_KIND_DAYS either side, each matched once.
+It's matched over the whole file, not row by row: every row's exact twin first (fingerprint,
+then FITID), then the rest by nearest date first, so a new row never takes the place of an old
+one's twin (ledger.pair_nearest). Accounts holding the same transactions that way are
 flagged and merged like those with shared fingerprints (ledger.cross_kind_pairs). So is one
 you added by hand (no fingerprint, ID or import) with the same amount within MANUAL_DAYS days:
 it takes the bank's date, text and IDs and keeps what you decided.
@@ -785,43 +788,49 @@ def _import_part(conn, fmt, part, filename, sha, archived_path, account_id=None,
         (filename, sha, account_id, kind, len(part.rows), part.first_date, part.last_date, archived_path)).lastrowid
     result.import_id = import_id
 
-    # Rows from a different kind of file (this bank's CSV, when this is its Quicken file, or a
-    # layout set up again): the same amount, a day or two either side, is the same transaction,
-    # whatever each file called it and whenever it was dated (posting moves a date). Each is
-    # matched once, nearest date first.
-    others = {}
-    for r in conn.execute("SELECT t.id, t.date, t.amount FROM transactions t JOIN imports i ON i.id = t.import_id "
-                          "WHERE t.account_id = ? AND i.format != ? AND t.date BETWEEN date(?, ?) AND date(?, ?) "
-                          "ORDER BY t.id", (account_id, kind, part.first_date or "", f"-{ledger.OTHER_KIND_DAYS} days",
-                                            part.last_date or "", f"+{ledger.OTHER_KIND_DAYS} days")):
-        others.setdefault(r["amount"], []).append(dict(r))
-
     # A bank's transaction ID is a hint, not proof: banks repeat them (one per day, 1, 2, 3…
     # in every download, one for two identical coffees). One that repeats within the file says
     # nothing about its rows, which the fingerprint tells apart (it counts identical rows).
     repeated = {f for f, n in Counter(r.fitid for r in part.rows if r.fitid).items() if n > 1}
+    fitids = [None if row.fitid in repeated else row.fitid for row in part.rows]
 
-    for row, fp in zip(part.rows, fps):
-        same = others.get(row.amount, [])
-        fitid = None if row.fitid in repeated else row.fitid
+    # First every row's exact twin: its fingerprint, else its bank ID. Those old rows leave the pool.
+    twins = {}
+    for i, (row, fp) in enumerate(zip(part.rows, fps)):
         existing = conn.execute("SELECT id, fitid FROM transactions WHERE account_id = ? AND fingerprint = ?",
                                 (account_id, fp)).fetchone()
-        if existing is None and fitid:
+        if existing is None and fitids[i]:
             # The same ID counts only for the same amount, about when it was (posting moves a date).
             existing = conn.execute(
                 "SELECT id, fitid FROM transactions WHERE account_id = ? AND fitid = ? AND amount = ? "
                 "AND date BETWEEN date(?, ?) AND date(?, ?)",
-                (account_id, fitid, row.amount, row.date, f"-{FITID_DAYS} days", row.date, f"+{FITID_DAYS} days")
+                (account_id, fitids[i], row.amount, row.date, f"-{FITID_DAYS} days", row.date, f"+{FITID_DAYS} days")
             ).fetchone()
-        if existing is None and same:
-            twin = ledger.nearest_row(same, row.date, row.amount)
-            if twin is not None:
-                existing = conn.execute("SELECT id, fitid FROM transactions WHERE id = ?", (twin["id"],)).fetchone()
+        if existing is not None:
+            twins[i] = existing
+
+    # Then, over every row left at once, the rows from a different kind of file (this bank's CSV, when
+    # this is its Quicken file, or a layout set up again): the same amount, a day or two either side,
+    # is the same transaction, whatever each file called it and whenever it was dated (posting moves a
+    # date). Each is matched once, nearest date first: not in the order of the file, where a new
+    # row would take the twin of an old one.
+    gone = {t["id"] for t in twins.values()}
+    others = [dict(r) for r in conn.execute(
+        "SELECT t.id, t.date, t.amount, i.format AS kind FROM transactions t JOIN imports i ON i.id = t.import_id "
+        "WHERE t.account_id = ? AND t.date BETWEEN date(?, ?) AND date(?, ?)",
+        (account_id, part.first_date or "", f"-{ledger.OTHER_KIND_DAYS} days",
+         part.last_date or "", f"+{ledger.OTHER_KIND_DAYS} days"))
+        if r["id"] not in gone and not ledger.same_kind_of_file(r["kind"], kind)]
+    left = [{"id": i, "date": row.date, "amount": row.amount} for i, row in enumerate(part.rows) if i not in twins]
+    for i, other_id in ledger.pair_nearest(left, others):
+        twins[i] = conn.execute("SELECT id, fitid FROM transactions WHERE id = ?", (other_id,)).fetchone()
+
+    for i, (row, fp) in enumerate(zip(part.rows, fps)):
+        fitid, existing = fitids[i], twins.get(i)
         # The ID is kept only where no other transaction in the account has it (it's unique there).
         keep_fitid = fitid if fitid and not conn.execute(
             "SELECT 1 FROM transactions WHERE account_id = ? AND fitid = ?", (account_id, fitid)).fetchone() else None
         if existing is not None:
-            same[:] = [o for o in same if o["id"] != existing["id"]]
             if keep_fitid and not existing["fitid"]:
                 conn.execute("UPDATE transactions SET fitid = ? WHERE id = ?", (keep_fitid, existing["id"]))
             result.duplicates += 1
