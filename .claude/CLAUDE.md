@@ -25,7 +25,8 @@ that are local businesses, category names that reveal finances, and real amounts
 - `.gitignore` excludes bank files and databases. `scripts/hooks/pre-commit` (switched on
   with `git config core.hooksPath scripts/hooks`; First Time Setup does it) refuses
   commits with those files, card-number shapes, or any word in `.git-denylist`, a local,
-  ignored list of private words. `scripts/tests/test_privacy.py` checks the working tree the same
+  ignored list of private words (it lives in the main checkout: the hooks and the test find
+  it from a git worktree too). `scripts/tests/test_privacy.py` checks the working tree the same
   way. Never bypass the hook, and never weaken these checks.
 - Tests and examples use made-up data only ("SAMPLE CAFE CALGARY AB", made-up amounts).
   Build card file names in code (`scripts/tests/helpers.CARD_FILE`) so no card-number shape

@@ -8,13 +8,13 @@
 #   2. Card numbers: masked in the shape Tangerine uses in file names (four digits, x's, then the
 #      last four digits), and full ones (13-19 digits that pass the Luhn check).
 #   3. Anything listed in .git-denylist: a local, ignored file with one private word or
-#      name per line (account digits, people's names, employers). Matching ignores case.
+#      name per line (account digits, people's names, employers). Matching ignores case. It lives
+#      in the main checkout; privacy_check.py finds it from a git worktree too.
 #
 # 2 and 3 are privacy_check.py, which the commit-msg hook and scripts/release.sh run too.
 # Only ever bypass with `git commit --no-verify` after checking the diff yourself.
 
 set -uo pipefail
-ROOT=$(git rev-parse --show-toplevel)
 fail=0
 
 blocked=$(git diff --cached --name-only --diff-filter=ACMR \
@@ -31,7 +31,7 @@ added=$(git diff --cached -U0 --diff-filter=ACMR | grep -E '^\+' | grep -Ev '^\+
 if ! command -v python3 >/dev/null; then
     echo "✗ python3 is needed for the card number and .git-denylist checks." >&2
     fail=1
-elif ! printf '%s\n' "$added" | python3 "$(dirname "$0")/privacy_check.py" --denylist "$ROOT/.git-denylist" --what "Being added"; then
+elif ! printf '%s\n' "$added" | python3 "$(dirname "$0")/privacy_check.py" --what "Being added"; then
     fail=1
 fi
 

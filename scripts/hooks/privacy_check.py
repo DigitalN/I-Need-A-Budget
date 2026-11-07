@@ -4,6 +4,10 @@ and scripts/tests/test_privacy.py: text that must never reach GitHub.
 
     privacy_check.py [--denylist FILE] [TEXT_FILE]      (reads standard input without one)
 
+The denylist is the main checkout's .git-denylist, found the same way from the main checkout and
+from any git worktree (it's an ignored file, so a worktree has no copy of its own). Without one
+(a copy of the app other people made) the checks for card numbers still run and one line says so.
+
 Prints every offending line to standard error and exits 1 if there is one:
   - a masked card number in the shape Tangerine uses in file names (four digits, x's, then
     the last four digits);
@@ -74,19 +78,34 @@ def problems(text, terms=()):
     return out
 
 
-def repository_denylist():
-    top = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True).stdout.strip()
+def _git_output(cwd, *args):
+    out = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
+    return out.stdout.strip() if out.returncode == 0 else ""
+
+
+def repository_denylist(cwd=None):
+    """Where .git-denylist is: in the main checkout, the folder that holds the repository's common git
+    directory. A worktree's own top folder has no copy (the file is ignored), so looking there would
+    silently check nothing. None outside a repository."""
+    common = _git_output(cwd, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    if common and Path(common).name == ".git":
+        return str(Path(common).parent / ".git-denylist")
+    top = _git_output(cwd, "rev-parse", "--show-toplevel")
     return str(Path(top) / ".git-denylist") if top else None
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--denylist", help="the denylist (default: .git-denylist at the top of the repository)")
+    parser.add_argument("--denylist", help="the denylist (default: .git-denylist in the main checkout)")
     parser.add_argument("--what", default="text", help="what is being checked, for the message")
     parser.add_argument("file", nargs="?", help="the text to check (default: standard input)")
     args = parser.parse_args(argv)
     text = Path(args.file).read_text(encoding="utf-8", errors="replace") if args.file else sys.stdin.read()
-    found = problems(text, read_denylist(args.denylist or repository_denylist()))
+    denylist = args.denylist or repository_denylist()
+    if not (denylist and Path(denylist).is_file()):
+        where = f" at {denylist}" if denylist else ""
+        print(f"No .git-denylist found{where}: private words weren't checked, card numbers were.", file=sys.stderr)
+    found = problems(text, read_denylist(denylist))
     for line, why in found:
         print(f"✗ {args.what}: {why}\n    {line.strip()[:200]}", file=sys.stderr)
     return 1 if found else 0
