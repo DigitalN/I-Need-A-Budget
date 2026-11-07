@@ -30,6 +30,26 @@ SHIM = ("<script>window.pywebview = {api: {"
         "quit: () => console.log('Quit'), asking_before_quit: () => console.log('Quit waits')}};</script>\n")
 
 
+def prepare(data):
+    """The preview's settings, with a Downloads folder that isn't the real one: when the data folder's
+    settings.json has none, `<data>/downloads` (created empty); refuses ~/Downloads. Onboarding
+    imports the bank files in that folder and moves them into the preview's Imported Files/."""
+    sys.path.insert(0, str(APP_FILES))
+    from settings import Settings
+
+    data = Path(data)
+    data.mkdir(parents=True, exist_ok=True)
+    settings = Settings(data / "settings.json")
+    if not settings.get()["downloads_dir"]:
+        settings.update({"downloads_dir": str(data / "downloads")})
+    downloads = settings.downloads_dir().expanduser()
+    if downloads.resolve() == (Path.home() / "Downloads").resolve():
+        sys.exit("The preview never uses your real Downloads folder: onboarding would move the bank files in it. "
+                 "Set downloads_dir in the preview's settings.json to a folder of copies.")
+    downloads.mkdir(parents=True, exist_ok=True)
+    return settings
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--data", default=str(Path.home() / "Library" / "Caches" / "I Need A Budget-preview"))
@@ -41,14 +61,12 @@ def main():
         sys.exit("The preview never uses the app's real data folder. Pass a throwaway --data folder.")
     if args.today:
         os.environ["INAB_TODAY"] = args.today
-    data.mkdir(parents=True, exist_ok=True)
+    settings = prepare(data)
 
-    sys.path.insert(0, str(APP_FILES))
     from db import Database
     from service import BudgetService
-    from settings import Settings
 
-    service = BudgetService(Database(data / "budget.db"), Settings(data / "settings.json"), data, hooks={
+    service = BudgetService(Database(data / "budget.db"), settings, data, hooks={
         "app_info": lambda: {"version": "preview", "data_dir": str(data), "log_path": "", "updates": None},
     })
 

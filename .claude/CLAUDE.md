@@ -248,7 +248,7 @@ with months it didn't exist).
 - After testing, quit test copies and delete their folders.
 - To try the interface on real data: copy the database with SQLite's backup API (read-only
   source) into `~/Library/Caches/I Need A Budget-preview/`, write a `settings.json` there
-  whose `downloads_dir` is an empty folder, run the `preview` launch entry, and delete the
+  whose `downloads_dir` is an empty folder (the preview sets `<data>/downloads` itself if there isn't one, and refuses `~/Downloads`), run the `preview` launch entry, and delete the
   folder afterwards. The preview loads `service.py` once: restart it after Python changes.
 
 ## Git
