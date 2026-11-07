@@ -47,7 +47,8 @@ of file in that account (a CSV set up again counts as another kind: imports.form
 them) with the same amount and a date up to OTHER_KIND_DAYS either side, each matched once.
 It's matched over the whole file, not row by row: every row's exact twin first (fingerprint,
 then FITID), then the rest by nearest date first, so a new row never takes the place of an old
-one's twin (ledger.pair_nearest). Accounts holding the same transactions that way are
+one's twin (ledger.pair_nearest). Only against files that overlap this one, though: two downloads
+that merely meet (one ends Oct 15, the next starts Oct 16) can't hold the same fare twice. Accounts holding the same transactions that way are
 flagged and merged like those with shared fingerprints (ledger.cross_kind_pairs). So is one
 you added by hand (no fingerprint, ID or import) with the same amount within MANUAL_DAYS days:
 it takes the bank's date, text and IDs and keeps what you decided.
@@ -930,13 +931,16 @@ def _import_part(conn, fmt, part, filename, sha, archived_path, account_id=None,
     # this is its Quicken file, or a layout set up again): the same amount, a day or two either side,
     # is the same transaction, whatever each file called it and whenever it was dated (posting moves a
     # date). Each is matched once, nearest date first: not in the order of the file, where a new
-    # row would take the twin of an old one.
+    # row would take the twin of an old one. Only from a file this one overlaps: a download ending
+    # Oct 15 and one starting Oct 16 can't hold the same fare twice (issue #124), so a row of a file
+    # that only meets this one is never a twin (ledger.files_overlap).
     gone = {t["id"] for t in twins.values()}
     others = [dict(r) for r in conn.execute(
         "SELECT t.id, t.date, t.amount, i.format AS kind FROM transactions t JOIN imports i ON i.id = t.import_id "
-        "WHERE t.account_id = ? AND t.date BETWEEN date(?, ?) AND date(?, ?)",
+        "WHERE t.account_id = ? AND t.date BETWEEN date(?, ?) AND date(?, ?) "
+        "AND (i.first_date IS NULL OR i.last_date IS NULL OR (i.first_date <= ? AND i.last_date >= ?))",
         (account_id, part.first_date or "", f"-{ledger.OTHER_KIND_DAYS} days",
-         part.last_date or "", f"+{ledger.OTHER_KIND_DAYS} days"))
+         part.last_date or "", f"+{ledger.OTHER_KIND_DAYS} days", part.last_date or "", part.first_date or ""))
         if r["id"] not in gone and not ledger.same_kind_of_file(r["kind"], kind)]
     left = [{"id": i, "date": row.date, "amount": row.amount} for i, row in enumerate(part.rows) if i not in twins]
     for i, other_id in ledger.pair_nearest(left, others):

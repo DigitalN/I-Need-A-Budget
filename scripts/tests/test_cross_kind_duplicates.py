@@ -81,7 +81,8 @@ def test_a_posting_date_a_day_later_isnt_a_new_transaction(app):
 
 
 def test_a_date_further_away_or_a_row_already_matched_is_a_new_transaction(app):
-    csv = bank_csv([("10/01/2026", "SAMPLE GROCER", "SAMPLE GROCER", "-5.00")])
+    # The CSV runs past the QFX's first day: files that only meet can't hold one transaction twice (issue #124).
+    csv = bank_csv([("10/03/2026", "SAMPLE CAFE", "SAMPLE CAFE", "-7.00"), ("10/01/2026", "SAMPLE GROCER", "SAMPLE GROCER", "-5.00")])
     call(app, "import_files", [str(write(app.test_downloads, "Chequing.CSV", csv))])
     qfx = ofx([("20261002", "-5.00", "SAMPLE GROCER", "Q1"),     # the same one, a day later
                ("20261002", "-5.00", "SAMPLE GROCER", "Q2"),     # a second one: nothing left to match

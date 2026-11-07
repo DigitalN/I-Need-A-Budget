@@ -104,6 +104,13 @@ def same_kind_of_file(a, b):
     return "csv" in (a, b) and a.startswith("csv") and b.startswith("csv")
 
 
+def files_overlap(a_first, a_last, b_first, b_last):
+    """Whether two files cover any day in common (their first and last dates; None when not known,
+    which counts as overlapping). Two downloads that only meet, one ending the day before the other
+    starts, can't hold the same transaction twice, whatever else about two rows looks alike."""
+    return not ((a_first and b_last and a_first > b_last) or (b_first and a_last and b_first > a_last))
+
+
 def pair_nearest(wanted, offered, days=OTHER_KIND_DAYS, allowed=None):
     """[(wanted id, offered id)]: rows (dicts with id, date, amount) that are the same transaction,
     seen in two kinds of file: the same amount, dates up to `days` apart, each used once, the
@@ -127,14 +134,16 @@ def pair_nearest(wanted, offered, days=OTHER_KIND_DAYS, allowed=None):
 def cross_kind_pairs(conn, a_id, b_id, days=OTHER_KIND_DAYS, skip_a=(), skip_b=()):
     """[(a's transaction id, b's)]: rows of two accounts that are the same transaction seen in
     different kinds of file (a bank's CSV and its Quicken file, or a CSV set up again), by
-    pair_nearest. `skip_a` / `skip_b`: rows that already have an exact twin (the same
-    fingerprint or bank ID), which pair with nothing else."""
+    pair_nearest, and only where the two rows' files overlap (files_overlap). `skip_a` / `skip_b`:
+    rows that already have an exact twin (the same fingerprint or bank ID), which pair with nothing else."""
     def rows(account_id, skip):
         return [dict(r) for r in conn.execute(
-            "SELECT t.id, t.date, t.amount, COALESCE(i.format, '') AS kind FROM transactions t "
-            "LEFT JOIN imports i ON i.id = t.import_id WHERE t.account_id = ?", (account_id,)) if r["id"] not in skip]
+            "SELECT t.id, t.date, t.amount, COALESCE(i.format, '') AS kind, i.first_date AS first, i.last_date AS last "
+            "FROM transactions t LEFT JOIN imports i ON i.id = t.import_id WHERE t.account_id = ?", (account_id,))
+            if r["id"] not in skip]
     return pair_nearest(rows(a_id, set(skip_a)), rows(b_id, set(skip_b)), days,
-                        allowed=lambda a, b: not same_kind_of_file(a["kind"], b["kind"]))
+                        allowed=lambda a, b: not same_kind_of_file(a["kind"], b["kind"])
+                        and files_overlap(a["first"], a["last"], b["first"], b["last"]))
 
 
 def duplicate_accounts(conn):
