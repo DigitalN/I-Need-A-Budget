@@ -21,7 +21,10 @@ Formats (detected from the content, not the file name):
 - Actual Budget's transaction export: not imported as transactions, only learnt from
   (its categories and which payees went where). See `learn_from_actual()`.
 
-Which account: from what the file says (see each format), else the one existing account
+Which account: from what the file says (see each format; an account number counts by its whole
+number first, then its last four digits, and only for an account of the same sort (card or bank
+account) at the same bank: two accounts can end in the same four digits, and a file that doesn't
+name its bank never joins an account at a named one by number alone), else the one existing account
 that already has most of the file's rows, else a new account (or, for a set-up CSV, a
 question). A file never lands in an account just because it's the only one of its kind:
 with more than one bank that would put one bank's file in another bank's account. Once the
@@ -99,6 +102,8 @@ class AccountHint:
     legacy_keys: list = field(default_factory=list)  # looked up after `keys`, never saved
     bank: str = None
     create: bool = True   # False: ask which account rather than make one
+    number_key: str = None  # the key made of the account number's last four digits (see find_account)
+    full_key: str = None    # the key made of the whole number, when the file has it: tried first
 
 
 @dataclass
@@ -233,9 +238,22 @@ def _parse_tangerine(text, filename, card):
 
 
 def account_number_key(bank, last4):
-    """The account_sources key for an account number, the same whichever kind of file
-    from that bank it came in."""
+    """The account_sources key for an account number's last four digits, the same whichever
+    kind of file from that bank it came in."""
     return f"number:{banks.slug(bank) or 'unknown'}:{last4}"
+
+
+def full_number_key(bank, digits):
+    """The key for the whole account number (more than its last four digits), which keeps two
+    accounts that end in the same four digits apart."""
+    return f"number-full:{banks.slug(bank) or 'unknown'}:{digits}"
+
+
+def _number_keys(bank, digits):
+    """(last-four key, whole-number key or None, the last four digits) for an account number."""
+    last4 = digits[-4:] if len(digits) >= 4 else None
+    return (account_number_key(bank, last4) if last4 else None,
+            full_number_key(bank, digits) if len(digits) > 4 else None, last4)
 
 
 def _tangerine_bank_account(filename):
@@ -275,14 +293,15 @@ def _parse_rbc(text):
         except ValueError as e:
             raise ImportError_(f"Couldn't read a row ({e}).") from None
         digits = re.sub(r"\D", "", number)
-        last4 = digits[-4:] if len(digits) >= 4 else None
-        if (acct_type.lower(), last4) not in parts:
+        number_key, full_key, last4 = _number_keys("RBC", digits)
+        if (acct_type.lower(), digits) not in parts:
             kind = _kind_from_label(acct_type)
             label = {"chequing": "Chequing", "savings": "Savings", "line_of_credit": "Line of Credit"}.get(kind) or \
                 ("Mastercard" if re.search(r"master ?card", acct_type, re.I) else acct_type.title() or "Card")
-            keys = [account_number_key("RBC", last4)] if last4 else []
-            parts[(acct_type.lower(), last4)] = Part(AccountHint(keys, kind, f"RBC {label}", last4, bank="RBC"), [])
-        parts[(acct_type.lower(), last4)].rows.append(row)
+            keys = [k for k in (full_key, number_key) if k]
+            parts[(acct_type.lower(), digits)] = Part(
+                AccountHint(keys, kind, f"RBC {label}", last4, bank="RBC", number_key=number_key, full_key=full_key), [])
+        parts[(acct_type.lower(), digits)].rows.append(row)
     return Parsed("rbc", list(parts.values()))
 
 
@@ -324,29 +343,32 @@ def _ofx_statement(text, bank, filename):
     acct_id = _ofx_value(acct_block.group(1) if acct_block else text, "ACCTID") or ""
     acct_type = ((_ofx_value(acct_block.group(1), "ACCTTYPE") if acct_block else None) or "").upper()
     digits = re.sub(r"\D", "", acct_id)
-    last4 = digits[-4:] if len(digits) >= 4 else None
+    number_key, full_key, last4 = _number_keys(bank, digits)
     # Tangerine sends its Mastercard as a bank statement: a credit line whose number is a
     # card number. Any bank could, so it's the card number that decides.
     is_card = re.search(r"<CCACCTFROM>", text, re.IGNORECASE) is not None or \
         (acct_type == "CREDITLINE" and _is_card_number(digits))
     tangerine = bank == "Tangerine"
-    number_keys = [account_number_key(bank, last4)] if last4 else []
+    number_keys = [k for k in (full_key, number_key) if k]
+    numbers = {"number_key": number_key, "full_key": full_key}
     if is_card:
         keys = number_keys + (([f"tangerine-card:{last4}"] if last4 else []) + ["tangerine-card"] if tangerine else [])
         hint = AccountHint(keys, "credit_card", "Tangerine Mastercard" if tangerine else f"{bank} card" if bank else "Credit card",
-                           last4, bank=bank)
+                           last4, bank=bank, **numbers)
     else:
-        kind = "savings" if acct_type in ("SAVINGS", "MONEYMRKT") else \
+        # Tangerine says SAVINGS for every bank account, chequing too: ACCTTYPE isn't trusted
+        # for it (the file name decides below; without one it's a bank account, told by its number).
+        kind = "savings" if acct_type in ("SAVINGS", "MONEYMRKT") and not tangerine else \
             "line_of_credit" if acct_type == "CREDITLINE" else "chequing"
         legacy = [f"ofx:{kind}:{last4}"] if last4 else []  # how version 1.0 keyed OFX accounts
         if tangerine and filename:
             # The file name only tells chequing from savings (both say SAVINGS).
             key, named, name = _tangerine_bank_account(filename)
             kind = kind if kind == "line_of_credit" else named
-            hint = AccountHint(number_keys + [key], kind, name, last4, legacy, bank=bank)
+            hint = AccountHint(number_keys + [key], kind, name, last4, legacy, bank=bank, **numbers)
         else:
             label = kind.replace("_", " ").title()
-            hint = AccountHint(number_keys, kind, f"{bank} {label}" if bank else label, last4, legacy, bank=bank)
+            hint = AccountHint(number_keys, kind, f"{bank} {label}" if bank else label, last4, legacy, bank=bank, **numbers)
     balance = None
     ledger_block = re.search(r"<LEDGERBAL>(.*?)(?:</LEDGERBAL>|<AVAILBAL>|$)", text, re.IGNORECASE | re.DOTALL)
     if ledger_block:
@@ -491,8 +513,39 @@ class Result:
 def find_account(conn, hint, rows=(), fps=()):
     """The existing account a file's rows belong to, or None: by what the file says
     (`hint.keys`), else the one account that already has the file's rows."""
-    return ledger.account_by_key(conn, hint.keys) or ledger.account_by_key(conn, hint.legacy_keys) \
+    return _account_by_keys(conn, hint) or ledger.account_by_key(conn, hint.legacy_keys) \
         or account_with_rows(conn, hint.kind, rows, fps)
+
+
+def _account_by_keys(conn, hint):
+    """The account a file's keys find, most specific first. One found by the last four digits
+    of its number alone has to be an account this file can be: the same sort (a card isn't a
+    chequing account), at the same bank (a file that doesn't name its bank doesn't join an
+    account at a named one), and without another whole number on record (two accounts can
+    end in the same four digits)."""
+    for key in hint.keys:
+        found = ledger.account_by_key(conn, [key])
+        if found is None:
+            continue
+        if key != hint.number_key or _same_number_account(conn, hint, found):
+            return found
+    return None
+
+
+def _same_number_account(conn, hint, account_id):
+    acct = conn.execute("SELECT kind, bank FROM accounts WHERE id = ?", (account_id,)).fetchone()
+    if acct is None:
+        return False
+    if ledger.is_debt(acct["kind"]) != ledger.is_debt(hint.kind):
+        return False
+    if hint.bank is None and acct["bank"] is not None:
+        return False
+    if hint.full_key:
+        prefix = hint.full_key.rsplit(":", 1)[0] + ":"
+        if conn.execute("SELECT 1 FROM account_sources WHERE account_id = ? AND key LIKE ? AND key != ?",
+                        (account_id, prefix + "%", hint.full_key)).fetchone():
+            return False
+    return True
 
 
 def find_or_create_account(conn, hint, rows=(), fps=()):
