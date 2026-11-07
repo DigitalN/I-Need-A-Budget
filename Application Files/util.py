@@ -98,6 +98,10 @@ def parse_date(text, order="mdy"):
     `order` is 'dmy'), '2026-10-08', '2026/10/08', OFX's '20261008' / '20261008120000[-5:EST]',
     'Oct 8, 2026', '8 Oct 2026', '08-OCT-26'. Two-digit years are 20xx."""
     s = str(text).strip()
+    if order == "ymd":  # 2026-10-08, or 26-10-08 (a two-digit year first)
+        m = re.fullmatch(r"(\d{4}|\d{2})[/.-](\d{1,2})[/.-](\d{1,2})", s)
+        if m:
+            return date(_year(m.group(1)), int(m.group(2)), int(m.group(3))).isoformat()
     m = re.fullmatch(r"(\d{1,2})[/.-](\d{1,2})[/.-](\d{4}|\d{2})", s)
     if m:
         a, b, year = int(m.group(1)), int(m.group(2)), _year(m.group(3))
