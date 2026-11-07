@@ -439,6 +439,19 @@ def rows_total(conn, rows_sql, params, category_id=None):
     return row["n"], row["total"]
 
 
+def category_amount(splits, category_id):
+    """What a split transaction puts in one category: the sum of its lines there (`splits`: dicts
+    with category_id and amount)."""
+    return sum(x["amount"] for x in splits if x["category_id"] == int(category_id))
+
+
+def transactions_total(conn, txn_ids):
+    """What these transactions add up to."""
+    ids = list(txn_ids)
+    return sum(conn.execute(f"SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE id IN ({','.join('?' * len(chunk))})",
+                            chunk).fetchone()[0] for chunk in (ids[i:i + 500] for i in range(0, len(ids), 500)))
+
+
 def payoff(owing, apr, payment):
     """Months to pay off `owing` at `payment` a month, and the interest that costs.
     None if it would never be paid off (the payment doesn't cover the interest)."""

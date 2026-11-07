@@ -398,7 +398,8 @@ def _ofx_statement(text, bank, filename):
             kind = kind if kind == "line_of_credit" else named
             hint = AccountHint(number_keys + [key], kind, name, last4, legacy, bank=bank, **numbers)
         else:
-            label = kind.replace("_", " ").title()
+            # Tangerine calls chequing and savings alike, and without a file name there's nothing to tell them by.
+            label = "account" if tangerine and kind == "chequing" else kind.replace("_", " ").title()
             hint = AccountHint(number_keys, kind, f"{bank} {label}" if bank else label, last4, legacy, bank=bank, **numbers)
     balance = None
     ledger_block = re.search(r"<LEDGERBAL>(.*?)(?:</LEDGERBAL>|<AVAILBAL>|$)", text, re.IGNORECASE | re.DOTALL)

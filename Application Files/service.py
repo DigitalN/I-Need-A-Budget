@@ -1193,8 +1193,7 @@ class BudgetService:
         label = "Categorize transaction" if len(txn_ids) == 1 else f"Categorize {len(txn_ids)} transactions"
         with self.db.write(label) as c:
             out = self._inbox(c).categorize(txn_ids, category_id, recheck_payee)
-            total = c.execute(f"SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE id IN ({','.join('?' * len(txn_ids))})",
-                              txn_ids).fetchone()[0]
+            total = figures.transactions_total(c, txn_ids)
         return {**self.counts(), "also_categorized": out.also, "question": out.question, "total": total}
 
     @exposed
@@ -1326,7 +1325,7 @@ class BudgetService:
                     "LEFT JOIN categories cat ON cat.id = s.category_id WHERE s.transaction_id = ? ORDER BY s.id",
                     (r["id"],)))
                 if f.get("category_id"):  # looking at one category: this split's line in it
-                    d["category_amount"] = sum(x["amount"] for x in d["splits"] if x["category_id"] == int(f["category_id"]))
+                    d["category_amount"] = figures.category_amount(d["splits"], f["category_id"])
             out.append(d)
         return out
 

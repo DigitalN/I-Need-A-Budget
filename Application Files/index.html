@@ -1144,7 +1144,7 @@ async function openCategory(id) {
   // What it spent last month, then the averages (one of a single month would repeat it).
   const useRow = (label, amount, title = '') => `<div class="row" style="padding:4px 0"${title ? ` title="${esc(title)}"` : ''}>
       <span class="muted">${label}</span><span class="spacer"></span><b class="num">${money(amount)}</b>
-      <button class="btn small" data-act="use-amount" data-amount="${amount}">Use</button></div>`;
+      ${amount > 0 ? `<button class="btn small" data-act="use-amount" data-amount="${amount}">Use</button>` : ''}</div>`;
   const rec = d.recurring, recAll = [...rec.subscriptions, ...rec.bills];
   const meta = editorCat(d.id);  // used, own (Income and Interest & Fees: Hide only)
   const spentRows = useRow('Last month', d.last_month.amount, `What ${d.name} actually spent in ${monthLong(d.last_month.month)}`) +
