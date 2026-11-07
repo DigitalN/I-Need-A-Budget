@@ -4,12 +4,13 @@ The pre-commit hook (scripts/hooks/pre-commit) checks what's being committed; th
 checks everything already in the working tree that git would track.
 """
 
-import re
 import subprocess
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-CARD_NUMBER = re.compile(r"[0-9]{4}[ *x]+x{4}[ *x]+x{4}[ *x]+[0-9]{4}", re.IGNORECASE)
+sys.path.insert(0, str(ROOT / "scripts" / "hooks"))
+import privacy_check  # noqa: E402  (the checks the hooks and release.sh run)
 
 
 def tracked_files():
@@ -20,9 +21,10 @@ def tracked_files():
 
 def test_gitignore_keeps_out_bank_files_and_databases():
     ignored = subprocess.run(["git", "check-ignore", "--no-index", "x.CSV", "x.csv", "x.qfx", "x.ofx", "budget.db",
-                              "budget.db-wal", "Imported Files/a.CSV", "Backups/budget-2026-10-12.db", ".git-denylist"],
+                              "budget.db-wal", "budget.db-shm", "budget.db-journal", "budget-2026-10-12.tmp", "app.log",
+                              "Imported Files/a.CSV", "Backups/budget-2026-10-12.db", ".git-denylist"],
                              cwd=ROOT, capture_output=True, text=True).stdout.split()
-    assert len(ignored) == 10
+    assert len(ignored) == 14  # 13 paths, one of them with a space
 
 
 def test_no_bank_files_or_databases_would_be_committed():
@@ -48,7 +50,7 @@ def test_no_private_words_or_card_numbers_in_the_repository():
             continue
         lower = text.lower()
         found += [f"{path.relative_to(ROOT)}: {t}" for t in terms if t in lower]
-        if CARD_NUMBER.search(text):
+        if privacy_check.masked_card_numbers(text) or privacy_check.card_numbers(text):
             found.append(f"{path.relative_to(ROOT)}: a card number")
     assert found == []
 
