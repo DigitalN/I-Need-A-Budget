@@ -394,7 +394,8 @@ def csv_account_key(layout_id, filename):
 
 def saved_layout(conn, sniffed):
     """The layout saved for files like this one, or None."""
-    row = conn.execute("SELECT * FROM csv_layouts WHERE signature = ?", (csvlayout.signature(sniffed),)).fetchone()
+    row = conn.execute("SELECT * FROM csv_layouts WHERE signature = ?", (csvlayout.signature(sniffed),)).fetchone() \
+        or conn.execute("SELECT * FROM csv_layouts WHERE signature = ?", (csvlayout.legacy_signature(sniffed),)).fetchone()
     if row is None:
         return None
     layout = {k: row[k] for k in csvlayout.LAYOUT_KEYS if k != "desc_cols"}

@@ -2300,6 +2300,9 @@ async function setupFile(path) {
   const lower = info.filename.toLowerCase();
   const brand = /visa/.test(lower) ? 'Visa' : /master ?card|\bmc\b/.test(lower) ? 'Mastercard' : /amex/.test(lower) ? 'Amex' : '';
   const kindGuess = brand || /card|credit/.test(lower) ? 'credit_card' : /saving/.test(lower) ? 'savings' : 'chequing';
+  const isCard = kind => kind === 'credit_card' || kind === 'line_of_credit';
+  // A card file of mostly positive amounts shows its purchases that way: money out is "Positive".
+  const startsPositive = L.negate || (!info.saved && info.mostly_positive && isCard(kindGuess));
   const two = L.amount_col === null || L.amount_col === undefined;
   let outcome = null, nameTouched = false, readLayout = () => ({}), readAccount = () => ({});
   const v = await dialog({
@@ -2311,14 +2314,14 @@ async function setupFile(path) {
       <div id="su-columns" ${info.saved ? 'hidden' : ''}>
         <div class="grid2">
           <div class="field"><label>Date</label><select id="su-date">${colOptions(L.date_col)}</select></div>
-          <div class="field"><label>Dates are</label><select id="su-order">${[['mdy', 'Month/Day/Year'], ['dmy', 'Day/Month/Year'], ['ymd', 'Year-Month-Day']].map(([v, t]) => `<option value="${v}" ${L.date_order === v ? 'selected' : ''}>${t}</option>`).join('')}</select></div>
+          <div class="field"><label>Dates are</label><select id="su-order">${L.date_order ? '' : '<option value="">Pick…</option>'}${[['mdy', 'Month/Day/Year'], ['dmy', 'Day/Month/Year'], ['ymd', 'Year-Month-Day']].map(([v, t]) => `<option value="${v}" ${L.date_order === v ? 'selected' : ''}>${t}</option>`).join('')}</select></div>
           <div class="field"><label>Description</label><select id="su-desc">${colOptions(L.desc_cols[0])}</select></div>
           <div class="field"><label>More description</label><select id="su-desc2">${colOptions(L.desc_cols[1], 'None')}</select></div>
         </div>
         <div class="field"><label>Amounts</label><div class="seg" id="su-mode"><button type="button" data-mode="one" aria-pressed="${!two}">One column</button><button type="button" data-mode="two" aria-pressed="${two}">Money out and money in</button></div></div>
         <div class="grid2" id="su-one" ${two ? 'hidden' : ''}>
           <div class="field"><label>Amount</label><select id="su-amount">${colOptions(L.amount_col)}</select></div>
-          <div class="field"><label>Money out shows as</label><select id="su-negate"><option value="0" ${L.negate ? '' : 'selected'}>Negative (−12.50)</option><option value="1" ${L.negate ? 'selected' : ''}>Positive (12.50)</option></select></div>
+          <div class="field"><label>Money out shows as</label><select id="su-negate"><option value="0" ${startsPositive ? '' : 'selected'}>Negative (−12.50)</option><option value="1" ${startsPositive ? 'selected' : ''}>Positive (12.50)</option></select></div>
         </div>
         <div class="grid2" id="su-two" ${two ? '' : 'hidden'}>
           <div class="field"><label>Money out</label><select id="su-out">${colOptions(L.out_col)}</select></div>
@@ -2390,7 +2393,14 @@ async function setupFile(path) {
       const syncAccount = () => { $('#su-new', d).hidden = !!$('#su-account', d).value; };
       $('#su-account', d).addEventListener('change', syncAccount);
       $('#su-bank', d).addEventListener('input', autoName);
-      $('#su-kind', d).addEventListener('change', autoName);
+      $('#su-kind', d).addEventListener('change', () => {
+        autoName();
+        // Choosing a card for a file of mostly positive amounts: its purchases are the positive ones.
+        if (!info.saved && info.mostly_positive && !L.negate && !$('#su-negate', d).dataset.touched && mode() === 'one')
+          $('#su-negate', d).value = isCard($('#su-kind', d).value) ? '1' : '0';
+        preview();
+      });
+      $('#su-negate', d).addEventListener('change', e => { e.target.dataset.touched = '1'; });
       $('#su-name', d).addEventListener('input', () => { nameTouched = true; });
       syncAccount(); autoName(); preview();
     },

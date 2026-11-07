@@ -470,6 +470,7 @@ class BudgetService:
         layout = {k: v for k, v in (saved or sniffed["guess"]).items() if k != "id"}
         return {"path": str(path), "filename": path.name, "header": header, "has_header": bool(sniffed["header"]),
                 "sample": sniffed["rows"][:6], "rows": len(sniffed["rows"]), "layout": layout,
+                "mostly_positive": sniffed["mostly_positive"],
                 "saved": saved is not None, "account_id": suggested_account,
                 "suggested_name": importer.base_name(path.name)}
 
