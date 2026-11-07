@@ -191,7 +191,7 @@ class BudgetApp:
         try:
             return self._updater.check_now()
         except UpdateError as e:
-            from service import UserError
+            from errors import UserError
             raise UserError(str(e)) from None
 
     def _restart_into_update(self):
@@ -204,7 +204,7 @@ class BudgetApp:
         return True
 
     def _set_github_token(self, token):
-        from service import UserError
+        from errors import UserError
         from updater import UpdateError, save_keychain_token
 
         try:

@@ -36,6 +36,7 @@ from dataclasses import dataclass
 import ledger
 import subscriptions
 import transfers
+from errors import UserError
 from learn import always_ask, analyze, guess, unusual, unusual_reason
 from payees import BANK_ENTRY_HINTS, describe
 
@@ -297,7 +298,7 @@ class Inbox:
         inbox's way, where categorizing re-checks the rest of the payee (not One at a time,
         and never outside the inbox)."""
         if category_id in (None, ""):
-            raise ValueError("Pick a category first.")
+            raise UserError("Pick a category first.")
         ledger.check_category(self.conn, int(category_id))
         txns = [self._yours(txn_id) for txn_id in txn_ids]
         learnt = [self._categorize(txn, int(category_id)) for txn in txns]
@@ -355,14 +356,14 @@ class Inbox:
         c = self.conn
         txn = self._txn(txn_id)
         if txn is None:
-            raise ValueError("That transaction no longer exists.")
+            raise UserError("That transaction no longer exists.")
         parts = [p for p in parts if int(p.get("amount") or 0) != 0]
         if len(parts) < 2:
-            raise ValueError("A split needs at least two parts.")
+            raise UserError("A split needs at least two parts.")
         if sum(int(p["amount"]) for p in parts) != txn["amount"]:
-            raise ValueError("The parts have to add up to the transaction's amount.")
+            raise UserError("The parts have to add up to the transaction's amount.")
         if any(not p.get("category_id") for p in parts):
-            raise ValueError("Every part needs a category.")
+            raise UserError("Every part needs a category.")
         for p in parts:
             ledger.check_category(c, int(p["category_id"]))
         txn = self._yours(txn_id)
@@ -380,7 +381,7 @@ class Inbox:
         c = self.conn
         txn = self._txn(txn_id)
         if txn is None:
-            raise ValueError("That transaction no longer exists.")
+            raise UserError("That transaction no longer exists.")
         before = txn["transfer_id"]
         transfers.make_transfer(c, txn_id, int(account_id))
         after = self._txn(txn_id)["transfer_id"]
@@ -398,7 +399,7 @@ class Inbox:
         Not a transfer). It waits for you, as its own inbox item."""
         txn = self._txn(txn_id)
         if txn is None:
-            raise ValueError("That transaction no longer exists.")
+            raise UserError("That transaction no longer exists.")
         if txn["transfer_account_id"]:
             self.not_a_transfer(txn_id)
         else:
@@ -429,7 +430,7 @@ class Inbox:
         its other half waits for you."""
         txn = self._txn(txn_id)
         if txn is None:
-            raise ValueError("That transaction no longer exists.")
+            raise UserError("That transaction no longer exists.")
         if txn["transfer_account_id"]:
             for other in transfers.unlink(self.conn, txn_id)[1:]:
                 self._send_back(other, NOT_A_TRANSFER)
