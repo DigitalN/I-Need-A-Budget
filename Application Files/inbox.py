@@ -142,6 +142,9 @@ class Inbox:
                           "WHERE id = ?", (sub["category_id"], f"{sub['name']} subscription", txn["id"]))
                 return True
         else:
+            again = subscriptions.charged_again(c, txn)  # cancelled or ended, at a new price
+            if again:
+                return self._wait(txn, again)
             question = subscriptions.unmatched_question(c, txn)
             if question:
                 return self._wait(txn, question)  # a new price? Always asked
@@ -209,7 +212,7 @@ class Inbox:
         alone = yours  # its own item, outside Accept all
         sub = c.execute("SELECT * FROM subscriptions WHERE id = ?", (txn["subscription_id"],)).fetchone() \
             if txn["subscription_id"] else None
-        warning = subscriptions.charged_when_it_shouldnt(sub, txn["date"]) if sub else None
+        warning = subscriptions.charged_when_it_shouldnt(sub, txn["date"]) if sub else subscriptions.charged_again(c, txn)
         hidden = self._hidden_category_of(sub)
         choices = subscriptions.price_change_choices(c, txn)
         mine = None if yours else transfers.find_counterpart(c, txn, yours=True)

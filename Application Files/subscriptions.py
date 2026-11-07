@@ -55,8 +55,9 @@ CAN_RECUR_SQL = (f"t.hint NOT IN ({', '.join(repr(h) for h in TRANSFER_OR_BANK_E
 
 
 def close(a, b, tolerance=TOLERANCE, floor=50):
-    """Amounts (positive cents) within `tolerance` of each other, or `floor` cents."""
-    return abs(a - b) <= max(floor, tolerance * max(a, b))
+    """Amount `b` (positive cents) within `tolerance` of `a`, the old price (+6.3% isn't within 6%),
+    or within `floor` cents of it."""
+    return abs(a - b) <= max(floor, tolerance * a)
 
 
 def same_price(a, b):
@@ -77,9 +78,11 @@ def monthly_equivalent(amount, cadence):
     return round(amount * {"weekly": 52 / 12, "monthly": 1, "yearly": 1 / 12}.get(cadence, 1))
 
 
-def next_due(last_date, cadence):
+def next_due(last_date, cadence, first_date=None):
+    """When the next charge is due. A monthly one keeps the day of the month it first fell on
+    (`first_date`'s: the 31st), clamped to each month's end."""
     if cadence == "monthly":
-        return same_day_next_month(last_date)
+        return same_day_next_month(last_date, int(first_date[8:10]) if first_date else None)
     return add_days(last_date, round(CADENCES.get(cadence, CADENCES["monthly"])[2]))
 
 
@@ -88,7 +91,10 @@ def looks_foreign(charges):
     `charges`: dicts or rows with `amt` (positive cents, oldest first) and `bank_category`."""
     if any("foreign currency" in (c["bank_category"] or "").lower() for c in charges):
         return True
-    changes = sum(1 for a, b in zip(charges, charges[1:]) if not same_price(a["amt"], b["amt"]))
+    # Each move is a few percent, as an exchange rate moves: a jump from $16.49 to $18.99 is a
+    # price change (you answered "New price for…"), not the currency, however many there are.
+    changes = sum(1 for a, b in zip(charges, charges[1:])
+                  if not same_price(a["amt"], b["amt"]) and close(a["amt"], b["amt"], TOLERANCE, floor=2))
     return changes >= 2
 
 
@@ -177,7 +183,7 @@ def detect(conn, today):
                 last = run[-1]
                 found.append({
                     "payee_id": payee_id, "name": last["name"], "amount": typical, "cadence": "monthly",
-                    "count": len(run), "last_date": last["date"], "next_date": next_due(last["date"], "monthly"),
+                    "count": len(run), "last_date": last["date"], "next_date": next_due(last["date"], "monthly", run[0]["date"]),
                     "previous_amount": None, "pricing": "varies", "low": min(amounts), "high": max(amounts),
                     "last_amount": amounts[-1], "account_id": last["account_id"], "category_id": last["category_id"],
                     "transaction_ids": [t["id"] for t in run], "kind": "bill", "monthly": typical,
@@ -206,7 +212,8 @@ def detect(conn, today):
             amounts = [t["amt"] for t in chain["txns"]]
             found.append({
                 "payee_id": payee_id, "name": last["name"], "amount": amounts[-1], "cadence": chain["cadence"],
-                "count": len(amounts), "last_date": last["date"], "next_date": next_due(last["date"], chain["cadence"]),
+                "count": len(amounts), "last_date": last["date"],
+                "next_date": next_due(last["date"], chain["cadence"], first["date"]),
                 "previous_amount": previous_price(pricing, amounts), "pricing": pricing,
                 "low": min(amounts), "high": max(amounts), "account_id": last["account_id"],
                 "category_id": last["category_id"], "transaction_ids": [t["id"] for t in chain["txns"]],
@@ -343,7 +350,8 @@ def price_change_choices(conn, txn):
     for s in conn.execute("SELECT * FROM subscriptions WHERE payee_id = ? AND status = 'active' "
                           "AND pricing != 'varies'", (txn["payee_id"],)).fetchall():
         last = _last_charge(conn, s["id"])
-        expected = next_due(last, s["cadence"]) if last else None
+        first = conn.execute("SELECT MIN(date) FROM transactions WHERE subscription_id = ?", (s["id"],)).fetchone()[0]
+        expected = next_due(last, s["cadence"], first) if last else None
         off_by = abs(days_between(expected, txn["date"])) if expected else 99
         out.append({"id": s["id"], "name": s["name"], "amount": s["amount"], "expected": expected,
                     "due_now": off_by <= 5, "_rank": (off_by > 5, abs(s["amount"] - amount))})
@@ -405,6 +413,23 @@ def charged_when_it_shouldnt(sub, day):
     return None
 
 
+def charged_again(conn, txn):
+    """The "charged you again" warning for a charge that matched none of its payee's recurring
+    charges (it's at another price) when all of them are cancelled or ended, at any price; else
+    None. Worked out each time, like charged_when_it_shouldnt."""
+    if not _is_charge(txn) or txn["subscription_id"]:
+        return None
+    subs = conn.execute("SELECT * FROM subscriptions WHERE payee_id = ? AND status != 'ignored' "
+                        "ORDER BY COALESCE(cancelled_on, ends_on) DESC", (txn["payee_id"],)).fetchall()
+    if not subs or any(s["status"] == "active" and not (s["ends_on"] and txn["date"] > s["ends_on"]) for s in subs):
+        return None
+    for s in subs:
+        warning = charged_when_it_shouldnt(s, txn["date"])
+        if warning:
+            return warning
+    return None
+
+
 def listing(conn, today):
     """Everything the Subscriptions page shows."""
     subs = _tracked(conn, today)
@@ -443,7 +468,7 @@ def _tracked(conn, today, where="", params=()):
         pricing = effective_pricing(conn, s)
         amount = _typical(amounts) if pricing == "varies" and amounts else (last["amt"] if last else s["amount"])
         recent = amounts[-RECENT_CHARGES:]
-        next_date = next_due(last["date"], s["cadence"]) if last else None
+        next_date = next_due(last["date"], s["cadence"], charges[0]["date"]) if last else None
         ended = bool(s["ends_on"] and today > s["ends_on"])
         if next_date and s["ends_on"] and next_date > s["ends_on"]:
             next_date = None  # no more charges expected
