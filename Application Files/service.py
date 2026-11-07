@@ -463,8 +463,11 @@ class BudgetService:
             saved = importer.saved_layout(c, sniffed)
             suggested_account = None
             if saved:
-                key = importer.csv_account_key(saved["id"], path.name)
-                suggested_account = ledger.account_by_key(c, [key])
+                try:  # not the account the name points to when the file doesn't look like it
+                    part = importer.parse(path, c).parts[0]
+                    suggested_account = importer.find_account(c, part.account, part.rows, importer.fingerprints(part.rows))
+                except importer.ImportError_:
+                    pass
         width = sniffed["width"]
         header = sniffed["header"] or [f"Column {i + 1}" for i in range(width)]
         layout = {k: v for k, v in (saved or sniffed["guess"]).items() if k != "id"}
@@ -507,8 +510,7 @@ class BudgetService:
                 if account.get("kind") not in ledger.ACCOUNT_KINDS:
                     raise UserError("Pick the type of account.")
                 account_id = ledger.create_account(c, name, account["kind"], bank=bank)
-            c.execute("INSERT INTO account_sources (key, account_id) VALUES (?, ?) ON CONFLICT(key) DO UPDATE "
-                      "SET account_id = excluded.account_id", (importer.csv_account_key(layout_id, path.name), account_id))
+            importer.remember_csv_account(c, layout_id, path.name, account_id)
         self._forget_file_status()
         downloads = self.settings.downloads_dir().resolve()
         return self.import_files([str(path)], archive=path.resolve().parent == downloads)
