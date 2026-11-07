@@ -409,6 +409,17 @@ class Figures:
         return changes
 
 
+def rows_total(conn, rows_sql, params, category_id=None):
+    """(how many, what they add up to) for every transaction a Transactions-page filter
+    matches, not just those the page shows. `rows_sql` is the filter's FROM and WHERE. With a
+    `category_id`, a split counts only its lines in that category, as Spent does."""
+    amount = ("COALESCE((SELECT SUM(s.amount) FROM splits s WHERE s.transaction_id = t.id AND s.category_id = ?), 0)"
+              if category_id else "t.amount")
+    row = conn.execute(f"SELECT COUNT(*) AS n, COALESCE(SUM(CASE WHEN t.is_split THEN {amount} ELSE t.amount END), 0) "
+                       f"AS total {rows_sql}", ([int(category_id)] if category_id else []) + list(params)).fetchone()
+    return row["n"], row["total"]
+
+
 def payoff(owing, apr, payment):
     """Months to pay off `owing` at `payment` a month, and the interest that costs.
     None if it would never be paid off (the payment doesn't cover the interest)."""
