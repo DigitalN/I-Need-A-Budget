@@ -1938,7 +1938,7 @@ function drawInbox() {
   state.blocks = blocks.flatMap(b => (b.items.length > 1 && !state.expanded.has(b.group)) ? [b] : b.items.map(i => ({ group: null, items: [i] })));
   state.inboxSel = Math.min(state.inboxSel, Math.max(0, state.blocks.length - 1));
   const alerts = data.alerts.map(a => a.type === 'balance' ? `<div class="notice">${esc(a.text)}<span class="spacer"></span>
-      <input style="width:130px;text-align:right" placeholder="Balance" data-balance-for="${a.account_id}"><button class="btn small" data-act="save-balance" data-account="${a.account_id}">Save</button></div>`
+      <input style="width:130px;text-align:right" placeholder="Balance" data-balance-for="${a.account_id}">${a.is_debt ? favourBox(a.account_id) : ''}<button class="btn small" data-act="save-balance" data-account="${a.account_id}">Save</button></div>`
     : a.type === 'duplicate' ? duplicateNotice(a) : '').join('') +
     (data.files || []).map((f, i) => `<div class="notice info"><span><b>${esc(f.filename)}</b> ${f.needs === 'layout' ? 'needs setting up once.' : f.needs === 'new_account' ? 'is for an account the app hasn\'t seen: a new one, or one you have?' : 'is from a bank the app knows: which account is it for?'}</span><span class="spacer"></span>
       <button class="btn small" data-act="ignore-file" data-index="${i}">${f.needs === 'new_account' ? 'Don\'t import' : 'Not a bank file'}</button><button class="btn small primary" data-act="setup-file" data-index="${i}">${f.needs === 'layout' ? 'Set up…' : 'Choose…'}</button></div>`).join('');
@@ -2448,12 +2448,17 @@ async function setupFiles(files) {
   await refresh();
 }
 
+// A card or line of credit's balance is what you owe, unless this says it's in your favour
+// (an overpaid card): the choice next to the amount.
+const favourBox = (id, checked = false) => `<label class="small muted" style="white-space:nowrap;display:inline-flex;gap:4px;align-items:center"><input type="checkbox" data-favour="${id}" ${checked ? 'checked' : ''}> In your favour</label>`;
+const inFavour = id => { const el = $(`[data-favour="${id}"]`); return !!(el && el.checked); };
+
 async function saveBalanceFrom(btn) {
   const acct = Number(btn.dataset.account);
   const input = $(`[data-balance-for="${acct}"]`);
   const cents = parseMoney(input.value);
   if (cents === null || Number.isNaN(cents)) return toast('Enter the balance your bank shows', { error: true });
-  await call('set_balance', [acct, cents]);
+  await call('set_balance', { account_id: acct, cents, in_favour: inFavour(acct) });
   toast('Balance saved', { action: undoAction });
   await refresh();
 }
@@ -2613,7 +2618,7 @@ async function renderAccounts() {
     return `<div class="card acct">
       <div class="row"><b>${esc(a.name)}</b><span class="faint small">${[a.bank && !a.name.toLowerCase().includes(a.bank.toLowerCase()) && esc(a.bank), a.last4 && `••${esc(a.last4)}`].filter(Boolean).join(' · ')}</span><span class="spacer"></span><span class="tag">${esc(a.kind_label)}</span></div>
       ${a.balance === null ? `<div class="notice" style="margin:10px 0">What ${owe ? 'do you owe on' : 'is the balance of'} this account right now?</div>
-          <div class="row"><input style="width:150px;text-align:right" placeholder="${owe ? 'Amount owing' : 'Balance'}" data-balance-for="${a.id}"><button class="btn primary small" data-act="save-balance" data-account="${a.id}">Save</button></div>`
+          <div class="row"><input style="width:150px;text-align:right" placeholder="${owe ? 'Amount owing' : 'Balance'}" data-balance-for="${a.id}">${owe ? favourBox(a.id) : ''}<button class="btn primary small" data-act="save-balance" data-account="${a.id}">Save</button></div>`
         : `<div class="bal num ${owe && a.balance < 0 ? 'neg' : ''}">${owe ? money(-a.balance) : money(a.balance)}</div>
            <div class="small muted">${owe ? 'owing' : 'balance'}${a.last_date ? ` · up to ${dayYear(a.last_date)}` : ''}</div>`}
       <div class="small muted" style="margin-top:8px">${plural(a.transactions, 'transaction')}${a.first_date ? ` since ${dayYear(a.first_date)}` : ''}${a.last_import ? ` · last import ${esc(a.last_import.slice(0, 10))}` : ''}</div>
@@ -2694,13 +2699,13 @@ async function accountAction(btn) {
       title: `Check ${a.name}`,
       body: `<p class="muted">The app says ${a.is_debt ? 'you owe' : 'the balance is'} <b>${money(a.is_debt ? -a.balance : a.balance)}</b> after the last imported transaction (${dayYear(a.last_date)}).
         If ${esc(a.bank || 'your bank')} shows something else, enter it: the app adds an adjustment for the difference${a.is_debt ? '' : ' (you choose its category in the Inbox)'}.</p>
-        <div class="field"><label>${a.is_debt ? 'Amount owing' : 'Balance'} at ${esc(a.bank || 'the bank')}</label><input id="rec-amount" style="text-align:right"></div>`,
+        <div class="field"><label>${a.is_debt ? 'Amount owing' : 'Balance'} at ${esc(a.bank || 'the bank')}</label><div class="row"><input id="rec-amount" style="text-align:right">${a.is_debt ? favourBox('rec') : ''}</div></div>`,
       actions: [{ label: 'Cancel', value: null }, { label: 'Match it', value: 'ok', primary: true }],
     });
     if (v !== 'ok') return;
     const cents = parseMoney($('#rec-amount').value);
     if (cents === null || Number.isNaN(cents)) return;
-    const r = await call('reconcile', [id, cents]);
+    const r = await call('reconcile', { account_id: id, cents, in_favour: a.is_debt && inFavour('rec') });
     toast(r.adjusted ? `Adjusted by ${money(r.adjusted)}` : 'It already matches', { action: r.adjusted ? undoAction : undefined });
   } else if (act === 'edit-account') {
     const banks = await call('bank_names');
@@ -2739,12 +2744,18 @@ async function accountAction(btn) {
         <div class="grid2"><div class="field"><label>Name</label><input id="na-name" placeholder="Line of credit"></div>
         <div class="field"><label>Bank</label><input id="na-bank" list="bank-list" placeholder="Search or type a name" autocomplete="off">${bankList(banks)}</div></div>
         <div class="grid2"><div class="field"><label>Type</label><select id="na-kind"><option value="line_of_credit">Line of credit</option><option value="credit_card">Credit card</option><option value="chequing">Chequing</option><option value="savings">Savings</option><option value="cash">Wallet</option></select></div>
-        <div class="field"><label>Balance now (owing, for credit)</label><input id="na-balance" placeholder="0.00" style="text-align:right"></div></div>`,
+        <div class="field"><label>Balance now (owing, for credit)</label><div class="row"><input id="na-balance" placeholder="0.00" style="text-align:right"><span id="na-favour">${favourBox('new')}</span></div></div></div>`,
       actions: [{ label: 'Cancel', value: null }, { label: 'Add', value: 'ok', primary: true, check: d => $('#na-name', d).value.trim() ? null : 'Give it a name.' }],
+      onOpen: d => {
+        const show = () => { $('#na-favour', d).hidden = !['line_of_credit', 'credit_card'].includes($('#na-kind', d).value); };
+        $('#na-kind', d).addEventListener('change', show);
+        show();
+      },
     });
     if (v !== 'ok') return;
     const bal = parseMoney($('#na-balance').value);
-    await call('add_account', { name: $('#na-name').value, kind: $('#na-kind').value, balance: Number.isNaN(bal) ? null : bal, bank: $('#na-bank').value });
+    await call('add_account', { name: $('#na-name').value, kind: $('#na-kind').value, balance: Number.isNaN(bal) ? null : bal, bank: $('#na-bank').value,
+      in_favour: ['line_of_credit', 'credit_card'].includes($('#na-kind').value) && inFavour('new') });
     await loadCategories();
     toast('Account added', { action: undoAction });
   } else if (act === 'undo-import') {
@@ -3001,7 +3012,7 @@ async function renderOnboarding() {
     body = `<h3>3. Balances</h3>
       <p class="muted">What does your bank show for each account right now? The app works out every past balance from this one number, so it only asks once.</p>
       <div class="card">${state.accounts.map(a => `<div class="settings-row"><div class="what"><b>${esc(a.name)}</b><span>${a.is_debt ? 'Amount owing (the balance on the card)' : 'Balance'}${a.last_date ? ` · transactions up to ${dayYear(a.last_date)}` : ''}</span></div>
-          <input style="width:150px;text-align:right" data-ob-balance="${a.id}" value="${a.balance !== null ? moneyPlain(a.is_debt ? -a.balance : a.balance) : ''}" placeholder="0.00"></div>`).join('') || '<p class="faint">No accounts yet: go back and import a file.</p>'}</div>
+          <span class="row"><input style="width:150px;text-align:right" data-ob-balance="${a.id}" value="${a.balance !== null ? moneyPlain(a.is_debt ? Math.abs(a.balance) : a.balance) : ''}" placeholder="0.00">${a.is_debt ? favourBox(a.id, a.balance > 0) : ''}</span></div>`).join('') || '<p class="faint">No accounts yet: go back and import a file.</p>'}</div>
       <div class="row" style="margin-top:16px"><button class="btn" data-ob="back">Back</button><span class="spacer"></span><button class="btn primary" data-ob="save-balances">Continue</button></div>`;
   } else {
     const os = await call('onboarding_state');
@@ -3047,7 +3058,7 @@ async function onboardingAction(btn) {
       const cents = parseMoney(el.value);
       if (cents === null) continue;
       if (Number.isNaN(cents)) return toast('One of the balances isn\'t an amount', { error: true });
-      await call('set_balance', [Number(el.dataset.obBalance), cents]);
+      await call('set_balance', { account_id: Number(el.dataset.obBalance), cents, in_favour: inFavour(el.dataset.obBalance) });
     }
     ob.step = 3;
   } else if (a === 'finish') {

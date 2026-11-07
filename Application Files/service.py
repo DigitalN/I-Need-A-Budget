@@ -52,6 +52,14 @@ STARTER_CATEGORIES = [
 ]
 
 
+def _balance_sign(kind, cents, in_favour=False):
+    """A balance as the app keeps it. For a card or line of credit the amount typed is what you
+    owe (kept negative), or what you're owed with `in_favour` (an overpaid card, kept positive)."""
+    if not ledger.is_debt(kind):
+        return cents
+    return abs(cents) if in_favour else -abs(cents)
+
+
 def _rows(cursor):
     return [dict(r) for r in cursor]
 
@@ -1022,10 +1030,10 @@ class BudgetService:
             categorized = self._transactions(c, {"ids": view["categorized"]}, limit=300) if view["categorized"] else []
             alerts = [{"type": "duplicate", **d} for d in ledger.duplicate_accounts(c)]
             copies = {a["account_id"] for a in alerts}
-            for a in c.execute("SELECT id, name FROM accounts WHERE anchor_date IS NULL AND closed = 0"):
+            for a in c.execute("SELECT id, name, kind FROM accounts WHERE anchor_date IS NULL AND closed = 0"):
                 if a["id"] in copies:
                     continue  # merge it rather than give it a balance
-                alerts.append({"type": "balance", "account_id": a["id"],
+                alerts.append({"type": "balance", "account_id": a["id"], "is_debt": ledger.is_debt(a["kind"]),
                                "text": f"What's the balance of {a['name']}? The app needs it once to show balances."})
         return {"items": items, "categorized": categorized, "alerts": alerts, "files": self.pending_files(),
                 "counts": self.counts()}
@@ -1287,7 +1295,7 @@ class BudgetService:
         return used + [b for b in banks.SUGGESTED if b not in used]
 
     @exposed
-    def add_account(self, name, kind, balance=None, date=None, bank=None):
+    def add_account(self, name, kind, balance=None, date=None, bank=None, in_favour=False):
         name, bank = _name_with_bank(name, bank)
         with self.db.write(f"Add account {name}") as c:
             if c.execute("SELECT 1 FROM accounts WHERE name = ? COLLATE NOCASE", (name,)).fetchone():
@@ -1296,7 +1304,7 @@ class BudgetService:
             if balance not in (None, ""):
                 cents = int(balance)
                 c.execute("UPDATE accounts SET anchor_date = ?, anchor_balance = ? WHERE id = ?",
-                          (date or self.today(), -abs(cents) if ledger.is_debt(kind) else cents, account_id))
+                          (date or self.today(), _balance_sign(kind, cents, in_favour), account_id))
         return account_id
 
     @exposed
@@ -1327,28 +1335,24 @@ class BudgetService:
         return True
 
     @exposed
-    def set_balance(self, account_id, cents, date=None):
+    def set_balance(self, account_id, cents, date=None, in_favour=False):
         """The balance the bank shows (for a card or line of credit: what you owe, as a
-        positive number). Every other balance is worked out from this one."""
+        positive number, or with `in_favour` what you're owed: an overpaid card). Every other
+        balance is worked out from this one."""
         with self.db.write("Set balance") as c:
             acct = c.execute("SELECT kind FROM accounts WHERE id = ?", (account_id,)).fetchone()
             if acct is None:
                 raise UserError("That account no longer exists.")
-            value = int(cents)
-            if ledger.is_debt(acct["kind"]):
-                value = -abs(value)
             c.execute("UPDATE accounts SET anchor_date = ?, anchor_balance = ? WHERE id = ?",
-                      (date or self.today(), value, account_id))
+                      (date or self.today(), _balance_sign(acct["kind"], int(cents), in_favour), account_id))
         return self.accounts()
 
     @exposed
-    def reconcile(self, account_id, cents):
+    def reconcile(self, account_id, cents, in_favour=False):
         """The bank shows a different balance: add an adjustment for the difference today."""
         with self.db.write("Balance adjustment") as c:
             acct = c.execute("SELECT kind FROM accounts WHERE id = ?", (account_id,)).fetchone()
-            target = int(cents)
-            if ledger.is_debt(acct["kind"]):
-                target = -abs(target)
+            target = _balance_sign(acct["kind"], int(cents), in_favour)
             ours = ledger.account_balance(c, account_id)
             if ours is None:
                 raise UserError("Set this account's balance first.")
