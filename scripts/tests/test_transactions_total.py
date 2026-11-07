@@ -16,7 +16,7 @@ def _warehouse(app):
     call(app, "add_category", gid, "Household")
     cats = {c["name"]: c["id"] for g in call(app, "categories") for c in g["categories"]}
     t = call(app, "add_transaction", wallet, "2026-10-05", "SAMPLE WAREHOUSE", -10000)
-    t = t["id"] if isinstance(t, dict) else t
+    t = t["id"]
     call(app, "split_transaction", t, [{"category_id": cats["Food"], "amount": -3000},
                                        {"category_id": cats["Household"], "amount": -7000}])
     return wallet, cats, t

@@ -14,7 +14,7 @@ def ofx(rows, balance, as_of, acct_id="000111222333", org="SAMPLE BANK"):
 
 
 def _id(added):
-    return added["id"] if isinstance(added, dict) else added
+    return added["id"]
 
 
 def _account(app):
@@ -84,3 +84,14 @@ def test_a_hand_added_row_in_another_account_isnt_matched(app):
     call(app, "add_transaction", wallet, "2026-10-05", "Sample Grocer", -8000)
     result = _import(app, [("20261005", "-80.00", "SAMPLE GROCER CALGARY AB", "C2")])
     assert result["added"] == 1 and len(_of(app, -8000)) == 2
+
+
+def test_the_banks_id_already_on_another_row_doesnt_break_the_match(app):
+    """Banks repeat IDs (PR #90): the hand-added row takes the bank's details, but not an ID the
+    account already has on another row, which is unique there."""
+    account = _account(app)  # its payroll row has the ID C1
+    mine = _id(call(app, "add_transaction", account, "2026-10-05", "SAMPLE GROCER", -8000))
+    result = _import(app, [("20261005", "-80.00", "SAMPLE GROCER CALGARY AB", "C1")], as_of="20261006")
+    assert (result["added"], result["duplicates"]) == (0, 1)
+    [row] = _of(app, -8000)
+    assert row["id"] == mine and row["raw_name"] == "SAMPLE GROCER CALGARY AB"

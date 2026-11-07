@@ -41,7 +41,7 @@ def test_a_bad_date_is_refused_before_it_is_stored(app):
         assert not result["ok"] and ("date" in result["error"]), date
     assert not app.dispatch("set_balance", [wallet, 5000, "2026-13-45"])["ok"]
     txn = call(app, "add_transaction", wallet, "2026-10-05", "Sample", -500)
-    txn = txn["id"] if isinstance(txn, dict) else txn
+    txn = txn["id"]
     assert not app.dispatch("update_transaction", [txn, {"date": "2026-99-99"}])["ok"]
     assert call(app, "update_transaction", txn, {"date": "2026-10-06"}) is not None
     with app.db.read() as c:
@@ -66,7 +66,7 @@ def test_something_unexpected_is_logged_and_shown_without_raw_python(app, caplog
 def test_messages_for_the_person_still_reach_the_page_unchanged(app):
     ids, wallet = _setup(app)
     txn = call(app, "add_transaction", wallet, "2026-10-05", "Sample", -500)
-    txn = txn["id"] if isinstance(txn, dict) else txn
+    txn = txn["id"]
     for request, args, message in (
             ("split_transaction", [txn, [{"category_id": ids["Food"], "amount": -500}]], "A split needs at least two parts."),
             ("split_transaction", [txn, [{"category_id": ids["Food"], "amount": -100}, {"category_id": ids["Food"], "amount": -100}]],

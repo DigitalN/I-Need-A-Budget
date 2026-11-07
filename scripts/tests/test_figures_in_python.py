@@ -100,6 +100,6 @@ def test_categorize_returns_what_the_items_came_to(app):
     call(app, "finish_onboarding", "2026-10")
     a = call(app, "add_transaction", wallet, "2026-10-02", "Sample Shop", -1250)
     b = call(app, "add_transaction", wallet, "2026-10-03", "Sample Shop", -980)
-    ids_ = [x["id"] if isinstance(x, dict) else x for x in (a, b)]
+    ids_ = [a["id"], b["id"]]
     out = call(app, "categorize", txn_ids=ids_, category_id=ids["Food"])
     assert out["total"] == -2230
