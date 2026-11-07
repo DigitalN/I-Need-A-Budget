@@ -609,9 +609,10 @@ def _parse_csv(text, filename, conn):
     except csvlayout.LayoutError as e:  # the bank changed its file: show the app its columns again
         raise NeedsSetup("layout", f"{e}. Set the file up again from the Inbox.") from None
     key = csv_account_key(layout["id"], filename)
-    hint = AccountHint([key], "chequing", base_name(filename), create=False,
-                       account_id=csv_account(conn, layout["id"], key, rows, balance))
-    return Parsed("csv", [Part(hint, rows)], kind=layout_kind(layout))
+    account_id = csv_account(conn, layout["id"], key, rows, balance)
+    note = csv_balance_note(conn, account_id or ledger.account_by_key(conn, [key]), balance)
+    hint = AccountHint([key], "chequing", base_name(filename), create=False, account_id=account_id)
+    return Parsed("csv", [Part(hint, rows, notes=[note] if note else [])], kind=layout_kind(layout))
 
 
 # How well a set-up CSV fits an account (csv_fit), from -1 to 1.
@@ -619,13 +620,15 @@ CONTRADICTS, UNLIKELY, UNKNOWN, FITS = -1, -0.5, 0, 1
 OVERLAP_ROWS = 3  # rows inside an account's dates before a file is judged by whether they match
 
 
-def csv_fit(conn, account_id, rows, balance):
+def csv_fit(conn, account_id, rows, balance, trusted=False):
     """Whether a set-up CSV looks like this account's file: FITS, CONTRADICTS, UNLIKELY (maybe
     another sort of account) or UNKNOWN. Banks reuse one file name for every account, and a
     wrong account is silent wrong money. The evidence: rows inside the account's dates that
     are (or aren't) in it, a running-balance column that moves the way this sort of account's
     does (a bank account's rises with money in; a card's can go either way, by bank), and one
-    that continues the balance the app has."""
+    that continues the balance the app has. `trusted`: the person already said this file name
+    is this account, so a balance that doesn't continue (a missed download, a balance typed a
+    little wrong) isn't held against it: csv_balance_note says so instead."""
     acct = conn.execute("SELECT kind FROM accounts WHERE id = ?", (account_id,)).fetchone()
     if acct is None:
         return UNKNOWN
@@ -636,7 +639,7 @@ def csv_fit(conn, account_id, rows, balance):
         else:
             scores.append(FITS if balance["sign"] == 1 else CONTRADICTS)
         ours = ledger.account_balance(conn, account_id, day_before(balance["date"]))
-        if ours is not None:
+        if ours is not None and not trusted:
             scores.append(FITS if ours == balance["sign"] * balance["opening"] else CONTRADICTS)
     span = conn.execute("SELECT MIN(date) AS first, MAX(date) AS last FROM transactions WHERE account_id = ?",
                         (account_id,)).fetchone()
@@ -658,6 +661,23 @@ def csv_fit(conn, account_id, rows, balance):
     return UNLIKELY if UNLIKELY in scores else UNKNOWN
 
 
+def csv_balance_note(conn, account_id, balance):
+    """What's off when a set-up CSV's running balance doesn't continue the account's: 'This file's
+    balance on Oct 3 was $1,070.00; the app has $1,060.00'. '' when it continues, or there's
+    nothing to compare."""
+    if account_id is None or balance is None:
+        return ""
+    day = day_before(balance["date"])
+    ours, theirs = ledger.account_balance(conn, account_id, day), balance["sign"] * balance["opening"]
+    if ours is None or ours == theirs:
+        return ""
+    def money(cents):
+        return f"{'-' if cents < 0 else ''}${abs(cents) / 100:,.2f}"
+    month, number = int(day[5:7]), int(day[8:])
+    when = f"{('Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec')[month - 1]} {number}"
+    return f"This file's balance on {when} was {money(theirs)}; the app has {money(ours)}"
+
+
 def csv_account(conn, layout_id, key, rows, balance):
     """The account a set-up CSV is for when looking at the file settles it, else None (the
     name, `key`, and the rows decide, as for any file). The account the name points to,
@@ -667,7 +687,7 @@ def csv_account(conn, layout_id, key, rows, balance):
     named = ledger.account_by_key(conn, [key])
     if named is None:
         return None
-    fit = csv_fit(conn, named, rows, balance)
+    fit = csv_fit(conn, named, rows, balance, trusted=True)
     if fit >= UNKNOWN:
         return None
     others = [r["account_id"] for r in conn.execute(

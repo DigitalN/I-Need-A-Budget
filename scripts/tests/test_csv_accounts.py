@@ -77,7 +77,9 @@ def test_an_overlapping_download_of_the_same_account_still_imports(app):
     assert (result["account_name"], result["added"], result["duplicates"]) == ("TD Chequing", 3, 3)
 
 
-def test_a_balance_that_doesnt_continue_the_accounts_is_asked_about(app):
+def test_a_balance_that_doesnt_continue_the_accounts_is_said_not_asked_about(app):
+    """Issue #120: the file name already says which account this is. A balance that doesn't continue is
+    a missed download or a balance typed wrong, not a reason to ask which account: the import says so."""
     app.db.set_meta("onboarded", "1")
     _set_up(app, CHEQUING, "TD Chequing", "chequing")
     chequing = _accounts(app)["TD Chequing"]
@@ -87,6 +89,50 @@ def test_a_balance_that_doesnt_continue_the_accounts_is_asked_about(app):
                                                            "10/05/2026,SAMPLE REFUND,,20.00,5020.00\n"
                                                            "10/06/2026,SAMPLE GYM,30.00,,4990.00\n")
     out = call(app, "import_files", [str(odd)])
-    assert out["needs_setup"] and not out["results"]
-    fine = write(app.test_downloads, "accountactivity.csv", NEXT_CHEQUING)
-    assert [r["added"] for r in call(app, "import_files", [str(fine)])["results"]] == [3]
+    assert not out["needs_setup"] and [r["added"] for r in out["results"]] == [3]
+    assert "This file's balance on Oct 3 was $5,010.00; the app has $2,434.30" in out["results"][0]["balance_note"]
+
+
+HEAD = "Date,Description,Amount,Balance\n"
+
+
+def test_an_account_with_a_slightly_wrong_balance_isnt_asked_about_every_time(app):
+    """Issue #120: a typed balance $10.00 short made every next download of the right account 'contradicted'."""
+    app.db.set_meta("onboarded", "1")
+    first = write(app.test_downloads, "activity.csv", HEAD + "2026-10-01,SAMPLE CAFE,-10.00,990.00\n"
+                  "2026-10-02,SAMPLE GROCER,-20.00,970.00\n2026-10-03,SAMPLE EMPLOYER PAY,100.00,1070.00\n")
+    setup = call(app, "csv_setup", str(first))
+    call(app, "setup_csv", str(first), setup["layout"], {"name": "Sample Chequing", "kind": "chequing", "bank": "Sample CU"})
+    acct = next(a["id"] for a in call(app, "accounts") if a["name"] == "Sample Chequing")
+    call(app, "set_balance", acct, 106000, "2026-10-03")   # typed $10.00 short
+    asked = 0
+    for n, days in enumerate([(4, 5, 6), (7, 8, 9)]):
+        bal = 1070.00 - 15 * n
+        rows = "".join(f"2026-10-{d:02d},SAMPLE BAKERY {d},-5.00,{bal - 5 * (i + 1):.2f}\n" for i, d in enumerate(days))
+        path = write(app.test_downloads, "activity.csv", HEAD + rows)
+        out = call(app, "import_files", [str(path)])
+        if out["needs_setup"]:
+            asked += 1
+            again = call(app, "csv_setup", str(path))
+            call(app, "setup_csv", str(path), again["layout"], {"id": acct})
+    assert asked <= 1, f"asked {asked} times"
+
+
+def test_what_is_off_about_the_balance_is_said_with_the_import(app):
+    app.db.set_meta("onboarded", "1")
+    first = write(app.test_downloads, "activity.csv", HEAD + "2026-10-01,SAMPLE CAFE,-10.00,990.00\n"
+                  "2026-10-02,SAMPLE GROCER,-20.00,970.00\n2026-10-03,SAMPLE EMPLOYER PAY,100.00,1070.00\n")
+    setup = call(app, "csv_setup", str(first))
+    call(app, "setup_csv", str(first), setup["layout"], {"name": "Sample Chequing", "kind": "chequing", "bank": "Sample CU"})
+    acct = next(a["id"] for a in call(app, "accounts") if a["name"] == "Sample Chequing")
+    call(app, "set_balance", acct, 106000, "2026-10-03")   # typed $10.00 short
+    path = write(app.test_downloads, "activity.csv", HEAD + "2026-10-04,SAMPLE BAKERY,-5.00,1065.00\n"
+                 "2026-10-05,SAMPLE BAKERY,-5.00,1060.00\n2026-10-06,SAMPLE BAKERY,-5.00,1055.00\n")
+    [result] = call(app, "import_files", [str(path)])["results"]
+    assert "This file's balance on Oct 3 was $1,070.00; the app has $1,060.00" in result["balance_note"]
+    # With the balance put right, the next file continues it and says nothing.
+    call(app, "set_balance", acct, 107000, "2026-10-03")
+    path = write(app.test_downloads, "activity.csv", HEAD + "2026-10-07,SAMPLE BAKERY,-5.00,1050.00\n"
+                 "2026-10-08,SAMPLE BAKERY,-5.00,1045.00\n2026-10-09,SAMPLE BAKERY,-5.00,1040.00\n")
+    [result] = call(app, "import_files", [str(path)])["results"]
+    assert "This file's balance" not in result["balance_note"]
