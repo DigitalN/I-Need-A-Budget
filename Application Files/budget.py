@@ -176,13 +176,21 @@ def _move_to_payment(spends, credit_over, moved, payment_for, moved_from, source
     category it's moved from."""
     positive = {a: s for a, s in spends.items() if s > 0}
     total_positive = sum(positive.values())
-    remaining = credit_over
-    shares = {}
-    for i, (account_id, spent) in enumerate(sorted(positive.items())):
-        share = remaining if i == len(positive) - 1 else round(credit_over * spent / total_positive)
-        share = min(share, spent, remaining)
-        shares[account_id] = share
-        remaining -= share
+    if credit_over >= total_positive:
+        shares = dict(positive)
+    else:
+        base = {}
+        fractions = {}
+        for a, s in sorted(positive.items()):
+            exact = credit_over * s / total_positive
+            b = int(exact)
+            base[a] = b
+            fractions[a] = exact - b
+        remainder = credit_over - sum(base.values())
+        ranked = sorted(positive.keys(), key=lambda a: (-fractions[a], a))
+        shares = dict(base)
+        for a in ranked[:remainder]:
+            shares[a] += 1
     for account_id, spent in spends.items():
         _move(moved, moved_from, payment_for[account_id], source, spent - shares.get(account_id, 0))
 

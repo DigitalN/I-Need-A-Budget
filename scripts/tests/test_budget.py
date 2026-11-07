@@ -2,7 +2,7 @@
 
 import random
 
-from budget import average_spending, complete_months_before, compute, usual_spending
+from budget import _move_to_payment, average_spending, complete_months_before, compute, usual_spending
 from helpers import CARD_FILE, bank_csv, call, card_csv, categories, txns, write
 from util import months_between
 
@@ -121,12 +121,57 @@ def test_balance_transfer_between_debts_moves_no_money():
     assert r["2026-07"]["categories"][CARD_PAY]["available"] == 0
 
 
+def test_shares_of_uncovered_card_spending_add_up():
+    spends = {1: 2600, 2: 2600, 3: 2600, 4: 2200}
+    moved, moved_from = {a: 0 for a in spends}, {a: {} for a in spends}
+    _move_to_payment(spends, 9998, moved, {a: a for a in spends}, moved_from, "food")
+    assert sum(moved.values()) == sum(spends.values()) - 9998
+
+
+def test_shares_of_uncovered_card_spending_exhaustive_small():
+    import itertools
+    for n in (2, 3, 4):
+        for combo in itertools.combinations_with_replacement(range(-5, 10), n):
+            spends = {i + 1: combo[i] for i in range(n)}
+            pos = {a: s for a, s in spends.items() if s > 0}
+            total_pos = sum(pos.values())
+            if not total_pos:
+                continue
+            for credit_over in range(0, total_pos + 1):
+                moved, moved_from = {a: 0 for a in spends}, {a: {} for a in spends}
+                _move_to_payment(spends, credit_over, moved, {a: a for a in spends}, moved_from, "food")
+                assert sum(moved.values()) == sum(spends.values()) - credit_over
+                for a, s in pos.items():
+                    assert 0 <= moved[a] <= s
+
+    for combo in itertools.combinations_with_replacement(range(-5, 10), 5):
+        spends = {i + 1: combo[i] for i in range(5)}
+        pos = {a: s for a, s in spends.items() if s > 0}
+        total_pos = sum(pos.values())
+        if not total_pos:
+            continue
+        for credit_over in (0, 1, total_pos // 2, total_pos - 1, total_pos):
+            moved, moved_from = {a: 0 for a in spends}, {a: {} for a in spends}
+            _move_to_payment(spends, credit_over, moved, {a: a for a in spends}, moved_from, "food")
+            assert sum(moved.values()) == sum(spends.values()) - credit_over
+            for a, s in pos.items():
+                assert 0 <= moved[a] <= s
+
+
 def test_money_always_adds_up_on_random_histories():
     """Ready to assign + money in categories − overspending not out of it yet + money in
     waiting in the inbox == cash in cash accounts, every month, whichever way overspending
     is paid for."""
     rng = random.Random(7)
     months = ["2026-07", "2026-08", "2026-09", "2026-10"]
+    cards = [10, 11, 12, 13]
+    payment_cats = [20, 21, 22, 23]
+    cats = [
+        {"id": FOOD, "role": "normal", "debt_account_id": None},
+        {"id": BILLS, "role": "normal", "debt_account_id": None},
+        {"id": INCOME, "role": "income", "debt_account_id": None},
+        *[{"id": pc, "role": "payment", "debt_account_id": c} for c, pc in zip(cards, payment_cats)],
+    ]
     for _ in range(60):
         opening = rng.randint(0, 500_000)
         lines, payments, assigned = [], [], {}
@@ -135,22 +180,23 @@ def test_money_always_adds_up_on_random_histories():
         for m in months:
             for _ in range(rng.randint(0, 25)):
                 on_card = rng.random() < 0.5
+                card = rng.choice(cards)
                 cat = rng.choice([FOOD, BILLS, INCOME, None])
                 amount = rng.randint(-60_000, 40_000 if cat in (INCOME, None) else 5_000)
-                lines.append((m, CARD if on_card else 1, on_card, cat, amount))
+                lines.append((m, card if on_card else 1, on_card, cat, amount))
                 if not on_card:
                     cash[m] += amount
                     if cat is None and amount > 0:
                         waiting[m] += amount
             for _ in range(rng.randint(0, 2)):
                 paid = -rng.randint(0, 200_000)
-                payments.append((m, CARD, paid))
+                payments.append((m, rng.choice(cards), paid))
                 cash[m] += paid
-            for cat in (FOOD, BILLS, CARD_PAY):
+            for cat in (FOOD, BILLS, *payment_cats):
                 if rng.random() < 0.7:
                     assigned[(m, cat)] = rng.randint(-5_000, 150_000)
         for overspending in ("this_month", "next_month", "carry_over"):
-            result = compute(months[0], months[-1], CATS, lines, payments, assigned, opening, overspending=overspending)
+            result = compute(months[0], months[-1], cats, lines, payments, assigned, opening, overspending=overspending)
             running, waited = opening, 0
             for m in months:
                 running += cash[m]
