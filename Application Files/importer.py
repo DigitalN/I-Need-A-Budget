@@ -74,8 +74,9 @@ class NeedsSetup(ImportError_):
     """A CSV the app hasn't been shown how to read yet ('layout'), or whose account it
     doesn't know yet ('account'). The page asks, then calls the import again."""
 
-    def __init__(self, what):
-        super().__init__("This file needs setting up first." if what == "layout" else "Which account is this file for?")
+    def __init__(self, what, message=None):
+        super().__init__(message or ("This file needs setting up first." if what == "layout"
+                                     else "Which account is this file for?"))
         self.what = what
 
 
@@ -139,10 +140,13 @@ class Parsed:
 # ── reading files ────────────────────────────────────────────
 
 def read_text(path):
+    """The file's text. UTF-16 (Excel's "Unicode text") is told by its byte order mark, and a
+    lone carriage return (Excel's "CSV (Macintosh)") ends a line like any other."""
     data = Path(path).read_bytes()
-    for encoding in ("utf-8-sig", "cp1252", "latin-1"):
+    encodings = ("utf-16",) if data[:2] in (b"\xff\xfe", b"\xfe\xff") else ("utf-8-sig", "cp1252", "latin-1")
+    for encoding in encodings:
         try:
-            return data.decode(encoding)
+            return re.sub(r"\r(?!\n)", "\n", data.decode(encoding))
         except UnicodeDecodeError:
             continue
     raise ImportError_("The file isn't text.")
@@ -167,7 +171,7 @@ def detect(text):
         return "ofx"
     try:
         first = next(csv.reader(io.StringIO(text)))
-    except StopIteration:
+    except (StopIteration, csv.Error):  # empty, or not a table the csv module can read
         return None
     header = [h.strip().lower() for h in first]
     if header[:5] == CARD_HEADER:
@@ -184,9 +188,16 @@ def detect(text):
 
 
 def parse(path, conn=None):
-    """Reads one file. Raises ImportError_ if it isn't a format we know, NeedsSetup for a
-    CSV whose layout hasn't been set up (looked up through `conn`)."""
-    path = Path(path)
+    """Reads one file. Raises ImportError_ if it isn't a format we know or can read,
+    NeedsSetup for a CSV whose layout hasn't been set up, or no longer fits (looked up
+    through `conn`)."""
+    try:
+        return _parse(Path(path), conn)
+    except csv.Error as e:  # a cell over the size limit, a stray quote...
+        raise ImportError_(f"This file can't be read as a table of transactions ({e}).") from None
+
+
+def _parse(path, conn):
     text = read_text(path)
     fmt = detect(text)
     if fmt == "tangerine_card":
@@ -425,8 +436,8 @@ def _parse_csv(text, filename, conn):
         raise NeedsSetup("layout")
     try:
         rows = [Row(day, cents, description) for day, cents, description in csvlayout.read(text, layout)]
-    except csvlayout.LayoutError as e:
-        raise ImportError_(f"{e}. Set the file up again from the Inbox.") from None
+    except csvlayout.LayoutError as e:  # the bank changed its file: show the app its columns again
+        raise NeedsSetup("layout", f"{e}. Set the file up again from the Inbox.") from None
     hint = AccountHint([csv_account_key(layout["id"], filename)], "chequing", base_name(filename), create=False)
     return Parsed("csv", [Part(hint, rows)])
 

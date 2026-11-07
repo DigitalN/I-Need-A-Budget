@@ -45,7 +45,10 @@ def table(text):
         delimiter = csv.Sniffer().sniff(sample, delimiters=",;\t|").delimiter
     except csv.Error:
         delimiter = ","
-    rows = [[cell.strip() for cell in r] for r in csv.reader(io.StringIO(text), delimiter=delimiter)]
+    try:
+        rows = [[cell.strip() for cell in r] for r in csv.reader(io.StringIO(text), delimiter=delimiter)]
+    except csv.Error:  # a cell over the size limit: not a table of transactions
+        return []
     rows = [r for r in rows if any(r)]
     widths = Counter(len(r) for r in rows if len(r) >= 3)
     if not widths:
