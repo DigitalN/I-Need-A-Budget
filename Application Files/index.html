@@ -465,15 +465,39 @@ function parseMoney(text, base) {
   const cents = Math.round(Number((Math.abs(v) * 100).toFixed(6)));  // 1.005 is 101¢, not 100
   return v < 0 && cents ? -cents : cents;
 }
-// What an amount box holds, in cents. A box marked data-relative (Assigned, Budgeted,
-// Assign money…'s Assign column) works +50 out from the amount it had when you clicked
-// into it (data-base), or else the amount it was drawn with: a redraw puts back what you'd
-// typed into a new box.
-const amountIn = el => parseMoney(el.value, !el.matches('[data-relative]') ? undefined
-  : el.dataset.base !== undefined ? Number(el.dataset.base) : parseMoney(el.defaultValue) || 0);
-// Whether what's in a box is math (120+35.50, or +50 in a relative box) rather than an amount.
-const isMath = el => /[*/()×÷]|.[-+−]/.test(el.value.replace(/[$,\s]/g, ''))
-  || (el.matches('[data-relative]') && /^\s*[-+−*/×÷]/.test(el.value));
+// What an amount box holds, in cents. The text in a box is either what the page (or a
+// button) put there, or what you typed. A box marked data-relative (Assigned, Budgeted,
+// Assign money…'s Assign column) works typed math like +50 out from `before`: the amount it
+// held when you clicked into it (data-base), or else the amount it was drawn with. Text the
+// page put there is an amount, whatever its first character: a drawn -50.00 is -$50.00.
+const isRelative = el => el.matches('[data-relative]');
+const shownIn = el => el.dataset.shown ?? el.defaultValue;  // the text the page last put in
+const typedIn = el => el.value !== shownIn(el);
+// The page (not you) writes into a box: a button, or the amount your math came to.
+function putIn(el, text, cents) {
+  el.value = text;
+  el.dataset.shown = text;
+  el.dataset.base = cents || 0;
+}
+// Escape: back to what the page drew.
+function putBack(el) {
+  el.value = el.defaultValue;
+  delete el.dataset.shown;
+  delete el.dataset.base;
+}
+// Clicking into a box: what it holds now is what typed math works from.
+function noteBefore(el) {
+  if (isRelative(el) && !typedIn(el)) el.dataset.base = parseMoney(el.value) || 0;
+}
+function amountIn(el) {
+  const before = el.dataset.base !== undefined ? Number(el.dataset.base) : parseMoney(el.defaultValue) || 0;
+  return parseMoney(el.value, isRelative(el) && typedIn(el) ? before : undefined);
+}
+// Whether what's in a box is math (120+35.50, or +50 typed in a relative box) rather than an amount.
+function isMath(el) {
+  return /[*/()×÷]|.[-+−]/.test(el.value.replace(/[$,\s]/g, ''))
+    || (isRelative(el) && typedIn(el) && /^\s*[-+−*/×÷]/.test(el.value));
+}
 const monthLong = m => new Date(m + '-15T12:00').toLocaleDateString('en-CA', { month: 'long', year: 'numeric' });
 const monthShort = m => new Date(m + '-15T12:00').toLocaleDateString('en-CA', { month: 'short' });
 const monthOnly = m => new Date(m + '-15T12:00').toLocaleDateString('en-CA', { month: 'long' });
@@ -1032,7 +1056,7 @@ async function saveAssigned(input) {
   if (Number.isNaN(cents)) { toast('That isn\'t an amount', { error: true }); return; }
   const id = Number(input.dataset.assign);
   const current = findCat(id);
-  if (current && (cents ?? 0) === current.assigned) { input.value = moneyOrBlank(current.assigned); return; }
+  if (current && (cents ?? 0) === current.assigned) { putIn(input, moneyOrBlank(current.assigned), current.assigned); return; }
   await call('set_assigned', [state.month, id, cents ?? 0]);
   await renderBudget();
   toast(`Assigned ${money(cents ?? 0)} to ${catName(id) || 'category'}`, { action: undoAction });
@@ -1234,7 +1258,8 @@ async function openCategory(id) {
     if (!btn) return;
     const act = btn.dataset.act, cat = Number(btn.dataset.cat);
     if (act === 'use-amount') {
-      monthlyInput.value = btn.dataset.amount === '' ? '' : moneyPlain(Number(btn.dataset.amount));
+      const used = btn.dataset.amount === '' ? null : Number(btn.dataset.amount);
+      putIn(monthlyInput, used === null ? '' : moneyPlain(used), used);
       await saveMonthly();
     } else if (act === 'cat-hide') {
       await call('set_category_hidden', [d.id, !d.hidden]);
@@ -3263,7 +3288,7 @@ document.addEventListener('click', async e => {
 document.addEventListener('keydown', e => {
   if (e.target.dataset && e.target.dataset.assign !== undefined && e.key === 'Escape') {  // puts it back, saves nothing
     e.preventDefault();
-    e.target.value = e.target.defaultValue;
+    putBack(e.target);
     e.target.blur();
     return;
   }
@@ -3302,7 +3327,7 @@ document.addEventListener('mousedown', e => {
 document.addEventListener('focusin', e => {
   const el = e.target;
   if (!el.matches || !el.matches(AMOUNT_BOXES)) return;
-  if (el.matches('[data-relative]') && !isMath(el)) el.dataset.base = parseMoney(el.value) || 0;
+  noteBefore(el);
   el.select();
 });
 document.addEventListener('focusout', e => { if (e.target === clickedInto) clickedInto = null; });
@@ -3312,7 +3337,7 @@ document.addEventListener('focusout', e => {
   const el = e.target;
   if (!el.matches || !el.matches(AMOUNT_BOXES) || !isMath(el)) return;
   const cents = amountIn(el);
-  if (cents !== null && !Number.isNaN(cents)) el.value = moneyPlain(cents);
+  if (cents !== null && !Number.isNaN(cents)) putIn(el, moneyPlain(cents), cents);
 });
 let dragDepth = 0;
 document.addEventListener('dragenter', e => { if (e.dataTransfer && [...e.dataTransfer.types].includes('Files')) { dragDepth++; document.body.classList.add('dragging'); } });

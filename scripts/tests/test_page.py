@@ -109,6 +109,91 @@ def test_amount_boxes_do_math():
     assert [(text, base, value) for (text, base, _), value in zip(cases, got)] == cases
 
 
+def _box_script(body):
+    """Node script: the page's own amount-box helpers, a fake box, then `body`."""
+    parts = [re.search(rf"^function {name}\(.*?^}}$", PAGE, re.S | re.M).group(0)
+             for name in ("parseMoney", "putIn", "putBack", "noteBefore", "amountIn", "isMath")]
+    parts += [re.search(rf"^const {name} = [^\n]*$", PAGE, re.M).group(0)
+              for name in ("moneyPlain", "isRelative", "shownIn", "typedIn")]
+    fake = """
+function box(text, { relative = true } = {}) {  // an <input> the page drew with `text`
+  return { value: text, defaultValue: text, dataset: {}, matches: s => relative && s === '[data-relative]' };
+}
+function focusIn(el) { noteBefore(el); }
+function typeIn(el, text) { el.value = text; }
+"""
+    return "\n".join(parts) + fake + body
+
+
+def _run_node(script):
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("needs Node")
+    return json.loads(subprocess.run([node, "-e", script], capture_output=True, text=True, check=True).stdout)
+
+
+def test_a_negative_assigned_amount_is_an_amount_until_you_type():
+    """Issue #45: an Assigned box drawn with -50.00 is an amount, not "subtract 50": clicking
+    in and out, Tab, Escape or quitting leave it at -$50.00. Only text you typed is math."""
+    got = _run_node(_box_script("""
+const out = {};
+let a = box('-50.00');                                   // untouched, never focused
+out.untouched = [amountIn(a), isMath(a)];
+a = box('-50.00'); focusIn(a);                           // clicked into, nothing typed
+out.focused = [amountIn(a), isMath(a)];
+a = box('-50.00'); focusIn(a); typeIn(a, '+10');
+out.plus = amountIn(a);
+a = box('-50.00'); focusIn(a); typeIn(a, '-10');
+out.minus = amountIn(a);
+a = box('-50.00'); focusIn(a); typeIn(a, '-10'); putBack(a);
+out.escape = [a.value, amountIn(a), isMath(a)];
+a = box('-50.00'); focusIn(a); typeIn(a, '*2');
+out.times = amountIn(a);
+a = box(''); focusIn(a); typeIn(a, '-50');
+out.empty = amountIn(a);
+a = box('120.00'); focusIn(a); typeIn(a, '-20');
+out.food = amountIn(a);
+a = box('120.00'); focusIn(a); typeIn(a, '120+35.50');
+out.sum = [amountIn(a), isMath(a)];
+// the page puts a resolved amount in the box: a later pass starts from it
+a = box('-50.00'); focusIn(a); typeIn(a, '+10'); putIn(a, moneyPlain(-4000), -4000); focusIn(a);
+out.resolved = [amountIn(a), isMath(a)];
+a = box('-40.00'); focusIn(a); typeIn(a, '-10');
+out.resolvedThenMinus = amountIn(a);
+console.log(JSON.stringify(out));
+"""))
+    assert got["untouched"] == [-5000, False]
+    assert got["focused"] == [-5000, False]
+    assert got["plus"] == -4000
+    assert got["minus"] == -6000
+    assert got["escape"] == ["-50.00", -5000, False]
+    assert got["times"] == -10000
+    assert got["empty"] == -5000
+    assert got["food"] == 10000
+    assert got["sum"] == [15550, True]
+    assert got["resolved"] == [-4000, False]
+    assert got["resolvedThenMinus"] == -5000
+
+
+def test_use_puts_an_amount_in_the_budgeted_box_even_when_negative():
+    """Issue #45: Use with a negative average (refunds make one) puts that amount in the
+    Budgeted box. It isn't "take 12 off what was there"."""
+    got = _run_node(_box_script("""
+const budgeted = box('100.00'); focusIn(budgeted);
+putIn(budgeted, moneyPlain(-1200), -1200);               // what the Use button does
+const out = { used: [budgeted.value, amountIn(budgeted), isMath(budgeted)] };
+const cleared = box('100.00'); focusIn(cleared);
+putIn(cleared, '', 0);                                   // Clear
+out.cleared = [cleared.value, amountIn(cleared)];
+const plain = box('100.00', { relative: false }); typeIn(plain, '-45');
+out.plain = amountIn(plain);
+console.log(JSON.stringify(out));
+"""))
+    assert got["used"] == ["-12.00", -1200, False]
+    assert got["cleared"] == ["", None]
+    assert got["plain"] == -4500
+
+
 def test_relative_boxes_and_escape():
     """Assigned, Budgeted and Assign money…'s Assign column work from what's in them;
     leaving a box with math in it shows the amount; Escape puts an Assigned box back."""
@@ -117,7 +202,7 @@ def test_relative_boxes_and_escape():
     assert 'data-i="${i}" data-relative' in PAGE
     assert "const cents = amountIn(input);" in PAGE and "const cents = amountIn(monthlyInput);" in PAGE
     assert "amount: amountIn(el) || 0" in PAGE
-    assert "e.target.value = e.target.defaultValue;" in PAGE
+    assert "putBack(e.target);" in PAGE
 
 
 def test_categories_are_edited_on_the_budget_page():
