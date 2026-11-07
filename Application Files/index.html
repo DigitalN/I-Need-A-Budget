@@ -2956,7 +2956,8 @@ async function settingsAction(btn) {
   } else if (act === 'open') { await call('window_action', [btn.dataset.what]); return; }
   else if (act === 'learn-actual') {
     const r = await call('learn_actual_file');
-    if (r && r.learnt) toast(`Learnt ${r.learnt.examples} examples${r.rechecked ? `, and categorized ${r.rechecked} waiting transactions` : ''}`);
+    if (r && r.learnt) toast(r.learnt.examples ? `Learnt ${r.learnt.examples} examples${r.rechecked ? `, and categorized ${r.rechecked} waiting transactions` : ''}`
+      : 'Nothing new: it had already learnt from this', r.learnt.examples ? { action: undoAction } : {});
   }
   await renderSettings();
 }

@@ -649,8 +649,9 @@ def learn_from_actual(conn, parsed):
 
     Categories are matched by name, including names they used to have (so renaming
     "Eating Out" to "Food" here still matches Actual's "Eating Out"); missing ones are
-    created. Returns {'examples': n, 'categories_created': [...]}."""
-    created, examples = [], 0
+    created. Returns {'examples': n (new ones), 'already_learnt': n, 'categories_created': [...]}."""
+    created, examples, already = [], 0, 0
+    seen = {}  # (payee, category, amount, date) → how many of those this file has had so far
     income_id = ledger.income_category(conn)
     income_group = conn.execute("SELECT group_id FROM categories WHERE id = ?", (income_id,)).fetchone()["group_id"]
     for r in parsed.actual_rows:
@@ -677,10 +678,19 @@ def learn_from_actual(conn, parsed):
         if desc.hint == "transfer":
             continue
         payee_id, _ = ledger.resolve_payee(conn, desc)
-        conn.execute("INSERT INTO examples (payee_id, category_id, amount, date, source) VALUES (?, ?, ?, ?, 'actual')",
-                     (payee_id, category_id, r["amount"], r["date"]))
+        # Each example once: one this file taught before (or an earlier export that had it) isn't added
+        # again, which would double its weight in every suggestion. Identical rows in one file
+        # (two $4.00 coffees on a day) are each an example.
+        key = (payee_id, category_id, r["amount"], r["date"])
+        seen[key] = seen.get(key, 0) + 1
+        have = conn.execute("SELECT COUNT(*) FROM examples WHERE payee_id = ? AND category_id = ? AND amount = ? "
+                            "AND date = ? AND source = 'actual'", key).fetchone()[0]
+        if have >= seen[key]:
+            already += 1
+            continue
+        conn.execute("INSERT INTO examples (payee_id, category_id, amount, date, source) VALUES (?, ?, ?, ?, 'actual')", key)
         examples += 1
-    return {"examples": examples, "categories_created": created}
+    return {"examples": examples, "already_learnt": already, "categories_created": created}
 
 
 def _actual_description(notes):
