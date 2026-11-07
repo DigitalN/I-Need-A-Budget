@@ -17,7 +17,8 @@ Formats (detected from the content, not the file name):
   Description 2,CAD$,USD$`, every account in one file, told apart by number.
 - Any other bank's CSV, once the person has shown the app its columns (csvlayout.py).
   The layout is saved and found again by the file's header; which account a file is for
-  is saved by its file name (dates taken out), and asked when the name is new.
+  is saved by its file name (dates taken out), and asked when the name is new, or when the
+  file doesn't look like that account (some banks name every download the same: csv_fit).
 - Actual Budget's transaction export: not imported as transactions, only learnt from
   (its categories and which payees went where). See `learn_from_actual()`.
 
@@ -57,7 +58,7 @@ import banks
 import csvlayout
 import ledger
 from payees import describe, transaction_hint
-from util import parse_date, to_cents
+from util import day_before, parse_date, to_cents
 
 log = logging.getLogger("inab")
 
@@ -105,6 +106,7 @@ class AccountHint:
     legacy_keys: list = field(default_factory=list)  # looked up after `keys`, never saved
     bank: str = None
     create: bool = True   # False: ask which account rather than make one
+    account_id: int = None  # the account the file is known to be for (found by looking at the file)
 
 
 @dataclass
@@ -408,6 +410,17 @@ def csv_account_key(layout_id, filename):
     return f"csv:{layout_id}:{csv_name_key(filename)}"
 
 
+def remember_csv_account(conn, layout_id, filename, account_id):
+    """Files with this name (dates taken out) go to this account from now on. The account is
+    also kept on record, under a key of its own, as one that gets files with this layout:
+    banks reuse a file name for every account, so the name will point at whichever account
+    answered last, and csv_account() looks for the others."""
+    key = csv_account_key(layout_id, filename)
+    conn.execute("INSERT INTO account_sources (key, account_id) VALUES (?, ?) ON CONFLICT(key) DO UPDATE "
+                 "SET account_id = excluded.account_id", (key, account_id))
+    conn.execute("INSERT OR IGNORE INTO account_sources (key, account_id) VALUES (?, ?)", (f"{key}#{account_id}", account_id))
+
+
 def saved_layout(conn, sniffed):
     """The layout saved for files like this one, or None."""
     row = conn.execute("SELECT * FROM csv_layouts WHERE signature = ?", (csvlayout.signature(sniffed),)).fetchone()
@@ -441,10 +454,80 @@ def _parse_csv(text, filename, conn):
         raise NeedsSetup("layout")
     try:
         rows = [Row(day, cents, description) for day, cents, description in csvlayout.read(text, layout)]
+        balance = csvlayout.running_balance(text, layout)
     except csvlayout.LayoutError as e:  # the bank changed its file: show the app its columns again
         raise NeedsSetup("layout", f"{e}. Set the file up again from the Inbox.") from None
-    hint = AccountHint([csv_account_key(layout["id"], filename)], "chequing", base_name(filename), create=False)
+    key = csv_account_key(layout["id"], filename)
+    hint = AccountHint([key], "chequing", base_name(filename), create=False,
+                       account_id=csv_account(conn, layout["id"], key, rows, balance))
     return Parsed("csv", [Part(hint, rows)])
+
+
+# How well a set-up CSV fits an account (csv_fit), from -1 to 1.
+CONTRADICTS, UNLIKELY, UNKNOWN, FITS = -1, -0.5, 0, 1
+OVERLAP_ROWS = 3  # rows inside an account's dates before a file is judged by whether they match
+
+
+def csv_fit(conn, account_id, rows, balance):
+    """Whether a set-up CSV looks like this account's file: FITS, CONTRADICTS, UNLIKELY (maybe
+    another sort of account) or UNKNOWN. Banks reuse one file name for every account, and a
+    wrong account is silent wrong money. The evidence: rows inside the account's dates that
+    are (or aren't) in it, a running-balance column that moves the way this sort of account's
+    does (a bank account's rises with money in; a card's can go either way, by bank), and one
+    that continues the balance the app has."""
+    acct = conn.execute("SELECT kind FROM accounts WHERE id = ?", (account_id,)).fetchone()
+    if acct is None:
+        return UNKNOWN
+    scores = []
+    if balance is not None:
+        if ledger.is_debt(acct["kind"]):
+            scores.append(FITS if balance["sign"] == -1 else UNLIKELY)
+        else:
+            scores.append(FITS if balance["sign"] == 1 else CONTRADICTS)
+        ours = ledger.account_balance(conn, account_id, day_before(balance["date"]))
+        if ours is not None:
+            scores.append(FITS if ours == balance["sign"] * balance["opening"] else CONTRADICTS)
+    span = conn.execute("SELECT MIN(date) AS first, MAX(date) AS last FROM transactions WHERE account_id = ?",
+                        (account_id,)).fetchone()
+    inside = [r for r in rows if span["first"] and span["first"] <= r.date <= span["last"]]
+    if len(inside) >= OVERLAP_ROWS:
+        have = Counter((t["date"], t["amount"]) for t in conn.execute(
+            "SELECT date, amount FROM transactions WHERE account_id = ? AND date BETWEEN ? AND ?",
+            (account_id, min(r.date for r in inside), max(r.date for r in inside))))
+        matched = 0
+        for r in inside:
+            if have[(r.date, r.amount)] > 0:
+                have[(r.date, r.amount)] -= 1
+                matched += 1
+        scores.append(FITS if matched >= 0.5 * len(inside) else CONTRADICTS)
+    if CONTRADICTS in scores:
+        return CONTRADICTS
+    if FITS in scores:
+        return FITS
+    return UNLIKELY if UNLIKELY in scores else UNKNOWN
+
+
+def csv_account(conn, layout_id, key, rows, balance):
+    """The account a set-up CSV is for when looking at the file settles it, else None (the
+    name, `key`, and the rows decide, as for any file). The account the name points to,
+    unless the file contradicts it, or doesn't fit it while it fits exactly one other
+    account that files with this layout go to; raises NeedsSetup('account') when the name's
+    account is contradicted and no other fits: ask which account."""
+    named = ledger.account_by_key(conn, [key])
+    if named is None:
+        return None
+    fit = csv_fit(conn, named, rows, balance)
+    if fit >= UNKNOWN:
+        return None
+    others = [r["account_id"] for r in conn.execute(
+        "SELECT DISTINCT account_id FROM account_sources WHERE key LIKE ? AND account_id != ?",
+        (f"csv:{layout_id}:%", named))]
+    fitting = [a for a in others if csv_fit(conn, a, rows, balance) == FITS]
+    if len(fitting) == 1:
+        return fitting[0]
+    if fit == CONTRADICTS:
+        raise NeedsSetup("account")
+    return None
 
 
 def _parse_actual(text):
@@ -507,7 +590,7 @@ class Result:
 def find_account(conn, hint, rows=(), fps=()):
     """The existing account a file's rows belong to, or None: by what the file says
     (`hint.keys`), else the one account that already has the file's rows."""
-    return ledger.account_by_key(conn, hint.keys) or ledger.account_by_key(conn, hint.legacy_keys) \
+    return hint.account_id or ledger.account_by_key(conn, hint.keys) or ledger.account_by_key(conn, hint.legacy_keys) \
         or account_with_rows(conn, hint.kind, rows, fps)
 
 

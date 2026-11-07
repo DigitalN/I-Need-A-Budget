@@ -220,9 +220,9 @@ def clean_layout(layout, width):
     return out
 
 
-def read(text, layout):
-    """[(date, cents, description)] for every transaction in the file. Raises LayoutError
-    naming the first row it can't read."""
+def _entries(text, layout):
+    """[(date, cents, description, the row)] for every transaction in the file. Raises
+    LayoutError naming the first row it can't read."""
     rows = table(text)
     if layout["has_header"]:
         rows = rows[1:]
@@ -247,5 +247,40 @@ def read(text, layout):
         except (ValueError, IndexError) as e:
             raise LayoutError(f"Row {n} doesn't fit: {e}") from None
         description = " ".join(r[c] for c in layout["desc_cols"] if c < len(r) and r[c])
-        out.append((day, cents, description))
+        out.append((day, cents, description, r))
     return out
+
+
+def read(text, layout):
+    """[(date, cents, description)] for every transaction in the file. Raises LayoutError
+    naming the first row it can't read."""
+    return [(day, cents, description) for day, cents, description, _ in _entries(text, layout)]
+
+
+def running_balance(text, layout):
+    """The file's running-balance column, if it has one (a money column that, row by row,
+    moves by the amount): {'sign': 1 if it rises with money in (a bank account's balance)
+    or -1 if it falls (a card's: what you owe), 'date', 'opening'}, where `opening` is the
+    balance before the oldest row, which is on `date`. None when there's no such column
+    or the file has too few rows to tell. Raises LayoutError like read()."""
+    entries = _entries(text, layout)
+    if len(entries) < 3:
+        return None
+    used = {layout["date_col"], layout["amount_col"], layout["out_col"], layout["in_col"], *layout["desc_cols"]}
+    for col in range(len(entries[0][3])):
+        if col in used:
+            continue
+        values = [r[col] if col < len(r) else "" for _, _, _, r in entries]
+        if sum(bool(v) for v in values) < len(values) or not all(_is_money(v) for v in values):
+            continue
+        balances = [_cents(v) for v in values]
+        cents = [e[1] for e in entries]
+        for newest_first in (False, True):
+            for sign in (1, -1):
+                pairs = [(balances[i] - balances[i - 1] == sign * cents[i]) if not newest_first
+                         else (balances[i - 1] - balances[i] == sign * cents[i - 1]) for i in range(1, len(entries))]
+                if sum(pairs) >= 0.9 * len(pairs):
+                    oldest = -1 if newest_first else 0
+                    return {"sign": sign, "date": entries[oldest][0],
+                            "opening": balances[oldest] - sign * cents[oldest]}
+    return None
