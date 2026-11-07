@@ -8,7 +8,7 @@ commits. Amounts are cents.
 
 import transfers
 from payees import describe, find_similar, merchant_key, transaction_hint
-from util import day_before
+from util import day_before, days_between
 
 CASH_KINDS = ("chequing", "savings", "cash")
 DEBT_KINDS = ("credit_card", "line_of_credit")
@@ -91,6 +91,44 @@ def opening_cash(conn, start_month):
     return total, missing
 
 
+OTHER_KIND_DAYS = 2  # a bank's CSV and its Quicken file can date one transaction this many days apart
+
+
+def nearest_row(candidates, day, amount, days=OTHER_KIND_DAYS):
+    """Of `candidates` (dicts with id, date, amount), the one with this amount whose date is
+    nearest `day`, within `days` (the lower id on a tie), or None."""
+    best = None
+    for c in candidates:
+        gap = abs(days_between(c["date"], day))
+        if c["amount"] == amount and gap <= days and (best is None or (gap, c["id"]) < best[0]):
+            best = ((gap, c["id"]), c)
+    return best[1] if best else None
+
+
+def cross_kind_pairs(conn, a_id, b_id, days=OTHER_KIND_DAYS):
+    """[(a's transaction id, b's)]: rows of two accounts that are the same transaction seen in
+    different kinds of file (a bank's CSV and its Quicken file, or a CSV set up again): the same
+    amount, dates up to `days` apart, each matched once, nearest first."""
+    def rows(account_id):
+        return [dict(r) for r in conn.execute(
+            "SELECT t.id, t.date, t.amount, COALESCE(i.format, '') AS kind FROM transactions t "
+            "LEFT JOIN imports i ON i.id = t.import_id WHERE t.account_id = ?", (account_id,))]
+    a_rows, b_rows = rows(a_id), rows(b_id)
+    by_amount = {}
+    for b in b_rows:
+        by_amount.setdefault(b["amount"], []).append(b)
+    candidates = sorted(
+        (abs(days_between(a["date"], b["date"])), a["id"], b["id"]) for a in a_rows
+        for b in by_amount.get(a["amount"], ()) if a["kind"] != b["kind"] and abs(days_between(a["date"], b["date"])) <= days)
+    used_a, used_b, out = set(), set(), []
+    for _, a, b in candidates:
+        if a not in used_a and b not in used_b:
+            used_a.add(a)
+            used_b.add(b)
+            out.append((a, b))
+    return out
+
+
 def duplicate_accounts(conn):
     """Accounts that look like a second copy of another one (a file was imported into a
     new account when it belonged to an existing one): nearly all of the newer account's
@@ -105,6 +143,17 @@ def duplicate_accounts(conn):
     accounts = {r["id"]: r for r in conn.execute(
         "SELECT a.id, a.name, a.kind, MIN(t.date) AS first, MAX(t.date) AS last, COUNT(t.id) AS n FROM accounts a "
         "JOIN transactions t ON t.account_id = a.id GROUP BY a.id")}
+    # The same transactions in different kinds of file (a CSV and a Quicken file worded differently) share
+    # no fingerprint: pair them by date and amount.
+    ids = sorted(accounts)
+    for i, older in enumerate(ids):
+        for newer in ids[i + 1:]:
+            a, b = accounts[older], accounts[newer]
+            if is_debt(a["kind"]) != is_debt(b["kind"]) or a["first"] > b["last"] or b["first"] > a["last"]:
+                continue
+            shared = len(cross_kind_pairs(conn, older, newer))
+            if shared > pairs.get((newer, older), 0):
+                pairs[(newer, older)] = shared
     out, seen = [], set()
     for (newer, older), shared in sorted(pairs.items(), key=lambda kv: -kv[1]):
         a, b = accounts.get(newer), accounts.get(older)
@@ -132,9 +181,18 @@ def merge_accounts(conn, from_id, into_id):
     if is_debt(a["kind"]) != is_debt(b["kind"]):
         raise ValueError("A card or line of credit can only be merged with another one.")
     moved = dropped = 0
-    for t in conn.execute("SELECT * FROM transactions WHERE account_id = ? ORDER BY date, id", (from_id,)).fetchall():
+    copies = conn.execute("SELECT * FROM transactions WHERE account_id = ? ORDER BY date, id", (from_id,)).fetchall()
+    # Rows seen in a different kind of file have no shared fingerprint: they pair by date and amount
+    # (the rows with a twin by fingerprint or bank ID keep that one).
+    taken = {r["id"] for t in copies for r in [conn.execute(
+        "SELECT id FROM transactions WHERE account_id = ? AND (fingerprint = ? OR fitid = ?)",
+        (into_id, t["fingerprint"], t["fitid"])).fetchone()] if r}
+    paired = {a: b for a, b in cross_kind_pairs(conn, from_id, into_id) if b not in taken}
+    for t in copies:
         twin = None
-        if t["fingerprint"]:
+        if t["id"] in paired:
+            twin = conn.execute("SELECT * FROM transactions WHERE id = ?", (paired[t["id"]],)).fetchone()
+        if t["fingerprint"] and twin is None:
             twin = conn.execute("SELECT * FROM transactions WHERE account_id = ? AND fingerprint = ?",
                                 (into_id, t["fingerprint"])).fetchone()
         if twin is None and t["fitid"]:

@@ -35,7 +35,10 @@ on the same day in one file are both kept. **Never change `fingerprint()`**: row
 already imported would stop matching and every overlapping file would import twice.
 OFX rows are also matched on FITID. A bank's CSV and its Quicken file can describe the
 same transaction differently, so a row is also the same as one from a *different kind*
-of file in that account with the same date and amount (each matched once).
+of file in that account (a CSV set up again counts as another kind: imports.format is
+`csv:<layout id>:<its shape>`) with the same amount and a date up to OTHER_KIND_DAYS either
+side, each matched once, nearest first. Accounts holding the same transactions that way are
+flagged and merged like those with shared fingerprints (ledger.cross_kind_pairs).
 
 New rows are only added here: each Result's `new_ids` then arrive in the inbox
 (inbox.Inbox.arrive), which categorizes what it can.
@@ -122,6 +125,7 @@ class Parsed:
     format: str           # one of BANK_FORMATS, or actual
     parts: list = field(default_factory=list)
     actual_rows: list = field(default_factory=list)
+    kind: str = None      # the kind of file, to tell it from another kind's: `format`, or a CSV's layout
 
     @property
     def rows(self):
@@ -388,6 +392,14 @@ def csv_name_key(filename):
     return " ".join(re.sub(r"[^a-z0-9]+", " ", stem).split()) or "file"
 
 
+def layout_kind(layout):
+    """The kind of file a set-up CSV is, kept on its import: a bank that changes its columns, or a
+    layout set up again, gives files worded differently, which count as another kind of file
+    (the same date and amount is the same transaction: see _import_part)."""
+    shape = repr([layout.get(k) for k in csvlayout.LAYOUT_KEYS])
+    return f"csv:{layout['id']}:{hashlib.sha1(shape.encode()).hexdigest()[:8]}"
+
+
 def csv_account_key(layout_id, filename):
     return f"csv:{layout_id}:{csv_name_key(filename)}"
 
@@ -428,7 +440,7 @@ def _parse_csv(text, filename, conn):
     except csvlayout.LayoutError as e:
         raise ImportError_(f"{e}. Set the file up again from the Inbox.") from None
     hint = AccountHint([csv_account_key(layout["id"], filename)], "chequing", base_name(filename), create=False)
-    return Parsed("csv", [Part(hint, rows)])
+    return Parsed("csv", [Part(hint, rows)], kind=layout_kind(layout))
 
 
 def _parse_actual(text):
@@ -568,11 +580,12 @@ def import_parsed(conn, parsed, filename, sha, archived_path=None, accounts=None
     if parsed.format == "actual":
         raise ImportError_("Actual Budget exports are learnt from, not imported.")
     accounts = accounts or {}
-    return [_import_part(conn, parsed.format, part, filename, sha, archived_path, accounts.get(i))
+    return [_import_part(conn, parsed.format, part, filename, sha, archived_path, accounts.get(i), parsed.kind)
             for i, part in enumerate(parsed.parts)]
 
 
-def _import_part(conn, fmt, part, filename, sha, archived_path, account_id=None):
+def _import_part(conn, fmt, part, filename, sha, archived_path, account_id=None, kind=None):
+    kind = kind or fmt
     result = Result(filename, fmt, total=len(part.rows), first_date=part.first_date, last_date=part.last_date)
     fps = fingerprints(part.rows)
     if account_id is None:
@@ -585,29 +598,33 @@ def _import_part(conn, fmt, part, filename, sha, archived_path, account_id=None)
     import_id = conn.execute(
         "INSERT INTO imports (filename, sha256, account_id, format, rows_total, first_date, last_date, archived_path) "
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        (filename, sha, account_id, fmt, len(part.rows), part.first_date, part.last_date, archived_path)).lastrowid
+        (filename, sha, account_id, kind, len(part.rows), part.first_date, part.last_date, archived_path)).lastrowid
     result.import_id = import_id
 
-    # Rows from a different kind of file (this bank's CSV, when this is its Quicken file):
-    # the same date and amount is the same transaction, whatever each file called it.
+    # Rows from a different kind of file (this bank's CSV, when this is its Quicken file, or a
+    # layout set up again): the same amount, a day or two either side, is the same transaction,
+    # whatever each file called it and whenever it was dated (posting moves a date). Each is
+    # matched once, nearest date first.
     others = {}
     for r in conn.execute("SELECT t.id, t.date, t.amount FROM transactions t JOIN imports i ON i.id = t.import_id "
-                          "WHERE t.account_id = ? AND i.format != ? AND t.date BETWEEN ? AND ? ORDER BY t.id",
-                          (account_id, fmt, part.first_date or "", part.last_date or "")):
-        others.setdefault((r["date"], r["amount"]), []).append(r["id"])
+                          "WHERE t.account_id = ? AND i.format != ? AND t.date BETWEEN date(?, ?) AND date(?, ?) "
+                          "ORDER BY t.id", (account_id, kind, part.first_date or "", f"-{ledger.OTHER_KIND_DAYS} days",
+                                            part.last_date or "", f"+{ledger.OTHER_KIND_DAYS} days")):
+        others.setdefault(r["amount"], []).append(dict(r))
 
     for row, fp in zip(part.rows, fps):
-        same = others.get((row.date, row.amount), [])
+        same = others.get(row.amount, [])
         existing = conn.execute("SELECT id, fitid FROM transactions WHERE account_id = ? AND fingerprint = ?",
                                 (account_id, fp)).fetchone()
         if existing is None and row.fitid:
             existing = conn.execute("SELECT id, fitid FROM transactions WHERE account_id = ? AND fitid = ?",
                                     (account_id, row.fitid)).fetchone()
         if existing is None and same:
-            existing = conn.execute("SELECT id, fitid FROM transactions WHERE id = ?", (same[0],)).fetchone()
+            twin = ledger.nearest_row(same, row.date, row.amount)
+            if twin is not None:
+                existing = conn.execute("SELECT id, fitid FROM transactions WHERE id = ?", (twin["id"],)).fetchone()
         if existing is not None:
-            if existing["id"] in same:
-                same.remove(existing["id"])
+            same[:] = [o for o in same if o["id"] != existing["id"]]
             if row.fitid and not existing["fitid"] and not conn.execute(
                     "SELECT 1 FROM transactions WHERE account_id = ? AND fitid = ?", (account_id, row.fitid)).fetchone():
                 conn.execute("UPDATE transactions SET fitid = ? WHERE id = ?", (row.fitid, existing["id"]))
