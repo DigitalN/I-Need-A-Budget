@@ -7,6 +7,7 @@ import pytest
 
 import ledger
 import subscriptions
+from errors import UserError
 from helpers import call, categories
 from test_inbox import Budget
 
@@ -24,12 +25,12 @@ def test_a_transaction_cant_go_in_a_payment_category_a_hidden_one_or_one_that_is
     """Issue #66: a -$40.00 card charge filed in the card's own payment category threw the check line off."""
     charge = b.arrive(b.card, "2026-08-10", -4000, "SAMPLE ARCADE")
     payment = ledger.payment_categories(b.c)[b.card]
-    with pytest.raises(ValueError, match="card's payments"):
+    with pytest.raises(UserError, match="card's payments"):
         b.inbox.categorize([charge], payment)
-    with pytest.raises(ValueError, match="no longer exists"):
+    with pytest.raises(UserError, match="no longer exists"):
         b.inbox.categorize([charge], 99999)
     _hide(b, "Fun Money")
-    with pytest.raises(ValueError, match="Fun Money is hidden"):
+    with pytest.raises(UserError, match="Fun Money is hidden"):
         b.inbox.categorize([charge], b.cat["Fun Money"])
     row = b.get(charge)
     assert (row["status"], row["category_id"], row["by_you"]) == ("review", None, 0)  # refused: nothing changed
@@ -41,10 +42,10 @@ def test_a_split_has_the_same_rule_for_every_part(b):
     charge = b.arrive(b.card, "2026-08-10", -4000, "SAMPLE ARCADE")
     payment = ledger.payment_categories(b.c)[b.card]
     parts = [{"category_id": b.cat["Food"], "amount": -1000}, {"category_id": payment, "amount": -3000}]
-    with pytest.raises(ValueError, match="card's payments"):
+    with pytest.raises(UserError, match="card's payments"):
         b.inbox.split(charge, parts)
     parts[1]["category_id"] = 99999
-    with pytest.raises(ValueError, match="no longer exists"):
+    with pytest.raises(UserError, match="no longer exists"):
         b.inbox.split(charge, parts)
     row = b.get(charge)
     assert (row["is_split"], row["status"]) == (0, "review")
@@ -81,7 +82,7 @@ def test_a_charge_added_by_hand_goes_through_the_inboxs_rules(b):
     assert (row["status"], row["by_you"], row["note"], row["category_id"]) == ("review", 1, "a note", None)
     payment = ledger.payment_categories(b.c)[b.card]
     before = b.c.execute("SELECT COUNT(*) FROM transactions").fetchone()[0]
-    with pytest.raises(ValueError, match="card's payments"):
+    with pytest.raises(UserError, match="card's payments"):
         b.inbox.add_by_hand(b.card, "2026-10-08", "Sample Arcade", -4000, payment)
     assert b.c.execute("SELECT COUNT(*) FROM transactions").fetchone()[0] == before  # nothing was added
 

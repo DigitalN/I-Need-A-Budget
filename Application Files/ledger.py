@@ -343,7 +343,7 @@ def category_problem(conn, category_id, hidden_ok=False):
 
 
 def check_category(conn, category_id, hidden_ok=False):
-    """Raises ValueError, with a message to show, unless something can be filed in this
+    """Raises UserError, with a message to show, unless something can be filed in this
     category (see category_problem). The page only offers such categories; this is what keeps
     the budget's rules true for anything else that asks."""
     problem = category_problem(conn, category_id, hidden_ok)
@@ -351,10 +351,10 @@ def check_category(conn, category_id, hidden_ok=False):
         return
     name, why = problem
     if why == "missing":
-        raise ValueError("That category no longer exists.")
+        raise UserError("That category no longer exists.")
     if why == "payment":
-        raise ValueError(f"{name} is where the card's payments are set aside: pick a category for what was bought.")
-    raise ValueError(f"{name} is hidden: show it again, or pick another category.")
+        raise UserError(f"{name} is where the card's payments are set aside: pick a category for what was bought.")
+    raise UserError(f"{name} is hidden: show it again, or pick another category.")
 
 
 def interest_category(conn):
