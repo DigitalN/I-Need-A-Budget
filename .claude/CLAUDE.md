@@ -104,7 +104,7 @@ All in `Application Files/`:
 - `transfers.py`: pairing the two halves of a transfer between own accounts, for the inbox.
 - `subscriptions.py`: detection (steady rhythm; same price, or a once-a-month bill that
   varies), tracking with a name, category, price type and optional end date, price-change
-  questions, "charged you again" alerts (after cancelling or after the end date). It links
+  questions, "charged you again" alerts (after cancelling or after the end date, at any price). It links
   charges and keeps prices; what happens to a charge in the inbox is inbox.py's.
 - `budget.py`: pure envelope math, credit cards included, and the three ways overspending
   is paid for (the Overspending setting). Its docstring states the rules and the
@@ -169,8 +169,8 @@ All in `Application Files/`:
   "Same Price, Different Currency" and "Fluctuates Every Time", their wording): `fixed` (exact price ±2¢;
   any other price from that payee is a question: "new price for X, a new subscription, or
   a one-off?", because Apple bills several things under one name), `currency` (billed in
-  US$: a wobble within 6% is the same price, not a change; set automatically from the
-  card's "Foreign Currency Spend" tag or repeated drift), and `varies` (a power bill: any
+  US$: a wobble within 6% of the old price is the same price, not a change; set automatically from the
+  card's "Foreign Currency Spend" tag or repeated drift of a few percent: prices you chose with "New price for…" never count), and `varies` (a power bill: any
   amount from that payee; the page shows the typical amount and range). Detection
   suggests `varies` for a once-a-month payee whose amount moved at least twice.
 - **Optional end date** on a subscription: a charge after it (or after it was marked
