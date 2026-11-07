@@ -442,7 +442,9 @@ class Database:
             finally:
                 dest.close()
         shutil.move(str(tmp), str(target))
-        for old in sorted(folder.glob("budget-*.db"))[:-BACKUPS_KEPT]:
+        # Only the dated daily copies: the one made before each upgrade (budget-before-upgrade-…)
+        # is kept for good and mustn't use up a slot.
+        for old in sorted(folder.glob("budget-[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9].db"))[:-BACKUPS_KEPT]:
             old.unlink(missing_ok=True)
         log.info("Backed up the database to %s", target)
         return target
