@@ -1072,6 +1072,8 @@ class BudgetService:
             if txn is None or txn["amount"] >= 0 or txn["payee_id"] is None:
                 raise UserError("Only a charge can start a subscription.")
             category_id = int(category_id) if category_id else txn["category_id"]
+            if category_id:
+                ledger.check_category(c, category_id)
             price = abs(int(amount)) if amount else -txn["amount"]
             sub_id = subscriptions.create(c, txn["payee_id"], name, price, cadence, kind, category_id, pricing,
                                           _end_date(ends_on))
@@ -1229,6 +1231,8 @@ class BudgetService:
 
     @exposed
     def add_transaction(self, account_id, date, payee, amount, category_id=None, note=""):
+        """Adds a transaction by hand (Inbox.add_by_hand). Returns {'id', 'question'}: the
+        question is "What's this for?" when its category makes it look recurring."""
         if not date:
             raise UserError("Enter a date.")
         amount = int(amount)
@@ -1240,13 +1244,9 @@ class BudgetService:
                 raise UserError("That account no longer exists.")
             if acct["closed"]:
                 raise UserError(f"{acct['name']} is closed.")
-            payee_id = ledger.get_or_create_payee(c, _clean_name(payee)) if payee else None
-            txn_id = c.execute(
-                "INSERT INTO transactions (account_id, date, amount, payee_id, category_id, status, reason, note, by_you) "
-                "VALUES (?, ?, ?, ?, ?, ?, 'Added by you', ?, 1)",
-                (int(account_id), date, amount, payee_id, category_id or None, "done" if category_id else "review",
-                 str(note or ""))).lastrowid
-        return txn_id
+            added = self._inbox(c).add_by_hand(int(account_id), date, _clean_name(payee) if payee else None, amount,
+                                               category_id or None, note)
+        return {"id": added.id, "question": added.question}
 
     @exposed
     def delete_transaction(self, txn_id):
@@ -1426,6 +1426,8 @@ class BudgetService:
         if cadence not in ("weekly", "monthly", "yearly") or kind not in ("subscription", "bill"):
             raise UserError("Pick how often it charges.")
         with self.db.write(f"Add subscription {name}") as c:
+            if category_id:
+                ledger.check_category(c, int(category_id))
             payee_id = payee if isinstance(payee, int) else ledger.get_or_create_payee(c, _clean_name(payee))
             sub_id = subscriptions.create(c, payee_id, name, amount, cadence, kind,
                                           int(category_id) if category_id else None, pricing, _end_date(ends_on))
@@ -1455,6 +1457,8 @@ class BudgetService:
                 c.execute("UPDATE subscriptions SET amount = ? WHERE id = ?", (abs(int(changes["amount"])), sub_id))
             if "category_id" in changes:
                 cid = int(changes["category_id"]) if changes["category_id"] else None
+                if cid:
+                    ledger.check_category(c, cid)
                 c.execute("UPDATE subscriptions SET category_id = ? WHERE id = ?", (cid, sub_id))
             if changes.get("pricing") in subscriptions.PRICINGS:
                 subscriptions.set_pricing(c, sub_id, changes["pricing"])

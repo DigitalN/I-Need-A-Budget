@@ -50,6 +50,12 @@ class Arrived:
 
 
 @dataclass
+class Added:
+    id: int                # a transaction you added by hand
+    question: dict = None  # "What's this for?", as for Outcome
+
+
+@dataclass
 class Outcome:
     categorized: int = 0  # of the transactions you gave it
     also: int = 0         # others the re-check categorized after it
@@ -127,6 +133,8 @@ class Inbox:
             if warning:
                 return self._wait(txn, warning)
             if sub["category_id"] and sub["status"] == "active":
+                if self._hidden_category_of(sub):
+                    return self._wait(txn, self._hidden_category_of(sub))
                 c.execute("UPDATE transactions SET category_id = ?, status = 'done', reason = ?, refund_of = NULL "
                           "WHERE id = ?", (sub["category_id"], f"{sub['name']} subscription", txn["id"]))
                 return True
@@ -141,6 +149,13 @@ class Inbox:
                       (s.options[0], reason, s.refund_of, txn["id"]))
             return True
         return self._wait(txn, reason)
+
+    def _hidden_category_of(self, sub):
+        """"Music's category is hidden" when a recurring charge's category can't take charges
+        any more (hidden since it was set): its charges wait for you rather than go there."""
+        if sub and sub["status"] == "active" and sub["category_id"] and ledger.category_problem(self.conn, sub["category_id"]):
+            return f"{sub['name']}'s category is hidden"
+        return None
 
     def _wait(self, txn, reason):
         """It waits in the inbox, in no category (docs/adr/0002). Returns False: not settled."""
@@ -182,13 +197,14 @@ class Inbox:
         sub = c.execute("SELECT * FROM subscriptions WHERE id = ?", (txn["subscription_id"],)).fetchone() \
             if txn["subscription_id"] else None
         warning = subscriptions.charged_when_it_shouldnt(sub, txn["date"]) if sub else None
+        hidden = self._hidden_category_of(sub)
         choices = subscriptions.price_change_choices(c, txn)
         mine = None if yours else transfers.find_counterpart(c, txn, yours=True)
         if mine is not None:
             reasons.append(self._other_half_of(mine, names))
             alone = True
-        elif warning:
-            reasons.append(warning)
+        elif warning or hidden:
+            reasons.append(warning or hidden)
             alone = True
         elif choices:
             item["subscription_choices"] = choices
@@ -232,6 +248,24 @@ class Inbox:
 
     # ── your decisions (all marked yours) ──
 
+    def add_by_hand(self, account_id, date, payee, amount, category_id=None, note=""):
+        """A transaction you add by hand (cash, or an account the app can't import): yours, in
+        `category_id` when you give one (asking "What's this for?" if that looks like a
+        recurring charge, as any categorizing does), else waiting for you in the inbox."""
+        c = self.conn
+        if category_id:
+            ledger.check_category(c, int(category_id))
+        payee_id = ledger.get_or_create_payee(c, payee) if payee else None
+        txn_id = c.execute(
+            "INSERT INTO transactions (account_id, date, amount, payee_id, status, reason, note, by_you) "
+            "VALUES (?, ?, ?, ?, 'review', 'Added by you', ?, 1)",
+            (int(account_id), date, int(amount), payee_id, str(note or ""))).lastrowid
+        question = None
+        if category_id:
+            question = self.categorize([txn_id], category_id).question
+            c.execute("UPDATE transactions SET reason = 'Added by you' WHERE id = ?", (txn_id,))
+        return Added(txn_id, question)
+
     def categorize(self, txn_ids, category_id, recheck_payee=False):
         """You put these transactions in `category_id` (replacing a split, or a transfer:
         its other half then waits for you). Money back for a purchase is linked to it as a
@@ -241,6 +275,7 @@ class Inbox:
         and never outside the inbox)."""
         if category_id in (None, ""):
             raise ValueError("Pick a category first.")
+        ledger.check_category(self.conn, int(category_id))
         txns = [self._yours(txn_id) for txn_id in txn_ids]
         learnt = [self._categorize(txn, int(category_id)) for txn in txns]
         also = self._follow(learnt)
@@ -305,6 +340,8 @@ class Inbox:
             raise ValueError("The parts have to add up to the transaction's amount.")
         if any(not p.get("category_id") for p in parts):
             raise ValueError("Every part needs a category.")
+        for p in parts:
+            ledger.check_category(c, int(p["category_id"]))
         txn = self._yours(txn_id)
         c.execute("DELETE FROM splits WHERE transaction_id = ?", (txn_id,))
         for p in parts:

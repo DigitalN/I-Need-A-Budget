@@ -244,6 +244,35 @@ def payment_categories(conn):
         "SELECT id, debt_account_id FROM categories WHERE debt_account_id IS NOT NULL")}
 
 
+def category_problem(conn, category_id, hidden_ok=False):
+    """Why a transaction (or a recurring charge) can't go in this category, as (name, why) with
+    why 'missing', 'payment' (a card's payment category: set-aside money, not spending) or
+    'hidden' (not for a choice of yours); None when it can."""
+    row = conn.execute("SELECT name, hidden, debt_account_id FROM categories WHERE id = ?", (category_id,)).fetchone()
+    if row is None:
+        return "", "missing"
+    if row["debt_account_id"]:
+        return row["name"], "payment"
+    if row["hidden"] and not hidden_ok:
+        return row["name"], "hidden"
+    return None
+
+
+def check_category(conn, category_id, hidden_ok=False):
+    """Raises ValueError, with a message to show, unless something can be filed in this
+    category (see category_problem). The page only offers such categories; this is what keeps
+    the budget's rules true for anything else that asks."""
+    problem = category_problem(conn, category_id, hidden_ok)
+    if problem is None:
+        return
+    name, why = problem
+    if why == "missing":
+        raise ValueError("That category no longer exists.")
+    if why == "payment":
+        raise ValueError(f"{name} is where the card's payments are set aside: pick a category for what was bought.")
+    raise ValueError(f"{name} is hidden: show it again, or pick another category.")
+
+
 def interest_category(conn):
     row = conn.execute("SELECT value FROM meta WHERE key = 'interest_category_id'").fetchone()
     if row and conn.execute("SELECT 1 FROM categories WHERE id = ?", (int(row["value"]),)).fetchone():
