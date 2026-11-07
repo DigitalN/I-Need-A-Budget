@@ -217,6 +217,18 @@ def match_reimbursement(conn, txn, names):
                       f"Back to {names.get(r['category_id'], '?')}?", group=group)
 
 
+def match_subscription(conn, txn, names):
+    """A charge of a tracked recurring charge, waiting because its payee has Always ask on: its
+    category is the suggestion ("Music subscription: Fun Money?"), asked rather than filed."""
+    if not txn["subscription_id"]:
+        return None
+    sub = conn.execute("SELECT name, category_id, status FROM subscriptions WHERE id = ?",
+                       (txn["subscription_id"],)).fetchone()
+    if sub is None or sub["status"] != "active" or sub["category_id"] not in names:
+        return None
+    return Suggestion([sub["category_id"]], False, f"{sub['name']} subscription: {names[sub['category_id']]}?")
+
+
 def analyze(conn, txn):
     """The best guess for a transaction (a transactions row)."""
     names = category_names(conn)
@@ -225,8 +237,9 @@ def analyze(conn, txn):
     if hint in BANK_ENTRY_HINTS:
         return _bank_entry(conn, txn, names, allowed)
 
+    always_ask = _always_ask(conn, txn)
     refund = match_refund(conn, txn, names)
-    if refund and refund.sure:
+    if refund and refund.sure and not always_ask:  # an Always-ask payee's refund is a question too
         return refund
     share = match_reimbursement(conn, txn, names)
     learnt = _from_history(conn, txn, names, allowed)
@@ -234,7 +247,8 @@ def analyze(conn, txn):
         return learnt
 
     options, reasons, group = [], [], ""
-    for candidate in (refund, share, learnt, _from_bank_category(conn, txn, names, allowed)):
+    for candidate in (match_subscription(conn, txn, names), refund, share, learnt,
+                      _from_bank_category(conn, txn, names, allowed)):
         if candidate:
             if not reasons:
                 reasons.append(candidate.reason)
@@ -246,7 +260,6 @@ def analyze(conn, txn):
         reasons.append("Cash: which category did it come out of?")
     if not reasons:
         reasons.append("New payee")
-    always_ask = _always_ask(conn, txn)
     mixed = bool(learnt and learnt.mixed) or bool(refund) or (always_ask and hint == "etransfer")
     # One group per payee in the inbox (even a mixed one like Amazon: "One at a time"
     # splits it), except payees with Always ask on (anyone you e-transfer with, at first)
@@ -274,6 +287,9 @@ def guess(txn, suggestion, income_id):
 def _always_ask(conn, txn):
     payee = conn.execute("SELECT always_ask FROM payees WHERE id = ?", (txn["payee_id"],)).fetchone()
     return bool(payee and payee["always_ask"])
+
+
+always_ask = _always_ask  # for the inbox: a payee with Always ask on never has an item filed without asking
 
 
 # Where each kind of bank entry (payees.BANK_ENTRY_HINTS) starts, and why.

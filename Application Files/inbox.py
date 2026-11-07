@@ -36,7 +36,7 @@ from dataclasses import dataclass
 import ledger
 import subscriptions
 import transfers
-from learn import analyze, guess
+from learn import always_ask, analyze, guess
 from payees import describe
 
 SENT_BACK = "You sent this back"
@@ -126,7 +126,7 @@ class Inbox:
             warning = subscriptions.charged_when_it_shouldnt(sub, txn["date"])
             if warning:
                 return self._wait(txn, warning)
-            if sub["category_id"] and sub["status"] == "active":
+            if sub["category_id"] and sub["status"] == "active" and not always_ask(c, txn):
                 c.execute("UPDATE transactions SET category_id = ?, status = 'done', reason = ?, refund_of = NULL "
                           "WHERE id = ?", (sub["category_id"], f"{sub['name']} subscription", txn["id"]))
                 return True
@@ -158,8 +158,18 @@ class Inbox:
         own from the recent imports."""
         c = self.conn
         names = ledger.category_names(c)
-        items = [self._look(txn, names) for txn in c.execute(
-            "SELECT * FROM transactions WHERE status = 'review' ORDER BY date DESC, id DESC LIMIT 1000").fetchall()]
+        waiting = c.execute("SELECT * FROM transactions WHERE status = 'review' ORDER BY date DESC, id DESC LIMIT 1000").fetchall()
+        items = [self._look(txn, names) for txn in waiting]
+        # Shares of one shared expense are different people chipping in: one person's two e-transfers
+        # aren't two shares, so only the first joins the group (the other is its own item).
+        seen = set()
+        for txn, item in zip(waiting, items):
+            if item["group"].startswith("share:"):
+                key = (item["group"], txn["payee_id"])
+                if key in seen:
+                    item["group"], item["guess"] = "", None
+                else:
+                    seen.add(key)
         recent = [r["id"] for r in c.execute("SELECT id FROM imports ORDER BY id DESC LIMIT 10")]
         categorized = [r["id"] for r in c.execute(
             f"SELECT id FROM transactions WHERE status = 'done' AND by_you = 0 AND import_id IN "
