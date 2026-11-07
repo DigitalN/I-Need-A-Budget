@@ -33,7 +33,10 @@ how many identical rows came before it in the same file. Exports overlap freely,
 row whose fingerprint is already in the account is skipped, while two identical coffees
 on the same day in one file are both kept. **Never change `fingerprint()`**: rows
 already imported would stop matching and every overlapping file would import twice.
-OFX rows are also matched on FITID. A bank's CSV and its Quicken file can describe the
+OFX rows are also matched on FITID, as a hint only: banks repeat them (one per day, 1, 2, 3… in
+every download), so a FITID counts for the same amount within FITID_DAYS days, one that repeats
+within a file counts for nothing, and one already on another row of the account isn't stored
+again. A bank's CSV and its Quicken file can describe the
 same transaction differently, so a row is also the same as one from a *different kind*
 of file in that account with the same date and amount (each matched once).
 
@@ -46,6 +49,7 @@ import hashlib
 import io
 import logging
 import re
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -62,6 +66,7 @@ BANK_HEADER = ["date", "transaction", "name", "memo", "amount"]
 RBC_HEADER = ["account type", "account number", "transaction date", "cheque number", "description 1",
               "description 2", "cad$"]
 ACTUAL_HEADER = ["account", "date", "payee", "notes", "category_group", "category", "amount"]
+FITID_DAYS = 7  # a bank's transaction ID matches a row of the same amount this many days either side
 SUPPORTED_SUFFIXES = {".csv", ".ofx", ".qfx", ".qbo"}
 BANK_FORMATS = ("ofx", "tangerine_card", "tangerine_bank", "rbc", "csv")
 
@@ -607,21 +612,33 @@ def _import_part(conn, fmt, part, filename, sha, archived_path, account_id=None)
                           (account_id, fmt, part.first_date or "", part.last_date or "")):
         others.setdefault((r["date"], r["amount"]), []).append(r["id"])
 
+    # A bank's transaction ID is a hint, not proof: banks repeat them (one per day, 1, 2, 3…
+    # in every download, one for two identical coffees). One that repeats within the file says
+    # nothing about its rows, which the fingerprint tells apart (it counts identical rows).
+    repeated = {f for f, n in Counter(r.fitid for r in part.rows if r.fitid).items() if n > 1}
+
     for row, fp in zip(part.rows, fps):
         same = others.get((row.date, row.amount), [])
+        fitid = None if row.fitid in repeated else row.fitid
         existing = conn.execute("SELECT id, fitid FROM transactions WHERE account_id = ? AND fingerprint = ?",
                                 (account_id, fp)).fetchone()
-        if existing is None and row.fitid:
-            existing = conn.execute("SELECT id, fitid FROM transactions WHERE account_id = ? AND fitid = ?",
-                                    (account_id, row.fitid)).fetchone()
+        if existing is None and fitid:
+            # The same ID counts only for the same amount, about when it was (posting moves a date).
+            existing = conn.execute(
+                "SELECT id, fitid FROM transactions WHERE account_id = ? AND fitid = ? AND amount = ? "
+                "AND date BETWEEN date(?, ?) AND date(?, ?)",
+                (account_id, fitid, row.amount, row.date, f"-{FITID_DAYS} days", row.date, f"+{FITID_DAYS} days")
+            ).fetchone()
         if existing is None and same:
             existing = conn.execute("SELECT id, fitid FROM transactions WHERE id = ?", (same[0],)).fetchone()
+        # The ID is kept only where no other transaction in the account has it (it's unique there).
+        keep_fitid = fitid if fitid and not conn.execute(
+            "SELECT 1 FROM transactions WHERE account_id = ? AND fitid = ?", (account_id, fitid)).fetchone() else None
         if existing is not None:
             if existing["id"] in same:
                 same.remove(existing["id"])
-            if row.fitid and not existing["fitid"] and not conn.execute(
-                    "SELECT 1 FROM transactions WHERE account_id = ? AND fitid = ?", (account_id, row.fitid)).fetchone():
-                conn.execute("UPDATE transactions SET fitid = ? WHERE id = ?", (row.fitid, existing["id"]))
+            if keep_fitid and not existing["fitid"]:
+                conn.execute("UPDATE transactions SET fitid = ? WHERE id = ?", (keep_fitid, existing["id"]))
             result.duplicates += 1
             continue
         desc = describe(row.name, row.memo, acct["kind"])
@@ -631,7 +648,7 @@ def _import_part(conn, fmt, part, filename, sha, archived_path, account_id=None)
             "bank_category, hint, fingerprint, fitid, import_id, similar_payee_id) "
             "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (account_id, row.date, row.amount, payee_id, row.name, row.memo, row.bank_type, row.bank_category,
-             transaction_hint(desc), fp, row.fitid, import_id, similar)).lastrowid)
+             transaction_hint(desc), fp, keep_fitid, import_id, similar)).lastrowid)
     result.added = len(result.new_ids)
     conn.execute("UPDATE imports SET rows_new = ? WHERE id = ?", (result.added, import_id))
 
