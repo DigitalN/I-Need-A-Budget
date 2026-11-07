@@ -203,7 +203,8 @@ class Figures:
                     if not cat["debt_account_id"] else None,
                 }
                 if cat["debt_account_id"] in accounts:
-                    owing = -(self._balance(cat["debt_account_id"]) or 0)
+                    as_of = last_day(month) if month < self.current else None
+                    owing = -(self._balance(cat["debt_account_id"], as_of) or 0)
                     row["owing"] = owing
                     row["set_aside"] = max(row["available"] or 0, 0)
                     row["not_covered"] = max(0, owing - row["set_aside"])
