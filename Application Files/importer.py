@@ -126,6 +126,7 @@ class Part:
     account: AccountHint
     rows: list
     balance: tuple = None  # (date, cents) when the file states one (OFX)
+    notes: list = field(default_factory=list)  # what was changed about the file to read it (shown with the import)
 
     @property
     def first_date(self):
@@ -403,7 +404,34 @@ def _ofx_statement(text, bank, filename):
                 balance = (parse_date(as_of), to_cents(amount))
         except ValueError:
             balance = None
-    return Part(hint, rows, balance)
+    notes = []
+    if is_card or hint.kind in ("credit_card", "line_of_credit"):
+        balance = _owed_signs(rows, balance, notes)
+    return Part(hint, rows, balance, notes)
+
+
+_PAYMENT_WORDS = re.compile(r"PAYMENT|PAIEMENT|THANK YOU|MERCI|REFUND|RETURN|REVERSAL|CREDIT|REWARD|CASH ?BACK|INTEREST PAID",
+                            re.IGNORECASE)
+
+
+def _owed_signs(rows, balance, notes):
+    """A card or line of credit file's signs, made the way the app has them: a purchase is
+    money out (negative), what you owe is a negative balance. Some banks write purchases as
+    positive (the file's amounts are flipped), and some write what you owe as a positive balance
+    (stored as owed). `notes` is told what was done. Returns the balance."""
+    typed = [r for r in rows if r.bank_type.upper() in ("DEBIT", "CREDIT")]
+    if typed:
+        purchases = [r for r in typed if r.bank_type.upper() == "DEBIT"]
+    else:
+        purchases = [r for r in rows if not _PAYMENT_WORDS.search(r.name)]
+    if len(purchases) >= 2 and sum(r.amount > 0 for r in purchases) >= 0.7 * len(purchases):
+        for r in rows:
+            r.amount = -r.amount
+        notes.append("This file shows purchases as positive: the signs were flipped")
+    if balance is not None and balance[1] > 0:
+        balance = (balance[0], -balance[1])
+        notes.append("The file's balance read as what you owe")
+    return balance
 
 
 def _is_card_number(digits):
@@ -845,6 +873,9 @@ def _import_part(conn, fmt, part, filename, sha, archived_path, account_id=None,
         elif ours is not None and ours != balance:
             result.balance_note = (f"The file says the balance was {balance / 100:,.2f} on {as_of}, "
                                    f"but the app has {ours / 100:,.2f}")
+    if part.notes:
+        result.balance_note = ". ".join([*part.notes, result.balance_note] if result.balance_note else part.notes)
+        log.info("%s: %s", filename, result.balance_note)
     return result
 
 
