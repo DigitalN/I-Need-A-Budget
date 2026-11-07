@@ -1,6 +1,6 @@
-"""Rows of another kind of file are the same transaction only where the two files overlap
-(issue #124): two downloads that only meet (one ends Oct 15, the next starts Oct 16) can't hold
-the same transaction twice. Made-up data only."""
+"""Rows of another kind of file are the same transaction only when at least one of them falls
+within the other's file dates (issue #124): the rows at the edges of two downloads (one ends
+Oct 15, the next starts Oct 16, or they overlap by a day) are two transactions. Made-up data only."""
 
 import ledger
 from helpers import bank_csv, call, write
