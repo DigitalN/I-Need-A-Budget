@@ -151,6 +151,9 @@ class BudgetService:
             needs, parsed = "layout", None
         except (importer.ImportError_, OSError) as e:
             return {**item, "format": None, "error": str(e)}
+        except Exception as e:  # one odd file must not stop the others being listed
+            log.warning("Couldn't read %s: %s", path.name, e, exc_info=True)
+            return {**item, "format": None, "error": "Couldn't read this file. Details are in the log."}
         if needs:
             return {**item, "format": "csv", "needs_setup": needs, **self._csv_summary(path)}
         item.update(format=parsed.format)
@@ -255,6 +258,9 @@ class BudgetService:
                 needs_setup.append({"path": str(path), "filename": path.name, "needs": e.what})
             except (importer.ImportError_, OSError) as e:
                 errors.append({"filename": path.name, "error": str(e)})
+            except Exception as e:  # one odd file must not stop the others
+                log.warning("Couldn't read %s: %s", path.name, e, exc_info=True)
+                errors.append({"filename": path.name, "error": "Couldn't read this file. Details are in the log."})
         # Learn from Actual first, then bank files oldest first, so refunds and transfers
         # find what they belong to.
         parsed_files.sort(key=lambda pf: (pf[1].format != "actual", pf[1].first_date or ""))
@@ -332,6 +338,9 @@ class BudgetService:
                 fmt = importer.detect(importer.read_text(path))
             except (importer.ImportError_, OSError):
                 continue
+            except Exception as e:  # logged by name (once per version of the file); the others still import
+                log.warning("Couldn't look at %s in Downloads: %s", path.name, e, exc_info=True)
+                continue
             if fmt in importer.BANK_FORMATS:
                 ready.append(str(path))
         if not ready:
@@ -387,8 +396,13 @@ class BudgetService:
             with self.db.read() as c:
                 return self._needs(c, path, importer.parse(path, c))
         except importer.NeedsSetup as e:
+            if e.what == "layout" and "fit" in str(e):
+                log.info("%s no longer fits its saved layout: %s", path.name, e)
             return e.what
         except (importer.ImportError_, OSError, ValueError):
+            return None
+        except Exception as e:  # one odd file must not hide the others from the Inbox
+            log.warning("Couldn't look at %s in Downloads: %s", path.name, e, exc_info=True)
             return None
 
     def _forget_file_status(self):
@@ -461,6 +475,11 @@ class BudgetService:
             raise UserError("This doesn't look like a bank file: no column of dates and amounts.")
         with self.db.read() as c:
             saved = importer.saved_layout(c, sniffed)
+            if saved:
+                try:
+                    csvlayout.read(importer.read_text(path), csvlayout.clean_layout(saved, sniffed["width"]))
+                except ValueError:  # the bank changed its file: show the columns again
+                    saved = None
             suggested_account = None
             if saved:
                 key = importer.csv_account_key(saved["id"], path.name)
