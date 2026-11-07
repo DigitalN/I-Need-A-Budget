@@ -18,6 +18,7 @@ from pathlib import Path
 
 import banks
 import csvlayout
+import figures
 import importer
 import ledger
 import subscriptions
@@ -1107,7 +1108,16 @@ class BudgetService:
 
     # ── transactions ──
 
-    def _transactions(self, c, filters, limit=500, order="t.date DESC, t.id DESC"):
+    # The Transactions page's rows: one FROM for the list and for its total (figures.rows_total).
+    _ROWS_FROM = """FROM transactions t
+              LEFT JOIN payees p ON p.id = t.payee_id
+              JOIN accounts a ON a.id = t.account_id
+              LEFT JOIN categories cat ON cat.id = t.category_id
+              LEFT JOIN accounts ta ON ta.id = t.transfer_account_id
+              LEFT JOIN subscriptions sub ON sub.id = t.subscription_id AND sub.status != 'ignored'"""
+
+    def _transaction_filter(self, filters):
+        """(the FROM and WHERE, their parameters) for a Transactions-page filter."""
         where, params = ["1 = 1"], []
         f = filters or {}
         if f.get("account_id"):
@@ -1130,18 +1140,17 @@ class BudgetService:
             where.append("(p.name LIKE ? OR t.raw_name LIKE ? OR t.raw_memo LIKE ? OR t.note LIKE ? "
                          "OR sub.name LIKE ? OR printf('%.2f', abs(t.amount) / 100.0) LIKE ?)")
             params += [q, q, q, q, q, q]
+        return f"{self._ROWS_FROM} WHERE {' AND '.join(where)}", params
+
+    def _transactions(self, c, filters, limit=500, order="t.date DESC, t.id DESC"):
+        f = filters or {}
+        rows_sql, params = self._transaction_filter(f)
         rows = c.execute(
             f"""
             SELECT t.*, p.name AS payee_name, p.always_ask, a.name AS account_name,
                    a.kind AS account_kind, cat.name AS category_name, ta.name AS transfer_account_name,
                    sub.name AS subscription_name
-              FROM transactions t
-              LEFT JOIN payees p ON p.id = t.payee_id
-              JOIN accounts a ON a.id = t.account_id
-              LEFT JOIN categories cat ON cat.id = t.category_id
-              LEFT JOIN accounts ta ON ta.id = t.transfer_account_id
-              LEFT JOIN subscriptions sub ON sub.id = t.subscription_id AND sub.status != 'ignored'
-             WHERE {' AND '.join(where)}
+              {rows_sql}
              ORDER BY {order} LIMIT {int(limit)}
             """, params).fetchall()
         out = []
@@ -1159,14 +1168,22 @@ class BudgetService:
                     "SELECT s.id, s.category_id, s.amount, s.note, cat.name AS category_name FROM splits s "
                     "LEFT JOIN categories cat ON cat.id = s.category_id WHERE s.transaction_id = ? ORDER BY s.id",
                     (r["id"],)))
+                if f.get("category_id"):  # looking at one category: this split's line in it
+                    d["category_amount"] = sum(x["amount"] for x in d["splits"] if x["category_id"] == int(f["category_id"]))
             out.append(d)
         return out
 
     @exposed
     def transactions(self, filters=None):
+        """The newest `limit` (default 500) transactions a filter matches, how many it matches
+        in all (`count`) and what they add up to (`total`: all of them, and a split counts only
+        its line in the category being looked at; see figures.rows_total)."""
+        f = filters or {}
         with self.db.read() as c:
-            items = self._transactions(c, filters or {}, limit=(filters or {}).get("limit", 500))
-        return {"items": items, "total": sum(i["amount"] for i in items)}
+            items = self._transactions(c, f, limit=f.get("limit", 500))
+            rows_sql, params = self._transaction_filter(f)
+            count, total = figures.rows_total(c, rows_sql, params, f.get("category_id"))
+        return {"items": items, "total": total, "count": count}
 
     @exposed
     def rename_payee(self, payee_id, name):
