@@ -764,9 +764,15 @@ function frame(html) {
 }
 
 // ── budget ──────────────────────────────────────────────
+// Every Budget render has a number, and only the newest is drawn: pressing ‹ › quickly could draw
+// month A over month B while the page wrote to B. Writes use the month that's on screen.
+let budgetSeq = 0;
+const shownMonth = () => (state.view && state.view.month) || state.month;
 async function renderBudget() {
   if (!state.month) state.month = state.boot.current_month;
+  const seq = ++budgetSeq;
   const [view] = await Promise.all([call('month', [state.month]), state.categories.length ? null : loadCategories()]);
+  if (seq !== budgetSeq) return;  // a newer one is on its way
   state.view = view;
   const s = view.summary;
   const prev = addMonths(view.month, -1);
@@ -1069,7 +1075,7 @@ async function saveAssigned(input) {
   const id = Number(input.dataset.assign);
   const current = findCat(id);
   if (current && (cents ?? 0) === current.assigned) { putIn(input, moneyOrBlank(current.assigned), current.assigned); return; }
-  await call('set_assigned', [state.month, id, cents ?? 0]);
+  await call('set_assigned', [shownMonth(), id, cents ?? 0]);
   await renderBudget();
   toast(`Assigned ${money(cents ?? 0)} to ${catName(id) || 'category'}`, { action: undoAction });
 }
@@ -1089,7 +1095,7 @@ async function assignFromArrow(id, which) {
   if (!c) return;
   const cents = which === 'spent' ? -c.activity : c.monthly_budget;
   if (!cents || cents < 0) return;
-  await call('set_assigned', [state.month, id, cents]);
+  await call('set_assigned', [shownMonth(), id, cents]);
   await renderBudget();
   toast(`Assigned ${money(cents)} to ${c.name}`, { action: undoAction });
 }
@@ -1130,7 +1136,7 @@ function envelopeSummary(c) {
 }
 
 async function openCategory(id) {
-  const d = await call('category_detail', { category_id: id, month: state.month });
+  const d = await call('category_detail', { category_id: id, month: shownMonth() });
   const hist = d.history.slice(-12);
   const max = Math.max(1, ...hist.map(h => h.spent));
   const bars = hist.map(h => `<div class="bar ${h.complete ? '' : 'partial'}" title="${monthLong(h.month)}: ${money(h.spent)}">
@@ -1295,7 +1301,7 @@ async function openCategory(id) {
       const other = await pickCategory(btn, { income: false, title: act === 'move-to' ? 'Move to…' : 'Take from…' });
       if (!other) return;
       const [from, to] = act === 'move-to' ? [cat, other] : [other, cat];
-      await call('move_money', [state.month, from, to, cents]);
+      await call('move_money', [shownMonth(), from, to, cents]);
       changed = true;
       await close();
       toast(`Moved ${money(cents)} from ${catName(from)} to ${catName(to)}`, { action: undoAction });
@@ -1324,7 +1330,8 @@ async function openSpent(which, { total = 'Spent' } = {}) {
 }
 
 async function openAssign(amount) {
-  const plan = await call('assign_plan', { month: state.month, amount: amount ?? null });
+  const month = shownMonth();
+  const plan = await call('assign_plan', { month, amount: amount ?? null });
   const rows = plan.plan.map((p, i) => `<tr><td>${esc(p.name)} <span class="faint small">${esc(p.group)}</span>${p.covered ? ` <span class="tag warn" title="Already spent, so it came out of Ready to assign: assigning up to this costs nothing">overspent ${money(p.covered)}</span>` : ''}</td>
       <td class="r num muted">${money(p.monthly_budget)}</td>
       <td class="r num ${p.has < 0 ? 'neg' : 'muted'}">${money(p.has)}</td>
@@ -1339,7 +1346,7 @@ async function openAssign(amount) {
       : `<div class="notice info">No category has a budgeted amount yet. Click a category on the Budget page to set one (it shows what it actually spent), or type amounts straight into the Assigned column.</div>`}
     ${plan.without_monthly_amount.length && plan.plan.length ? `<p class="small faint">Not budgeted: ${esc(plan.without_monthly_amount.join(', '))}</p>` : ''}`;
   const result = await dialog({
-    title: `Assign money in ${monthOnly(state.month)}`, body, wide: true,
+    title: `Assign money in ${monthOnly(month)}`, body, wide: true,
     actions: plan.plan.length ? [{ label: 'Cancel', value: null }, { label: 'Assign', value: 'go', primary: true }] : [{ label: 'OK', value: null, primary: true }],
     onOpen: d => {
       const left = () => {
@@ -1363,7 +1370,7 @@ async function openAssign(amount) {
   if (result !== 'go') return;
   const allocations = $$('#dlg [data-i]').map(el => ({ category_id: plan.plan[Number(el.dataset.i)].category_id, amount: amountIn(el) || 0 })).filter(a => a.amount);
   if (!allocations.length) return;
-  await call('apply_plan', [state.month, allocations]);
+  await call('apply_plan', [month, allocations]);
   await renderBudget();
   toast(`Assigned ${money(allocations.reduce((s, a) => s + a.amount, 0))}`, { action: undoAction });
 }
@@ -3211,6 +3218,19 @@ function askInDialog(d) {
 }
 
 // ── events from Python ──────────────────────────────────
+// An import (or an update) redraws the page, but not under a box you're typing in (the Accounts page's
+// balance, rate and payment boxes, the Inbox's balance box and search, the GitHub token box), nor in a
+// pop-up, a drag or a name being typed: it waits, and runs when you leave the box.
+const typingInMain = () => {
+  const el = document.activeElement;
+  return !!(el && el.closest && el.closest('#main') && el.matches('input:not([type=checkbox]):not([type=radio]):not([type=button]), textarea, select'));
+};
+function refreshWhenIdle() {
+  const busy = $('#dlg').open || $('.drawer') || $('.popover') || state.dragging || $('#main .inline-name') || typingInMain();
+  state.refreshLater = !!busy;
+  if (!busy) refresh();
+}
+document.addEventListener('focusout', () => setTimeout(() => { if (state.refreshLater) refreshWhenIdle(); }, 60));
 window.appEvent = (name, payload) => {
   if (name === 'imported') {
     if (payload.error) return toast(payload.error, { error: true });
@@ -3229,7 +3249,7 @@ window.appEvent = (name, payload) => {
     toast(added ? `Imported ${plural(added, 'new transaction')} from ${results.map(r => r.filename).join(', ')}${review ? ` · ${review} in the Inbox` : ''}`
       : `Nothing new in ${results.map(r => r.filename).join(', ')}`,
       review ? { action: { label: 'Open Inbox', run: () => navigate('inbox') } } : {});
-    if (!$('#dlg').open && !$('.drawer') && !$('.popover') && !state.dragging && !$('#main .inline-name')) refresh();
+    refreshWhenIdle();
   } else if (name === 'update') {
     state.update = payload;
     if (state.checkingByHand && payload.status !== 'checking') {
@@ -3240,7 +3260,7 @@ window.appEvent = (name, payload) => {
       else if (payload.status === 'idle') toast(`You're up to date: ${payload.current} is the latest version.`);
     }
     if (state.page === 'settings') renderSettings();
-    else if (payload.status === 'ready' && !state.dragging && !$('#main .inline-name')) refresh();
+    else if (payload.status === 'ready') refreshWhenIdle();
   }
 };
 
@@ -3266,7 +3286,7 @@ document.addEventListener('click', async e => {
   const groupX = e.target.closest('.btable [data-group-x]');
   if (groupX) return deleteGroupAsked(Number(groupX.dataset.groupX));
   const spentGroup = e.target.closest('.btable [data-spent-group]');
-  if (spentGroup) return openSpent({ month: state.month, group_id: Number(spentGroup.dataset.spentGroup) });
+  if (spentGroup) return openSpent({ month: shownMonth(), group_id: Number(spentGroup.dataset.spentGroup) });
   const spent = e.target.closest('.btable [data-spent]');
   if (spent) return openCategory(Number(spent.dataset.spent));
   const copy = e.target.closest('.btable [data-copy-budget]');
@@ -3287,8 +3307,9 @@ document.addEventListener('click', async e => {
     if (act === 'restart-update') await call('window_action', ['install_update']);
     else if (act === 'assign') await openAssign();
     else if (act === 'catch-up') {
-      if (await confirmBox(`Catch up ${monthOnly(state.month)}?`, 'Assigns exactly what each category spent this month, so nothing ends it overspent. Good for months gone by.', 'Catch up')) {
-        await call('catch_up', [state.month]); await renderBudget(); toast(`${monthOnly(state.month)} caught up`, { action: undoAction });
+      const month = shownMonth();
+      if (await confirmBox(`Catch up ${monthOnly(month)}?`, 'Assigns exactly what each category spent this month, so nothing ends it overspent. Good for months gone by.', 'Catch up')) {
+        await call('catch_up', [month]); await renderBudget(); toast(`${monthOnly(month)} caught up`, { action: undoAction });
       }
     } else if (act === 'start-here') {
       if (await confirmBox(`Start the budget in ${monthOnly(state.month)}?`, `Every month from ${monthOnly(state.month)} counts, and its spending shows in its categories.`, 'Start here')) {
