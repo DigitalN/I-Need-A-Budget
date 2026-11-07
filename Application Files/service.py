@@ -937,6 +937,12 @@ class BudgetService:
         return plan
 
     @exposed
+    def assign_left(self, month, amount, allocations):
+        """Assign money…'s "Left over" as you type: see Figures.assign_left."""
+        with self.db.read() as c:
+            return {"left_over": self._figures(c).assign_left(month, _amount(amount), allocations or [])}
+
+    @exposed
     def apply_plan(self, month, allocations):
         with self.db.write("Assign paycheque") as c:
             for a in allocations:
@@ -1089,7 +1095,8 @@ class BudgetService:
             "cash": now["cash"], "owed": now["owed"], "has_debt": now["has_debt"],
             "missing_balances": missing, "net_worth": worth,
             "spending": {"range": months, "usual_months": f.usual_months, "income": spending["income"],
-                         "total": spending["total"], "groups": groups,
+                         "total": spending["total"], "difference": spending["difference"],
+                         "above_usual": spending["above_usual"], "groups": groups,
                          "income_group": next((g["id"] for g in tree if g["role"] == "income"), None),
                          "months": [{"month": m, "so_far": m == current, "complete": m >= coverage} for m in cols]},
         }
@@ -1125,7 +1132,9 @@ class BudgetService:
         label = "Categorize transaction" if len(txn_ids) == 1 else f"Categorize {len(txn_ids)} transactions"
         with self.db.write(label) as c:
             out = self._inbox(c).categorize(txn_ids, category_id, recheck_payee)
-        return {**self.counts(), "also_categorized": out.also, "question": out.question}
+            total = c.execute(f"SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE id IN ({','.join('?' * len(txn_ids))})",
+                              txn_ids).fetchone()[0]
+        return {**self.counts(), "also_categorized": out.also, "question": out.question, "total": total}
 
     @exposed
     def accept_all(self, txn_ids):

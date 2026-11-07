@@ -1349,19 +1349,22 @@ async function openAssign(amount) {
     title: `Assign money in ${monthOnly(month)}`, body, wide: true,
     actions: plan.plan.length ? [{ label: 'Cancel', value: null }, { label: 'Assign', value: 'go', primary: true }] : [{ label: 'OK', value: null, primary: true }],
     onOpen: d => {
-      const left = () => {
-        const total = parseMoney($('#assign-amount', d).value) || 0;
-        const used = $$('[data-i]', d).reduce((s, el) => {  // covering overspending is already paid for
-          const v = amountIn(el) || 0;
-          return s + (v > 0 ? Math.max(0, v - plan.plan[Number(el.dataset.i)].covered) : v);
-        }, 0);
-        const el = $('#assign-left', d); if (el) el.innerHTML = `Left over: <b class="${total - used < 0 ? 'neg' : ''}">${money(total - used)}</b>`;
-      };
+      // Left over is worked out in Python (figures.assign_left) from what's typed so far.
+      const left = debounce(async () => {
+        const el = $('#assign-left', d);
+        const total = parseMoney($('#assign-amount', d).value);
+        const boxes = $$('[data-i]', d);
+        if (!el) return;
+        if (Number.isNaN(total) || boxes.some(b => Number.isNaN(amountIn(b)))) { el.innerHTML = 'Left over: <b class="neg">That isn\'t an amount</b>'; return; }
+        const r = await call('assign_left', { month, amount: total || 0,
+          allocations: boxes.map(b => ({ category_id: plan.plan[Number(b.dataset.i)].category_id, amount: amountIn(b) || 0 })) });
+        el.innerHTML = `Left over: <b class="${r.left_over < 0 ? 'neg' : ''}">${money(r.left_over)}</b>`;
+      }, 120);
       $$('[data-i]', d).forEach(el => el.addEventListener('input', left));
       const recalc = $('#assign-recalc', d);
       recalc.onclick = async () => {
         const v = parseMoney($('#assign-amount', d).value);
-        if (Number.isNaN(v)) return;
+        if (Number.isNaN(v)) { d.querySelector('.dlg-error').textContent = 'That isn\'t an amount'; return; }
         d.close();
         openAssign(v);
       };
@@ -1732,9 +1735,9 @@ function drawDashboard() {
 
   const head = cols.map((m, i) => `<th class="r ${m.so_far ? 'so-far' : ''} ${m.complete ? '' : 'partial'}"${m.complete ? '' : ' title="Not every account has data for this month"'}>
       ${monthShort(m.month)}${i === 0 || m.month.endsWith('-01') ? ` ${m.month.slice(0, 4)}` : ''}${m.so_far ? '<div class="tiny">so far</div>' : ''}</th>`).join('');
-  const cells = (amounts, attrs, { above = [], usual = [], click = true } = {}) => amounts.map((a, i) => {
+  const cells = (amounts, attrs, { above = [], usual = [], aboveBy = [], click = true } = {}) => amounts.map((a, i) => {
     const m = cols[i];
-    const tip = above[i] ? (usual[i] !== undefined ? `${money(a - usual[i])} above usual (${money(usual[i])})` : 'Above usual in here')
+    const tip = above[i] ? (usual[i] !== undefined ? `${money(aboveBy[i] ?? a - usual[i])} above usual (${money(usual[i])})` : 'Above usual in here')
       : (usual[i] && !m.so_far ? `Usually ${money(usual[i])}` : '');
     const text = `${above[i] ? '↑ ' : ''}${money(a)}`;
     return `<td class="r num ${m.so_far ? 'so-far' : ''} ${m.complete ? '' : 'partial'} ${above[i] ? 'above' : ''}">${!a ? '<span class="faint">—</span>'
@@ -1750,7 +1753,7 @@ function drawDashboard() {
     if (!open) continue;
     for (const c of g.categories) {
       rows.push(`<tr class="cat ${c.hidden ? 'hidden-cat' : ''}"><td>${esc(c.name)}</td>
-        ${cells(c.spent, `data-cat="${c.id}"`, { above: c.above, usual: c.usual })}</tr>`);
+        ${cells(c.spent, `data-cat="${c.id}"`, { above: c.above, usual: c.usual, aboveBy: c.above_by })}</tr>`);
     }
   }
   const ranges = [[3, '3 months'], [6, '6 months'], [12, '12 months'], ['all', 'All']];
@@ -1775,7 +1778,7 @@ function drawDashboard() {
     <div class="card" style="padding:12px 16px">
       <div class="row" style="margin-bottom:6px"><h2 style="margin:0">Spending</h2></div>
       ${sp.groups.length || sp.income.some(Boolean) ? `<div class="spend-wrap"><table class="spend"><thead><tr><th></th>${head}</tr></thead><tbody>${rows.join('')}</tbody></table></div>
-        <p class="small muted" style="margin:8px 0 0">↑ Above usual: at least $25 and 25% more than its average in the ${plural(sp.usual_months, 'whole month')} before.</p>`
+        <p class="small muted" style="margin:8px 0 0">↑ Above usual: at least ${money(sp.above_usual.cents)} and ${sp.above_usual.percent}% more than its average in the ${plural(sp.usual_months, 'whole month')} before.</p>`
         : '<div class="empty"><b>No spending yet</b>Categorized transactions show here, month by month.</div>'}
     </div>`);
   main.scrollTop = scrolled;
@@ -1908,7 +1911,7 @@ function drawCharts() {
       months: sp.months.map(m => m.month),
       series: [{ cls: 's1', values: sp.income }, { cls: 's2', values: sp.total }],
       faded: i => sp.months[i].so_far || !sp.months[i].complete,
-      tip: i => `<b>${monthName(sp.months[i].month, sp.months[i].so_far)}</b>${tipRow('s1', 'Income', sp.income[i])}${tipRow('s2', 'Spending', sp.total[i])}${tipRow('', 'Difference', sp.income[i] - sp.total[i])}${sp.months[i].complete ? '' : '<div class="small faint">Not every account has data</div>'}`,
+      tip: i => `<b>${monthName(sp.months[i].month, sp.months[i].so_far)}</b>${tipRow('s1', 'Income', sp.income[i])}${tipRow('s2', 'Spending', sp.total[i])}${tipRow('', 'Difference', sp.difference[i])}${sp.months[i].complete ? '' : '<div class="small faint">Not every account has data</div>'}`,
     });
   }
 }
@@ -2047,7 +2050,7 @@ function itemCard(t, i) {
 
 function groupCard(b, i) {
   const first = b.items[0];
-  const total = b.items.reduce((s, t) => s + t.amount, 0);
+  const total = first.group_total;  // what the group adds up to, from Python
   const dates = b.items.map(t => t.date).sort();
   const share = b.group.startsWith('share:');
   const title = share ? `${b.items.length} e-transfers that look like shares of one expense` : `${esc(first.payee_name || first.raw_name)} · ${b.items.length} transactions`;
@@ -2087,7 +2090,7 @@ async function fileBlock(index, categoryId) {
   const name = t.payee_name || t.raw_name;
   let msg = `${ids.length > 1 ? plural(ids.length, 'transaction') : name} → ${catName(categoryId)}`;
   if (r.also_categorized) msg += ` · also categorized ${r.also_categorized} more like it`;
-  const total = b.items.reduce((s, x) => s + x.amount, 0);
+  const total = r.total;  // what these came to, from Python
   if (incomeIds().includes(categoryId) && total > 0) {
     toast(msg, { action: { label: `Assign ${money(total)}`, run: () => { state.month = t.date.slice(0, 7); navigate('budget').then(() => openAssign(total)); } } });
   } else toast(msg, { action: undoAction });
@@ -2873,8 +2876,8 @@ async function renderSubscriptions() {
     <div class="page-head"><h1>Subscriptions</h1><span class="spacer"></span><button class="btn" data-act="sub-add">Add one…</button></div>
     <div class="stack">
       <div class="grid2">
-        <div class="card"><div class="muted">Subscriptions</div><div class="rta num">${money(s.monthly_subscriptions)}<span class="muted" style="font-size:15px"> a month</span></div><div class="small muted">${money(s.monthly_subscriptions * 12)} a year</div></div>
-        <div class="card"><div class="muted">Bills</div><div class="rta num">${money(s.monthly_bills)}<span class="muted" style="font-size:15px"> a month</span></div><div class="small muted">${money(s.monthly_bills * 12)} a year</div></div>
+        <div class="card"><div class="muted">Subscriptions</div><div class="rta num">${money(s.monthly_subscriptions)}<span class="muted" style="font-size:15px"> a month</span></div><div class="small muted">${money(s.yearly_subscriptions)} a year</div></div>
+        <div class="card"><div class="muted">Bills</div><div class="rta num">${money(s.monthly_bills)}<span class="muted" style="font-size:15px"> a month</span></div><div class="small muted">${money(s.yearly_bills)} a year</div></div>
       </div>
       ${s.cancelled.some(x => x.charged_after_cancel.length) ? `<div class="notice bad">Something you cancelled has charged you again. See Cancelled below.</div>` : ''}
       ${[...s.subscriptions, ...s.bills].filter(x => x.charged_after_end.length).map(x => `<div class="notice bad"><b>${esc(x.name)}</b>&nbsp;should have ended on ${dayYear(x.ends_on)}, but charged ${x.charged_after_end.map(c => money(c.amt) + ' on ' + day(c.date)).join(', ')}. Time to call ${esc(x.payee_name || 'them')}, or change its end date.</div>`).join('')}
