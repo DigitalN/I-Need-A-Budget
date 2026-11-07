@@ -159,7 +159,7 @@ class Inbox:
         c = self.conn
         names = ledger.category_names(c)
         items = [self._look(txn, names) for txn in c.execute(
-            "SELECT * FROM transactions WHERE status = 'review' ORDER BY date DESC, id DESC LIMIT 1000").fetchall()]
+            "SELECT * FROM transactions WHERE status = 'review' ORDER BY date DESC, id DESC").fetchall()]
         recent = [r["id"] for r in c.execute("SELECT id FROM imports ORDER BY id DESC LIMIT 10")]
         categorized = [r["id"] for r in c.execute(
             f"SELECT id FROM transactions WHERE status = 'done' AND by_you = 0 AND import_id IN "

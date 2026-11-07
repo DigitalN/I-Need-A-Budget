@@ -1017,7 +1017,7 @@ class BudgetService:
         imports, and the notices above them."""
         with self.db.read() as c:
             view = self._inbox(c).view()
-            rows = {t["id"]: t for t in self._transactions(c, {"status": "review"}, limit=1000)}
+            rows = {t["id"]: t for t in self._transactions(c, {"status": "review"}, limit=-1)}  # all of them
             items = [{**rows[item["id"]], **item} for item in view["items"] if item["id"] in rows]
             categorized = self._transactions(c, {"ids": view["categorized"]}, limit=300) if view["categorized"] else []
             alerts = [{"type": "duplicate", **d} for d in ledger.duplicate_accounts(c)]
