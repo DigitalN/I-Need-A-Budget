@@ -571,7 +571,7 @@ class BudgetService:
 
     @exposed
     def finish_onboarding(self, start_month):
-        self.set_budget_start(start_month)
+        self._set_budget_start(start_month)
         with self.db.write() as c:
             ledger.income_category(c)
             # Files already in Downloads count as looked at; only new downloads auto-import.
@@ -586,9 +586,16 @@ class BudgetService:
 
     @exposed
     def set_budget_start(self, month):
-        if not (isinstance(month, str) and len(month) == 7):
+        """Moves the budget's start (the Budget page's "Start the budget in…"): one undo step.
+        Onboarding's own start (finish_onboarding) isn't a step of its own."""
+        return self._set_budget_start(month, "Change budget start")
+
+    def _set_budget_start(self, month, label=None):
+        if not (isinstance(month, str) and re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", month)):
             raise UserError("Pick a month to start the budget in.")
-        self.db.set_meta("budget_start", month)
+        with self.db.write(label) as c:
+            c.execute("INSERT INTO meta (key, value) VALUES ('budget_start', ?) "
+                      "ON CONFLICT(key) DO UPDATE SET value = excluded.value", (month,))
         return month
 
     # ── categories ──

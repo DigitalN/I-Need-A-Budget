@@ -3227,8 +3227,10 @@ document.addEventListener('click', async e => {
         await call('catch_up', [state.month]); await renderBudget(); toast(`${monthOnly(state.month)} caught up`, { action: undoAction });
       }
     } else if (act === 'start-here') {
-      await call('set_budget_start', [state.month]); state.boot.budget_start = state.month; await renderBudget();
-      toast(`The budget now starts in ${monthLong(state.month)}`);
+      if (await confirmBox(`Start the budget in ${monthOnly(state.month)}?`, `Every month from ${monthOnly(state.month)} counts, and its spending shows in its categories.`, 'Start here')) {
+        await call('set_budget_start', [state.month]); state.boot.budget_start = state.month; await renderBudget();
+        toast(`The budget now starts in ${monthLong(state.month)}`, { action: undoAction });
+      }
     } else if (act === 'toggle-hidden') { state.showHidden = !state.showHidden; await renderBudget(); }
     else if (act === 'tx-cat') {
       const cid = await pickCategory(btn);
