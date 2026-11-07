@@ -1206,6 +1206,14 @@ class BudgetService:
                 if changes.get("date"):
                     c.execute("UPDATE transactions SET date = ? WHERE id = ?", (changes["date"], txn_id))
                 if changes.get("amount") is not None:
+                    now = c.execute("SELECT amount, is_split, transfer_id FROM transactions WHERE id = ?",
+                                    (txn_id,)).fetchone()
+                    if int(changes["amount"]) != now["amount"]:
+                        # Its split lines and its other half would be left at the old amount.
+                        if now["is_split"]:
+                            raise UserError("Unsplit it first, then change the amount.")
+                        if now["transfer_id"]:
+                            raise UserError("This is a transfer: change it as Not a transfer first.")
                     c.execute("UPDATE transactions SET amount = ? WHERE id = ?", (int(changes["amount"]), txn_id))
             if "transfer_account_id" in changes:
                 if changes["transfer_account_id"]:
