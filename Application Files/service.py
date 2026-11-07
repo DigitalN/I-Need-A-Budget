@@ -276,7 +276,7 @@ class BudgetService:
         for path, parsed in parsed_files:
             in_downloads = path.resolve().parent == downloads
             if parsed.format == "actual":
-                with self.db.write() as c:
+                with self.db.write("Learn from Actual") as c:  # one undo step: its examples and categories go with it
                     outcome = importer.learn_from_actual(c, parsed)
                 learnt = {"filename": path.name, **outcome}
                 continue
