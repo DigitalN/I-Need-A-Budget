@@ -34,9 +34,13 @@ PURCHASES = [("20261003", "-30.00", "SAMPLE ARCADE", "A1"), ("20261005", "-45.50
              ("20261008", "100.00", "PAYMENT - THANK YOU", "A3")]
 
 
-def test_a_positive_balance_with_negative_charges_means_money_owed(app):
-    """Issue #60: a card LEDGERBAL of 120.50 showed as owing -$120.50 everywhere."""
-    result = _import(app, card_ofx(PURCHASES, "120.50"))
+def test_a_positive_balance_with_negative_charges_can_mean_money_owed(app):
+    """Issue #60: a card LEDGERBAL of 120.50 showed as owing -$120.50 everywhere. Some banks do write it
+    that way, most mean a card in your favour: with no balance to go by (issue #119) the first file asks."""
+    app.db.set_meta("onboarded", "1")
+    path = str(write(app.test_downloads, "visa.ofx", card_ofx(PURCHASES, "120.50")))
+    assert call(app, "import_files", [path])["needs_setup"][0]["needs"] == "balance_sign"
+    result = call(app, "answer_balance", path, "owed")["results"][0]
     assert _card(app)["balance"] == -12050
     assert "owe" in result["balance_note"]
     assert _amounts(app) == [-4550, -3000, 10000]

@@ -232,11 +232,14 @@ class BudgetService:
     def _needs(self, c, path, parsed):
         """What a parsed file needs before it can be imported: 'account' for a set-up CSV
         whose account the app doesn't know yet, 'new_account' for any other bank file with
-        an account the app should ask about (see _accounts_to_ask), else None."""
+        an account the app should ask about (see _accounts_to_ask), 'balance_sign' for one with
+        a card balance whose sign it should ask about (see _balance_questions), else None."""
         if parsed.format == "actual":
             return None
         if parsed.format != "csv":
-            return "new_account" if self._accounts_to_ask(c, parsed) else None
+            if self._accounts_to_ask(c, parsed):
+                return "new_account"
+            return "balance_sign" if self._balance_questions(c, parsed) else None
         part = parsed.parts[0]
         found = importer.find_account(c, part.account, part.rows, importer.fingerprints(part.rows))
         return None if found else "account"
@@ -256,6 +259,14 @@ class BudgetService:
             if not importer.find_account(c, part.account, part.rows, importer.fingerprints(part.rows)):
                 out.append(i)
         return out
+
+    def _balance_questions(self, c, parsed, chosen=None, answered=()):
+        """The card balances in a bank file the app can't read the sign of (importer.balance_questions),
+        except the parts in `answered`. Not while setting up the budget: a balance there is only the
+        starting point, read as the file writes it."""
+        if self.db.get_meta("onboarded") != "1":
+            return []
+        return [q for q in importer.balance_questions(c, parsed, chosen) if q["index"] not in answered]
 
     def _csv_summary(self, path):
         sniffed = csvlayout.sniff(importer.read_text(path))
@@ -296,9 +307,11 @@ class BudgetService:
         moved into the app's Imported Files folder afterwards."""
         return self._import_files(paths, archive)
 
-    def _import_files(self, paths, archive=True, chosen=None):
-        """`chosen`: {path: {part index: account id}} for accounts the person picked."""
+    def _import_files(self, paths, archive=True, chosen=None, answers=None):
+        """`chosen`: {path: {part index: account id}} for accounts the person picked. `answers`:
+        {path: {part index: 'owed' or 'favour'}} for card balances they said the sign of."""
         chosen = {str(Path(k)): v for k, v in (chosen or {}).items()}
+        answers = {str(Path(k)): v for k, v in (answers or {}).items()}
         downloads = self.settings.downloads_dir().resolve()
         results, learnt, errors, needs_setup = [], None, [], []
         parsed_files = []
@@ -330,8 +343,12 @@ class BudgetService:
                     if self._accounts_to_ask(c, parsed, accounts):
                         needs_setup.append({"path": str(path), "filename": path.name, "needs": "new_account"})
                         continue
+            with self.db.read() as c:
+                if self._balance_questions(c, parsed, accounts, answers.get(str(path), {})):
+                    needs_setup.append({"path": str(path), "filename": path.name, "needs": "balance_sign"})
+                    continue
             try:
-                file_results = self._import_one(path, parsed, archive and in_downloads, accounts)
+                file_results = self._import_one(path, parsed, archive and in_downloads, accounts, answers.get(str(path)))
             except importer.NeedsSetup as e:
                 needs_setup.append({"path": str(path), "filename": path.name, "needs": e.what})
                 continue
@@ -340,10 +357,10 @@ class BudgetService:
         return {"results": results, "learnt": learnt, "errors": errors, "needs_setup": needs_setup,
                 "rechecked": rechecked, "counts": self.counts()}
 
-    def _import_one(self, path, parsed, archive, accounts=None):
+    def _import_one(self, path, parsed, archive, accounts=None, answers=None):
         sha = importer.sha256_of(path)
         with self.db.write() as c:
-            file_results = importer.import_parsed(c, parsed, path.name, sha, accounts=accounts)
+            file_results = importer.import_parsed(c, parsed, path.name, sha, accounts=accounts, answers=answers)
             inbox = self._inbox(c)
             for result in file_results:
                 arrived = inbox.arrive(result.new_ids)
@@ -517,6 +534,29 @@ class BudgetService:
         self._forget_file_status()
         downloads = self.settings.downloads_dir().resolve()
         return self._import_files([str(path)], archive=path.resolve().parent == downloads, chosen={str(path): picked})
+
+    @exposed
+    def file_balance_question(self, path):
+        """For the "is that what you owe?" pop-up: each card balance in a bank file whose sign the
+        app can't read. [] once an earlier answer or balance has settled it."""
+        path = Path(path)
+        with self.db.read() as c:
+            questions = self._balance_questions(c, importer.parse(path, c))
+        return {"path": str(path), "filename": path.name, "questions": questions}
+
+    @exposed
+    def answer_balance(self, path, answer):
+        """Whether a card balance in a bank file is what you owe ('owed') or in your favour
+        ('favour'), then imports it. The account remembers the answer."""
+        if answer not in ("owed", "favour"):
+            raise UserError("Pick one: what you owe, or in your favour.")
+        path = Path(path)
+        with self.db.read() as c:
+            questions = self._balance_questions(c, importer.parse(path, c))
+        self._forget_file_status()
+        downloads = self.settings.downloads_dir().resolve()
+        return self._import_files([str(path)], archive=path.resolve().parent == downloads,
+                                  answers={str(path): {q["index"]: answer for q in questions}})
 
     @exposed
     def csv_setup(self, path):

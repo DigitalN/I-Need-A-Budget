@@ -1987,8 +1987,8 @@ function drawInbox() {
   const alerts = data.alerts.map(a => a.type === 'balance' ? `<div class="notice">${esc(a.text)}<span class="spacer"></span>
       <input style="width:130px;text-align:right" placeholder="Balance" data-balance-for="${a.account_id}">${a.is_debt ? favourBox(a.account_id) : ''}<button class="btn small" data-act="save-balance" data-account="${a.account_id}">Save</button></div>`
     : a.type === 'duplicate' ? duplicateNotice(a) : '').join('') +
-    (data.files || []).map((f, i) => `<div class="notice info"><span><b>${esc(f.filename)}</b> ${f.needs === 'layout' ? 'needs setting up once.' : f.needs === 'new_account' ? 'is for an account the app hasn\'t seen: a new one, or one you have?' : 'is from a bank the app knows: which account is it for?'}</span><span class="spacer"></span>
-      <button class="btn small" data-act="ignore-file" data-index="${i}">${f.needs === 'new_account' ? 'Don\'t import' : 'Not a bank file'}</button><button class="btn small primary" data-act="setup-file" data-index="${i}">${f.needs === 'layout' ? 'Set up…' : 'Choose…'}</button></div>`).join('');
+    (data.files || []).map((f, i) => `<div class="notice info"><span><b>${esc(f.filename)}</b> ${f.needs === 'layout' ? 'needs setting up once.' : f.needs === 'new_account' ? 'is for an account the app hasn\'t seen: a new one, or one you have?' : f.needs === 'balance_sign' ? 'has a card balance the app can\'t read: is it what you owe?' : 'is from a bank the app knows: which account is it for?'}</span><span class="spacer"></span>
+      <button class="btn small" data-act="ignore-file" data-index="${i}">${f.needs === 'new_account' || f.needs === 'balance_sign' ? 'Don\'t import' : 'Not a bank file'}</button><button class="btn small primary" data-act="setup-file" data-index="${i}">${f.needs === 'layout' ? 'Set up…' : f.needs === 'balance_sign' ? 'Answer…' : 'Choose…'}</button></div>`).join('');
   const cards = state.blocks.map((b, i) => b.items.length > 1 ? groupCard(b, i) : itemCard(b.items[0], i)).join('');
   const filedRows = data.categorized.map(t => `<tr><td class="muted nowrap">${day(t.date)}</td><td>${esc(t.payee_name || t.raw_name)}${t.subscription_name ? ` <span class="tag info">${esc(t.subscription_name)}</span>` : ''}</td>
       <td>${t.transfer_account_name ? `<span class="tag">Transfer</span>` : `<button class="link" data-act="recat" data-id="${t.id}">${esc(t.category_name || (t.is_split ? 'Split' : 'No category'))}</button>`}</td>
@@ -2496,10 +2496,30 @@ async function chooseAccounts(path) {
   return v === 'import' ? outcome : null;
 }
 
+// A card file with charges negative and a balance above zero, for an account with no balance yet: owed, or in your favour?
+async function askBalanceSign(f) {
+  const r = await tryCall('file_balance_question', [f.path]);
+  if (!r.ok) { toast(r.error, { error: true }); return null; }
+  const questions = r.result.questions;
+  if (!questions.length) return call('answer_balance', [f.path, 'favour']);  // settled by an earlier answer: nothing to ask
+  const v = await dialog({
+    title: 'Is that what you owe?',
+    body: questions.map(q => `<p style="margin-top:0">Is <b>${esc(money(q.amount))}</b> what you owe on ${esc(q.name)}, or in your favour?</p>`).join(''),
+    actions: [
+      { label: 'Don\'t import', value: 'ignore', left: true },
+      { label: 'Cancel', value: null },
+      { label: 'In my favour', value: 'favour' },
+      { label: 'What I owe', value: 'owed', primary: true },
+    ],
+  });
+  if (v === 'ignore') { await call('ignore_file', [f.path]); toast(`${f.filename} won't be imported`); return null; }
+  return v ? call('answer_balance', [f.path, v]) : null;
+}
+
 // One after another: each pop-up waits for the one before.
 async function setupFiles(files) {
   for (const f of files) {
-    const outcome = await (f.needs === 'new_account' ? chooseAccounts(f.path) : setupFile(f.path));
+    const outcome = await (f.needs === 'new_account' ? chooseAccounts(f.path) : f.needs === 'balance_sign' ? askBalanceSign(f) : setupFile(f.path));
     if (outcome) window.appEvent('imported', outcome);
   }
   await refresh();

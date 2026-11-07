@@ -407,7 +407,8 @@ def test_a_new_account_from_downloads_waits_for_its_name(app):
     app.db.set_meta("onboarded", "1")
     # No card yet, so a card's file has nothing it could be: no question.
     card = write(app.test_downloads, "Card.QFX", ofx_file(
-        "Sample Credit Union", [("20260911", "-8.00", "SAMPLE DINER", "", "C1")], card=True, acct_id="0009876"))
+        "Sample Credit Union", [("20260911", "-8.00", "SAMPLE DINER", "", "C1")], card=True, acct_id="0009876",
+        balance="-8.00"))  # owing: a positive balance on a card would ask which sign it is (issue #119)
     [result] = call(app, "import_files", [str(card)])["results"]
     assert (result["account_name"], result["new_account"]) == ("Sample Credit Union card", True)
 

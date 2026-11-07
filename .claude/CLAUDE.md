@@ -144,6 +144,15 @@ All in `Application Files/`:
   its OFX/QFX files (chequing too): ACCTTYPE isn't trusted for Tangerine.
 - **A file's own balance (OFX LEDGERBAL) replaces any balance as old or older**: a
   balance typed in during the day misses what the bank adds later that day.
+- **A card file's signs are settled at import, when the account is known** (`importer._flip`,
+  `_positive_balance`, `balance_questions`). Charges negative and a balance above zero is a card in
+  your favour for most banks and what you owe for some. With a balance in the account, the sign that
+  agrees with the app's own balance for that date (this file's rows counted) wins; neither agreeing is
+  a real difference, kept as the file wrote it. An account with no balance yet asks once ("Is $120.50
+  what you owe…", `needs: 'balance_sign'`; not during onboarding, where the balance is read as
+  written) and remembers the answer (`account_sources` keys `signs:<id>:…`). Whether a file writes
+  purchases as positive is decided once per account: by rows the account already holds, then the
+  earlier decision, then how the file looks.
 - **Learning only uses `status = 'done'` transactions** (plus Actual examples). Rows waiting
   in the inbox never teach the app anything, and count in no category: no tentative
   category, Spent/Usual/the budget only count `status = 'done'`

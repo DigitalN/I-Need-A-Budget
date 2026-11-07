@@ -62,7 +62,7 @@ import io
 import logging
 import re
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import banks
@@ -128,8 +128,10 @@ class Part:
     """One account's rows in a file (most files have one; RBC's CSV has every account)."""
     account: AccountHint
     rows: list
-    balance: tuple = None  # (date, cents) when the file states one (OFX)
+    balance: tuple = None  # (date, cents) when the file states one (OFX), as the file writes it
     notes: list = field(default_factory=list)  # what was changed about the file to read it (shown with the import)
+    card_file: bool = False  # a card or credit line's file: its signs are settled when the account is known (_flip, _positive_balance)
+    flip_guess: bool = None  # from the rows alone: do they write purchases as positive? None: too few purchases to tell
 
     @property
     def first_date(self):
@@ -407,34 +409,114 @@ def _ofx_statement(text, bank, filename):
                 balance = (parse_date(as_of), to_cents(amount))
         except ValueError:
             balance = None
-    notes = []
     if is_card or hint.kind in ("credit_card", "line_of_credit"):
-        balance = _owed_signs(rows, balance, notes)
-    return Part(hint, rows, balance, notes)
+        return Part(hint, rows, balance, card_file=True, flip_guess=_flip_guess(rows))
+    return Part(hint, rows, balance)
 
 
 _PAYMENT_WORDS = re.compile(r"PAYMENT|PAIEMENT|THANK YOU|MERCI|REFUND|RETURN|REVERSAL|CREDIT|REWARD|CASH ?BACK|INTEREST PAID",
                             re.IGNORECASE)
 
 
-def _owed_signs(rows, balance, notes):
-    """A card or line of credit file's signs, made the way the app has them: a purchase is
-    money out (negative), what you owe is a negative balance. Some banks write purchases as
-    positive (the file's amounts are flipped), and some write what you owe as a positive balance
-    (stored as owed). `notes` is told what was done. Returns the balance."""
+def _flip_guess(rows):
+    """From a card or credit line file's rows alone: does it write purchases as positive? True or False
+    when there are enough purchases to tell (TRNTYPE says which rows are purchases when it can), else None."""
     typed = [r for r in rows if r.bank_type.upper() in ("DEBIT", "CREDIT")]
     if typed:
         purchases = [r for r in typed if r.bank_type.upper() == "DEBIT"]
     else:
         purchases = [r for r in rows if not _PAYMENT_WORDS.search(r.name)]
-    if len(purchases) >= 2 and sum(r.amount > 0 for r in purchases) >= 0.7 * len(purchases):
-        for r in rows:
-            r.amount = -r.amount
-        notes.append("This file shows purchases as positive: the signs were flipped")
-    if balance is not None and balance[1] > 0:
-        balance = (balance[0], -balance[1])
-        notes.append("The file's balance read as what you owe")
-    return balance
+    if len(purchases) < 2:
+        return None
+    return sum(r.amount > 0 for r in purchases) >= 0.7 * len(purchases)
+
+
+# What the app remembers about how an account's files are signed, kept in account_sources under keys
+# of its own (they go with the account if it's merged away or deleted): signs:<account id>:<topic>:<value>.
+def _remembered(conn, account_id, topic):
+    row = conn.execute("SELECT key FROM account_sources WHERE account_id = ? AND key LIKE ?",
+                       (account_id, f"signs:{account_id}:{topic}:%")).fetchone()
+    return row["key"].rsplit(":", 1)[1] if row else None
+
+
+def _remember(conn, account_id, topic, value):
+    conn.execute("DELETE FROM account_sources WHERE account_id = ? AND key LIKE ?",
+                 (account_id, f"signs:{account_id}:{topic}:%"))
+    conn.execute("INSERT OR IGNORE INTO account_sources (key, account_id) VALUES (?, ?)",
+                 (f"signs:{account_id}:{topic}:{value}", account_id))
+
+
+def _flip(conn, part, account_id):
+    """(flip, worth remembering): does this card file write purchases as positive, so its amounts and
+    balance are flipped? Decided once per account. First by the rows the account already holds (the
+    file's row with the same date and amount, or with the opposite sign), then by what was decided
+    before, then by how the file looks."""
+    if account_id is not None and part.rows:
+        have = Counter((r["date"], r["amount"]) for r in conn.execute(
+            "SELECT date, amount FROM transactions WHERE account_id = ? AND date BETWEEN ? AND ?",
+            (account_id, part.first_date, part.last_date)))
+        same = opposite = 0
+        for r in part.rows:
+            if have[(r.date, r.amount)] > 0:
+                have[(r.date, r.amount)] -= 1
+                same += 1
+            elif have[(r.date, -r.amount)] > 0:
+                have[(r.date, -r.amount)] -= 1
+                opposite += 1
+        if opposite >= 2 and opposite > same:  # one pair could be a purchase and its refund
+            return True, True
+        if same > opposite:
+            return False, True
+        kept = _remembered(conn, account_id, "flip")
+        if kept:
+            return kept == "yes", False
+    return bool(part.flip_guess), part.flip_guess is not None
+
+
+def _positive_balance(conn, account_id, balance, ours, answer):
+    """A card file whose charges are negative and whose balance is above zero: what you owe written
+    as positive, or a card in your favour (overpaid, or a refund bigger than the balance)? What
+    you answered, else the sign that agrees with the balance the app has for that date (`ours`, with
+    this file's rows counted), else what the account's earlier files were. With none of those, as
+    the file writes it: a real difference between the file and the app."""
+    if answer in ("owed", "favour"):
+        _remember(conn, account_id, "positive", answer)
+        return -balance if answer == "owed" else balance
+    if ours is not None:
+        if ours == balance:
+            return balance
+        if ours == -balance:
+            return -balance
+    return -balance if _remembered(conn, account_id, "positive") == "owed" else balance
+
+
+def _match_rows(part):
+    """The rows to find a card file's account by: as the app will have them if the file is flipped."""
+    return [replace(r, amount=-r.amount) for r in part.rows] if part.flip_guess else part.rows
+
+
+def balance_questions(conn, parsed, chosen=None):
+    """[{index, name, amount}]: the card or credit line balances in this file the app can't read the
+    sign of. Charges negative and a balance above zero is a card in your favour for most banks, and
+    what you owe for some, so for an account with no balance yet (and no earlier answer) it asks:
+    a balance the app already has settles it (see _positive_balance)."""
+    out = []
+    for i, part in enumerate(parsed.parts):
+        if not (part.card_file and part.balance and part.balance[1] > 0):
+            continue
+        rows = _match_rows(part)
+        account_id = (chosen or {}).get(i) or find_account(conn, part.account, rows, fingerprints(rows))
+        name = suggested_name(conn, part.account)
+        if account_id is not None:
+            acct = conn.execute("SELECT name, kind, anchor_date FROM accounts WHERE id = ?", (account_id,)).fetchone()
+            if acct is None or not ledger.is_debt(acct["kind"]) or acct["anchor_date"] is not None or \
+                    _remembered(conn, account_id, "positive"):
+                continue
+            name = acct["name"]
+        if _flip(conn, part, account_id)[0]:
+            continue
+        out.append({"index": i, "name": name, "amount": part.balance[1]})
+    return out
 
 
 def _is_card_number(digits):
@@ -760,27 +842,41 @@ def account_with_rows(conn, kind, rows, fps):
     return matches[0] if len(matches) == 1 else None
 
 
-def import_parsed(conn, parsed, filename, sha, archived_path=None, accounts=None):
+def import_parsed(conn, parsed, filename, sha, archived_path=None, accounts=None, answers=None):
     """Adds the new rows of a parsed bank file, one Result per account in the file; their
     `new_ids` are for the inbox. `accounts`: {part index: account id} for parts whose
-    account the person chose. Call inside db.write()."""
+    account the person chose. `answers`: {part index: 'owed' or 'favour'} for a card balance the
+    person said the sign of (see balance_questions). Call inside db.write()."""
     if parsed.format == "actual":
         raise ImportError_("Actual Budget exports are learnt from, not imported.")
-    accounts = accounts or {}
-    return [_import_part(conn, parsed.format, part, filename, sha, archived_path, accounts.get(i), parsed.kind)
+    accounts, answers = accounts or {}, answers or {}
+    return [_import_part(conn, parsed.format, part, filename, sha, archived_path, accounts.get(i), parsed.kind,
+                         answers.get(i))
             for i, part in enumerate(parsed.parts)]
 
 
-def _import_part(conn, fmt, part, filename, sha, archived_path, account_id=None, kind=None):
+def _import_part(conn, fmt, part, filename, sha, archived_path, account_id=None, kind=None, answer=None):
     kind = kind or fmt
     result = Result(filename, fmt, total=len(part.rows), first_date=part.first_date, last_date=part.last_date)
-    fps = fingerprints(part.rows)
+    notes = list(part.notes)
+    rows = _match_rows(part)
     if account_id is None:
-        account_id, created = find_or_create_account(conn, part.account, part.rows, fps)
+        account_id, created = find_or_create_account(conn, part.account, rows, fingerprints(rows))
     else:
         learn_keys(conn, part.account, account_id, chosen=True)
         created = False
     acct = conn.execute("SELECT * FROM accounts WHERE id = ?", (account_id,)).fetchone()
+    flipped = False
+    if part.card_file and ledger.is_debt(acct["kind"]):
+        # Purchases negative, what you owe a negative balance: some banks write them the other way round.
+        flipped, remember = _flip(conn, part, account_id)
+        if remember:
+            _remember(conn, account_id, "flip", "yes" if flipped else "no")
+        if flipped:
+            part = replace(part, rows=[replace(r, amount=-r.amount) for r in part.rows],
+                           balance=(part.balance[0], -part.balance[1]) if part.balance else None)
+            notes.append("This file shows purchases as positive: the signs were flipped")
+    fps = fingerprints(part.rows)
     result.account_id, result.account_name, result.new_account = account_id, acct["name"], created
     import_id = conn.execute(
         "INSERT INTO imports (filename, sha256, account_id, format, rows_total, first_date, last_date, archived_path) "
@@ -868,6 +964,10 @@ def _import_part(conn, fmt, part, filename, sha, archived_path, account_id=None,
         # this one. So a file's balance replaces any as old as it, or older.
         as_of, balance = part.balance
         ours = ledger.account_balance(conn, account_id, as_of)
+        if part.card_file and ledger.is_debt(acct["kind"]) and not flipped and balance > 0:
+            balance = _positive_balance(conn, account_id, balance, ours, answer)
+            if balance < 0:
+                notes.append("The file's balance read as what you owe")
         if acct["anchor_date"] is None or as_of >= acct["anchor_date"]:
             conn.execute("UPDATE accounts SET anchor_date = ?, anchor_balance = ? WHERE id = ?",
                          (as_of, balance, account_id))
@@ -883,8 +983,8 @@ def _import_part(conn, fmt, part, filename, sha, archived_path, account_id=None,
         elif ours is not None and ours != balance:
             result.balance_note = (f"The file says the balance was {balance / 100:,.2f} on {as_of}, "
                                    f"but the app has {ours / 100:,.2f}")
-    if part.notes:
-        result.balance_note = ". ".join([*part.notes, result.balance_note] if result.balance_note else part.notes)
+    if notes:
+        result.balance_note = ". ".join([*notes, result.balance_note] if result.balance_note else notes)
         log.info("%s: %s", filename, result.balance_note)
     return result
 
