@@ -70,11 +70,17 @@ def _is_date(value):
             return False
 
 
-_MONEY = re.compile(r"[-+−]?\(?[-+−]?\$?\s*[\d,]*\.?\d+\)?(\s*(CR|DR))?", re.IGNORECASE)
+_MONEY = re.compile(r"[-+−]?\(?[-+−]?\$?\s*(?:\d{1,3}(?:\.\d{3})+,\d{1,2}|[\d,]*\.?\d+)\)?(\s*(CR|DR))?", re.IGNORECASE)
 
 
 def _is_money(value):
-    return bool(_MONEY.fullmatch(value)) and any(ch.isdigit() for ch in value) and not _is_date(value)
+    if not (_MONEY.fullmatch(value) and any(ch.isdigit() for ch in value)) or _is_date(value):
+        return False
+    try:
+        _cents(value)  # 1,23,4 looks like money but isn't an amount
+    except ValueError:
+        return False
+    return True
 
 
 def _cents(value):
@@ -96,7 +102,7 @@ def _column_types(rows, width):
         elif sum(_is_date(v) for v in values) >= 0.9 * len(values):
             types.append("d")
         elif sum(_is_money(v) for v in values) >= 0.9 * len(values) and \
-                sum(bool(re.search(r"\.\d{2}\b", v)) for v in values) >= 0.5 * len(values):
+                sum(bool(re.search(r"[.,]\d{2}\b", v)) for v in values) >= 0.5 * len(values):
             types.append("m")
         else:
             types.append("t")
