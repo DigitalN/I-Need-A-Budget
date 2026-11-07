@@ -5,7 +5,7 @@ from helpers import call
 
 def _add(app, *args):
     """add_transaction's id (it returns {'id', 'question'} once the inbox adds it)."""
-    added = _add(app, *args)
+    added = call(app, "add_transaction", *args)
     return added["id"] if isinstance(added, dict) else added
 
 
