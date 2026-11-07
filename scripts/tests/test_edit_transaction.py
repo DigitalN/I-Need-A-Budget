@@ -3,6 +3,12 @@
 from helpers import call
 
 
+def _add(app, *args):
+    """add_transaction's id (it returns {'id', 'question'} once the inbox adds it)."""
+    added = _add(app, *args)
+    return added["id"] if isinstance(added, dict) else added
+
+
 def _budget(app):
     gid = call(app, "add_group", "Everyday")
     food, house = call(app, "add_category", gid, "Food"), call(app, "add_category", gid, "Household")
@@ -13,7 +19,7 @@ def _budget(app):
 
 def _split(app):
     food, house, cheq = _budget(app)
-    t = call(app, "add_transaction", cheq, "2026-10-05", "SAMPLE HARDWARE", -5000, food)
+    t = _add(app, cheq, "2026-10-05", "SAMPLE HARDWARE", -5000, food)
     call(app, "split_transaction", t, [{"category_id": food, "amount": -2000}, {"category_id": house, "amount": -3000}])
     return t, food, house, cheq
 
@@ -35,8 +41,8 @@ def test_a_split_keeps_adding_up_when_its_amount_changes(app):
 def test_a_paired_transfer_keeps_matching_when_its_amount_changes(app):
     _, _, cheq = _budget(app)
     card = call(app, "add_account", "Sample Visa", "credit_card", 0, "2026-09-30")
-    payment = call(app, "add_transaction", cheq, "2026-10-06", "Card payment", -30000)
-    other = call(app, "add_transaction", card, "2026-10-06", "Payment thank you", 30000)
+    payment = _add(app, cheq, "2026-10-06", "Card payment", -30000)
+    other = _add(app, card, "2026-10-06", "Payment thank you", 30000)
     call(app, "update_transaction", payment, {"transfer_account_id": card})
     paired = {x["id"]: x for x in call(app, "transactions", {})["items"]}
     assert paired[payment]["transfer_id"] == other
@@ -57,7 +63,7 @@ def test_the_amount_can_change_again_once_it_isnt_a_split_or_a_transfer(app):
     assert call(app, "month", "2026-10")["summary"]["off"] == 0
     # A transfer that was only marked (its other half isn't imported) has nothing to match.
     card = call(app, "add_account", "Sample Visa", "credit_card", 0, "2026-09-30")
-    lone = call(app, "add_transaction", cheq, "2026-10-09", "Card payment", -10000)
+    lone = _add(app, cheq, "2026-10-09", "Card payment", -10000)
     call(app, "update_transaction", lone, {"transfer_account_id": card})
     call(app, "update_transaction", lone, {"amount": -12000})
     assert _amount(app, lone) == -12000
