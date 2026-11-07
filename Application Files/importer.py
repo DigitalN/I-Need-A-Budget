@@ -633,6 +633,10 @@ def _import_part(conn, fmt, part, filename, sha, archived_path, account_id=None)
         if acct["anchor_date"] is None or as_of >= acct["anchor_date"]:
             conn.execute("UPDATE accounts SET anchor_date = ?, anchor_balance = ? WHERE id = ?",
                          (as_of, balance, account_id))
+            # Remembered so that removing this import puts the balance it replaced back.
+            conn.execute("UPDATE imports SET anchor_before_date = ?, anchor_before_balance = ?, anchor_after_date = ?, "
+                         "anchor_after_balance = ? WHERE id = ?",
+                         (acct["anchor_date"], acct["anchor_balance"], as_of, balance, import_id))
             if ours != balance:
                 result.balance_note = "Balance taken from the file"
                 if ours is not None:

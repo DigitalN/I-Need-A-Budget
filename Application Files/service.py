@@ -538,9 +538,26 @@ class BudgetService:
             ids = {r["id"] for r in rows}
             others = [r["transfer_id"] for r in rows if r["transfer_id"] and r["transfer_id"] not in ids]
             c.execute("DELETE FROM transactions WHERE import_id = ?", (import_id,))
+            imp = c.execute("SELECT * FROM imports WHERE id = ?", (import_id,)).fetchone()
+            if imp is not None and imp["anchor_after_date"] is not None:
+                self._take_back_balance(c, imp)
             c.execute("DELETE FROM imports WHERE id = ?", (import_id,))
             self._inbox(c).ask_again(others, "Its other half was removed with its import")
         return {"removed": len(ids), "counts": self.counts()}
+
+    def _take_back_balance(self, c, imp):
+        """The balance a removed import set goes, and the one it replaced comes back, if it's
+        still the account's: one a later file or you set since is left alone (and a later
+        import that replaced this one's balance now remembers what this one had before)."""
+        before = (imp["anchor_before_date"], imp["anchor_before_balance"])
+        after = (imp["anchor_after_date"], imp["anchor_after_balance"])
+        current = c.execute("SELECT anchor_date, anchor_balance FROM accounts WHERE id = ?",
+                            (imp["account_id"],)).fetchone()
+        if current is not None and (current["anchor_date"], current["anchor_balance"]) == after:
+            c.execute("UPDATE accounts SET anchor_date = ?, anchor_balance = ? WHERE id = ?", (*before, imp["account_id"]))
+        c.execute("UPDATE imports SET anchor_before_date = ?, anchor_before_balance = ? WHERE account_id = ? AND id != ? "
+                  "AND anchor_after_date IS NOT NULL AND anchor_before_date IS ? AND anchor_before_balance IS ?",
+                  (*before, imp["account_id"], imp["id"], *after))
 
     # ── onboarding ──
 
