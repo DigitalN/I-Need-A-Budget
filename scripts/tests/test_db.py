@@ -1,5 +1,7 @@
 """Undo, and keeping only the changes it should."""
 
+from datetime import date
+
 from db import SCHEMA_VERSION, Database
 
 
@@ -77,6 +79,30 @@ def test_daily_backup_keeps_one_per_day(tmp_path):
     first = db.backup_daily(tmp_path / "Backups")
     assert first is not None and first.exists()
     assert db.backup_daily(tmp_path / "Backups") is None
+
+
+def test_pre_upgrade_copies_dont_use_up_the_daily_backups(tmp_path):
+    """Issue #68: each upgrade's copy used to take one of the 14 daily slots, for good."""
+    db = make(tmp_path)
+    folder = tmp_path / "Backups"
+    folder.mkdir()
+    for day in range(1, 14):  # 13 days of daily copies, all older than today
+        (folder / f"budget-2020-01-{day:02d}.db").write_bytes(b"x")
+    upgrades = [f"budget-before-upgrade-v{n}-to-v{n + 1}-2026-10-20.db" for n in range(1, 6)]
+    for name in upgrades:
+        (folder / name).write_bytes(b"x")
+    assert db.backup_daily(folder) is not None
+    dated = sorted(p.name for p in folder.glob("budget-[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9].db"))
+    assert len(dated) == 14 and dated[0] == "budget-2020-01-01.db"
+    assert all((folder / name).exists() for name in upgrades)
+    # Another day: the oldest daily copies go, the pre-upgrade copies stay.
+    (folder / f"budget-{date.today().isoformat()}.db").unlink()
+    for day in (14, 15):
+        (folder / f"budget-2020-01-{day:02d}.db").write_bytes(b"x")
+    assert db.backup_daily(folder) is not None
+    dated = sorted(p.name for p in folder.glob("budget-[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9].db"))
+    assert len(dated) == 14 and dated[0] == "budget-2020-01-03.db"
+    assert all((folder / name).exists() for name in upgrades)
 
 
 def test_an_older_database_is_backed_up_then_upgraded(tmp_path):
