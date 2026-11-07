@@ -2625,10 +2625,11 @@ async function addTransaction() {
   });
   if (v !== 'ok') return;
   const dir = Number($('#add-dir [aria-pressed="true"]').dataset.dir);
-  await call('add_transaction', { account_id: Number($('#add-acct').value), date: $('#add-date').value, payee: $('#add-payee').value,
+  const r = await call('add_transaction', { account_id: Number($('#add-acct').value), date: $('#add-date').value, payee: $('#add-payee').value,
     amount: dir * Math.abs(parseMoney($('#add-amount').value)), category_id: catId });
   toast('Added', { action: undoAction });
   await refresh();
+  if (r.question) { await subscriptionPrompt(r.question); await refresh(); }
 }
 
 // ── accounts ────────────────────────────────────────────
