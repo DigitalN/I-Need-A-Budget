@@ -1367,8 +1367,10 @@ class BudgetService:
         """`from_id` is the same account as `into_id`: see ledger.merge_accounts()."""
         with self.db.write("Merge accounts") as c:
             name = c.execute("SELECT name FROM accounts WHERE id = ?", (into_id,)).fetchone()
-            moved, dropped, unpaired = ledger.merge_accounts(c, int(from_id), int(into_id))
-            self._inbox(c).ask_again(unpaired, f"No longer a transfer: both halves are in {name['name'] if name else 'one account'}")
+            moved, dropped, unpaired, asked = ledger.merge_accounts(c, int(from_id), int(into_id))
+            inbox = self._inbox(c)
+            inbox.ask_again(unpaired, f"No longer a transfer: both halves are in {name['name'] if name else 'one account'}")
+            inbox.ask_again(asked, "Its other half is a duplicate of one you decided about")
         log.info("Merged account %s into %s: %d moved, %d duplicates dropped", from_id, into_id, moved, dropped)
         return {"into": name["name"] if name else "", "moved": moved, "dropped": dropped, "counts": self.counts()}
 
