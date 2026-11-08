@@ -216,8 +216,8 @@ def prune(folder, today):
 
 def move_old(old, new):
     """Moves every file from the old backups folder into `new`, then removes the old folder.
-    A backup takes along the side files beside it that hold anything; empty ones hold nothing
-    and are dropped, like copies left half made. It can stop at any point and run again: a
+    A backup takes along the side files beside it that hold anything (`_holds_something`);
+    the others are dropped, like copies left half made. It can stop at any point and run again: a
     file leaves the old folder only once it's complete in the new one, and one already there
     isn't copied twice. Returns how many moved."""
     old, new = Path(old), Path(new)
@@ -231,7 +231,7 @@ def move_old(old, new):
             continue
         if not path.is_file():  # a folder, or a side file that went with its backup
             continue
-        if _main_of(path) and not path.stat().st_size:
+        if _main_of(path) and not _holds_something(path):
             path.unlink()
             continue
         target = new / path.name
@@ -256,19 +256,28 @@ def _free_name(path):
     return candidate
 
 
+def _holds_something(side):
+    """Whether a side file holds anything: a -wal or -journal that isn't empty, or a -shm beside
+    such a -wal. A -shm is only the -wal's index, rebuilt from it when it's needed, so without
+    pages in the -wal it holds nothing, whatever its size."""
+    if side.name.endswith("-shm"):
+        side = side.with_name(side.name[:-len("-shm")] + "-wal")
+    return side.is_file() and side.stat().st_size > 0
+
+
 def _move_with_side_files(path, target):
-    """Moves a backup with the side files beside it that hold anything, dropping empty ones.
+    """Moves a backup with the side files beside it that hold anything, dropping the others.
     Side files go first: if this stops part way, the next try brings the backup to them, and
     if the backup itself can't be moved, they go back beside it."""
+    sides = [path.with_name(path.name + suffix) for suffix in SIDE_FILES]
+    keep = {side: _holds_something(side) for side in sides if side.is_file()}  # before an empty -wal goes
     moved = []
     try:
-        for suffix in SIDE_FILES:
-            side, there = path.with_name(path.name + suffix), target.with_name(target.name + suffix)
-            if not side.is_file():
-                continue
-            if not side.stat().st_size:
+        for side, holds_something in keep.items():
+            if not holds_something:
                 side.unlink()
                 continue
+            there = target.with_name(target.name + side.name[len(path.name):])
             _put(side, there)
             moved.append((side, there))
         _put(path, target)
