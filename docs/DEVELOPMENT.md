@@ -23,7 +23,12 @@ select your **Personal Team** → Manage Certificates… → **+** → **Apple D
 
 Builds go to `~/Library/Caches/I Need A Budget-build`, not the repository: folders synced
 by iCloud Drive (such as `~/Documents`) add Finder metadata to app bundles, and codesign
-rejects bundles that have it.
+rejects bundles that have it. Every checkout and worktree shares that folder, so
+`build.sh`, `package.sh`, `install.sh` and `release.sh` take one lock
+(`scripts/build-lock.sh`): a second build waits, saying so. PyInstaller's binary cache is
+the build's own (`PYINSTALLER_CONFIG_DIR` inside that folder), because another project's
+`--clean` build empties the shared one in `~/Library/Application Support/pyinstaller`,
+which used to make ours fail half-way ("lipo: can't open input file").
 
 To run from source without building (uses your real data unless you say otherwise):
 

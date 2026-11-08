@@ -10,6 +10,7 @@
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
+source scripts/build-lock.sh  # one build at a time
 
 VOLUME_NAME="I Need A Budget"
 
