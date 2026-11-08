@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """The one kind of error whose message is for the person.
 
 Raise UserError for something they can fix ("That transaction no longer exists.", "Pick another

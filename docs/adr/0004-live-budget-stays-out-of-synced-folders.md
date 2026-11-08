@@ -24,5 +24,5 @@ quits, go to `Documents/I Need A Budget Backups`.
   the write-ahead log into `budget.db` and empties it, so after a normal quit nothing
   else in the data folder still holds changes; after a crash, `budget.db-wal` and
   `budget.db-shm` are deleted first.
-- Decided 2026-10-14, for Windows and the Mac; built for the Mac alone in 1.3.1 once the
+- Decided 2026-10-14, for Windows and the Mac; built for the Mac alone in 1.3.2 once the
   Windows plan was shelved. Backups used to be made at launch, one per day, 14 kept.

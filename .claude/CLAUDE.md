@@ -213,7 +213,10 @@ All in `Application Files/`:
 - Every user-facing change should be undoable: wrap it in `db.write("Short label")`.
   Background imports aren't undoable (they're removed from Accounts → Imported files).
 - `~/Documents` is iCloud-synced on this machine; `scripts/build.sh` builds in
-  `~/Library/Caches` and runs `xattr -cr` before signing.
+  `~/Library/Caches` and runs `xattr -cr` before signing. One build at a time from any
+  checkout or worktree (`scripts/build-lock.sh`, taken by build, package, install and
+  release), with its own PyInstaller cache: other projects on this Mac build with
+  PyInstaller `--clean`, which empties the shared one.
 
 ## Budget rules (summary; budget.py has the detail)
 
@@ -251,7 +254,24 @@ with months it didn't exist).
 - The repository is **public** (it was private at first). It's
   **GPL-3.0-only**, the maintainer's choice, made knowing the GPL allows selling: what
   they want is that nobody builds a closed product from it. `docs/NOTICE` is a section 7(b)
-  attribution term. The updater asks
+  attribution term. No contributor agreement (their call): contributions come in under the
+  same GPL. The license reaches every copy:
+  - Every source file has `SPDX-License-Identifier: GPL-3.0-only` in its first lines
+    (after a `#!` line; an HTML comment after the doctype). `scripts/tests/test_licenses.py`
+    fails on one without it, new files included.
+  - The app carries `LICENSE.txt`, `NOTICE.txt` and `Third-party licenses.txt` in
+    `Contents/Resources` (the spec adds them). The last is written at build time by
+    `scripts/third_party_licenses.py` from the packages whose modules PyInstaller
+    collected, plus PyInstaller (its launcher) and Python (the docs' license page, which
+    covers OpenSSL and the rest Python incorporates). A bundled package with no license
+    file stops the build unless its metadata says MIT (then it gets the MIT text) or its
+    text is in `GIVEN`.
+  - Finder's Get Info says "© 2026 DigitalN. Free software under the GNU GPL v3."
+    (`NSHumanReadableCopyright`; it said "Private. Not for distribution." until 1.3.1).
+  - Settings ends with "© 2026 DigitalN · Free software under the GNU GPL v3, with no
+    warranty · License"; License opens a read-only copy of the app's `LICENSE.txt` in the
+    default text app (TextEdit saving into the app itself would break its signature).
+  The updater asks
   GitHub anonymously, or with a token when there is one (saved in the Keychain from
   Settings, or the GitHub CLI's login, `gh auth token`). Settings shows the token field
   only when GitHub refused this copy (`needs_access`): it would if the repository went
@@ -483,8 +503,8 @@ Don't undo these without asking:
   its age. With `INAB_DATA_DIR` they stay inside that folder. If Documents can't be
   written they go to the data folder's `Backups/` until it can. **To restore one:** quit
   the app, delete `budget.db-wal` and `budget.db-shm` in the data folder if they're
-  there, and copy the backup in as `budget.db`. (Until 1.3.0: one a day at launch, 14
-  kept, in the data folder's `Backups/`, which the first launch of 1.3.1 moves over.)
+  there, and copy the backup in as `budget.db`. (Until 1.3.1: one a day at launch, 14
+  kept, in the data folder's `Backups/`, which the first launch of 1.3.2 moves over.)
 - "Eating Out" was renamed **Food** (Actual's old name still matches through `old_names`).
 - **Update checks only at launch and on Check now**, never on a timer while the app is
   open (the maintainer's choice).
@@ -505,8 +525,8 @@ Don't undo these without asking:
 - **Settings is kept short** (the maintainer's mock-up): Appearance, Import from
   Downloads, Overspending, Learn from Actual; updates, Release notes,
   Check now (GitHub access only when needed); Open buttons for the data, imported
-  files and log folders. Budget start, the Usual ("needs") look-back and "fill monthly amounts"
-  were removed from it on purpose.
+  files and log folders; the license line under them. Budget start, the Usual ("needs")
+  look-back and "fill monthly amounts" were removed from it on purpose.
 - **No bill due dates, paydays or safe-to-spend**, ever: that isn't the envelope method
   (the maintainer's call). Money is in a category or it's Ready to assign.
 - **The Dashboard** is the page the app opens on (always, after onboarding too), at the

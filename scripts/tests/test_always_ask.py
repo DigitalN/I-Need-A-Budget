@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """Always ask is always: an Always-ask payee's item waits, whatever else the app knows about it (an
 exact refund, a tracked recurring charge, a share of a bill), and shares group only different people.
 Driven at the Inbox level, like test_inbox.py. Made-up data only."""

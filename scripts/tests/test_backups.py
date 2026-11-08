@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """Backups at quit, into Documents (issue #21, docs/adr/0004). Made-up data and dates, in
 throwaway folders: nothing here reads or writes the real data folder or Documents."""
 
@@ -78,7 +79,7 @@ def test_backups_are_named_with_the_date_and_time():
     assert backups.name(QUIT) == "budget-2026-11-08-14-32-05.db"
     assert backups.upgrade_name(7, 8, QUIT) == "budget-before-upgrade-v7-to-v8-2026-11-08-14-32-05.db"
     assert backups.made_at("budget-2026-11-08-14-32-05.db") == QUIT
-    assert backups.made_at("budget-before-upgrade-v6-to-v7-2026-10-12.db") == datetime(2026, 10, 12)  # until 1.3.0
+    assert backups.made_at("budget-before-upgrade-v6-to-v7-2026-10-12.db") == datetime(2026, 10, 12)  # until 1.3.1
     assert backups.made_at("budget-2026-10-12.db") == datetime(2026, 10, 12)
     for other in ("budget.db", "budget-2026-10-12.tmp", "budget-2026-13-01.db", "notes.txt", "budget-2026-10-12 (2).db"):
         assert backups.made_at(other) is None
@@ -130,8 +131,8 @@ def test_backups_older_than_four_months_go_before_upgrade_copies_included(tmp_pa
     touch(folder,
           "budget-2026-07-07-23-59-59.db",                      # gone: before 2026-07-08
           "budget-before-upgrade-v5-to-v6-2026-06-01-10-00-00.db",  # gone
-          "budget-before-upgrade-v4-to-v5-2026-05-02.db",          # gone (named as until 1.3.0)
-          "budget-2026-05-01.db",                               # gone (a daily one, until 1.3.0)
+          "budget-before-upgrade-v4-to-v5-2026-05-02.db",          # gone (named as until 1.3.1)
+          "budget-2026-05-01.db",                               # gone (a daily one, until 1.3.1)
           "budget-2026-07-08-00-00-00.db",                      # kept: four months ago today
           "budget-before-upgrade-v6-to-v7-2026-10-12.db",          # kept
           "budget-2026-11-07-18-00-00.db",                      # kept: the newest from before today

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """The Categories pop-up and the category pop-over: no two categories (or category groups)
 with one name, dragging categories and groups, what a used category is used by, and the
 recurring charges a category's pop-over lists."""

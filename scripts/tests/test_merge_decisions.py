@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """Merging a duplicate account keeps what you decided (docs/adr/0005): a copy dropped in favour
 of its twin never costs a decision of yours, whichever of the two it was on. Driven at the
 ledger/Inbox level, like test_inbox.py. Made-up data only."""

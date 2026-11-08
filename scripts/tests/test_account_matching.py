@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """Which account a bank file belongs to, when the number is all it has to go on: two accounts
 that end in the same four digits stay apart, and a file that can't say which bank it's from
 asks. Made-up data only (card numbers built in code)."""

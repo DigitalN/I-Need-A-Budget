@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """Reading any bank's CSV, once the person has shown the app which column is which.
 
 Pure functions, no database. `sniff()` says whether a file looks like bank transactions

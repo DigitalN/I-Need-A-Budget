@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """Backups: a complete copy of the budget at every quit, kept four months (docs/adr/0004).
 
 They go to `~/Documents/I Need A Budget Backups`, which iCloud Drive can back up off the
@@ -10,7 +11,7 @@ half a copy under a backup's name.
   an update).
 - `at_launch`: only when the budget changed since the newest backup (`changed`), which
   means the last session didn't quit normally (a crash, a power cut). It also moves the
-  backups from the data folder's old `Backups/` (where they were until 1.3.0) over, once.
+  backups from the data folder's old `Backups/` (where they were until 1.3.1) over, once.
 - The copy made before a database upgrade (db.py) goes to the same folder, under its own
   name, and is kept as long as the others.
 - `prune` keeps every backup from the last four months. The newest from before today is
@@ -45,7 +46,7 @@ from pathlib import Path
 log = logging.getLogger("inab")
 
 FOLDER_NAME = "I Need A Budget Backups"
-OLD_FOLDER_NAME = "Backups"   # in the data folder, until 1.3.0
+OLD_FOLDER_NAME = "Backups"   # in the data folder, until 1.3.1
 KEPT_MONTHS = 4
 DIGEST_KEY = "backed_up"      # meta: `digest` of the budget when the last backup was made
 NOT_THE_BUDGET = ("undo_log", "undo_groups", "undo_state")  # this session's undo, cleared at launch

@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-only
 # Refuses commits that could put private banking data on GitHub.
 #
 # Turned on by `git config core.hooksPath scripts/hooks` (First Time Setup does it).

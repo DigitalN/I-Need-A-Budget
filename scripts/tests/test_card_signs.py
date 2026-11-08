@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """Cards and lines of credit: which sign means "you owe", in a bank's file and in a balance you
 type. Made-up data only (card numbers built in code)."""
 

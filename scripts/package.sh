@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-only
 # Builds I Need A Budget and packages it as a disk image for a GitHub release:
 #   ~/Library/Caches/I Need A Budget-dmg/I-Need-A-Budget-<version>.dmg
 # When opened, it shows the app and the Applications folder on a background with an
@@ -9,6 +10,7 @@
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
+source scripts/build-lock.sh  # one build at a time
 
 VOLUME_NAME="I Need A Budget"
 

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """I Need A Budget: envelope budgeting from your bank's downloads, as a Mac app.
 
 Launcher: logging, the single-instance lock, the database, the Downloads watcher, the
@@ -25,7 +26,7 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 APP_NAME = "I Need A Budget"
-VERSION = "1.3.1"  # the build reads it from here; see the release checklist in docs/DEVELOPMENT.md
+VERSION = "1.3.2"  # the build reads it from here; see the release checklist in docs/DEVELOPMENT.md
 if os.environ.get("INAB_DATA_DIR"):  # for development/testing against a throwaway folder
     DATA_DIR = Path(os.environ["INAB_DATA_DIR"]).expanduser()
     LOG_DIR = DATA_DIR / "Logs"
@@ -143,6 +144,7 @@ class BudgetApp:
             "open_imports": lambda: self._open_folder(DATA_DIR / "Imported Files"),
             "open_log": lambda: self._open_folder(LOG_DIR),
             "open_release_notes": self._open_release_notes,
+            "open_license": self._open_license,
             "update_state": self._updater.state,
             "check_updates": self._check_updates,
             "install_update": self._restart_into_update,
@@ -185,6 +187,25 @@ class BudgetApp:
         import launch
 
         AppHelper.callAfter(NSWorkspace.sharedWorkspace().openURL_, NSURL.URLWithString_(launch.RELEASES_URL))
+        return True
+
+    def _open_license(self):
+        """The license shipped with the app, as a read-only copy in the default text app:
+        TextEdit saving into the app itself would break its signature."""
+        import shutil
+        import tempfile
+
+        from AppKit import NSURL, NSWorkspace
+        from PyObjCTools import AppHelper
+
+        frozen = getattr(sys, "frozen", False)
+        source = _app_files_dir() / "LICENSE.txt" if frozen else _app_files_dir().parent / "LICENSE"
+        copy = Path(tempfile.gettempdir()) / APP_NAME / "LICENSE.txt"
+        copy.parent.mkdir(parents=True, exist_ok=True)
+        copy.unlink(missing_ok=True)
+        shutil.copyfile(source, copy)
+        copy.chmod(0o444)
+        AppHelper.callAfter(NSWorkspace.sharedWorkspace().openURL_, NSURL.fileURLWithPath_(str(copy)))
         return True
 
     def _check_updates(self):

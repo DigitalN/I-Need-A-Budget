@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """The inbox, driven directly (inbox.Inbox): an inbox item from arrival until it's
 categorized, split or a transfer, and what you decided staying decided (docs/adr/0005).
 Made-up data only."""

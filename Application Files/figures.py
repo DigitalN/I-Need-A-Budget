@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """Every money figure the pages show: the Budget page, the Dashboard, a category's
 pop-over and Spent list, the Debt page, Assign money… and Catch up.
 

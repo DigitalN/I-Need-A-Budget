@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """Everything the page can ask for, in one place.
 
 The page calls `window.pywebview.api.call(name, args)`; main.Api passes that to
@@ -1722,8 +1723,8 @@ class BudgetService:
 
     @exposed
     def window_action(self, action, argument=None):
-        """open_data, open_imports, open_log, open_release_notes, check_updates, install_update,
-        set_github_token"""
+        """open_data, open_imports, open_log, open_release_notes, open_license, check_updates,
+        install_update, set_github_token"""
         hook = self.hooks.get(action)
         if hook is None:
             raise UserError("That only works in the app, not in the preview.")

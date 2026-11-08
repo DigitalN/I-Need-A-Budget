@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-only
 """Development preview: the app's page in an ordinary browser, driving the real engine.
 
     python3 scripts/preview.py [--data FOLDER] [--port 8765] [--today 2026-10-12]
@@ -16,6 +17,7 @@ network port. It refuses to use the app's real data folder; by default it uses
 import argparse
 import json
 import os
+import subprocess
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -68,6 +70,7 @@ def main():
 
     service = BudgetService(Database(data / "budget.db"), settings, data, hooks={
         "app_info": lambda: {"version": "preview", "data_dir": str(data), "log_path": "", "updates": None},
+        "open_license": lambda: subprocess.run(["open", "-t", str(ROOT / "LICENSE")], check=True) and True,
     })
 
     class Handler(BaseHTTPRequestHandler):

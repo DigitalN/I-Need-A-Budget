@@ -1,9 +1,15 @@
+# SPDX-License-Identifier: GPL-3.0-only
 # PyInstaller spec for I Need A Budget.
 # A normal windowed app (Dock icon, quits when its window closes).
 # Data lives in ~/Library/Application Support/I Need A Budget, logs in ~/Library/Logs/I Need A Budget.
 
 import os
 import re
+import sys
+
+REPO = os.path.dirname(SPECPATH)
+sys.path.insert(0, os.path.join(REPO, 'scripts'))
+import third_party_licenses  # noqa: E402
 
 ICON_PATH = os.path.join(SPECPATH, 'INeedABudget.icns')
 # The version lives in main.py only.
@@ -46,6 +52,18 @@ a = Analysis(
     noarchive=False,
 )
 
+# The licenses, in Contents/Resources as .txt so they open in TextEdit. The third-party
+# file lists every package whose modules were collected; the build stops if one has no license.
+bundled = {name.split('/')[0].split('.')[0] for name, _, _ in a.pure + a.binaries + a.datas}
+third_party = os.path.join(workpath, 'Third-party licenses.txt')
+with open(third_party, 'w', encoding='utf-8') as f:
+    f.write(third_party_licenses.for_modules(bundled))
+a.datas += [
+    ('LICENSE.txt', os.path.join(REPO, 'LICENSE'), 'DATA'),
+    ('NOTICE.txt', os.path.join(REPO, 'docs', 'NOTICE'), 'DATA'),
+    ('Third-party licenses.txt', third_party, 'DATA'),
+]
+
 pyz = PYZ(a.pure, a.zipped_data)
 
 exe = EXE(
@@ -86,6 +104,6 @@ app = BUNDLE(
             'I Need A Budget imports the bank files you download, then moves them into its own folder.',
         'NSDocumentsFolderUsageDescription':
             'I Need A Budget saves a backup of your budget in Documents each time you quit.',
-        'NSHumanReadableCopyright': 'Private. Not for distribution.',
+        'NSHumanReadableCopyright': '© 2026 DigitalN. Free software under the GNU GPL v3.',
     },
 )

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """The reasons a category can't be used reach the page as they are written, not as "Something went
 wrong" (issue #118). Made-up data only."""
 

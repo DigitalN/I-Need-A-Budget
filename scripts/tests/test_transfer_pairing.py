@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """Pairing the two halves of a transfer, and guessing the account of a half whose other half
 isn't imported (another bank's wording: "ONLINE BANKING TRANSFER"). Made-up data only."""
 

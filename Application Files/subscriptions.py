@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """Subscriptions and bills: found automatically, then tracked on their own page.
 
 Each tracked one has a **price type**:

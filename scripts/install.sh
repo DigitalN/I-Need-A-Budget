@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-only
 # Builds I Need A Budget and installs it in /Applications.
 #
 #   scripts/install.sh            sign with your Apple Development certificate, if you have one
@@ -10,6 +11,7 @@
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
+source scripts/build-lock.sh  # one build at a time
 
 DEST="/Applications/I Need A Budget.app"
 OPEN=0

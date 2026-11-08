@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """An inbox item from arrival until it's categorized, split or a transfer.
 
 Only this module puts a transaction in the inbox (status 'review') or takes it out

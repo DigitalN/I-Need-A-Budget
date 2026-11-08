@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """Changing the amount of a transaction added by hand. Made-up data only."""
 
 from helpers import call

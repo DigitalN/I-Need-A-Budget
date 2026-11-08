@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """A transaction added by hand is the same one the bank's file brings later, not a second one.
 Made-up data only."""
 

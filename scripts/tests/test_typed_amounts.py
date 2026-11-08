@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """Amounts and rates that aren't numbers are refused, not cleared or misread. Made-up data only."""
 
 from pathlib import Path

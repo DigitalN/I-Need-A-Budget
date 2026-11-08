@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """Turning what the bank wrote into a payee: "SQ *CORNER BAKERY ROAS CALGARY" → "Corner Bakery Roas".
 
 Pure functions, no database. `describe()` reads one bank row and returns a clean

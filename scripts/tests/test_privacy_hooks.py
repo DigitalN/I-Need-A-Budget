@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """The privacy hooks refuse what they promise to refuse, tried in a throwaway git repository.
 Made-up data only; card numbers are built in code, as helpers.card_number() does."""
 

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """Recurring charges: a cancelled one at a new price, prices you chose, the 6% wobble, and the day
 the next charge is due. Made-up data only."""
 

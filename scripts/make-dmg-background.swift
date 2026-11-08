@@ -1,4 +1,5 @@
 #!/usr/bin/env swift
+// SPDX-License-Identifier: GPL-3.0-only
 // Draws the background of the installer disk image window: an arrow from the app icon
 // to the Applications folder with "Drag I Need A Budget into Applications" above it.
 //

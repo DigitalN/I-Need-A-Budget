@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """What gets filed on its own, what's asked about, and learning from answers."""
 
 from helpers import CARD_FILE, bank_csv, call, card_csv, categories, txns, write

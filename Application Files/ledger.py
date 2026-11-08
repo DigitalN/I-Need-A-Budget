@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """Core bookkeeping shared by the importer, the budget and the page: accounts and their
 balances, the special categories (Income, debt payment envelopes, Interest & Fees),
 and finding or creating payees.

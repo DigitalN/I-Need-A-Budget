@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """Removing an import puts the balance back the way it was. Made-up data only."""
 
 import db

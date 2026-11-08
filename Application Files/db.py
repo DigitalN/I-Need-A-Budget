@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """The SQLite database: schema, migrations and undo. Backups are backups.py's.
 
 One connection, shared by every thread behind a lock (pywebview runs each call from

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """A set-up CSV finds its account by its file name, but some banks give every download the
 same name. Before a file goes into the account its name points to, it has to look like that
 account. Made-up data only."""

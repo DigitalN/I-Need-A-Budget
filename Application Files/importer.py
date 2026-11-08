@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """Reading bank exports and adding their new transactions, never twice.
 
 Formats (detected from the content, not the file name):

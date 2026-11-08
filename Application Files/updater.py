@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """Keeps the app up to date from its GitHub releases.
 
 GitHub only shows a private repository's releases to someone with access, so the updater
