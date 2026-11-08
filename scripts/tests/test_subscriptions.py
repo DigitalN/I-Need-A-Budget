@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """Finding subscriptions, naming them, and asking about new prices."""
 
 from helpers import CARD_FILE, call, card_csv, categories, txns, write

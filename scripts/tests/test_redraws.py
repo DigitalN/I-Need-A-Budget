@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """Redraws don't replace what you're typing in, and a slow response doesn't draw over a newer one.
 Static checks on the page (the page's behaviour is tried with the mouse in the dev preview)."""
 

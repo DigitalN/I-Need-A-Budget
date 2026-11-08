@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """Undo, and keeping only the changes it should."""
 
 from datetime import date

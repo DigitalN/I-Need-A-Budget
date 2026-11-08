@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-only
 # Builds "I Need A Budget.app" and prints its path. Used by install.sh and package.sh.
 #
 #   scripts/build.sh            sign with your Apple Development certificate, if you have one

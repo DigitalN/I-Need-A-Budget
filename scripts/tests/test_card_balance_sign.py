@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """Which sign means "you owe" in a card's file, settled with what the app already knows about the account
 (issue #119). Made-up data only (card numbers built in code)."""
 

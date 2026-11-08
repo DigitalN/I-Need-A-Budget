@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """A new card whose balance needs a sign (issues #119, #126): the "A new account?" pop-up asks
 what the balance is, so declining leaves no account behind. Made-up data only."""
 

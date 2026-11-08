@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """A charge more than 3× the payee's biggest past charge always asks (above a small floor). Driven at
 the Inbox level, like test_inbox.py. Made-up data only."""
 

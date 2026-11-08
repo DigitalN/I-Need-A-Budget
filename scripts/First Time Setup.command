@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-only
 # ═══════════════════════════════════════════════════════════════
 #  I Need A Budget — First Time Setup
 #  Double-click this file to install what's needed, switch on the

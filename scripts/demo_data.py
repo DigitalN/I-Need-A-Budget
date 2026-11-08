@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-only
 """A made-up budget for screenshots and demos: nothing in it is anyone's real data.
 
     python3 scripts/demo_data.py [FOLDER] [--today 2026-10-14]

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """Nothing private in the repository: no bank files, no databases, no personal words.
 
 The pre-commit hook (scripts/hooks/pre-commit) checks what's being committed; this

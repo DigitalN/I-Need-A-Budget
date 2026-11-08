@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """Reading Tangerine exports and importing them without duplicates."""
 
 import csvlayout

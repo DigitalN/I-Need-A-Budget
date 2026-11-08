@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """Budget figures, through figures.Figures on a real (temporary) database.
 
 budget.compute's own tests check the envelope rules on hand-built lines. These check the

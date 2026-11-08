@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-only
 """README screenshots of the dev preview, in light and dark, with WebKit (as the app's window).
 
     python3 scripts/demo_data.py

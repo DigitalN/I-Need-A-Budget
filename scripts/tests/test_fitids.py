@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """A bank's own transaction ID (FITID) is a hint that two rows are the same transaction, not
 proof: banks repeat them. Made-up data only."""
 

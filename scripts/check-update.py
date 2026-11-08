@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-only
 """Would the installed copy take this disk image as an update?
 
 Runs the installed version's own updater code (taken from its git tag, v<version>)

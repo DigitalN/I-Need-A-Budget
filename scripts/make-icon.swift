@@ -1,4 +1,5 @@
 #!/usr/bin/env swift
+// SPDX-License-Identifier: GPL-3.0-only
 // Draws the app icon (a green envelope on a rounded square) as an .iconset folder.
 // scripts/make-icon.sh turns it into Application Files/INeedABudget.icns.
 //

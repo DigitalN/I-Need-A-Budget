@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-only
 # Refuses a commit message that could put private banking data on GitHub (commit messages are
 # public): a card number, or a word listed in .git-denylist. The same checks as pre-commit's
 # (scripts/hooks/privacy_check.py). Lines git will drop (# comments) aren't looked at.

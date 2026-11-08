@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """Rows of another kind of file are matched over the whole file, not in file order (issue #116).
 Made-up data only."""
 

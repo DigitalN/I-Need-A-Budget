@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """Learning from an Actual Budget export: once per example, and one undo step. Made-up data only."""
 
 from helpers import call, write

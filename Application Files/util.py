@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """Small helpers shared by the engine: money in cents, months and dates.
 
 Money is always an int number of cents. Negative means money left the account.

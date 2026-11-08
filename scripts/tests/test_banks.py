@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """Files from banks other than Tangerine: RBC's CSV, any bank's Quicken file, and CSVs
 set up once by showing the app their columns. Made-up data only."""
 

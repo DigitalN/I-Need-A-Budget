@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """Small follow-ups from reviewing the review fixes (issue #121). Made-up data only."""
 
 import re

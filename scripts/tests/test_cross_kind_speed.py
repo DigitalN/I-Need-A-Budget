@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """Pairing rows of two kinds of file compares only rows a day or two apart (issue #126), so the
 "imported twice" check, run on every Inbox and Accounts load, stays fast on a long history.
 Made-up data only."""

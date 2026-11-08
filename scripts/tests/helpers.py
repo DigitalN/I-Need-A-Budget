@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """Made-up Tangerine exports for the tests. Never put real bank data in this folder."""
 
 # Tangerine names card exports after the masked card number. Built here so the source

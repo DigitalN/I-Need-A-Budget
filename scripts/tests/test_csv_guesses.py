@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """CSV set-up guesses: what it can tell from a file, and what it leaves for the person to pick.
 Made-up data only."""
 
