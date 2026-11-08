@@ -11,6 +11,7 @@
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
+source scripts/build-lock.sh  # one build at a time
 
 REPO="DigitalN/I-Need-A-Budget"
 TEAM="XT4LT7MS6Y"

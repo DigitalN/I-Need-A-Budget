@@ -10,12 +10,16 @@
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
+source scripts/build-lock.sh  # one build at a time
 
 # Build outside the repo: folders synced by iCloud Drive (like ~/Documents) add
 # Finder metadata to app bundles, which codesign rejects.
 WORK="$HOME/Library/Caches/I Need A Budget-build"
 APP="$WORK/dist/I Need A Budget.app"
 LOG="$WORK/build.log"
+# PyInstaller's binary cache, this build's own: the shared one in ~/Library/Application
+# Support/pyinstaller is emptied by any other project's --clean build, mid-way through ours.
+export PYINSTALLER_CONFIG_DIR="$WORK/pyinstaller"
 
 if [[ "${1:-}" == "--adhoc" ]]; then
     IDENTITY="-"

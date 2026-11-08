@@ -11,6 +11,7 @@
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
+source scripts/build-lock.sh  # one build at a time
 
 DEST="/Applications/I Need A Budget.app"
 OPEN=0

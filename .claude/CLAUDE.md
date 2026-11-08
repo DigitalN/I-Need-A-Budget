@@ -204,7 +204,10 @@ All in `Application Files/`:
 - Every user-facing change should be undoable: wrap it in `db.write("Short label")`.
   Background imports aren't undoable (they're removed from Accounts → Imported files).
 - `~/Documents` is iCloud-synced on this machine; `scripts/build.sh` builds in
-  `~/Library/Caches` and runs `xattr -cr` before signing.
+  `~/Library/Caches` and runs `xattr -cr` before signing. One build at a time from any
+  checkout or worktree (`scripts/build-lock.sh`, taken by build, package, install and
+  release), with its own PyInstaller cache: other projects on this Mac build with
+  PyInstaller `--clean`, which empties the shared one.
 
 ## Budget rules (summary; budget.py has the detail)
 
