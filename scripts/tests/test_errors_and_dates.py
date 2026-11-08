@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """What reaches the page as an error: messages for the person, and nothing raw from Python; dates and
 months from the page are checked. Made-up data only."""
 

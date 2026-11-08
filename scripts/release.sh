@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-only
 # Publishes a release of what's on main: every step of docs/DEVELOPMENT.md's release checklist
 # that a script can do, stopping at the first problem.
 #

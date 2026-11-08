@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """The envelope budget: what's in each category, month by month.
 
 `compute()` is pure (no database) and is where all the rules live:

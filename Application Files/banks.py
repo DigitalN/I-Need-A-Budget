@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """Bank names: one spelling per bank, whatever a file calls it.
 
 The bank on an account is free text (there are hundreds of credit unions); `SUGGESTED`

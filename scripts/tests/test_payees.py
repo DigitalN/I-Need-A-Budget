@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """Turning bank descriptions into payees, and matching similar names."""
 
 from payees import clean_merchant, describe, find_similar, merchant_key, person_key

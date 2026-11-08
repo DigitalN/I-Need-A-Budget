@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """Static checks on the page: every button action has code that handles it.
 
 A button the click handler doesn't recognise does nothing at all when clicked, with no

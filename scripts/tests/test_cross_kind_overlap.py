@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """Rows of another kind of file are the same transaction only when at least one of them falls
 within the other's file dates (issue #124): the rows at the edges of two downloads (one ends
 Oct 15, the next starts Oct 16, or they overlap by a day) are two transactions. Made-up data only."""

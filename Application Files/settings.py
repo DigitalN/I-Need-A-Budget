@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """User settings, stored as JSON in the app data folder.
 
 Every value is validated on load and on save, so a stale or hand-edited file can

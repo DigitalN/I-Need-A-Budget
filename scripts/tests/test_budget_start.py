@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """Moving the budget's start month is one undo step, and the page asks first. Made-up data only."""
 
 from pathlib import Path

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-only
 """The privacy checks shared by the pre-commit hook, the commit-msg hook, the release script
 and scripts/tests/test_privacy.py: text that must never reach GitHub.
 

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """A monthly charge's next date follows the day of its last charge (issue #125): billing days move,
 and a first bill is often part of a month. Made-up data only."""
 

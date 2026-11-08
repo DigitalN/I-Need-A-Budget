@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """The Transactions page's total and count cover every matching row, and a split counts only
 its line in the category being looked at. Made-up data only."""
 

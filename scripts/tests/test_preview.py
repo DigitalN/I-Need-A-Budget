@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """The dev preview never reads or moves files from the real Downloads folder. Made-up files only,
 in a throwaway HOME."""
 

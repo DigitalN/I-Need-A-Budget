@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """Figures the page used to work out itself now come from Python (figures.py / subscriptions.py /
 inbox.py): Assign money's Left over, a subscription's cost a year, the Dashboard's difference and
 above-usual amounts, and the Inbox's group totals. Made-up data only."""

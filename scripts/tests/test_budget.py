@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """The envelope rules, including credit cards. See budget.py's docstring."""
 
 import random

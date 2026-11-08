@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """Where the app runs from, and relaunching it.
 
 It has to run from an Applications folder to update itself: opened from a disk image

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """The Inbox page shows every item waiting, however many. Made-up data only."""
 
 import time

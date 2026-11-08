@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """The updater's decisions: versions, GitHub's release format, signing, the token, when it checks."""
 
 import pytest

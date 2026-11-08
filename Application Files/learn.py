@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """Guessing a transaction's category, and deciding when it's sure enough not to ask.
 
 Everything is learnt from what you've already filed (plus examples taken from an

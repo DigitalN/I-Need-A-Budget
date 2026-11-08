@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """Settings validation and persistence."""
 
 from settings import DEFAULTS, Settings, validate

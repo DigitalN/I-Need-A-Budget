@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """One transaction, however many kinds of file it comes in: a re-set-up CSV layout, a bank's CSV and
 its Quicken file, a posting date a day later. Made-up data only."""
 

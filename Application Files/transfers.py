@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """Money moving between your own accounts: paying the card from chequing, moving a
 balance to a line of credit.
 

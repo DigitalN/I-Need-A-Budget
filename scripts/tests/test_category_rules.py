@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """Which categories a transaction can go in, checked in Python and not only by what the page
 offers (a card's payment category, a hidden category, one that isn't there). Made-up data only."""
 

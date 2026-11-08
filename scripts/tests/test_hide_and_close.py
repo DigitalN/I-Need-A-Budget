@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """A category or account that has been used is never deleted, only hidden or closed:
 deleting one sent its transactions back to the inbox, took its assigned money out of
 every month, and sent its transfers' other halves to the inbox."""
