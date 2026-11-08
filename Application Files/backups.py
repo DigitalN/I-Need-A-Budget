@@ -19,10 +19,15 @@ half a copy under a backup's name.
 
 Backups are named with the date and time they were made: `budget-2026-11-08-14-32-05.db`,
 `budget-before-upgrade-v7-to-v8-2026-11-08-14-32-05.db` (and the old daily
-`budget-2026-10-12.db`). Only files named like that are ever deleted.
+`budget-2026-10-12.db`, or `budget-2026-10-12 (2).db` after a name clash moving them over).
+Only files named like that are ever deleted, with the side files SQLite leaves beside a
+backup someone opened in place (`-wal`, `-shm`, `-journal`): they go with their backup, or
+as soon as it's gone. Copies left half made go too: ours at once, the old daily backup's
+(`budget-2026-10-12.tmp`) after four months.
 
 If the folder can't be written (Documents access refused in System Settings), backups go
-to the old `Backups/` in the data folder instead, and the next launch moves them over.
+to the old `Backups/` in the data folder instead, and the next launch moves them over. That
+is one line in the log each time, not a traceback.
 
 With INAB_DATA_DIR set, main.py puts the folder inside that folder, so tests, the dev
 preview and test copies never touch the real Documents. `Database` defaults to there too.
@@ -50,9 +55,12 @@ OLD_FOLDER_NAME = "Backups"   # in the data folder, until 1.3.1
 KEPT_MONTHS = 4
 DIGEST_KEY = "backed_up"      # meta: `digest` of the budget when the last backup was made
 NOT_THE_BUDGET = ("undo_log", "undo_groups", "undo_state")  # this session's undo, cleared at launch
+SIDE_FILES = ("-wal", "-shm", "-journal")  # what SQLite leaves beside a database someone opened
 
 _STAMP = "%Y-%m-%d-%H-%M-%S"
-_MADE_AT = re.compile(r"budget-(?:before-upgrade-v\d+-to-v\d+-)?(\d{4}-\d{2}-\d{2})((?:-\d{2}){3})?\.db")
+_MADE_AT = re.compile(
+    r"budget-(?:before-upgrade-v\d+-to-v\d+-)?(\d{4}-\d{2}-\d{2})((?:-\d{2}){3})?(?: \(\d+\))?\.db")
+_HALF_MADE = re.compile(r"budget-(\d{4}-\d{2}-\d{2})\.tmp")  # by the daily backup, until 1.3.1
 
 
 def name(now):
@@ -72,6 +80,20 @@ def made_at(filename):
         return datetime.strptime(match[1] + (match[2] or "-00-00-00"), _STAMP)
     except ValueError:
         return None
+
+
+def _main_of(path):
+    """The database a side file belongs to, or None for a file that isn't a side file."""
+    for suffix in SIDE_FILES:
+        if path.name.endswith(suffix):
+            return path.with_name(path.name[:-len(suffix)])
+    return None
+
+
+def _partial(path):
+    """A copy left half made (`_copy_into`, `_move`), or a side file of one."""
+    name = (_main_of(path) or path).name
+    return name.startswith(".") and name.endswith(".partial")
 
 
 def found(folder):
@@ -163,21 +185,30 @@ def months_before(day, months):
 
 def prune(folder, today):
     """Deletes the backups in `folder` from before the last four months, except the newest one
-    from before `today`, and any copy left half made. Returns what it deleted."""
+    from before `today`; the side files of any backup that's gone; and copies left half made.
+    Returns the backups it deleted."""
     folder = Path(folder)
-    if not folder.is_dir():
+    try:
+        files = [path for path in folder.iterdir() if path.is_file()]
+    except OSError:  # not there, or can't be read (Documents access refused)
         return []
-    for partial in folder.glob(".*.partial"):  # only one copy of the app runs: none is being made now
-        partial.unlink(missing_ok=True)
+    cutoff = months_before(today, KEPT_MONTHS)
+    for path in files:  # only one copy of the app runs: no copy is being made now
+        old_daily = _HALF_MADE.fullmatch(path.name)
+        if _partial(path) or (old_daily and old_daily[1] < cutoff.isoformat()):
+            path.unlink(missing_ok=True)
     backups = found(folder)
     before_today = [path for when, path in backups if when.date() < today]
     spare = before_today[-1] if before_today else None
-    cutoff = months_before(today, KEPT_MONTHS)
     gone = []
     for when, path in backups:
         if when.date() < cutoff and path != spare:
             path.unlink(missing_ok=True)
             gone.append(path)
+    for path in files:  # side files of the backups just deleted, or of ones deleted by hand
+        main = _main_of(path)
+        if main and (made_at(main.name) or _HALF_MADE.fullmatch(main.name)) and not main.exists():
+            path.unlink(missing_ok=True)
     if gone:
         log.info("Deleted %d backup%s from before %s", len(gone), "" if len(gone) == 1 else "s", cutoff)
     return gone
@@ -185,27 +216,30 @@ def prune(folder, today):
 
 def move_old(old, new):
     """Moves every file from the old backups folder into `new`, then removes the old folder.
-    It can stop at any point and run again: a file leaves the old folder only once it's
-    complete in the new one, and one already there isn't copied twice. Returns how many moved."""
+    A backup takes along the side files beside it that hold anything; empty ones hold nothing
+    and are dropped, like copies left half made. It can stop at any point and run again: a
+    file leaves the old folder only once it's complete in the new one, and one already there
+    isn't copied twice. Returns how many moved."""
     old, new = Path(old), Path(new)
     if not old.is_dir() or (new.exists() and old.samefile(new)):
         return 0
     new.mkdir(parents=True, exist_ok=True)
     moved = 0
-    for path in sorted(old.iterdir()):
-        if path.name == ".DS_Store":
+    for path in sorted(old.iterdir()):  # a backup comes before its side files
+        if path.name == ".DS_Store" or (path.is_file() and _partial(path)):
             path.unlink(missing_ok=True)
             continue
-        if not path.is_file():
+        if not path.is_file():  # a folder, or a side file that went with its backup
+            continue
+        if _main_of(path) and not path.stat().st_size:
+            path.unlink()
             continue
         target = new / path.name
-        if target.exists():
-            if filecmp.cmp(path, target, shallow=False):  # moved before, stopped before deleting it here
-                path.unlink()
-                continue
+        same = target.exists() and filecmp.cmp(path, target, shallow=False)  # moved before, stopped before deleting it here
+        if target.exists() and not same:
             target = _free_name(target)
-        _move(path, target)
-        moved += 1
+        _move_with_side_files(path, target)
+        moved += not same
     if moved:
         log.info("Moved %d backup%s from %s to %s", moved, "" if moved == 1 else "s", old, new)
     try:
@@ -220,6 +254,39 @@ def _free_name(path):
     while (candidate := path.with_name(f"{path.stem} ({n}){path.suffix}")).exists():
         n += 1
     return candidate
+
+
+def _move_with_side_files(path, target):
+    """Moves a backup with the side files beside it that hold anything, dropping empty ones.
+    Side files go first: if this stops part way, the next try brings the backup to them, and
+    if the backup itself can't be moved, they go back beside it."""
+    moved = []
+    try:
+        for suffix in SIDE_FILES:
+            side, there = path.with_name(path.name + suffix), target.with_name(target.name + suffix)
+            if not side.is_file():
+                continue
+            if not side.stat().st_size:
+                side.unlink()
+                continue
+            _put(side, there)
+            moved.append((side, there))
+        _put(path, target)
+    except Exception:
+        for side, there in moved:
+            try:
+                _move(there, side)
+            except OSError:
+                log.warning("Couldn't put %s back beside %s", there, path)
+        raise
+
+
+def _put(source, target):
+    """Moves `source` to `target`, or only deletes it when the same file is already there."""
+    if target.exists() and filecmp.cmp(source, target, shallow=False):
+        source.unlink()
+    else:
+        _move(source, target)
 
 
 def _move(source, target):
@@ -241,16 +308,8 @@ def at_launch(db, now=None):
     backs up if the budget changed since the newest backup, and deletes the old ones. Each step
     is tried even if one before it failed. Returns the backup made, if any."""
     now = now or datetime.now()
-    made = None
-    try:
-        move_old(db.path.parent / OLD_FOLDER_NAME, db.backup_dir)
-    except Exception:
-        log.exception("Moving the old backups failed")
-    try:
-        if changed(db):
-            made = make(db, now)
-    except Exception:
-        log.exception("Backing up at launch failed")
+    _try("Moving the old backups", lambda: move_old(db.path.parent / OLD_FOLDER_NAME, db.backup_dir))
+    made = _try("Backing up at launch", lambda: make(db, now) if changed(db) else None)
     _prune_all(db, now)
     return made
 
@@ -272,7 +331,17 @@ def at_quit(db, now=None):
 
 def _prune_all(db, now):
     for folder in _folders(db):
-        try:
-            prune(folder, now.date())
-        except Exception:
-            log.exception("Deleting old backups failed")
+        _try("Deleting old backups", lambda: prune(folder, now.date()))
+
+
+def _try(what, step):
+    """Runs one step of launching or quitting, so the next is tried even if this one fails. A
+    folder that can't be written (Documents access refused) is one line in the log, not a
+    traceback at every launch: save() has already used the data folder instead."""
+    try:
+        return step()
+    except PermissionError as e:
+        log.warning("%s failed: %s", what, e)
+    except Exception:
+        log.exception("%s failed", what)
+    return None

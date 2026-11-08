@@ -77,7 +77,8 @@ All in `Application Files/`:
 - `backups.py`: backups ([ADR 0004](../docs/adr/0004-live-budget-stays-out-of-synced-folders.md)).
   `at_quit` and `at_launch` (a backup only if `changed`: the budget's `digest` differs from
   the one kept in meta at the last backup), one complete file each (`VACUUM INTO`, then
-  renamed), `prune` (four months), `move_old` (the data folder's old `Backups/`).
+  renamed), `prune` (four months; the `-wal`/`-shm` SQLite leaves beside a backup opened in
+  place go with it), `move_old` (the data folder's old `Backups/`).
   `scripts/tests/test_backups.py` covers it, every way of quitting included.
 - `importer.py`: detects and parses OFX/QFX/QBO from any bank, Tangerine card and bank
   CSVs, RBC's CSV (every account in one file, so a file has `parts`), CSVs set up once

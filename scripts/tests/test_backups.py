@@ -3,6 +3,7 @@
 throwaway folders: nothing here reads or writes the real data folder or Documents."""
 
 import errno
+import logging
 import importlib.util
 import os
 import shutil
@@ -81,7 +82,8 @@ def test_backups_are_named_with_the_date_and_time():
     assert backups.made_at("budget-2026-11-08-14-32-05.db") == QUIT
     assert backups.made_at("budget-before-upgrade-v6-to-v7-2026-10-12.db") == datetime(2026, 10, 12)  # until 1.3.1
     assert backups.made_at("budget-2026-10-12.db") == datetime(2026, 10, 12)
-    for other in ("budget.db", "budget-2026-10-12.tmp", "budget-2026-13-01.db", "notes.txt", "budget-2026-10-12 (2).db"):
+    assert backups.made_at("budget-2026-10-12 (2).db") == datetime(2026, 10, 12)  # renamed moving them over
+    for other in ("budget.db", "budget-2026-10-12.tmp", "budget-2026-13-01.db", "notes.txt", "budget-2026-10-12.db-wal"):
         assert backups.made_at(other) is None
 
 
@@ -137,14 +139,17 @@ def test_backups_older_than_four_months_go_before_upgrade_copies_included(tmp_pa
           "budget-before-upgrade-v6-to-v7-2026-10-12.db",          # kept
           "budget-2026-11-07-18-00-00.db",                      # kept: the newest from before today
           "budget-2026-11-08-09-00-00.db",                      # kept: today
-          "notes.txt", "budget-2020-01-01.tmp", "budget-2020-01-01 (2).db")  # not backups: never deleted
+          "budget-2020-01-01 (2).db",                           # gone: renamed by a clash moving them over
+          "budget-2020-01-01.tmp",                              # gone: the old daily backup's, half made
+          "budget-2026-10-31.tmp",                              # kept: from the last four months
+          "notes.txt", "budget-2020-01-01.db.bak", "budget-2020-01-01 copy.db")  # not backups: never deleted
     gone = backups.prune(folder, date(2026, 11, 8))
     assert sorted(p.name for p in gone) == [
-        "budget-2026-05-01.db", "budget-2026-07-07-23-59-59.db",
+        "budget-2020-01-01 (2).db", "budget-2026-05-01.db", "budget-2026-07-07-23-59-59.db",
         "budget-before-upgrade-v4-to-v5-2026-05-02.db", "budget-before-upgrade-v5-to-v6-2026-06-01-10-00-00.db"]
     assert names(folder) == [
-        "budget-2020-01-01 (2).db", "budget-2020-01-01.tmp", "budget-2026-07-08-00-00-00.db",
-        "budget-2026-11-07-18-00-00.db", "budget-2026-11-08-09-00-00.db",
+        "budget-2020-01-01 copy.db", "budget-2020-01-01.db.bak", "budget-2026-07-08-00-00-00.db",
+        "budget-2026-10-31.tmp", "budget-2026-11-07-18-00-00.db", "budget-2026-11-08-09-00-00.db",
         "budget-before-upgrade-v6-to-v7-2026-10-12.db", "notes.txt"]
 
 
@@ -173,9 +178,86 @@ def test_the_newest_backup_from_before_today_survives_a_five_month_break(tmp_pat
 
 def test_a_copy_left_half_made_is_cleaned_up(tmp_path):
     folder = tmp_path / backups.FOLDER_NAME
-    touch(folder, ".budget-2026-11-08-14-32-05.db.partial", "budget-2026-11-08-09-00-00.db")
+    touch(folder, ".budget-2026-11-08-14-32-05.db.partial", ".budget-2026-11-08-14-32-05.db.partial-journal",
+          "budget-2026-11-08-09-00-00.db")
     backups.prune(folder, date(2026, 11, 8))
     assert names(folder) == ["budget-2026-11-08-09-00-00.db"]
+
+
+# ── what SQLite leaves beside a backup someone opened in place (DB Browser, sqlite3) ──
+
+def side_files(folder, backup, *suffixes, holding=b""):
+    folder.mkdir(parents=True, exist_ok=True)
+    for suffix in suffixes:
+        (folder / (backup + suffix)).write_bytes(holding)
+
+
+def test_a_pruned_backup_leaves_nothing_behind(tmp_path):
+    folder = tmp_path / backups.FOLDER_NAME
+    touch(folder, "budget-2026-05-01.db", "budget-2026-11-07-18-00-00.db")
+    side_files(folder, "budget-2026-05-01.db", "-wal", "-shm")
+    side_files(folder, "budget-2026-11-07-18-00-00.db", "-wal", "-shm", "-journal", holding=b"pages")
+    backups.prune(folder, date(2026, 11, 8))
+    assert names(folder) == [  # a kept backup keeps its side files
+        "budget-2026-11-07-18-00-00.db", "budget-2026-11-07-18-00-00.db-journal",
+        "budget-2026-11-07-18-00-00.db-shm", "budget-2026-11-07-18-00-00.db-wal"]
+
+
+def test_side_files_whose_backup_is_gone_are_deleted(tmp_path):
+    folder = tmp_path / backups.FOLDER_NAME
+    touch(folder, "budget-2026-11-08-09-00-00.db", "notes.txt")
+    side_files(folder, "budget-2026-11-01-10-30-00.db", "-wal", holding=b"pages")  # its backup deleted by hand
+    side_files(folder, "budget-2026-04-01.tmp", "-journal")                         # the old daily backup's
+    side_files(folder, "notes.txt", "-wal")                                         # not a backup's: kept
+    backups.prune(folder, date(2026, 11, 8))
+    assert names(folder) == ["budget-2026-11-08-09-00-00.db", "notes.txt", "notes.txt-wal"]
+
+
+def test_empty_side_files_are_not_moved_over(tmp_path):
+    old, new = tmp_path / "Backups", tmp_path / backups.FOLDER_NAME
+    touch(old, "budget-2026-10-30.db", "budget-2026-11-01.db")
+    side_files(old, "budget-2026-10-30.db", "-wal", "-shm")
+    side_files(old, "budget-2026-10-01.db", "-shm")  # beside nothing
+    assert backups.move_old(old, new) == 2
+    assert not old.exists()
+    assert names(new) == ["budget-2026-10-30.db", "budget-2026-11-01.db"]
+
+
+def test_a_side_file_holding_something_moves_with_its_backup(tmp_path):
+    old, new = tmp_path / "Backups", tmp_path / backups.FOLDER_NAME
+    touch(old, "budget-2026-10-30.db", "budget-2026-11-01.db")
+    side_files(old, "budget-2026-10-30.db", "-wal", holding=b"pages")
+    side_files(old, "budget-2026-10-30.db", "-shm")
+    side_files(old, "budget-2026-11-01.db", "-wal", holding=b"other pages")
+    (new / "budget-2026-11-01.db").parent.mkdir()
+    (new / "budget-2026-11-01.db").write_bytes(b"something else")  # a name clash: renamed, its -wal too
+    assert backups.move_old(old, new) == 2
+    assert not old.exists()
+    assert names(new) == ["budget-2026-10-30.db", "budget-2026-10-30.db-wal", "budget-2026-11-01 (2).db",
+                          "budget-2026-11-01 (2).db-wal", "budget-2026-11-01.db"]
+    assert (new / "budget-2026-10-30.db-wal").read_bytes() == b"pages"
+    assert (new / "budget-2026-11-01 (2).db-wal").read_bytes() == b"other pages"
+    backups.prune(new, date(2027, 6, 1))  # later they go together (the newest from before today stays)
+    assert names(new) == ["budget-2026-11-01.db"]
+
+
+def test_a_backup_that_cant_be_moved_keeps_its_side_files(tmp_path, monkeypatch):
+    old, new = tmp_path / "Backups", tmp_path / backups.FOLDER_NAME
+    touch(old, "budget-2026-10-30.db")
+    side_files(old, "budget-2026-10-30.db", "-wal", holding=b"pages")
+    real_move = backups._move
+
+    def not_the_backup(source, target):
+        if source.name.endswith(".db"):
+            raise OSError(errno.EIO, "Input/output error")
+        real_move(source, target)
+
+    monkeypatch.setattr(backups, "_move", not_the_backup)
+    with pytest.raises(OSError):
+        backups.move_old(old, new)
+    backups.prune(new, date(2026, 11, 8))
+    assert names(old) == ["budget-2026-10-30.db", "budget-2026-10-30.db-wal"]
+    assert names(new) == []
 
 
 # ── the old folder in the data folder ──
@@ -237,7 +319,7 @@ def test_moving_to_another_disk_never_leaves_half_a_file_under_a_backups_name(tm
     assert all((new / n).read_bytes() == n.encode() for n in OLD)
 
 
-def test_a_backups_folder_that_cant_be_written_falls_back_to_the_data_folder(tmp_path):
+def test_a_backups_folder_that_cant_be_written_falls_back_to_the_data_folder(tmp_path, caplog):
     """Documents access refused in System Settings: the backup still happens, in the old
     folder, and moves over at a launch once Documents can be written again."""
     documents = tmp_path / "Documents"
@@ -247,7 +329,10 @@ def test_a_backups_folder_that_cant_be_written_falls_back_to_the_data_folder(tmp
         db = Database(tmp_path / "data" / "budget.db", backup_dir=documents / backups.FOLDER_NAME)
         made = backups.at_quit(db, QUIT)
         assert made == tmp_path / "data" / "Backups" / "budget-2026-11-08-14-32-05.db"
-        assert backups.at_launch(db, datetime(2026, 11, 9, 8, 0, 0)) is None  # the one there counts
+        with caplog.at_level(logging.INFO, logger="inab"):
+            assert backups.at_launch(db, datetime(2026, 11, 9, 8, 0, 0)) is None  # the one there counts
+        assert not [r for r in caplog.records if r.exc_info]  # one line each launch, not a traceback
+        assert [r.levelname for r in caplog.records if "old backups" in r.getMessage()] == ["WARNING"]
     finally:
         documents.chmod(0o700)
     backups.at_launch(db, datetime(2026, 11, 9, 8, 0, 0))
