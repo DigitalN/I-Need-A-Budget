@@ -102,6 +102,8 @@ app = BUNDLE(
         'NSHighResolutionCapable': True,
         'NSDownloadsFolderUsageDescription':
             'I Need A Budget imports the bank files you download, then moves them into its own folder.',
+        'NSDocumentsFolderUsageDescription':
+            'I Need A Budget saves a backup of your budget in Documents each time you quit.',
         'NSHumanReadableCopyright': '© 2026 DigitalN. Free software under the GNU GPL v3.',
     },
 )

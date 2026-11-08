@@ -21,7 +21,8 @@ database, account or card digits, people's names (e-transfers), employers, payee
 that are local businesses, category names that reveal finances, and real amounts.
 
 - All data lives outside the repository: `~/Library/Application Support/I Need A Budget`
-  (database, settings, `Imported Files/`, `Backups/`) and `~/Library/Logs/I Need A Budget`.
+  (database, settings, `Imported Files/`), `~/Library/Logs/I Need A Budget`, and the
+  backups in `~/Documents/I Need A Budget Backups`.
 - `.gitignore` excludes bank files and databases. `scripts/hooks/pre-commit` (switched on
   with `git config core.hooksPath scripts/hooks`; First Time Setup does it) refuses
   commits with those files, card-number shapes, or any word in `.git-denylist`, a local,
@@ -45,10 +46,11 @@ Application logs: `~/Library/Logs/I Need A Budget/app.log` (rotating, 3 × 1 MB)
 first**. The updater logs `Automatic updates off: <reason>`, `Up to date at`,
 `Downloading`, `ready to install`, `Installed …` or `Update check failed: …`. "Up to date"
 also when no release has been published yet: merging isn't releasing.
-`Page connected` means the window loaded and reached Python.
+`Page connected` means the window loaded and reached Python. `Backed up the budget to …`
+at every quit, and at launch only after a session that didn't quit normally.
 
 To reproduce without touching the user's data: `INAB_DATA_DIR=<tmp folder>` (logs go to
-`<tmp folder>/Logs/`), and `INAB_TODAY=2026-10-12` to pin "today". To see the interface,
+`<tmp folder>/Logs/`, backups to `<tmp folder>/I Need A Budget Backups/`), and `INAB_TODAY=2026-10-12` to pin "today". To see the interface,
 run the dev preview (`python3 scripts/preview.py`, or the `preview` entry in
 `.claude/launch.json`) and open it in the browser pane: it's the real page driving the
 real engine over localhost. Claude's shell can't screenshot the app's own window.
@@ -57,7 +59,8 @@ real engine over localhost. Claude's shell can't screenshot the app's own window
 
 All in `Application Files/`:
 
-- `main.py`: launcher. Logging, single-instance lock, daily DB backup, the pywebview
+- `main.py`: launcher. Logging, single-instance lock, where backups go (`BACKUP_DIR`)
+  and every way of quitting (`_before_quit`: the backup, then a waiting update), the pywebview
   window, the Downloads watcher thread, the updater, and `Api`, which exposes one method,
   `call(name, args)`, to the page. `VERSION` here is the app's only version number.
 - `service.py`: everything the page can ask for. `BudgetService.dispatch()` runs only
@@ -66,10 +69,17 @@ All in `Application Files/`:
   The preview and most tests drive this same class.
 - `db.py`: schema, upgrades, the shared connection behind a lock, **undo** (triggers record
   inverse SQL; `db.write("Label")` makes one undoable step; updates only record changed
-  columns), daily backups. Schema is at version 7. To change it: raise `SCHEMA_VERSION`,
+  columns). Schema is at version 7. To change it: raise `SCHEMA_VERSION`,
   add the column to `SCHEMA` *and* an `ALTER TABLE` step in `_migrate` for existing
-  databases. Upgrades copy the database to `Backups/budget-before-upgrade-…` first. The
+  databases. Upgrades copy the database to the backups folder
+  (`budget-before-upgrade-v7-to-v8-<date and time>.db`) first. The
   user's real database has real data in it: test every upgrade on a copy of it first.
+- `backups.py`: backups ([ADR 0004](../docs/adr/0004-live-budget-stays-out-of-synced-folders.md)).
+  `at_quit` and `at_launch` (a backup only if `changed`: the budget's `digest` differs from
+  the one kept in meta at the last backup), one complete file each (`VACUUM INTO`, then
+  renamed), `prune` (four months; the `-wal`/`-shm` SQLite leaves beside a backup opened in
+  place go with it), `move_old` (the data folder's old `Backups/`).
+  `scripts/tests/test_backups.py` covers it, every way of quitting included.
 - `importer.py`: detects and parses OFX/QFX/QBO from any bank, Tangerine card and bank
   CSVs, RBC's CSV (every account in one file, so a file has `parts`), CSVs set up once
   (`csvlayout.py`), and Actual Budget's export (learnt from, never imported as
@@ -483,6 +493,19 @@ Don't undo these without asking:
   a pop-up "<its own button> and quit". The maintainer's wording: "finish", never "save",
   which would suggest the rest might not be saved. Logging out or shutting down quits
   straight away. A downloaded update installs on quit.
+- **A backup at every quit, into Documents** (issue #21,
+  [ADR 0004](../docs/adr/0004-live-budget-stays-out-of-synced-folders.md)):
+  `~/Documents/I Need A Budget Backups`, which iCloud Drive can back up; the live budget
+  never moves there. One at every quit (the close button, ⌘Q, Restart now, quitting to
+  install an update: before the update goes in), and at launch only when the budget
+  changed since the newest one (a crash, a power cut). Named with the date and time
+  (`budget-2026-11-08-14-32-05.db`). Every one from the last four months is kept,
+  before-upgrade copies included, and the newest from before today is never deleted for
+  its age. With `INAB_DATA_DIR` they stay inside that folder. If Documents can't be
+  written they go to the data folder's `Backups/` until it can. **To restore one:** quit
+  the app, delete `budget.db-wal` and `budget.db-shm` in the data folder if they're
+  there, and copy the backup in as `budget.db`. (Until 1.3.1: one a day at launch, 14
+  kept, in the data folder's `Backups/`, which the first launch of 1.3.2 moves over.)
 - "Eating Out" was renamed **Food** (Actual's old name still matches through `old_names`).
 - **Update checks only at launch and on Check now**, never on a timer while the app is
   open (the maintainer's choice).

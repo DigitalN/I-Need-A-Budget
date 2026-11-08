@@ -6,11 +6,13 @@ updater, and the pywebview window. The page talks to Python through pywebview's
 in-process bridge (`window.pywebview.api.call(name, args)` → service.BudgetService), so
 the app opens no network ports. Its only network access is the update check
 (updater.py); "Release notes" in Settings opens GitHub in your browser. All data stays in
-~/Library/Application Support/I Need A Budget.
+~/Library/Application Support/I Need A Budget, and a backup of the budget is made at every
+quit into ~/Documents/I Need A Budget Backups (backups.py, docs/adr/0004).
 
 Closing the window quits the app entirely (it isn't meant to keep running in the
 background), and so does ⌘Q: the page saves what you're typing first, and asks only about
-a pop-up with changes or an entry it can't save. A downloaded update is installed on quit.
+a pop-up with changes or an entry it can't save. A downloaded update is installed on quit,
+after the backup.
 """
 
 import fcntl
@@ -24,13 +26,15 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 APP_NAME = "I Need A Budget"
-VERSION = "1.3.1"  # the build reads it from here; see the release checklist in docs/DEVELOPMENT.md
+VERSION = "1.3.2"  # the build reads it from here; see the release checklist in docs/DEVELOPMENT.md
 if os.environ.get("INAB_DATA_DIR"):  # for development/testing against a throwaway folder
     DATA_DIR = Path(os.environ["INAB_DATA_DIR"]).expanduser()
     LOG_DIR = DATA_DIR / "Logs"
+    BACKUP_DIR = DATA_DIR / f"{APP_NAME} Backups"  # never the real Documents
 else:
     DATA_DIR = Path.home() / "Library" / "Application Support" / APP_NAME
     LOG_DIR = Path.home() / "Library" / "Logs" / APP_NAME
+    BACKUP_DIR = Path.home() / "Documents" / f"{APP_NAME} Backups"  # iCloud Drive can back it up
 LOG_PATH = LOG_DIR / "app.log"
 WATCH_EVERY = 4  # seconds between looks in Downloads
 MIN_SIZE = (1000, 660)
@@ -120,6 +124,7 @@ class Api:
 
 class BudgetApp:
     def __init__(self):
+        import backups
         import launch
         from db import Database
         from service import BudgetService
@@ -127,11 +132,8 @@ class BudgetApp:
         from updater import Updater
 
         self._settings = Settings(DATA_DIR / "settings.json")
-        self._db = Database(DATA_DIR / "budget.db")
-        try:
-            self._db.backup_daily(DATA_DIR / "Backups")
-        except Exception:
-            log.exception("Daily backup failed")
+        self._db = Database(DATA_DIR / "budget.db", backup_dir=BACKUP_DIR)
+        backups.at_launch(self._db)  # before anything else can change the budget
         self._app_path = launch.bundle_path()
         self._updater = Updater(self._app_path, VERSION, settings=self._settings, data_dir=DATA_DIR,
                                 on_status=self._on_update_status)
@@ -219,8 +221,9 @@ class BudgetApp:
         from PyObjCTools import AppHelper
 
         def go():
+            self._back_up()  # first: the new copy starts as soon as this one has quit
             if self._updater.install(relaunch_after=True):
-                self._quit_now()
+                self._quit_now(backed_up=True)
         AppHelper.callAfter(go)
         return True
 
@@ -341,13 +344,26 @@ class BudgetApp:
         threading.Thread(target=ask, name="quit", daemon=True).start()
         return False
 
-    def _before_quit(self):
+    def _before_quit(self, backed_up=False):
+        """Once, whichever way the app quits: a backup, then a downloaded update is installed."""
+        if self._quitting:
+            return
         self._quitting = True
+        if not backed_up:
+            self._back_up()
         try:
             self._updater.install(relaunch_after=False)
         except Exception:
             log.exception("Installing the update on quit failed")
         log.info("Quitting")
+
+    def _back_up(self):
+        import backups
+
+        try:
+            backups.at_quit(self._db)
+        except Exception:
+            log.exception("Backing up at quit failed")
 
     def _restore_frame(self):
         """Just before the window first shows (on the main thread): puts it back the size and
@@ -379,10 +395,10 @@ class BudgetApp:
         except Exception:
             log.exception("Couldn't put the window back where it was")
 
-    def _quit_now(self):
+    def _quit_now(self, backed_up=False):
         import AppKit
 
-        self._before_quit()
+        self._before_quit(backed_up)
         AppKit.NSApp.terminate_(None)
 
     def _install_quit_handler(self):
@@ -432,7 +448,7 @@ class BudgetApp:
         self._updater.start()
         log.info("%s %s started (data in %s)", APP_NAME, VERSION, DATA_DIR)
         webview.start(private_mode=True, debug=bool(os.environ.get("INAB_DEBUG")))
-        self._quitting = True
+        self._before_quit()  # already done, unless the window closed some other way
         os._exit(0)
 
 

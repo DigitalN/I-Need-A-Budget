@@ -165,6 +165,11 @@ _Avoid_: Reports, home page
 The first month the budget counts. Months before it still teach the app and count
 towards Usual.
 
+**Backup**:
+A copy of the whole budget, made each time the app quits and kept for four months.
+Restoring one puts the budget back as it was then.
+_Avoid_: export, snapshot
+
 **Cash**:
 The money in your open cash accounts, and in any closed one that still has money in it.
 It isn't known until every open cash account has a balance. Ready to assign is checked

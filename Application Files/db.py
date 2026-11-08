@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-only
-"""The SQLite database: schema, migrations, undo and daily backups.
+"""The SQLite database: schema, migrations and undo. Backups are backups.py's.
 
 One connection, shared by every thread behind a lock (pywebview runs each call from
 the page on its own thread, and the Downloads watcher has its own). Writes go through
@@ -16,17 +16,17 @@ Money is stored in integer cents. Dates are ISO strings.
 """
 
 import logging
-import shutil
 import sqlite3
 import threading
 from contextlib import contextmanager
-from datetime import date
+from datetime import datetime
 from pathlib import Path
+
+import backups
 
 log = logging.getLogger("inab")
 
 SCHEMA_VERSION = 7
-BACKUPS_KEPT = 14
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -235,8 +235,11 @@ UNDO_TABLES = ("meta", "accounts", "account_sources", "category_groups", "catego
 
 
 class Database:
-    def __init__(self, path):
+    def __init__(self, path, backup_dir=None):
+        """`backup_dir`: where backups go (main.py's BACKUP_DIR); by default a folder beside the
+        database, so tests and the dev preview keep theirs in their own folder."""
         self.path = Path(path)
+        self.backup_dir = Path(backup_dir) if backup_dir else self.path.parent / backups.FOLDER_NAME
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.lock = threading.RLock()
         self._depth = 0
@@ -256,7 +259,7 @@ class Database:
 
     def _migrate(self):
         """Creates the schema, or upgrades an older database step by step. An existing
-        database is copied to Backups/ before any upgrade touches it."""
+        database is copied to the backups folder before any upgrade touches it."""
         with self.lock:
             has_meta = self.conn.execute(
                 "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'meta'").fetchone()
@@ -322,16 +325,7 @@ class Database:
                 log.info("Upgraded the database from version %d to %d", version, SCHEMA_VERSION)
 
     def _backup_before_upgrade(self, version):
-        folder = self.path.parent / "Backups"
-        folder.mkdir(parents=True, exist_ok=True)
-        target = folder / f"budget-before-upgrade-v{version}-to-v{SCHEMA_VERSION}-{date.today().isoformat()}.db"
-        if target.exists():
-            return
-        dest = sqlite3.connect(str(target))
-        try:
-            self.conn.backup(dest)
-        finally:
-            dest.close()
+        target = backups.save(self, backups.upgrade_name(version, SCHEMA_VERSION, datetime.now()))
         log.info("Saved a copy of the database before upgrading it: %s", target)
 
     def _install_undo_triggers(self):
@@ -437,30 +431,6 @@ class Database:
         with self.write() as c:
             c.execute("INSERT INTO meta (key, value) VALUES (?, ?) "
                       "ON CONFLICT(key) DO UPDATE SET value = excluded.value", (key, None if value is None else str(value)))
-
-    # ── backups ──
-
-    def backup_daily(self, folder):
-        """Keeps one copy of the database per day, for the last BACKUPS_KEPT days."""
-        folder = Path(folder)
-        folder.mkdir(parents=True, exist_ok=True)
-        target = folder / f"budget-{date.today().isoformat()}.db"
-        if target.exists():
-            return None
-        tmp = target.with_suffix(".tmp")
-        with self.lock:
-            dest = sqlite3.connect(str(tmp))
-            try:
-                self.conn.backup(dest)
-            finally:
-                dest.close()
-        shutil.move(str(tmp), str(target))
-        # Only the dated daily copies: the one made before each upgrade (budget-before-upgrade-…)
-        # is kept for good and mustn't use up a slot.
-        for old in sorted(folder.glob("budget-[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9].db"))[:-BACKUPS_KEPT]:
-            old.unlink(missing_ok=True)
-        log.info("Backed up the database to %s", target)
-        return target
 
     def close(self):
         with self.lock:

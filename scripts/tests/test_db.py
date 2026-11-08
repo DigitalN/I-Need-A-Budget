@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-only
 """Undo, and keeping only the changes it should."""
 
-from datetime import date
-
+from backups import FOLDER_NAME as BACKUPS
 from db import SCHEMA_VERSION, Database
 
 
@@ -75,37 +74,6 @@ def test_a_failed_write_changes_nothing(tmp_path):
     assert db.undo_label() is None
 
 
-def test_daily_backup_keeps_one_per_day(tmp_path):
-    db = make(tmp_path)
-    first = db.backup_daily(tmp_path / "Backups")
-    assert first is not None and first.exists()
-    assert db.backup_daily(tmp_path / "Backups") is None
-
-
-def test_pre_upgrade_copies_dont_use_up_the_daily_backups(tmp_path):
-    """Issue #68: each upgrade's copy used to take one of the 14 daily slots, for good."""
-    db = make(tmp_path)
-    folder = tmp_path / "Backups"
-    folder.mkdir()
-    for day in range(1, 14):  # 13 days of daily copies, all older than today
-        (folder / f"budget-2020-01-{day:02d}.db").write_bytes(b"x")
-    upgrades = [f"budget-before-upgrade-v{n}-to-v{n + 1}-2026-10-20.db" for n in range(1, 6)]
-    for name in upgrades:
-        (folder / name).write_bytes(b"x")
-    assert db.backup_daily(folder) is not None
-    dated = sorted(p.name for p in folder.glob("budget-[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9].db"))
-    assert len(dated) == 14 and dated[0] == "budget-2020-01-01.db"
-    assert all((folder / name).exists() for name in upgrades)
-    # Another day: the oldest daily copies go, the pre-upgrade copies stay.
-    (folder / f"budget-{date.today().isoformat()}.db").unlink()
-    for day in (14, 15):
-        (folder / f"budget-2020-01-{day:02d}.db").write_bytes(b"x")
-    assert db.backup_daily(folder) is not None
-    dated = sorted(p.name for p in folder.glob("budget-[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9].db"))
-    assert len(dated) == 14 and dated[0] == "budget-2020-01-03.db"
-    assert all((folder / name).exists() for name in upgrades)
-
-
 def test_an_older_database_is_backed_up_then_upgraded(tmp_path):
     import sqlite3
 
@@ -129,7 +97,7 @@ def test_an_older_database_is_backed_up_then_upgraded(tmp_path):
     assert "note" in columns
     assert db.get_meta("schema_version") == str(SCHEMA_VERSION)
     assert db.conn.execute("SELECT name, note FROM categories").fetchone()[:] == ("Rent", "")
-    backups = list((tmp_path / "Backups").glob(f"budget-before-upgrade-v1-to-v{SCHEMA_VERSION}-*.db"))
+    backups = list((tmp_path / BACKUPS).glob(f"budget-before-upgrade-v1-to-v{SCHEMA_VERSION}-*.db"))
     assert len(backups) == 1
     with db.write("Edit") as c:  # undo still works on the new column
         c.execute("UPDATE categories SET note = 'renews in March' WHERE id = 1")
@@ -152,7 +120,7 @@ def test_version_2_accounts_from_files_become_tangerine_accounts(tmp_path):
     assert db.get_meta("schema_version") == str(SCHEMA_VERSION)
     assert [tuple(r) for r in db.conn.execute("SELECT name, bank FROM accounts ORDER BY id")] == [("Chequing", "Tangerine"),
                                                                                               ("Cash", None)]
-    assert len(list((tmp_path / "Backups").glob(f"budget-before-upgrade-v2-to-v{SCHEMA_VERSION}-*.db"))) == 1
+    assert len(list((tmp_path / BACKUPS).glob(f"budget-before-upgrade-v2-to-v{SCHEMA_VERSION}-*.db"))) == 1
 
 
 def test_version_3_e_transfer_payees_start_with_always_ask_on(tmp_path):
@@ -174,7 +142,7 @@ def test_version_3_e_transfer_payees_start_with_always_ask_on(tmp_path):
     assert [tuple(r) for r in db.conn.execute("SELECT name, always_ask FROM payees ORDER BY id")] == [
         ("Riley Example", 1), ("Sample Cafe", 0), ("Sample Bookshop", 1), ("Cash withdrawal", 0), ("Sample Utility", 0)]
     assert [r[0] for r in db.conn.execute("SELECT hint FROM transactions ORDER BY id")] == ["etransfer", "", "cash", ""]
-    assert len(list((tmp_path / "Backups").glob(f"budget-before-upgrade-v3-to-v{SCHEMA_VERSION}-*.db"))) == 1
+    assert len(list((tmp_path / BACKUPS).glob(f"budget-before-upgrade-v3-to-v{SCHEMA_VERSION}-*.db"))) == 1
 
 
 def test_version_4_inbox_items_lose_their_tentative_category(tmp_path):
@@ -195,7 +163,7 @@ def test_version_4_inbox_items_lose_their_tentative_category(tmp_path):
     assert db.get_meta("schema_version") == str(SCHEMA_VERSION)
     assert [r[0] for r in db.conn.execute("SELECT category_id FROM transactions ORDER BY id")] == [None, 1, None]
     assert db.conn.execute("SELECT COUNT(*) FROM splits").fetchone()[0] == 2
-    assert len(list((tmp_path / "Backups").glob(f"budget-before-upgrade-v4-to-v{SCHEMA_VERSION}-*.db"))) == 1
+    assert len(list((tmp_path / BACKUPS).glob(f"budget-before-upgrade-v4-to-v{SCHEMA_VERSION}-*.db"))) == 1
 
 
 def test_version_5_what_you_decided_becomes_yours(tmp_path):
@@ -221,4 +189,4 @@ def test_version_5_what_you_decided_becomes_yours(tmp_path):
     rows = [tuple(r) for r in db.conn.execute("SELECT by_you, reason FROM transactions ORDER BY id")]
     assert [r[0] for r in rows] == [1, 1, 1, 1, 0, 1, 1, 0, 0, 0]
     assert rows[6] == (1, "You sent this back")
-    assert len(list((tmp_path / "Backups").glob(f"budget-before-upgrade-v5-to-v{SCHEMA_VERSION}-*.db"))) == 1
+    assert len(list((tmp_path / BACKUPS).glob(f"budget-before-upgrade-v5-to-v{SCHEMA_VERSION}-*.db"))) == 1

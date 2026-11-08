@@ -36,7 +36,8 @@ To run from source without building (uses your real data unless you say otherwis
 cd "Application Files" && INAB_DATA_DIR=/tmp/inab-test python3 main.py
 ```
 
-`INAB_DATA_DIR` points at a throwaway data folder; `INAB_TODAY=YYYY-MM-DD` pins today's
+`INAB_DATA_DIR` points at a throwaway data folder (its backups go in it too, never into
+the real Documents); `INAB_TODAY=YYYY-MM-DD` pins today's
 date; `INAB_DEBUG=1` turns on the web inspector. Tests (`scripts/tests/`): `python3 -m pytest`.
 
 The app icon is drawn by `scripts/make-icon.swift`. To redraw it:
@@ -169,8 +170,9 @@ is up to date (1.0.0 and 1.0.1 also said that when the token couldn't see the re
 - [ ] An older installed copy picks it up: Settings → Check now. `app.log` shows
   `Downloading`, `ready to install`, and on quit `Installed <version>`.
 - [ ] The maintainer's own copy updates the same way (within a day, or Settings → Check
-  now, then quit). If the release raised the schema, its log shows `Upgraded the
-  database` and `Backups/` has the pre-upgrade copy.
+  now, then quit). Its log shows `Backed up the budget to …/Documents/I Need A Budget
+  Backups/…` on quit. If the release raised the schema, it also shows `Upgraded the
+  database`, and that folder has the pre-upgrade copy.
 - [ ] CLAUDE.md and the README describe what's shipping (new features, decisions, gaps).
 
 ## How updates work
