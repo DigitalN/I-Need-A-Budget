@@ -87,8 +87,13 @@ behind it.
 ## Your money stays on your Mac
 
 No bank login, no account to make, no subscription, no cloud. Your budget lives on your
-Mac and is backed up every day. The only thing the app connects to is GitHub, to update
-itself.
+Mac. The only thing the app connects to is GitHub, to update itself.
+
+Each time you quit, a backup of the budget is saved in **I Need A Budget Backups** in your
+Documents folder, which iCloud Drive backs up if it syncs your Documents. Backups are kept for four
+months. To restore one, quit the app, open its data folder (Settings → Your data → Open),
+delete `budget.db-wal` and `budget.db-shm` if they're there, and copy the backup in as
+`budget.db`, replacing the one there.
 
 ## Install
 

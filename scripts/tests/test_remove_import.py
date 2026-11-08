@@ -98,4 +98,4 @@ def test_an_existing_database_upgrades_with_imports_that_remember_nothing(tmp_pa
     assert again.get_meta("schema_version") == str(db.SCHEMA_VERSION) == "7"
     old = again.conn.execute("SELECT * FROM imports").fetchone()
     assert (old["filename"], old["anchor_after_date"]) == ("old.ofx", None)  # removing it leaves the balance as it is
-    assert list((tmp_path / "Backups").glob("budget-before-upgrade-v6-to-v7-*.db"))
+    assert list((tmp_path / "I Need A Budget Backups").glob("budget-before-upgrade-v6-to-v7-*.db"))
