@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 import db
-from helpers import bank_csv, call, card_number, write
+from helpers import bank_csv, call, card_number, categories, write
 from test_card_signs import card_ofx, covers
 
 PAGE = (Path(__file__).resolve().parents[2] / "Application Files" / "index.html").read_text(encoding="utf-8")
@@ -791,3 +791,43 @@ def test_a_cards_check_balance_adjustment_goes_when_the_next_file_brings_the_cha
     _import(app, "card-2.ofx", card_ofx(later, "-550.00", "20261020", start="20261001"))
     assert _adjustments(app) == []
     assert call(app, "accounts")[0]["balance"] == -55000
+
+
+def test_a_categorized_adjustment_asks_when_the_file_that_starts_the_check_brings_its_money(app, monkeypatch):
+    """An account whose balance isn't checked yet (a typed balance here; at the first launch of 1.4 every account whose
+    balance came from a file, too): Check balance… on Oct 12 finds −$110.00 (the Oct 3 charge and the two from Oct 11),
+    and you categorize it. The next file's balance starts the check, and that file brings the charges. It asks, as on an
+    account already checked: it counted twice instead, and September started at $1,160.00."""
+    _first_file(app)
+    food = categories(app, {"Everyday": ["Food"]})["Food"]
+    account = call(app, "accounts")[0]["id"]
+    call(app, "set_balance", account, 270000, "2026-09-30")  # typed: the check ends
+    assert call(app, "reconcile", account, 259000)["adjusted"] == -11000
+    [mine] = _adjustments(app)
+    call(app, "categorize", txn_ids=[mine["id"]], category_id=food)  # yours now
+    monkeypatch.setenv("INAB_TODAY", "2026-10-21")
+    _import(app, "chequing-2.ofx", ofx(MISSING + OCTOBER + LATE + LATER, "2570.00", "20261020"))
+    [question] = _adjustments(app)  # the app's, cancelling yours out
+    assert question["amount"] == 11000 and question["adjustment_question"]["ids"] == [mine["id"]]
+    assert question["reason"] == "The $110.00 your balance adjustment stood for has arrived: remove the adjustment?"
+    assert _start(app) == 105000
+    call(app, "remove_adjustment", question["id"])
+    assert _adjustments(app) == [] and mine["id"] not in [t["id"] for t in call(app, "transactions", {})["items"]]
+    assert call(app, "accounts")[0]["balance"] == 257000 and _start(app) == 105000
+
+
+def test_removing_the_file_the_check_starts_from_still_asks_about_yours(app, monkeypatch):
+    """Yours (−$410.00 from Oct 12) is asked about once the Oct 20 file brings its money. Remove import of the Sep
+    file, the one the check started from: the check now starts from the Oct 20 file, whose balance has yours in it, so
+    it still asks (the question went, and yours counted twice)."""
+    _first_file(app)
+    food = categories(app, {"Everyday": ["Food"]})["Food"]
+    account = call(app, "accounts")[0]["id"]
+    assert call(app, "reconcile", account, 259000)["adjusted"] == -41000
+    [mine] = _adjustments(app)
+    call(app, "categorize", txn_ids=[mine["id"]], category_id=food)
+    monkeypatch.setenv("INAB_TODAY", "2026-10-21")
+    _import(app, "chequing-2.ofx", ofx(MISSING + OCTOBER + LATE + LATER, "2570.00", "20261020"))
+    call(app, "undo_import", next(i["id"] for i in call(app, "imports") if i["filename"] == "chequing-1.ofx"))
+    [question] = _adjustments(app)
+    assert question["amount"] == 41000 and question["adjustment_question"]["ids"] == [mine["id"]]

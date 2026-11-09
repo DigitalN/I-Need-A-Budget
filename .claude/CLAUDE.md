@@ -202,8 +202,9 @@ All in `Application Files/`:
   (`transactions.after_import`, schema 10). The check leaves it alone until a file whose balance is
   as new as it comes in after it, which takes it over (`ledger._TAKEN_OVER`): the app's becomes the
   check's own (it goes, or stays as what that file doesn't explain); one you categorized counts as
-  kept, so its money arriving asks. The file a check starts from takes over the app's ones it's as
-  new as (a typed balance, or a file's from before 1.4, replaced). The bank's row of the same amount
+  kept, so its money arriving asks. The file a check starts from takes over the ones it's as new as
+  (a typed balance, or a file's from before 1.4, replaced): the app's go, and one you categorized asks
+  the same way (`ledger._IN_START`). The bank's row of the same amount
   within 3 days still takes its place as for a transaction you added by hand, keeping your category,
   with the bank's name. Whatever the day, Check balance… changes the balance after everything
   imported and never the days before: dated the day of a file's balance (a Quicken file's is
