@@ -187,24 +187,44 @@ def test_small_steps_undo_straight_away(app):
 
 
 def test_a_toast_undoes_its_own_step_and_says_when_it_cant(app):
-    """Every answer carries the step ⌘Z would undo after it: the toast's Undo asks for exactly that step."""
+    """A change's answer carries the step it made: the toast's Undo asks for exactly that step."""
     ids = categories(app, {"Fun": ["Cafes"]})
     out = app.dispatch("set_assigned", ["2026-10", ids["Cafes"], 5000])
     assert out["ok"] and out["step"] == call(app, "undo_step")["step"]
-    _import(app, "Chequing.CSV", [("09/02/2026", *CAFE, "-4.50")])  # a download arrives before Undo is clicked
+    path = write(app.test_downloads, "Chequing.CSV", bank_csv([("09/02/2026", *CAFE, "-4.50")]))
+    imported = app.dispatch("import_files", [[str(path)]])  # a download arrives before Undo is clicked
+    assert imported["ok"] and imported["step"] is None  # it cleared undo: its toast has no Undo
     gone = app.dispatch("undo", {"step": out["step"]})
     assert gone == {"ok": False, "error": "That can't be undone any more."}
-    assert app.dispatch("month", ["2026-10"])["step"] is None
+    assert call(app, "undo_step") is None
+
+
+def test_a_change_that_changed_nothing_has_no_undo(app):
+    """Issue #139: every answer carried the step ⌘Z would undo next, so the toast after a change
+    that changed nothing offered an Undo that took back the step before it (Hide on a category an
+    undo had taken away undid the money assigned before). Now an answer carries the step its own
+    change made, None when it made none; a read, or a note saved as it's typed, carries none."""
+    ids = categories(app, {"Fun": ["Food", "Gifts"]})
+    assigned = app.dispatch("set_assigned", ["2026-10", ids["Food"], 5000])
+    assert assigned["step"] == call(app, "undo_step")["step"]
+    shown = app.dispatch("set_category_hidden", [ids["Gifts"], False])  # it's shown already
+    assert shown == {"ok": True, "result": True, "step": None}
+    assert call(app, "undo_step")["step"] == assigned["step"]
+    assert "step" not in app.dispatch("month", ["2026-10"])
+    assert "step" not in app.dispatch("set_category_note", [ids["Food"], "Lunches"])
+    undone = app.dispatch("undo", [])
+    assert undone["ok"] and undone["step"] is None
 
 
 # ── the page: ⌘Z asks for a big step, a toast's Undo doesn't ─────────────────
 
 def _undo_script(body):
     parts = [re.search(rf"^{pattern}", PAGE, re.S | re.M).group(0) for pattern in (
-        r"const undoAction = [^\n]*$", r"const undoStep = [^\n]*$", r"let undoing = false;$",
-        r"async function doUndo\(.*?^}$")]
+        r"let lastStep = null;$", r"const undoAction = [^\n]*$", r"const undoStep = [^\n]*$",
+        r"const toastButtons = [^\n]*$", r"let undoing = false;$", r"async function doUndo\(.*?^}$",
+        r"let openPanel = null;$", r"async function redrawAfterUndo\(.*?^}$", r"async function drawPanelAgain\(.*?^}$")]
     fakes = """
-const out = { calls: [], asked: [], toasts: [] };
+const out = { calls: [], asked: [], toasts: [], drawn: [] };
 let next = null, answer = false;
 async function call(name, args) {
   out.calls.push(args === undefined ? [name] : [name, args]);
@@ -213,7 +233,18 @@ async function call(name, args) {
 }
 async function confirmBox(title, text, label) { out.asked.push([title, text, label]); return answer; }
 function toast(message) { out.toasts.push(message); }
-async function refresh() {}
+async function refresh() { out.drawn.push('page'); }
+async function loadCategories() { out.drawn.push('categories'); }
+const shown ={ '#dlg': { open: false }, '#onboard': { hidden: true } };
+const $ = selector => shown[selector] || null;
+const document = { activeElement: null };
+// A pop-over scrolled down, with its Budgeted box: closing it saves what's typed, opening it draws it again.
+function popOver() {
+  const box = { id: 'monthly-input', selectionStart: 3, selectionEnd: 3 };
+  return { el: { scrollTop: 340, contains: el => el === box }, box,
+    close: async () => { out.drawn.push('close'); openPanel = null; },
+    open: async again => { out.drawn.push(['open', again]); } };
+}
 """
     return fakes + "\n".join(parts) + "\n(async () => {\n" + body + "\nconsole.log(JSON.stringify(out));\n})();"
 
@@ -266,4 +297,83 @@ def test_the_page_binds_undo_to_its_step_and_command_z_to_asking():
     assert PAGE.count("if (r && r.ok && 'step' in r) lastStep = r.step;") == 2  # call() and tryCall()
     keys = PAGE[PAGE.index("document.addEventListener('keydown'"):]
     keys = keys[:keys.index("inboxKeys(e);")]
-    assert "if (!$('#dlg').open) doUndo();" in keys and "e.preventDefault();" in keys
+    # Not behind a pop-up, the category picker list or a drag (issue #139); a pop-over is drawn again after it.
+    assert "if (!$('#dlg').open && !$('.popover') && !state.dragging) doUndo();" in keys and "e.preventDefault();" in keys
+
+
+# ── undo with a pop-over open: it's drawn again with what's true (issue #139) ──
+
+def test_command_z_with_a_pop_over_open_undoes_and_draws_it_again():
+    """The pop-over is drawn again after the page, where you were scrolled and back in your box,
+    once it has closed (saving what you'd typed). The categories are read again first: the picker
+    offered a category the undo had taken away."""
+    got = _run(_undo_script("""
+openPanel = popOver(); document.activeElement = openPanel.box;
+next = { step: 6, label: 'Change budgeted amount', big: false, undoes: '' };
+await doUndo();
+"""))
+    assert got["calls"] == [["undo_step"], ["undo", {"step": 6}]]
+    assert got["drawn"] == ["categories", "page", "close",
+                            ["open", {"scroll": 340, "box": "monthly-input", "start": 3, "end": 3}]]
+
+
+def test_a_big_steps_question_opens_over_a_pop_over_and_cancel_changes_nothing():
+    got = _run(_undo_script("""
+openPanel = popOver();
+next = { step: 5, label: 'Add category Review Drawer', big: true, undoes: 'Review Drawer is deleted.' };
+answer = false;
+await doUndo();
+"""))
+    assert got["asked"] == [["Undo Add category Review Drawer?", "Review Drawer is deleted.", "Undo"]]
+    assert got["calls"] == [["undo_step"]] and got["drawn"] == []
+
+
+def test_a_toasts_undo_with_a_pop_over_open_draws_it_again():
+    """The commoner way: Food's pop-over, a transaction moved to Gifts, then the toast's Undo."""
+    got = _run(_undo_script("""
+openPanel = popOver();
+await undoStep(7)();
+"""))
+    assert got["calls"] == [["undo", {"step": 7}]]
+    assert got["drawn"] == ["categories", "page", "close", ["open", {"scroll": 340, "box": "", "start": None, "end": None}]]
+
+
+def test_a_pop_over_under_a_pop_up_is_left_for_the_pop_up_to_reopen():
+    got = _run(_undo_script("""
+openPanel = popOver(); shown['#dlg'].open = true;
+await drawPanelAgain();
+"""))
+    assert got["drawn"] == []
+
+
+def test_an_undo_during_onboarding_draws_its_category_list_again():
+    """Onboarding's list kept showing a category an undo had taken away; the Budget page was drawn
+    behind it instead."""
+    got = _run(_undo_script("""
+shown['#onboard'].hidden = false;
+shown['#ob-cats'] = { redraw: async () => out.drawn.push('onboarding list') };
+next = { step: 8, label: 'Hide category', big: false, undoes: '' };
+await doUndo();
+"""))
+    assert got["calls"] == [["undo_step"], ["undo", {"step": 8}]] and got["drawn"] == ["onboarding list"]
+
+
+def test_a_toast_after_a_change_that_changed_nothing_has_no_undo_button():
+    got = _run(_undo_script("""
+const labels = opts => toastButtons(opts).map(a => a.label);
+lastStep = 12; out.made = labels({ action: undoAction });
+lastStep = null; out.nothing = labels({ action: undoAction });
+out.others = labels({ actions: [{ label: 'Go back' }, { label: 'Quit anyway' }] });
+"""))
+    assert (got["made"], got["nothing"], got["others"]) == (["Undo"], [], ["Go back", "Quit anyway"])
+    assert "const buttons = toastButtons(opts);" in PAGE and "buttons.length ? 7000" in PAGE
+
+
+def test_the_pop_overs_and_onboardings_list_can_be_drawn_again():
+    """Each pop-over says how to draw it again (quietly not, when what it shows is gone), and
+    onboarding's list how to draw itself again."""
+    for name, detail in (("openCategory", "category_detail"), ("openSpent", "spent_detail")):
+        body = re.search(rf"^async function {name}\(.*?^}}$", PAGE, re.S | re.M).group(0)
+        assert f"again ? (await tryCall('{detail}'" in body and "if (!d) return;" in body, name
+        assert "openPanel = { el: dr, close, open: " in body and "if (openPanel && openPanel.el === dr) openPanel = null;" in body, name
+    assert "host.redraw = async () => { await loadCategories(); rerender(true); };" in PAGE

@@ -67,14 +67,16 @@ All in `Application Files/`:
   window, the Downloads watcher thread, the updater, and `Api`, which exposes one method,
   `call(name, args)`, to the page. `VERSION` here is the app's only version number.
 - `service.py`: everything the page can ask for. `BudgetService.dispatch()` runs only
-  methods marked `@exposed`; results are `{"ok": true, "result": …, "step": …}` (`step`: the
-  undo step ⌘Z would reverse after it, so a toast's Undo reverses exactly its own) or
+  methods marked `@exposed`; results are `{"ok": true, "result": …, "step": …}` (`step`, on a
+  change or an undo: the undo step it made, so a toast's Undo reverses exactly its own; None
+  when it made none, and its toast then has no Undo; a read has no `step`) or
   `{"ok": false, "error": "…"}`. Raise `UserError` (`errors.py`) for messages the user should see, in service.py, ledger.py and inbox.py alike; any other exception is logged with its traceback and shown as "Something went wrong (…). Details are in the log." Months and dates from the page are checked on the way in.
   The preview and most tests drive this same class.
 - `db.py`: schema, upgrades, the shared connection behind a lock, **undo** (triggers record
-  inverse SQL; `db.write("Label")` makes one undoable step; updates only record changed
-  columns; a write without a label that changes anything clears undo, unless
-  `keep_undo`; `big_step()` marks a step ⌘Z asks about first; see Key rules). Schema is at
+  inverse SQL; `db.write("Label")` makes one undoable step; an update records only the
+  columns it changes, and nothing when it changes none; a write without a label that changes
+  anything clears undo, unless `keep_undo`; `big_step()` marks a step ⌘Z asks about first;
+  `steps_made()` is the step a request made, for its toast's Undo; see Key rules). Schema is at
   version 10. To change it: raise `SCHEMA_VERSION`,
   add the column to `SCHEMA` *and* an `ALTER TABLE` step in `_migrate` for existing
   databases. Upgrades copy the database to the backups folder
@@ -289,8 +291,18 @@ All in `Application Files/`:
   ←, Move money, renames, Hide/Show, categorizing, editing or splitting a transaction, payee
   and recurring charge changes) undo straight away. The Undo in a step's toast never asks: it
   undoes the step the toast is about, or says "That can't be undone any more" (so does an undo
-  that fails; its step is dropped, and ⌘Z never gets stuck). ⌘Z does nothing while a pop-up
-  is open (its question would replace the pop-up).
+  that fails; its step is dropped, and ⌘Z never gets stuck). A toast after a change that
+  changed nothing has no Undo: the step ⌘Z would undo next is something else you did. ⌘Z does
+  nothing while a pop-up is open (its question would replace the pop-up), nor while the
+  category picker list is open or during a drag. **With the category pop-over or a Spent list
+  open, ⌘Z and a toast's Undo work** (issue #139; a big step's question opens on top of it, and
+  Cancel changes nothing): the pop-over is then drawn again with what's true, where you were
+  scrolled and back in your box, what you'd typed saved first, or it closes when its category
+  or group is gone (`redrawAfterUndo`). During onboarding its category list is drawn again.
+  **A change aimed at something that's gone** (a category, group, account, transaction,
+  recurring charge, payee or import) says "That category no longer exists." and so on, changes
+  nothing and has no Undo (`service._existing`): it said "Saved", or its toast's Undo took back
+  the step before it.
 - `~/Documents` is iCloud-synced on this machine; `scripts/build.sh` builds in
   `~/Library/Caches` and runs `xattr -cr` before signing. One build at a time from any
   checkout or worktree (`scripts/build-lock.sh`, taken by build, package, install and

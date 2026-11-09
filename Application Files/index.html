@@ -533,7 +533,7 @@ function track(p) {
   p.then(done, done);
   return p;
 }
-// The undo step ⌘Z would reverse, as of the app's last answer (service.dispatch): a step's toast undoes that one.
+// The undo step the app's last change made (service.dispatch; null: it made none): a step's toast undoes that one.
 let lastStep = null;
 async function call(name, args) {
   const api = window.pywebview && window.pywebview.api;
@@ -571,7 +571,8 @@ function toast(msg, opts = {}) {
   if (el.parentElement !== host) host.appendChild(el);
   el.querySelector('span').textContent = msg;
   el.querySelectorAll('button').forEach(b => b.remove());
-  for (const a of opts.actions || (opts.action ? [opts.action] : [])) {
+  const buttons = toastButtons(opts);
+  for (const a of buttons) {
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.textContent = a.label;
@@ -584,16 +585,20 @@ function toast(msg, opts = {}) {
   el.classList.toggle('error', !!opts.error);
   el.classList.add('show');
   clearTimeout(toastTimer);
-  if (!opts.stay) toastTimer = setTimeout(() => el.classList.remove('show'), opts.action || opts.actions ? 7000 : (opts.error ? 6000 : 3200));
+  if (!opts.stay) toastTimer = setTimeout(() => el.classList.remove('show'), buttons.length ? 7000 : (opts.error ? 6000 : 3200));
 }
 // A step's toast offers Undo: it undoes the step the toast is about (the step as the toast showed),
 // without asking, since the message next to it says what it undoes.
 const undoAction = { label: 'Undo' };
 const undoStep = step => () => doUndo({ step });
+// A toast's buttons: its Undo only when the change it's about made a step. After a change that
+// changed nothing, the step ⌘Z would undo next is something else you did (issue #139).
+const toastButtons = opts => (opts.actions || (opts.action ? [opts.action] : [])).filter(a => a !== undoAction || lastStep !== null);
 
 // ⌘Z (no `step`): asks first when the step is a big one (service.undo_step: "Undo Add account
 // Savings? Savings is deleted."), and undoes exactly the step it asked about. A toast's Undo
-// (`step`) doesn't ask. A step that's gone, or can't be undone any more, says so.
+// (`step`) doesn't ask. A step that's gone, or can't be undone any more, says so. Then the page,
+// and whatever is open on top of it, show what's true (redrawAfterUndo).
 let undoing = false;
 async function doUndo({ step } = {}) {
   if (undoing) return;
@@ -608,9 +613,48 @@ async function doUndo({ step } = {}) {
     if (step === null) return toast('Nothing to undo');
     const r = await call('undo', { step });
     toast(`Undone: ${r.undone}`);
-    await refresh();
+    await redrawAfterUndo();
   } catch (_) {
   } finally { undoing = false; }
+}
+
+// The pop-over that's open, if any (the category pop-over or a Spent list): {el, close, open(again)}.
+let openPanel = null;
+
+// After an undo, what's on screen shows what's true now: the page and an open pop-over, or during
+// onboarding its category list (issue #139: they went on showing what was there before), and the
+// category picker offers the categories there are now.
+async function redrawAfterUndo() {
+  if (!$('#onboard').hidden) {
+    const list = $('#ob-cats');
+    if (list && list.redraw) await list.redraw();
+    return;
+  }
+  await loadCategories();
+  await refresh();
+  await drawPanelAgain();
+}
+
+// The open pop-over, drawn again with what's true: where you were scrolled, back in the box you were
+// in, what you'd typed saved first (as closing it does). It stays closed when its category or group
+// is gone. Not under a pop-up opened from it: that reopens it when it closes (editFromDrawer).
+async function drawPanelAgain() {
+  const p = openPanel;
+  if (!p || $('#dlg').open) return;
+  const a = document.activeElement, inside = !!a && p.el.contains(a);
+  const again = { scroll: p.el.scrollTop, box: inside ? a.id : '',
+    start: inside ? (a.selectionStart ?? null) : null, end: inside ? (a.selectionEnd ?? null) : null };
+  await p.close();
+  await p.open(again);
+}
+
+// A pop-over drawn again (drawPanelAgain): scrolled where it was, and back in the box you were in.
+function placeIn(dr, again) {
+  dr.scrollTop = again.scroll;
+  const box = again.box && dr.querySelector('#' + CSS.escape(again.box));
+  if (!box) return;
+  box.focus({ preventScroll: true });
+  if (again.start !== null && box.setSelectionRange) box.setSelectionRange(again.start, again.end);
 }
 
 // Dialog: resolves with the clicked action's value (or null). `check(dlg)` on an action
@@ -1161,8 +1205,11 @@ function envelopeSummary(c) {
   return `<div class="card" style="margin-top:12px">${c.owing < 0 ? line('In your favour on the card', -c.owing) : line('You owe on the card', c.owing)}${line('Set aside here to pay it', c.set_aside)}${line('Not set aside yet', c.not_covered, c.not_covered ? 'warn' : '')}</div>`;
 }
 
-async function openCategory(id) {
-  const d = await call('category_detail', { category_id: id, month: shownMonth() });
+async function openCategory(id, again = null) {
+  // Drawn again after an undo (`again`: drawPanelAgain): a category that's gone stays closed, quietly.
+  const args = { category_id: id, month: shownMonth() };
+  const d = again ? (await tryCall('category_detail', args)).result : await call('category_detail', args);
+  if (!d) return;
   const hist = d.history.slice(-12);
   const max = Math.max(1, ...hist.map(h => h.spent));
   const bars = hist.map(h => `<div class="bar ${h.complete ? '' : 'partial'}" title="${monthLong(h.month)}: ${money(h.spent)}">
@@ -1279,6 +1326,7 @@ async function openCategory(id) {
   }
 
   const close = async () => {
+    if (openPanel && openPanel.el === dr) openPanel = null;
     document.removeEventListener('keydown', onKey);
     await Promise.all([saveMonthly(), saveNote(), saveName()]);  // anything typed in the last moment
     bg.remove(); dr.remove();
@@ -1333,18 +1381,25 @@ async function openCategory(id) {
       toast(`Moved ${money(cents)} from ${catName(from)} to ${catName(to)}`, { action: undoAction });
     }
   });
+  openPanel = { el: dr, close, open: a => openCategory(id, a) };
+  if (again) placeIn(dr, again);
 }
 
 // What makes up one Spent figure (a group's, or a category's on the Dashboard), in a
 // pop-over; `which` is spent_detail's {month, group_id or category_id}.
-async function openSpent(which, { total = 'Spent' } = {}) {
-  const d = await call('spent_detail', which);
+async function openSpent(which, { total = 'Spent' } = {}, again = null) {
+  // Drawn again after an undo (`again`: drawPanelAgain): one whose group or category is gone stays closed, quietly.
+  const d = again ? (await tryCall('spent_detail', which)).result : await call('spent_detail', which);
+  if (!d) return;
   const bg = document.createElement('div'); bg.className = 'drawer-bg';
   const dr = document.createElement('div'); dr.className = 'drawer';
   dr.innerHTML = `<div class="row"><h3 style="margin:0">${esc(d.name)}</h3><span class="spacer"></span><button class="icon-btn" data-close>✕</button></div>
     ${spentCard(d, d.month, { group: d.group, total })}`;
   document.body.append(bg, dr);
-  const close = async () => { document.removeEventListener('keydown', onKey); bg.remove(); dr.remove(); };
+  const close = async () => {
+    if (openPanel && openPanel.el === dr) openPanel = null;
+    document.removeEventListener('keydown', onKey); bg.remove(); dr.remove();
+  };
   const onKey = e => { if (e.key === 'Escape' && !$('#dlg').open && !$('.popover')) { e.preventDefault(); close(); } };
   document.addEventListener('keydown', onKey);
   bg.onclick = close;
@@ -1353,6 +1408,8 @@ async function openSpent(which, { total = 'Spent' } = {}) {
     const line = e.target.closest('[data-line-tx]');
     if (line) editFromDrawer(Number(line.dataset.lineTx), close, () => openSpent(which, { total }));
   });
+  openPanel = { el: dr, close, open: a => openSpent(which, { total }, a) };
+  if (again) placeIn(dr, again);
 }
 
 async function openAssign(amount) {
@@ -1465,16 +1522,21 @@ async function deleteQuestion(cat) {
 // a Return then added a category once per set).
 function bindCategoryEditor(host) {
   const FOCUSABLE = ['data-rename-group', 'data-rename-cat', 'data-add-cat', 'data-add-group'];
-  // Redrawn after every change, keeping the box you're in (Tab after a rename moved you on).
-  const rerender = () => {
+  // Redrawn after every change, keeping the box you're in (Tab after a rename moved you on), and
+  // after an undo (redrawAfterUndo) what you'd typed in it too.
+  const rerender = (keepTyped = false) => {
     if (state.dragging) return;
     const a = document.activeElement;
     const attr = a && host.contains(a) ? FOCUSABLE.find(n => a.hasAttribute(n)) : null;
     const value = attr && a.getAttribute(attr);
+    const typed = keepTyped && attr && a.value !== a.defaultValue ? { text: a.value, start: a.selectionStart, end: a.selectionEnd } : null;
     host.innerHTML = categoryEditorHtml(state.categories);
     const again = attr && host.querySelector(value ? `[${attr}="${value}"]` : `[${attr}]`);
-    if (again) again.focus();
+    if (!again) return;
+    again.focus();
+    if (typed) { again.value = typed.text; again.setSelectionRange(typed.start, typed.end); }
   };
+  host.redraw = async () => { await loadCategories(); rerender(true); };
   const run = async (fn, msg) => {
     let ok = false;
     try { await fn(); ok = true; } catch (_) {}
@@ -3451,7 +3513,9 @@ document.addEventListener('keydown', e => {
   }
   if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z' && !e.shiftKey && !e.target.closest('input, textarea')) {
     e.preventDefault();
-    if (!$('#dlg').open) doUndo();  // not behind a pop-up: its question would replace the pop-up
+    // Not behind a pop-up (its question would replace the pop-up), the category picker list or a drag,
+    // which would go on showing what was there before. A pop-over is drawn again after it (redrawAfterUndo).
+    if (!$('#dlg').open && !$('.popover') && !state.dragging) doUndo();
     return;
   }
   inboxKeys(e);
