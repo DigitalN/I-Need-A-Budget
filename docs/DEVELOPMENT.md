@@ -81,10 +81,10 @@ Go through all of it for every release. Installed copies update themselves from 
 latest release, so a mistake reaches every copy. Merging a pull request doesn't release
 anything.
 
-**Who does what.** The maintainer only merges PRs (each PR already raises `VERSION`).
-Claude releases from this Mac, where the signing certificate is, once all the current
-work is done and no small fixes are needed after it (one release for everything merged
-since the last), with **`scripts/release.sh NOTES.md`** (notes written outside the repo).
+**Who does what.** The maintainer only merges PRs (`VERSION` already says the next
+release's version). Claude releases from this Mac, where the signing certificate is, only
+when the maintainer says it's ready (one release for everything merged since the last),
+with **`scripts/release.sh NOTES.md`** (notes written outside the repo).
 It does every step below that a script can: main matches GitHub, version newer than the
 latest release, tests, certificate valid 30+ days, build, `hdiutil verify`,
 `scripts/check-update.py` (the installed copy's own updater code, from its tag, accepts
@@ -115,9 +115,9 @@ is up to date (1.0.0 and 1.0.1 also said that when the token couldn't see the re
 
 - [ ] Everything going out is merged into `main`, and the local `main` matches GitHub
   (`git pull`).
-- [ ] `VERSION` in `Application Files/main.py` is higher than the latest release (every
-  PR raises it: by 0.0.1, or 0.1 for a big change). The build copies it into the app's
-  `Info.plist`; installed copies only update to a higher version.
+- [ ] `VERSION` in `Application Files/main.py` is higher than the latest release (the
+  first PR after a release raises it: by 0.0.1, or 0.1 for a big change). The build
+  copies it into the app's `Info.plist`; installed copies only update to a higher version.
 - [ ] `python3 -m pytest` passes (including `test_privacy.py`).
 - [ ] The signing certificate is valid and not about to expire:
   `security find-identity -v -p codesigning` lists an *Apple Development* identity from

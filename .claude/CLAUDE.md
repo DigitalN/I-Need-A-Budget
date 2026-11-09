@@ -49,7 +49,7 @@ also when no release has been published yet: merging isn't releasing.
 `Page connected` means the window loaded and reached Python. `Backed up the budget to …`
 at a quit after a change (`No backup made: …` when nothing changed since the newest one),
 and at launch only when no backup holds the budget as it is: after a session that didn't
-quit normally, at the first launch of 1.3.3 (no file named in meta yet), or after the
+quit normally, at the first launch of 1.4.0 (no file named in meta yet), or after the
 newest was deleted by hand.
 
 To reproduce without touching the user's data: `INAB_DATA_DIR=<tmp folder>` (logs go to
@@ -293,16 +293,17 @@ with months it didn't exist).
 ## Releasing
 
 - A release means the whole **Release checklist** in docs/DEVELOPMENT.md, every time.
-- **Every PR raises `VERSION` itself** (in `Application Files/main.py`), so merging is
-  all the maintainer does: 1.0.1 → 1.0.2 by default, 1.0.x → 1.1.0 only for a change big
-  enough to deserve it. Never leave the bump for a separate PR after the merge.
-- **The next release waits until all the current work is done and no small fixes are
-  needed after it** (the maintainer's rule, after a release was started while two
-  sessions still had work to do). Done means no open PR, no session still working on
-  this repository, and no small fix still needed after them; if you can't tell, ask.
-  Then Claude runs `scripts/release.sh NOTES.md` (notes outside the repo). The
-  maintainer never builds. Installed copies only update when a release is published on
-  GitHub.
+- **`VERSION` is the version the next release will have** (in `Application Files/main.py`),
+  set by the PRs themselves, so merging is all the maintainer does. The first PR after a
+  release raises it (1.0.1 → 1.0.2 by default, 1.0.x → 1.1.0 only for a change big enough
+  to deserve it); the PRs after it leave it alone until that version is released, so PRs
+  made side by side don't clash on it. It's 1.4.0 until 1.4 is released (the maintainer's
+  choice, 2026-11-09). Never leave the bump for a separate PR after the merge.
+- **A release happens only when the maintainer says it's ready** (their rule since
+  2026-11-09, as bugs kept turning up). A merge, a finished list or every session being
+  done is never the go-ahead. Then Claude runs `scripts/release.sh NOTES.md` (notes
+  outside the repo), covering every PR merged since the last release. The maintainer
+  never builds. Installed copies only update when a release is published on GitHub.
 - The repository is **public** (it was private at first). It's
   **GPL-3.0-only**, the maintainer's choice, made knowing the GPL allows selling: what
   they want is that nobody builds a closed product from it. `docs/NOTICE` is a section 7(b)
@@ -559,7 +560,7 @@ Don't undo these without asking:
   written they go to the data folder's `Backups/` until it can. **To restore one:** quit
   the app, delete `budget.db-wal` and `budget.db-shm` in the data folder if they're
   there, and copy the backup in as `budget.db`. (Until 1.3.1: one a day at launch, 14
-  kept, in the data folder's `Backups/`, which the first launch of 1.3.3 moves over.)
+  kept, in the data folder's `Backups/`, which the first launch of 1.4.0 moves over.)
 - "Eating Out" was renamed **Food** (Actual's old name still matches through `old_names`).
 - **Update checks only at launch and on Check now**, never on a timer while the app is
   open (the maintainer's choice).
