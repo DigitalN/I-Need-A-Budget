@@ -205,9 +205,10 @@ def average_spending(month_totals, months):
 
 def usual_months(month_totals, month, earliest, count):
     """The whole months a category's Usual for `month` averages: up to `count` before it,
-    from `earliest` (the first month every account has data for) and from its own first
-    spending, so a bill that started last month isn't averaged with months it didn't
-    exist. None of them if it has never spent anything."""
+    from `earliest` (the first month every account has data for, a new account aside:
+    figures.Figures.coverage) and from its own first spending, so a bill that started last
+    month isn't averaged with months it didn't exist. None of them if it has never spent
+    anything."""
     spent = [m for m, total in month_totals.items() if total]
     return complete_months_before(month, max(earliest, min(spent)), count) if spent else []
 

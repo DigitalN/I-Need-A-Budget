@@ -22,6 +22,11 @@ _Avoid_: bank account
 A cash account for notes and coins.
 _Avoid_: Cash (as an account type)
 
+**Kept by hand**:
+An account no file has ever brought transactions to, like the Wallet: you add its
+transactions yourself. A transfer you mark with one gets its other half there from the app.
+_Avoid_: manual account, offline account
+
 **Overdraft**:
 A cash account's safety net: the bank lets the balance go below zero. Below zero is
 simply less cash; the account doesn't become a debt account.
@@ -245,6 +250,13 @@ _Avoid_: Each month, monthly amount, target, goal
 What a category actually spent on average in the 3, 6 or 12 whole months before a month,
 counting from its first spending. Not a plan: that's Budgeted.
 _Avoid_: Needs, average, estimate
+
+**Whole month**:
+A finished month every account has data for, so what was spent in it can be compared:
+Usual and the Dashboard's months count only these. A new account (added after the budget was
+set up, with nothing older than a month before that) has no history to miss, so it doesn't
+make a month less than whole.
+_Avoid_: complete month, full month
 
 **Above usual**:
 A month in which a category spent clearly more than its Usual. It can still have money

@@ -18,6 +18,11 @@ transaction you decided about (docs/adr/0005): one you categorized, split or sen
 or said isn't a transfer. A half arriving for one of those waits in the inbox instead.
 Nor with a balance adjustment: it stands for transactions that haven't arrived, and the
 real other half pairs with them when they do.
+
+No file will ever bring the other half to an account kept by hand (the Wallet, or any
+account no file has brought transactions to: ledger.kept_by_hand). When you mark a transfer
+with one and its other half isn't there, the inbox adds it (issue #75, docs/adr/0006).
+Accounts that get files wait for theirs.
 """
 
 import re
@@ -146,22 +151,24 @@ def pair(conn, txn):
     return True
 
 
-def make_transfer(conn, txn_id, account_id):
+def make_transfer(conn, txn_id, account_id, kept_by_hand=False):
     """The user says this is a transfer to/from `account_id`: pair it with the other half
-    if that's already imported (whoever decided about it), otherwise just mark it."""
-    txn = conn.execute("SELECT * FROM transactions WHERE id = ?", (txn_id,)).fetchone()
+    if that's already there (whoever decided about it; never a balance adjustment, which
+    stands for transactions still to come), otherwise just mark it. In an account kept by
+    hand (`kept_by_hand`) no file will bring the other half: it's left marked, and the inbox
+    adds the other half there (issue #75)."""
     unlink(conn, txn_id)
     conn.execute("UPDATE transactions SET transfer_account_id = ? WHERE id = ?", (account_id, txn_id))
     txn = conn.execute("SELECT * FROM transactions WHERE id = ?", (txn_id,)).fetchone()
     other = conn.execute(
         """
         SELECT * FROM transactions WHERE account_id = ? AND amount = ? AND transfer_id IS NULL AND id != ?
-           AND date BETWEEN date(?, '-10 days') AND date(?, '+10 days')
+           AND hint != 'adjustment' AND date BETWEEN date(?, '-10 days') AND date(?, '+10 days')
          ORDER BY abs(julianday(date) - julianday(?)) LIMIT 1
         """, (account_id, -txn["amount"], txn_id, txn["date"], txn["date"], txn["date"])).fetchone()
     if other is not None:
         link(conn, txn, other)
-    else:
+    elif not kept_by_hand:
         pair(conn, txn)
 
 

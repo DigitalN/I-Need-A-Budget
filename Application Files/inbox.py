@@ -19,10 +19,17 @@ transaction, `by_you`:
 - The app's: what an import or the re-check categorizes ("also categorized 3 more like
   it"), and what removing an import or a merge sends back to the inbox (`ask_again`).
 
+A transfer you mark with an account kept by hand (the Wallet) gets its other half there
+when it isn't there already: the app adds it, paired and yours (issue #75, docs/adr/0006).
+It only exists because of the transfer, so whatever ends the transfer (Not a transfer, a
+category or split, another account, deleting or removing the other half) takes it away
+(`_let_go`), unless you decided about the half itself (`_adopt`).
+
 A transaction you sent back is its own inbox item, outside its payee's group and outside
 Accept all, still with suggestions. A category change outside the inbox changes only that
-transaction; in the inbox, categorizing one re-checks its payee unless you chose One at a
-time (`recheck_payee`).
+transaction; in the inbox, categorizing one re-checks its payee, and a recurring charge's
+other waiting charges follow the category it learnt, unless you chose One at a time
+(`recheck_payee`, issue #63).
 
 `reason` is only text to show: no code reads it. What the inbox says about an item is
 worked out each time (`view()`): today's suggestion, "charged you again" from its
@@ -47,7 +54,7 @@ import subscriptions
 import transfers
 from errors import UserError
 from learn import always_ask, analyze, guess, unusual, unusual_reason
-from payees import ADJUSTMENT, BANK_ENTRY_HINTS, describe
+from payees import ADDED_HALF, ADJUSTMENT, BANK_ENTRY_HINTS, describe
 from util import money, short_day
 
 SENT_BACK = "You sent this back"
@@ -413,17 +420,18 @@ class Inbox:
         """You put these transactions in `category_id` (replacing a split, or a transfer:
         its other half then waits for you). Money back for a purchase is linked to it as a
         refund when that's what the category says; a recurring charge without a category
-        learns this one, and its charges waiting in the inbox follow. `recheck_payee`: the
-        inbox's way, where categorizing re-checks the rest of the payee (not One at a time,
-        and never outside the inbox)."""
+        learns this one. `recheck_payee`: the inbox's way, where the recurring charge's charges
+        waiting in the inbox follow and the rest of the payee is re-checked. Without it (One at
+        a time, and anywhere outside the inbox) only these transactions change (issue #63): the
+        others keep waiting, with the category as their suggestion."""
         if category_id in (None, ""):
             raise UserError("Pick a category first.")
         ledger.check_category(self.conn, int(category_id))
         txns = [self._yours(txn_id) for txn_id in txn_ids]
         learnt = [self._categorize(txn, int(category_id)) for txn in txns]
-        also = self._follow(learnt)
+        also = 0
         if recheck_payee:
-            also += self.recheck({t["payee_id"] for t in txns})
+            also = self._follow(learnt) + self.recheck({t["payee_id"] for t in txns})
         return Outcome(len(txns), also, self._question([t["id"] for t in txns]))
 
     def _categorize(self, txn, category_id):
@@ -495,34 +503,81 @@ class Inbox:
 
     def mark_transfer(self, txn_id, account_id):
         """You say this is a transfer to or from `account_id`: paired with its other half
-        if that's imported (even one you'd categorized), else marked until it arrives. A
-        half it was paired with before waits for you."""
+        if that's there (even one you'd categorized; never a balance adjustment), else marked
+        until it arrives. No file will ever bring the other half to an account kept by hand
+        (the Wallet): with none there, the app adds it, paired and yours (issue #75). A half it
+        was paired with before waits for you, or goes if the app added it. Returns the name of
+        the account the app added the other half to, or None."""
         c = self.conn
         txn = self._txn(txn_id)
         if txn is None:
             raise UserError("That transaction no longer exists.")
+        account = c.execute("SELECT name, closed FROM accounts WHERE id = ?", (int(account_id),)).fetchone()
+        if account is None:
+            raise UserError("That account no longer exists.")
+        by_hand = not account["closed"] and ledger.kept_by_hand(c, int(account_id))
         before = txn["transfer_id"]
-        transfers.make_transfer(c, txn_id, int(account_id))
+        transfers.make_transfer(c, txn_id, int(account_id), kept_by_hand=by_hand)
         after = self._txn(txn_id)["transfer_id"]
+        added = None
+        if after is None and by_hand:
+            after, added = self._add_other_half(self._txn(txn_id)), account["name"]
         c.execute("UPDATE transactions SET by_you = 1, similar_payee_id = NULL WHERE id IN (?, ?)", (txn_id, after or 0))
         if before and before != after:
-            self._send_back(before, NOT_A_TRANSFER)
+            self._adopt(txn)  # the half the app added, with another other half now
+            self._let_go(before)
+        return added
+
+    def _add_other_half(self, txn):
+        """The other half of `txn`, a transfer you marked with an account kept by hand: added
+        there by hand, paired with it, yours. It only exists because of the transfer: when that
+        ends, it goes (_let_go). Returns its id."""
+        c = self.conn
+        half = c.execute("INSERT INTO transactions (account_id, date, amount, payee_id, hint, status, by_you) "
+                         "VALUES (?, ?, ?, ?, ?, 'done', 1)",
+                         (txn["transfer_account_id"], txn["date"], -txn["amount"], txn["payee_id"], ADDED_HALF)).lastrowid
+        transfers.link(c, txn, self._txn(half))
+        return half
+
+    def _let_go(self, txn_id):
+        """The other half of a transfer that just ended (already unlinked): one the app added for
+        it goes (issue #75); any other waits for you, as yours. Returns the name of the account a
+        half went from, or None."""
+        txn = self._txn(txn_id)
+        if txn is None:
+            return None
+        if txn["hint"] != ADDED_HALF:
+            self._send_back(txn_id, NOT_A_TRANSFER)
+            return None
+        account = self.conn.execute("SELECT name FROM accounts WHERE id = ?", (txn["account_id"],)).fetchone()
+        self.conn.execute("DELETE FROM transactions WHERE id = ?", (txn_id,))
+        return account["name"] if account else None
+
+    def _adopt(self, txn):
+        """You decided about a half the app added, on its own (a category, a split, another other
+        half): from now on it's yours like a transaction you added, and stays when the transfer ends."""
+        if txn["hint"] == ADDED_HALF:
+            self.conn.execute("UPDATE transactions SET hint = '' WHERE id = ?", (txn["id"],))
 
     def not_a_transfer(self, txn_id):
-        """It isn't a transfer: both halves wait for you, and are never paired again."""
+        """It isn't a transfer: both halves wait for you, and are never paired again. A half the
+        app added for it goes instead (issue #75): returns the name of its account, or None."""
+        removed = None
         for i in transfers.unlink(self.conn, txn_id):
-            self._send_back(i, NOT_A_TRANSFER)
+            removed = self._let_go(i) or removed
+        return removed
 
     def send_back(self, txn_id):
         """You put a transaction back in the inbox: no category, not split (a transfer:
-        Not a transfer). It waits for you, as its own inbox item."""
+        Not a transfer, which returns the account a half the app added went from). It waits
+        for you, as its own inbox item."""
         txn = self._txn(txn_id)
         if txn is None:
             raise UserError("That transaction no longer exists.")
         if txn["transfer_account_id"]:
-            self.not_a_transfer(txn_id)
-        else:
-            self._send_back(txn_id, SENT_BACK)
+            return self.not_a_transfer(txn_id)
+        self._send_back(txn_id, SENT_BACK)
+        return None
 
     def _send_back(self, txn_id, reason):
         self.conn.execute("DELETE FROM splits WHERE transaction_id = ?", (txn_id,))
@@ -533,8 +588,17 @@ class Inbox:
         """Transactions the app decides about again, straight away, as if they'd just
         arrived (but never a price): a transfer half whose other half was removed (with its
         import, or deleted), or both halves of a transfer that a merge put in one account.
-        They're the app's, whoever decided before. One that waits in the inbox says `why`."""
+        They're the app's, whoever decided before. One that waits in the inbox says `why`.
+        A half the app added only existed because of its transfer: it goes instead (issue
+        #75), and a half it was still paired with is decided about again too."""
         c = self.conn
+        txn_ids = list(txn_ids)
+        for txn_id in list(txn_ids):
+            txn = self._txn(txn_id)
+            if txn is not None and txn["hint"] == ADDED_HALF:
+                txn_ids.remove(txn_id)
+                txn_ids += [i for i in transfers.unlink(c, txn_id)[1:] if i not in txn_ids]
+                c.execute("DELETE FROM transactions WHERE id = ?", (txn_id,))
         for txn_id in txn_ids:
             transfers.unlink(c, txn_id)
             c.execute("DELETE FROM splits WHERE transaction_id = ?", (txn_id,))
@@ -546,13 +610,14 @@ class Inbox:
 
     def _yours(self, txn_id):
         """A transaction you're deciding about: if it was a transfer, the pairing goes and
-        its other half waits for you."""
+        its other half waits for you (or goes, if the app added it)."""
         txn = self._txn(txn_id)
         if txn is None:
             raise UserError("That transaction no longer exists.")
         if txn["transfer_account_id"]:
             for other in transfers.unlink(self.conn, txn_id)[1:]:
-                self._send_back(other, NOT_A_TRANSFER)
+                self._let_go(other)
+            self._adopt(txn)
             txn = self._txn(txn_id)
         return txn
 

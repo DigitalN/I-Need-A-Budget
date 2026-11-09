@@ -801,10 +801,14 @@ class BudgetService:
     @exposed
     def finish_onboarding(self, start_month):
         """Not an undo step, and it leaves the steps before it: ⌘Z on the Dashboard can still undo
-        the last thing done while setting up."""
+        the last thing done while setting up. The accounts made so far are onboarding's (meta
+        `last_onboarding_account`, the newest of them): one added after the budget was set up can be
+        new rather than missing its history (Figures.coverage, issue #83)."""
         self._set_budget_start(start_month)
         with self.db.write(keep_undo=True) as c:
             ledger.income_category(c)
+            c.execute("INSERT INTO meta (key, value) VALUES ('last_onboarding_account', "
+                      "(SELECT COALESCE(MAX(id), 0) FROM accounts)) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
             # Files already in Downloads count as looked at; only new downloads auto-import.
         for path in self._candidates(self.settings.downloads_dir()):
             try:
@@ -1299,9 +1303,10 @@ class BudgetService:
 
     @exposed
     def categorize(self, txn_ids, category_id, recheck_payee=False):
-        """You put these inbox items (one, or a group) in a category. `recheck_payee`: the
-        rest of their payee that the app is now sure of is categorized too; "One at a time"
-        in the inbox turns that off."""
+        """You put these inbox items (one, or a group) in a category. `recheck_payee`: a
+        recurring charge's other waiting charges follow the category it learnt, and the rest of
+        their payee that the app is now sure of is categorized too; "One at a time" in the inbox
+        turns that off (issue #63)."""
         txn_ids = [int(i) for i in txn_ids]
         label = "Categorize transaction" if len(txn_ids) == 1 else f"Categorize {len(txn_ids)} transactions"
         with self.db.write(label) as c:
@@ -1483,12 +1488,14 @@ class BudgetService:
     @exposed
     def update_transaction(self, txn_id, changes):
         """Changes a transaction from anywhere but the inbox's suggestions: its payee, its
-        category (only this transaction: its payee isn't re-checked; no category sends it
-        back to the inbox), its note, a transfer or not, and the date and amount of one
-        added by hand. Returns "What's this for?" when the category makes it look like a
-        recurring charge, else None."""
+        category (only this transaction: its payee isn't re-checked, nor do a recurring
+        charge's other charges follow; no category sends it back to the inbox), its note, a
+        transfer or not, and the date and amount of one added by hand. Returns `question`:
+        "What's this for?" when the category makes it look like a recurring charge, else None;
+        `added_to` / `removed_from`: the account kept by hand the app added a transfer's other
+        half to, or removed the one it added from (issue #75), else None."""
         changes = dict(changes or {})
-        question = None
+        question = added_to = removed_from = None
         with self.db.write("Edit transaction") as c:
             txn = c.execute("SELECT * FROM transactions WHERE id = ?", (txn_id,)).fetchone()
             if txn is None:
@@ -1501,7 +1508,7 @@ class BudgetService:
                 if changes["category_id"]:
                     question = inbox.categorize([txn_id], changes["category_id"]).question
                 else:
-                    inbox.send_back(txn_id)
+                    removed_from = inbox.send_back(txn_id)
             if "note" in changes:
                 c.execute("UPDATE transactions SET note = ? WHERE id = ?", (str(changes["note"] or ""), txn_id))
             if manual:
@@ -1520,10 +1527,10 @@ class BudgetService:
                     c.execute("UPDATE transactions SET amount = ? WHERE id = ?", (new_amount, txn_id))
             if "transfer_account_id" in changes:
                 if changes["transfer_account_id"]:
-                    inbox.mark_transfer(txn_id, int(changes["transfer_account_id"]))
+                    added_to = inbox.mark_transfer(txn_id, int(changes["transfer_account_id"]))
                 else:
-                    inbox.not_a_transfer(txn_id)
-        return {"question": question}
+                    removed_from = inbox.not_a_transfer(txn_id)
+        return {"question": question, "added_to": added_to, "removed_from": removed_from}
 
     @exposed
     def split_transaction(self, txn_id, parts):

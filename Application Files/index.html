@@ -2182,8 +2182,10 @@ async function transferDialog(txId, fromAccountName) {
   });
   if (!v) return false;
   const account = v === 'none' ? null : Number($('#tr-acct').value);
-  await call('update_transaction', [txId, { transfer_account_id: account }]);
-  toast(account ? 'Marked as a transfer' : 'No longer a transfer', { action: undoAction });
+  const r = await call('update_transaction', [txId, { transfer_account_id: account }]);
+  // An account kept by hand (the Wallet) gets the other half from the app, and loses it with the transfer.
+  toast(account ? `Marked as a transfer${r.added_to ? ` · added to ${r.added_to}` : ''}`
+    : `No longer a transfer${r.removed_from ? ` · removed from ${r.removed_from}` : ''}`, { action: undoAction });
   return true;
 }
 
