@@ -82,8 +82,9 @@ latest release, so a mistake reaches every copy. Merging a pull request doesn't 
 anything.
 
 **Who does what.** The maintainer only merges PRs (each PR already raises `VERSION`).
-A merged PR is the go-ahead: Claude releases it from this Mac, where the signing
-certificate is, with **`scripts/release.sh NOTES.md`** (notes written outside the repo).
+Claude releases from this Mac, where the signing certificate is, once all the current
+work is done and no small fixes are needed after it (one release for everything merged
+since the last), with **`scripts/release.sh NOTES.md`** (notes written outside the repo).
 It does every step below that a script can: main matches GitHub, version newer than the
 latest release, tests, certificate valid 30+ days, build, `hdiutil verify`,
 `scripts/check-update.py` (the installed copy's own updater code, from its tag, accepts
@@ -149,7 +150,8 @@ is up to date (1.0.0 and 1.0.1 also said that when the token couldn't see the re
 
 ### Publish
 
-- [ ] Release notes: what's new in this version, in plain words. **No private details**:
+- [ ] Release notes: what's new since the last release (every PR merged since), in
+  plain words. **No private details**:
   no amounts, payee or people's names, categories or account digits from the
   maintainer's data, even as examples. Write them outside the repository (e.g. the
   scratchpad), not as a file in it.
