@@ -4,7 +4,8 @@
 Formats (detected from the content, not the file name):
 - OFX / QFX / QBO ("Microsoft Money", "Quicken" and "QuickBooks" downloads, which nearly
   every bank offers): every transaction has the bank's own ID (FITID), the file includes
-  the balance, and it says which bank (<ORG>) and account it's for. The best kind of file.
+  the balance, and it says which bank (<ORG>) and account it's for, and the first day it
+  covers (<DTSTART>, kept for the balance check). The best kind of file.
   Tangerine calls every bank account SAVINGS in these, chequing included, so for Tangerine
   the file name (the account's nickname, as with its CSVs) decides which account it is.
   Its Mastercard comes as a bank statement too (CREDITLINE, the full card number): a
@@ -135,6 +136,8 @@ class Part:
     notes: list = field(default_factory=list)  # what was changed about the file to read it (shown with the import)
     card_file: bool = False  # a card or credit line's file: its signs are settled when the account is known (_flip, _positive_balance)
     flip_guess: bool = None  # from the rows alone: do they write purchases as positive? None: too few purchases to tell
+    covers_from: str = None  # the first day the file says it covers (a Quicken file's DTSTART), when it says: a card
+                             # file covers the days things posted, so it can have charges dated before it
 
     @property
     def first_date(self):
@@ -413,9 +416,29 @@ def _ofx_statement(text, bank, filename):
                 balance = (parse_date(as_of), to_cents(amount))
         except ValueError:
             balance = None
+    covers_from = _ofx_covers_from(text, balance)
     if is_card or hint.kind in ("credit_card", "line_of_credit"):
-        return Part(hint, rows, balance, card_file=True, flip_guess=_flip_guess(rows))
-    return Part(hint, rows, balance)
+        return Part(hint, rows, balance, card_file=True, flip_guess=_flip_guess(rows), covers_from=covers_from)
+    return Part(hint, rows, balance, covers_from=covers_from)
+
+
+def _ofx_covers_from(text, balance):
+    """The first day a statement says its transactions cover (DTSTART, at the top of its transaction list), or
+    None. A first day after its own last one (the balance's date, else DTEND) says nothing."""
+    listing = re.search(r"<BANKTRANLIST>(.*?)(?:<STMTTRN>|</BANKTRANLIST>|$)", text, re.IGNORECASE | re.DOTALL)
+    if not listing:
+        return None
+
+    def day(tag):
+        value = _ofx_value(listing.group(1), tag)
+        try:
+            return parse_date(value) if value else None
+        except ValueError:
+            return None
+
+    start = day("DTSTART")
+    last = balance[0] if balance else day("DTEND")
+    return None if start is None or (last is not None and start > last) else start
 
 
 _PAYMENT_WORDS = re.compile(r"PAYMENT|PAIEMENT|THANK YOU|MERCI|REFUND|RETURN|REVERSAL|CREDIT|REWARD|CASH ?BACK|INTEREST PAID",
@@ -909,9 +932,10 @@ def _import_part(conn, fmt, part, filename, sha, archived_path, account_id=None,
     fps = fingerprints(part.rows)
     result.account_id, result.account_name, result.new_account = account_id, acct["name"], created
     import_id = conn.execute(
-        "INSERT INTO imports (filename, sha256, account_id, format, rows_total, first_date, last_date, archived_path) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        (filename, sha, account_id, kind, len(part.rows), part.first_date, part.last_date, archived_path)).lastrowid
+        "INSERT INTO imports (filename, sha256, account_id, format, rows_total, first_date, last_date, covers_from, "
+        "archived_path) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (filename, sha, account_id, kind, len(part.rows), part.first_date, part.last_date, part.covers_from,
+         archived_path)).lastrowid
     result.import_id = import_id
 
     # A bank's transaction ID is a hint, not proof: banks repeat them (one per day, 1, 2, 3…

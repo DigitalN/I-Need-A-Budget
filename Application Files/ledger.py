@@ -96,7 +96,8 @@ def account_balance(conn, account_id, as_of=None):
 # explain waits in the Inbox as a balance adjustment, dated the newest balance's date, so the budget's
 # starting balance stays put (Inbox.check_balance keeps it). It's worked out again from scratch after
 # every import into the account, so it shrinks, or goes, as the missing transactions arrive, and Remove
-# import puts it back the way it was.
+# import puts it back the way it was. Older history a file fills in (rows from before the day the starting
+# file covers from) was in the starting balance already, so it doesn't count (balance_difference).
 
 ADJUSTMENT_PAYEE = "Balance adjustment"
 
@@ -115,21 +116,31 @@ def balance_difference(conn, account_id):
     one the check starts from, less the bank's transactions that arrived since (in a later import, up
     to the one that brought the newest balance, or in any later file that ends by then), less the
     balance adjustments you kept since. The adjustment waiting for you isn't counted: this is what it
-    should be."""
+    should be.
+
+    Older history isn't money that arrived since (issue #136): a row dated before the starting file's
+    first day, in a file that starts before that day too, was in the starting balance already. A file's
+    first day is the one it says it covers from (`imports.covers_from`, a Quicken file's DTSTART), else
+    its first row's date, else (no rows) its balance's date. Not the first row's date when it says: a
+    card file covers the days things posted, so it has charges dated before its first day, and a charge
+    dated before it that posted after its balance comes in a later file that starts on that day too."""
     acct = conn.execute("SELECT anchor_date, anchor_balance, anchor_source, check_from FROM accounts WHERE id = ?",
                         (account_id,)).fetchone()
     if acct is None or acct["anchor_source"] != "file" or acct["check_from"] is None:
         return None
-    start = conn.execute("SELECT anchor_after_balance FROM imports WHERE id = ?", (acct["check_from"],)).fetchone()
+    start = conn.execute("SELECT anchor_after_balance, COALESCE(covers_from, first_date, anchor_after_date) AS first_day "
+                         "FROM imports WHERE id = ?", (acct["check_from"],)).fetchone()
     current = conn.execute("SELECT MAX(id) FROM imports WHERE account_id = ? AND anchor_after_date = ? "
                            "AND anchor_after_balance = ?",
                            (account_id, acct["anchor_date"], acct["anchor_balance"])).fetchone()[0]
     if start is None or start["anchor_after_balance"] is None or current is None:
         return None
+    first_day = start["first_day"] or ""
     arrived = conn.execute(
         "SELECT COALESCE(SUM(t.amount), 0) FROM transactions t JOIN imports i ON i.id = t.import_id "
-        "WHERE t.account_id = ? AND t.fingerprint IS NOT NULL AND t.import_id > ? AND (t.import_id <= ? OR i.last_date <= ?)",
-        (account_id, acct["check_from"], current, acct["anchor_date"])).fetchone()[0]
+        "WHERE t.account_id = ? AND t.fingerprint IS NOT NULL AND t.import_id > ? AND (t.import_id <= ? OR i.last_date <= ?) "
+        "AND (t.date >= ? OR COALESCE(i.covers_from, i.first_date) >= ?)",
+        (account_id, acct["check_from"], current, acct["anchor_date"], first_day, first_day)).fetchone()[0]
     kept = conn.execute(
         "SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE account_id = ? AND hint = ? AND import_id >= ? "
         "AND NOT (by_you = 0 AND status = 'review')", (account_id, ADJUSTMENT, acct["check_from"])).fetchone()[0]

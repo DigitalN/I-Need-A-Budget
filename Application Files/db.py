@@ -36,7 +36,7 @@ from errors import UserError
 
 log = logging.getLogger("inab")
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 CANT_UNDO = "That can't be undone any more."
 
@@ -142,6 +142,8 @@ CREATE TABLE IF NOT EXISTS imports (
     rows_new INTEGER NOT NULL DEFAULT 0,
     first_date TEXT,
     last_date TEXT,
+    covers_from TEXT,                    -- the first day the file says it covers (a Quicken file's DTSTART;
+                                         -- none: it doesn't say): see ledger.balance_difference
     archived_path TEXT,
     anchor_before_date TEXT,             -- the balance this import replaced (none: the account had none) ...
     anchor_before_balance INTEGER,
@@ -341,7 +343,13 @@ class Database:
                         self.conn.execute(f"ALTER TABLE imports ADD COLUMN {column} {kind}")
             if version is not None and version < 8:
                 self._upgrade_to_8()
-            # Next upgrade: `if version is not None and version < 9: ...`, then raise SCHEMA_VERSION.
+            if version is not None and version < 9:
+                # The first day each file says it covers, so the older history a file brings isn't counted by the
+                # balance check (issue #136). Imports made before this don't know it: their first row's date stands in.
+                columns = [r["name"] for r in self.conn.execute("PRAGMA table_info(imports)")]
+                if "covers_from" not in columns:
+                    self.conn.execute("ALTER TABLE imports ADD COLUMN covers_from TEXT")
+            # Next upgrade: `if version is not None and version < 10: ...`, then raise SCHEMA_VERSION.
             self.conn.execute("INSERT INTO meta (key, value) VALUES ('schema_version', ?) "
                               "ON CONFLICT(key) DO UPDATE SET value = excluded.value", (str(SCHEMA_VERSION),))
             if version is not None and version < SCHEMA_VERSION:

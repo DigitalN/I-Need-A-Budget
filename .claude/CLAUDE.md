@@ -75,10 +75,10 @@ All in `Application Files/`:
   inverse SQL; `db.write("Label")` makes one undoable step; updates only record changed
   columns; a write without a label that changes anything clears undo, unless
   `keep_undo`; `big_step()` marks a step ⌘Z asks about first; see Key rules). Schema is at
-  version 8. To change it: raise `SCHEMA_VERSION`,
+  version 9. To change it: raise `SCHEMA_VERSION`,
   add the column to `SCHEMA` *and* an `ALTER TABLE` step in `_migrate` for existing
   databases. Upgrades copy the database to the backups folder
-  (`budget-before-upgrade-v8-to-v9-<date and time>.db`) first. The
+  (`budget-before-upgrade-v9-to-v10-<date and time>.db`) first. The
   user's real database has real data in it: test every upgrade on a copy of it first.
 - `backups.py`: backups ([ADR 0004](../docs/adr/0004-live-budget-stays-out-of-synced-folders.md)).
   `at_quit` and `at_launch` (a backup only if `changed`: the budget's `digest` differs from
@@ -174,7 +174,15 @@ All in `Application Files/`:
   − the one the check starts from − the bank's transactions that arrived since (in a later
   import, up to the one with the newest balance, or in a later file ending by then; deleted
   ones don't count) − the balance adjustments you kept since. Card files bring charges dated
-  before they posted, so by date a card looks off after most downloads. What's left waits in
+  before they posted, so by date a card looks off after most downloads. **Older history doesn't
+  count** (issue #136): a row dated before the starting file's first day, in a file that starts
+  before that day too (filling in the months before), was in the starting balance already. A
+  file's first day is the one it says it covers from (`imports.covers_from`, a Quicken file's
+  `DTSTART`; one after its own balance's date says nothing), else its first row's date, else
+  its balance's date. Not the first row's date when it says: a card file covers the days things
+  posted, so it has charges dated before its first day, and a charge dated before it that posted
+  after its balance comes in a later file that starts on that day too, and counts. An older
+  file's own balance is only compared by date, in its note (chequing and savings). What's left waits in
   the Inbox as a **balance adjustment** (hint `adjustment`, payee "Balance adjustment") dated the
   newest balance's date, so the budget's starting balance stays put: no guess, never in Accept
   all, never a transfer's other half or a copy of a bank's row (`transfers.find_counterpart`,

@@ -9,13 +9,21 @@ from helpers import call, card_number, write
 PAGE = (Path(__file__).resolve().parents[2] / "Application Files" / "index.html").read_text(encoding="utf-8")
 
 
-def card_ofx(rows, balance, as_of="20261010", acct_id=None, trntype="OTHER"):
-    """A made-up credit card OFX download. rows: (YYYYMMDD, amount, name, fitid)"""
+def covers(start, as_of):
+    """The days a made-up Quicken file says it covers, written as a bank writes them (local midnight); '' when
+    `start` is None (the file doesn't say)."""
+    return f"<DTSTART>{start}000000.000[-5:EST]<DTEND>{as_of}235959.000[-5:EST]\n" if start else ""
+
+
+def card_ofx(rows, balance, as_of="20261010", acct_id=None, trntype="OTHER", start=None):
+    """A made-up credit card OFX download. rows: (YYYYMMDD, amount, name, fitid). `start`: the first day the
+    file says it covers (DTSTART, YYYYMMDD), if it says."""
     trn = "".join(f"<STMTTRN><TRNTYPE>{trntype if isinstance(trntype, str) else trntype[i]}<DTPOSTED>{d}<TRNAMT>{a}"
                   f"<FITID>{f}<NAME>{n}</STMTTRN>\n" for i, (d, a, n, f) in enumerate(rows))
     return ("OFXHEADER:100\nDATA:OFXSGML\nVERSION:102\n\n<OFX><SIGNONMSGSRSV1><SONRS><FI><ORG>Sample Bank<FID>00000</FI></SONRS>"
             "</SIGNONMSGSRSV1><CREDITCARDMSGSRSV1><CCSTMTTRNRS><CCSTMTRS><CURDEF>CAD\n"
-            f"<CCACCTFROM><ACCTID>{acct_id or card_number('4444')}</CCACCTFROM>\n<BANKTRANLIST>\n{trn}</BANKTRANLIST>"
+            f"<CCACCTFROM><ACCTID>{acct_id or card_number('4444')}</CCACCTFROM>\n<BANKTRANLIST>\n{covers(start, as_of)}{trn}"
+            "</BANKTRANLIST>"
             f"<LEDGERBAL><BALAMT>{balance}<DTASOF>{as_of}</LEDGERBAL></CCSTMTRS></CCSTMTTRNRS></CREDITCARDMSGSRSV1></OFX>\n")
 
 
