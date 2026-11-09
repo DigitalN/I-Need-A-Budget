@@ -213,30 +213,39 @@ def test_side_files_whose_backup_is_gone_are_deleted(tmp_path):
     assert names(folder) == ["budget-2026-11-08-09-00-00.db", "notes.txt", "notes.txt-wal"]
 
 
-def test_empty_side_files_are_not_moved_over(tmp_path):
+def test_side_files_holding_nothing_are_not_moved_over(tmp_path):
     old, new = tmp_path / "Backups", tmp_path / backups.FOLDER_NAME
-    touch(old, "budget-2026-10-30.db", "budget-2026-11-01.db")
-    side_files(old, "budget-2026-10-30.db", "-wal", "-shm")
-    side_files(old, "budget-2026-10-01.db", "-shm")  # beside nothing
-    assert backups.move_old(old, new) == 2
+    touch(old, "budget-2026-10-30.db", "budget-2026-10-31.db", "budget-2026-11-01.db")
+    side_files(old, "budget-2026-10-30.db", "-wal")                     # an empty -wal,
+    side_files(old, "budget-2026-10-30.db", "-shm", holding=b"index")   # so its index holds nothing
+    side_files(old, "budget-2026-10-31.db", "-shm", holding=b"index")   # an index with no -wal
+    side_files(old, "budget-2026-11-01.db", "-journal")                 # an empty journal
+    side_files(old, "budget-2026-10-01.db", "-shm", holding=b"index")   # beside nothing
+    assert backups.move_old(old, new) == 3
     assert not old.exists()
-    assert names(new) == ["budget-2026-10-30.db", "budget-2026-11-01.db"]
+    assert names(new) == ["budget-2026-10-30.db", "budget-2026-10-31.db", "budget-2026-11-01.db"]
 
 
-def test_a_side_file_holding_something_moves_with_its_backup(tmp_path):
+def test_side_files_holding_something_move_with_their_backup(tmp_path):
     old, new = tmp_path / "Backups", tmp_path / backups.FOLDER_NAME
-    touch(old, "budget-2026-10-30.db", "budget-2026-11-01.db")
+    touch(old, "budget-2026-10-29.db", "budget-2026-10-30.db", "budget-2026-11-01.db")
+    side_files(old, "budget-2026-10-29.db", "-journal", holding=b"pages")
     side_files(old, "budget-2026-10-30.db", "-wal", holding=b"pages")
-    side_files(old, "budget-2026-10-30.db", "-shm")
+    side_files(old, "budget-2026-10-30.db", "-shm", holding=b"index")   # the index of a -wal with pages
     side_files(old, "budget-2026-11-01.db", "-wal", holding=b"other pages")
+    side_files(old, "budget-2026-11-01.db", "-shm", holding=b"other index")
     (new / "budget-2026-11-01.db").parent.mkdir()
-    (new / "budget-2026-11-01.db").write_bytes(b"something else")  # a name clash: renamed, its -wal too
-    assert backups.move_old(old, new) == 2
+    (new / "budget-2026-11-01.db").write_bytes(b"something else")  # a name clash: renamed, its side files too
+    assert backups.move_old(old, new) == 3
     assert not old.exists()
-    assert names(new) == ["budget-2026-10-30.db", "budget-2026-10-30.db-wal", "budget-2026-11-01 (2).db",
-                          "budget-2026-11-01 (2).db-wal", "budget-2026-11-01.db"]
+    assert names(new) == [
+        "budget-2026-10-29.db", "budget-2026-10-29.db-journal",
+        "budget-2026-10-30.db", "budget-2026-10-30.db-shm", "budget-2026-10-30.db-wal",
+        "budget-2026-11-01 (2).db", "budget-2026-11-01 (2).db-shm", "budget-2026-11-01 (2).db-wal",
+        "budget-2026-11-01.db"]
     assert (new / "budget-2026-10-30.db-wal").read_bytes() == b"pages"
     assert (new / "budget-2026-11-01 (2).db-wal").read_bytes() == b"other pages"
+    assert (new / "budget-2026-11-01 (2).db-shm").read_bytes() == b"other index"
     backups.prune(new, date(2027, 6, 1))  # later they go together (the newest from before today stays)
     assert names(new) == ["budget-2026-11-01.db"]
 
@@ -245,6 +254,7 @@ def test_a_backup_that_cant_be_moved_keeps_its_side_files(tmp_path, monkeypatch)
     old, new = tmp_path / "Backups", tmp_path / backups.FOLDER_NAME
     touch(old, "budget-2026-10-30.db")
     side_files(old, "budget-2026-10-30.db", "-wal", holding=b"pages")
+    side_files(old, "budget-2026-10-30.db", "-shm", holding=b"index")
     real_move = backups._move
 
     def not_the_backup(source, target):
@@ -256,7 +266,7 @@ def test_a_backup_that_cant_be_moved_keeps_its_side_files(tmp_path, monkeypatch)
     with pytest.raises(OSError):
         backups.move_old(old, new)
     backups.prune(new, date(2026, 11, 8))
-    assert names(old) == ["budget-2026-10-30.db", "budget-2026-10-30.db-wal"]
+    assert names(old) == ["budget-2026-10-30.db", "budget-2026-10-30.db-shm", "budget-2026-10-30.db-wal"]
     assert names(new) == []
 
 
