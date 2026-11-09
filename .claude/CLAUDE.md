@@ -48,7 +48,9 @@ first**. The updater logs `Automatic updates off: <reason>`, `Up to date at`,
 also when no release has been published yet: merging isn't releasing.
 `Page connected` means the window loaded and reached Python. `Backed up the budget to …`
 at a quit after a change (`No backup made: …` when nothing changed since the newest one),
-and at launch only after a session that didn't quit normally.
+and at launch only when no backup holds the budget as it is: after a session that didn't
+quit normally, at the first launch of 1.3.3 (no file named in meta yet), or after the
+newest was deleted by hand.
 
 To reproduce without touching the user's data: `INAB_DATA_DIR=<tmp folder>` (logs go to
 `<tmp folder>/Logs/`, backups to `<tmp folder>/I Need A Budget Backups/`), and `INAB_TODAY=2026-10-12` to pin "today". To see the interface,
@@ -557,7 +559,7 @@ Don't undo these without asking:
   written they go to the data folder's `Backups/` until it can. **To restore one:** quit
   the app, delete `budget.db-wal` and `budget.db-shm` in the data folder if they're
   there, and copy the backup in as `budget.db`. (Until 1.3.1: one a day at launch, 14
-  kept, in the data folder's `Backups/`, which the first launch of 1.3.2 moves over.)
+  kept, in the data folder's `Backups/`, which the first launch of 1.3.3 moves over.)
 - "Eating Out" was renamed **Food** (Actual's old name still matches through `old_names`).
 - **Update checks only at launch and on Check now**, never on a timer while the app is
   open (the maintainer's choice).
