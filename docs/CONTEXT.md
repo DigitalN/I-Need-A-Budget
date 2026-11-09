@@ -179,8 +179,8 @@ The first month the budget counts. Months before it still teach the app and coun
 towards Usual.
 
 **Backup**:
-A copy of the whole budget, made each time the app quits and kept for four months.
-Restoring one puts the budget back as it was then.
+A copy of the whole budget, made when the app quits after something changed and kept for
+four months. Restoring one puts the budget back as it was then.
 _Avoid_: export, snapshot
 
 **Cash**:

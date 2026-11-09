@@ -126,6 +126,148 @@ def test_the_first_launch_makes_a_backup(tmp_path):
     assert backups.at_launch(db, QUIT) is not None
 
 
+# ── at quit ──
+
+def test_quitting_with_nothing_changed_since_the_newest_backup_makes_none_and_says_so(tmp_path, caplog):
+    """Opening the app just to look: the newest backup already holds the budget as it is."""
+    db = open_db(tmp_path)
+    add_category(db, "Groceries")
+    first = backups.at_quit(db, QUIT)
+    with caplog.at_level(logging.INFO, logger="inab"):
+        assert backups.at_quit(db, datetime(2026, 11, 8, 18, 0, 0)) is None
+        assert backups.at_quit(db, datetime(2026, 11, 9, 8, 0, 0)) is None
+    assert names(tmp_path / backups.FOLDER_NAME) == [first.name]
+    said = [r for r in caplog.records if "No backup" in r.getMessage()]
+    assert [r.levelname for r in said] == ["INFO", "INFO"]  # one line at each quit
+    assert all(first.name in r.getMessage() for r in said)
+    assert not [r for r in caplog.records if "Backed up" in r.getMessage()]
+
+
+def test_quitting_after_a_change_makes_a_backup_holding_it(tmp_path):
+    db = open_db(tmp_path)
+    add_category(db, "Groceries")
+    first = backups.at_quit(db, QUIT)
+    add_category(db, "Rent")
+    second = backups.at_quit(db, datetime(2026, 11, 8, 18, 0, 0))
+    assert categories_in(first) == ["Groceries"]
+    assert categories_in(second) == ["Groceries", "Rent"]
+    assert backups.at_quit(db, datetime(2026, 11, 8, 19, 0, 0)) is None  # the second is the newest now
+
+
+def test_a_change_that_was_undone_is_no_change(tmp_path):
+    """The budget is the one in the newest backup, though the write-ahead log holds pages: a quit
+    makes no backup, and still folds the log in."""
+    db = open_db(tmp_path)
+    add_category(db, "Groceries")
+    first = backups.at_quit(db, QUIT)
+    add_category(db, "Rent")
+    db.undo()
+    wal = tmp_path / "budget.db-wal"
+    assert wal.stat().st_size > 0
+    assert backups.at_quit(db, datetime(2026, 11, 8, 18, 0, 0)) is None
+    assert names(tmp_path / backups.FOLDER_NAME) == [first.name]
+    assert wal.stat().st_size == 0
+
+
+def test_an_older_backup_deleted_by_hand_is_no_change(tmp_path):
+    db = open_db(tmp_path)
+    add_category(db, "Groceries")
+    older = backups.at_quit(db, datetime(2026, 11, 7, 9, 0, 0))
+    add_category(db, "Rent")
+    newest = backups.at_quit(db, datetime(2026, 11, 8, 9, 0, 0))
+    older.unlink()
+    assert not backups.changed(db)
+    assert backups.at_quit(db, QUIT) is None
+    assert names(tmp_path / backups.FOLDER_NAME) == [newest.name]
+
+
+@pytest.mark.parametrize("when", ["quit", "launch"])
+def test_the_newest_backup_deleted_by_hand_counts_as_a_change(when, tmp_path):
+    """Older ones remain, but none holds the budget as it is."""
+    db = open_db(tmp_path)
+    folder = tmp_path / backups.FOLDER_NAME
+    add_category(db, "Groceries")
+    older = backups.at_quit(db, datetime(2026, 11, 7, 9, 0, 0))
+    add_category(db, "Rent")
+    backups.at_quit(db, datetime(2026, 11, 8, 9, 0, 0)).unlink()
+    assert backups.changed(db)
+    again = (backups.at_quit if when == "quit" else backups.at_launch)(db, QUIT)
+    assert again is not None and categories_in(again) == ["Groceries", "Rent"]
+    assert names(folder) == sorted([older.name, again.name])
+    assert not backups.changed(db)
+
+
+def test_changed_is_false_right_after_a_backup(tmp_path):
+    """What `make` keeps in meta about the backup isn't a change in the budget."""
+    db = open_db(tmp_path)
+    assert backups.changed(db)  # nothing backed up yet
+    backups.make(db, QUIT)
+    assert not backups.changed(db)
+    add_category(db, "Groceries")
+    assert backups.changed(db)
+    backups.make(db, datetime(2026, 11, 8, 15, 0, 0))
+    assert not backups.changed(db)
+
+
+def test_the_digest_leaves_out_what_make_keeps_in_meta(tmp_path):
+    db = open_db(tmp_path)
+    add_category(db, "Groceries")
+    before = backups.digest(db)
+    backups.make(db, QUIT)
+    assert backups.digest(db) == before
+    db.set_meta(backups.FILE_KEY, "budget-2026-11-01-10-30-00.db")
+    db.set_meta(backups.DIGEST_KEY, "something else")
+    assert backups.digest(db) == before
+    db.set_meta("onboarded", "1")  # anything else in meta is the budget's
+    assert backups.digest(db) != before
+
+
+def test_a_budget_with_no_backup_file_in_meta_counts_as_changed(tmp_path):
+    """Backed up by a version that kept only the budget's fingerprint."""
+    db = open_db(tmp_path)
+    backups.make(db, QUIT)
+    db.conn.execute("DELETE FROM meta WHERE key = ?", (backups.FILE_KEY,))
+    assert backups.changed(db)
+    assert backups.at_quit(db, datetime(2026, 11, 8, 18, 0, 0)) is not None
+
+
+def test_a_backup_that_fails_at_quit_doesnt_stop_the_rest(tmp_path, monkeypatch, caplog):
+    db = open_db(tmp_path)
+    folder = tmp_path / backups.FOLDER_NAME
+    touch(folder, "budget-2026-05-20-12-00-00.db", "budget-2026-11-07-18-00-00.db")
+    add_category(db, "Groceries")
+    wal = tmp_path / "budget.db-wal"
+    assert wal.stat().st_size > 0
+
+    def disk_full(db, now=None):
+        raise sqlite3.OperationalError("database or disk is full")
+
+    monkeypatch.setattr(backups, "make", disk_full)
+    assert backups.at_quit(db, QUIT) is None
+    failed = [r for r in caplog.records if "Backing up at quit failed" in r.getMessage()]
+    assert len(failed) == 1 and failed[0].exc_info  # one line, with the traceback
+    assert names(folder) == ["budget-2026-11-07-18-00-00.db"]  # old ones still go
+    assert wal.stat().st_size == 0                             # and the log is still folded in
+
+
+def test_a_backups_folder_that_cant_be_read_makes_a_quit_back_up_in_the_data_folder(tmp_path):
+    """Documents access refused after a backup was made there: none can be seen, so none holds
+    the budget as it is. That's not an error, and not a reason to skip."""
+    documents = tmp_path / "Documents" / backups.FOLDER_NAME
+    db = Database(tmp_path / "data" / "budget.db", backup_dir=documents)
+    add_category(db, "Groceries")
+    backups.at_quit(db, datetime(2026, 11, 7, 9, 0, 0))
+    assert not backups.changed(db)
+    documents.chmod(0o000)
+    try:
+        assert backups.changed(db)
+        made = backups.at_quit(db, QUIT)
+    finally:
+        documents.chmod(0o700)
+    assert made == tmp_path / "data" / "Backups" / "budget-2026-11-08-14-32-05.db"
+    assert categories_in(made) == ["Groceries"]
+
+
 # ── keeping them four months ──
 
 def test_backups_older_than_four_months_go_before_upgrade_copies_included(tmp_path):
@@ -169,9 +311,11 @@ def test_the_newest_backup_from_before_today_survives_a_five_month_break(tmp_pat
     db = open_db(tmp_path)
     assert backups.at_launch(db, datetime(2026, 11, 8, 8, 0, 0)) is None
     assert names(folder) == [last.name]
+    add_category(db, "Groceries")  # a quit with nothing changed makes no backup
     today = backups.at_quit(db, datetime(2026, 11, 8, 22, 0, 0))
     assert names(folder) == sorted([last.name, today.name])
     # The day after, the one from yesterday is the newest from before today: June's goes.
+    add_category(db, "Rent")
     tomorrow = backups.at_quit(db, datetime(2026, 11, 9, 22, 0, 0))
     assert names(folder) == sorted([today.name, tomorrow.name])
 
@@ -339,6 +483,7 @@ def test_a_backups_folder_that_cant_be_written_falls_back_to_the_data_folder(tmp
         db = Database(tmp_path / "data" / "budget.db", backup_dir=documents / backups.FOLDER_NAME)
         made = backups.at_quit(db, QUIT)
         assert made == tmp_path / "data" / "Backups" / "budget-2026-11-08-14-32-05.db"
+        assert not backups.changed(db)  # the one in the data folder holds the budget as it is
         with caplog.at_level(logging.INFO, logger="inab"):
             assert backups.at_launch(db, datetime(2026, 11, 9, 8, 0, 0)) is None  # the one there counts
         assert not [r for r in caplog.records if r.exc_info]  # one line each launch, not a traceback
@@ -392,8 +537,11 @@ class FakeNSApp:
         self.terminated = True
 
 
-@pytest.mark.parametrize("route", ["close button", "⌘Q", "Restart now", "quit to install an update"])
-def test_every_way_of_quitting_leaves_a_backup_with_the_latest_changes(route, tmp_path, monkeypatch):
+ROUTES = ["close button", "⌘Q", "Restart now", "quit to install an update"]
+
+
+def start_app(monkeypatch, tmp_path):
+    """The app as main.py builds it, without its window: a budget in a throwaway folder."""
     AppKit = pytest.importorskip("AppKit")
     from PyObjCTools import AppHelper
 
@@ -405,8 +553,10 @@ def test_every_way_of_quitting_leaves_a_backup_with_the_latest_changes(route, tm
     ns_app = FakeNSApp()
     monkeypatch.setattr(AppKit, "NSApp", ns_app)
     monkeypatch.setattr(AppHelper, "callAfter", lambda fn, *args: fn(*args))
-    add_category(app._db, "Groceries")
+    return main, app, ns_app
 
+
+def quit_by(route, main, app, ns_app):
     if route == "close button":  # with no page to ask, the window closes and the app quits
         assert app._on_closing() is True
     elif route == "⌘Q":  # the page has saved what you were typing
@@ -419,8 +569,29 @@ def test_every_way_of_quitting_leaves_a_backup_with_the_latest_changes(route, tm
         app._before_quit()
     app._before_quit()  # asked again while quitting: nothing more
 
+
+@pytest.mark.parametrize("route", ROUTES)
+def test_every_way_of_quitting_leaves_a_backup_with_the_latest_changes(route, tmp_path, monkeypatch):
+    main, app, ns_app = start_app(monkeypatch, tmp_path)
+    add_category(app._db, "Groceries")
+    quit_by(route, main, app, ns_app)
+
     made = names(main.BACKUP_DIR)
     assert len(made) == 1 and categories_in(main.BACKUP_DIR / made[0]) == ["Groceries"]
     relaunch = route == "Restart now"
     assert app._updater.installs[0] == (relaunch, made)  # the update goes in after the backup
+    assert not (tmp_path / "home").exists()  # nothing near the real Documents
+
+
+@pytest.mark.parametrize("route", ROUTES)
+def test_every_way_of_quitting_with_nothing_changed_makes_no_backup_and_the_update_still_goes_in(
+        route, tmp_path, monkeypatch):
+    main, app, ns_app = start_app(monkeypatch, tmp_path)
+    add_category(app._db, "Groceries")
+    earlier = backups.at_quit(app._db, QUIT)  # the last time the app quit
+    quit_by(route, main, app, ns_app)
+
+    assert names(main.BACKUP_DIR) == [earlier.name]
+    relaunch = route == "Restart now"
+    assert app._updater.installs[0] == (relaunch, [earlier.name])
     assert not (tmp_path / "home").exists()  # nothing near the real Documents

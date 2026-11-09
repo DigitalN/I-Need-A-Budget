@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-only
-"""Backups: a complete copy of the budget at every quit, kept four months (docs/adr/0004).
+"""Backups: a complete copy of the budget at a quit after a change, kept four months (docs/adr/0004).
 
 They go to `~/Documents/I Need A Budget Backups`, which iCloud Drive can back up off the
 Mac. The live budget never moves there: it's written as you work (SQLite in WAL mode, so
@@ -8,10 +8,16 @@ three files), and a sync could catch it halfway. A backup is one complete file, 
 half a copy under a backup's name.
 
 - `at_quit`: every quit (main.py: the close button, ⌘Q, Restart now, quitting to install
-  an update).
+  an update), but a backup only when the budget changed since the newest one (`changed`).
+  Opening the app just to look would otherwise add a complete copy each time, and skipping
+  loses nothing: the newest backup already holds the budget as it is. The log says so,
+  naming that backup.
 - `at_launch`: only when the budget changed since the newest backup (`changed`), which
   means the last session didn't quit normally (a crash, a power cut). It also moves the
   backups from the data folder's old `Backups/` (where they were until 1.3.1) over, once.
+- `changed`: the budget's `digest` isn't the one `make` kept in meta, or the file `make`
+  made (its name is in meta too) is in neither folder: the newest backup deleted by hand,
+  so none holds the budget as it is until the next change.
 - The copy made before a database upgrade (db.py) goes to the same folder, under its own
   name, and is kept as long as the others.
 - `prune` keeps every backup from the last four months. The newest from before today is
@@ -54,6 +60,8 @@ FOLDER_NAME = "I Need A Budget Backups"
 OLD_FOLDER_NAME = "Backups"   # in the data folder, until 1.3.1
 KEPT_MONTHS = 4
 DIGEST_KEY = "backed_up"      # meta: `digest` of the budget when the last backup was made
+FILE_KEY = "backed_up_to"     # meta: the name of the file that backup made
+BACKUP_META = (DIGEST_KEY, FILE_KEY)  # what `make` keeps in meta: not the budget, so not in `digest`
 NOT_THE_BUDGET = ("undo_log", "undo_groups", "undo_state")  # this session's undo, cleared at launch
 SIDE_FILES = ("-wal", "-shm", "-journal")  # what SQLite leaves beside a database someone opened
 
@@ -141,9 +149,12 @@ def _copy_into(db, folder, filename):
 
 
 def make(db, now=None):
-    """A backup of the budget as it is now, remembering what it looked like (`changed`)."""
+    """A backup of the budget as it is now, remembering which file it is and what the budget
+    looked like (`changed`)."""
     with db.lock:  # nothing changes between the copy and remembering it
         target = save(db, name(now or datetime.now()))
+        # the file first: if this stops between the two, the worst is one more backup
+        db.set_meta(FILE_KEY, target.name)
         db.set_meta(DIGEST_KEY, digest(db))
     log.info("Backed up the budget to %s", target)
     return target
@@ -151,7 +162,7 @@ def make(db, now=None):
 
 def digest(db):
     """A fingerprint of everything in the budget: every table and its rows, but not this
-    session's undo (cleared at each launch) or the fingerprint kept in meta."""
+    session's undo (cleared at each launch) or what `make` keeps in meta about the last backup."""
     h = hashlib.sha256()
     with db.read() as c:
         tables = [r[0] for r in c.execute(
@@ -162,15 +173,21 @@ def digest(db):
             rows = c.execute(f'SELECT * FROM "{table}" ORDER BY rowid')
             h.update(repr((table, [d[0] for d in rows.description])).encode())
             for row in rows:
-                if table == "meta" and row[0] == DIGEST_KEY:
+                if table == "meta" and row[0] in BACKUP_META:
                     continue
                 h.update(repr(tuple(row)).encode())
     return h.hexdigest()
 
 
 def changed(db):
-    """Whether the budget changed since the newest backup was made (or there's none)."""
-    if not any(found(folder) for folder in _folders(db)):
+    """Whether no backup holds the budget as it is: it changed since the newest backup was
+    made, or that file is in neither folder any more (deleted by hand: the older ones don't
+    hold what changed since), or none was made yet (a budget `make` has never backed up has
+    no file in meta)."""
+    newest = db.get_meta(FILE_KEY)
+    # os.path, not Path.is_file(): that one raises in a folder that can't be read (Documents
+    # access refused), and then nothing there can be seen to hold the budget
+    if not newest or not any(os.path.isfile(folder / newest) for folder in _folders(db)):
         return True
     return db.get_meta(DIGEST_KEY) != digest(db)
 
@@ -324,11 +341,13 @@ def at_launch(db, now=None):
 
 
 def at_quit(db, now=None):
-    """Every quit: a backup, then old ones go, then budget.db is made whole on its own (the
-    write-ahead log folded in and emptied), so a backup copied back while the app is closed
-    isn't mixed with what the log still held."""
+    """Every quit: a backup if the budget changed since the newest one (opening the app just to
+    look makes none: that one already holds it), then old ones go, then budget.db is made whole
+    on its own (the write-ahead log folded in and emptied), so a backup copied back while the app
+    is closed isn't mixed with what the log still held. Each step is tried even if one before it
+    failed. Returns the backup made, if any."""
     now = now or datetime.now()
-    made = make(db, now)
+    made = _try("Backing up at quit", lambda: _back_up_at_quit(db, now))
     _prune_all(db, now)
     try:
         with db.lock:
@@ -336,6 +355,13 @@ def at_quit(db, now=None):
     except sqlite3.Error:
         log.exception("Couldn't fold the write-ahead log into the database")
     return made
+
+
+def _back_up_at_quit(db, now):
+    if changed(db):
+        return make(db, now)
+    log.info("No backup made: the budget hasn't changed since %s", db.get_meta(FILE_KEY))
+    return None
 
 
 def _prune_all(db, now):

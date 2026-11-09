@@ -6,8 +6,8 @@ updater, and the pywebview window. The page talks to Python through pywebview's
 in-process bridge (`window.pywebview.api.call(name, args)` → service.BudgetService), so
 the app opens no network ports. Its only network access is the update check
 (updater.py); "Release notes" in Settings opens GitHub in your browser. All data stays in
-~/Library/Application Support/I Need A Budget, and a backup of the budget is made at every
-quit into ~/Documents/I Need A Budget Backups (backups.py, docs/adr/0004).
+~/Library/Application Support/I Need A Budget, and quitting after a change backs the budget
+up into ~/Documents/I Need A Budget Backups (backups.py, docs/adr/0004).
 
 Closing the window quits the app entirely (it isn't meant to keep running in the
 background), and so does ⌘Q: the page saves what you're typing first, and asks only about
@@ -345,7 +345,8 @@ class BudgetApp:
         return False
 
     def _before_quit(self, backed_up=False):
-        """Once, whichever way the app quits: a backup, then a downloaded update is installed."""
+        """Once, whichever way the app quits: a backup (if the budget changed), then a downloaded
+        update is installed."""
         if self._quitting:
             return
         self._quitting = True
