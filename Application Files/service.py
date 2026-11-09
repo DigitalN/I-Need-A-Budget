@@ -724,6 +724,11 @@ class BudgetService:
                 if imp["anchor_after_date"] is not None:
                     self._take_back_balance(c, imp)
                 self._take_back_check(c, imp)
+                # A balance adjustment from Check balance… made after this import now comes after the one before it:
+                # the next import can be given this one's number, and a file's balance as new as it still takes it over.
+                c.execute("UPDATE transactions SET after_import = (SELECT MAX(id) FROM imports WHERE account_id = ? "
+                          "AND id < ? AND anchor_after_date IS NOT NULL) WHERE after_import = ?",
+                          (imp["account_id"], import_id, import_id))
             c.execute("DELETE FROM imports WHERE id = ?", (import_id,))
             inbox = self._inbox(c)
             inbox.ask_again(others, "Its other half was removed with its import")
@@ -1644,9 +1649,10 @@ class BudgetService:
         has for that day changes nothing (issue #135): onboarding's 3. Balances saves every box, and
         a file's balance left as it is keeps its date and its check. Any other is a typed balance:
         the next file's balance replaces it as it is (no balance adjustment), and checks start again
-        from that file's. A card's file balance read as in your favour and given as owing (*In your
-        favour* unticked) also settles how its files write what you owe, like the answer to "Is
-        $120.50 what you owe…?"."""
+        from that file's. It stands for everything, so the app's balance adjustments waiting for the
+        account go (issue #137); yours stay. A card's file balance read as in your favour and given as
+        owing (*In your favour* unticked) also settles how its files write what you owe, like the
+        answer to "Is $120.50 what you owe…?"."""
         date = _date(date) if date else date
         with self.db.write("Set balance") as c:
             acct = c.execute("SELECT kind, anchor_source, anchor_balance FROM accounts WHERE id = ?",
@@ -1658,6 +1664,7 @@ class BudgetService:
             if ledger.account_balance(c, account_id, day) != value:
                 if ledger.is_debt(acct["kind"]) and acct["anchor_source"] == "file" and acct["anchor_balance"] > 0 > value:
                     importer.remember_owed(c, account_id)
+                self._inbox(c).drop_adjustments(account_id)
                 c.execute("UPDATE accounts SET anchor_date = ?, anchor_balance = ?, anchor_source = 'typed', "
                           "check_from = NULL WHERE id = ?", (day, value, account_id))
         return self.accounts()
@@ -1665,10 +1672,14 @@ class BudgetService:
     @exposed
     def reconcile(self, account_id, cents, in_favour=False):
         """The bank shows a different balance: add a balance adjustment for the difference today,
-        waiting in the Inbox. Like a balance you type, it's what the next file's balance is no
-        longer checked against: that one is taken as it is, and checks start again from it."""
+        waiting in the Inbox. It doesn't end the balance check (issue #137): it stands for what's
+        happened since the newest file's balance, and a file's balance as new as it, from a later
+        import, takes it over (ledger.balance_difference). It changes the balance after everything
+        imported, never the days before, whatever the day: on the day of a file's balance it comes
+        after it (ledger.account_balance); on the day of a balance no file gave (typed, or a file's
+        from before version 7 said which), the bank's balance becomes that day's, the adjustment in it."""
         with self.db.write("Balance adjustment") as c:
-            acct = c.execute("SELECT kind FROM accounts WHERE id = ?", (account_id,)).fetchone()
+            acct = c.execute("SELECT kind, anchor_date FROM accounts WHERE id = ?", (account_id,)).fetchone()
             if acct is None:
                 raise UserError("That account no longer exists.")
             target = _balance_sign(acct["kind"], _amount(cents), in_favour)
@@ -1678,11 +1689,16 @@ class BudgetService:
             diff = target - ours
             if diff == 0:
                 return {"adjusted": 0}
+            day = max(self.today(), acct["anchor_date"])
+            if day == acct["anchor_date"] and ledger.anchor_import(c, account_id) is None:
+                c.execute("UPDATE accounts SET anchor_balance = anchor_balance + ?, anchor_source = 'typed' WHERE id = ?",
+                          (diff, account_id))
             payee = ledger.get_or_create_payee(c, ledger.ADJUSTMENT_PAYEE, "bank")
             txn_id = c.execute("INSERT INTO transactions (account_id, date, amount, payee_id, hint, category_id, status, "
-                               "reason) VALUES (?, ?, ?, ?, ?, NULL, 'review', 'To match the balance the bank shows')",
-                               (account_id, self.today(), diff, payee, ADJUSTMENT)).lastrowid
-            c.execute("UPDATE accounts SET check_from = NULL WHERE id = ?", (account_id,))
+                               "reason, after_import) VALUES (?, ?, ?, ?, ?, NULL, 'review', "
+                               "'To match the balance the bank shows', ?)",
+                               (account_id, day, diff, payee, ADJUSTMENT,
+                                ledger.newest_balance_import(c, account_id))).lastrowid
             self._inbox(c).arrive([txn_id])  # it waits for you: no guess, never in Accept all
         return {"adjusted": diff}
 

@@ -36,7 +36,7 @@ from errors import UserError
 
 log = logging.getLogger("inab")
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 CANT_UNDO = "That can't be undone any more."
 
@@ -196,6 +196,9 @@ CREATE TABLE IF NOT EXISTS transactions (
     fingerprint TEXT,                    -- importer.fingerprint(); never change how it's computed
     fitid TEXT,                          -- OFX's own transaction ID
     import_id INTEGER REFERENCES imports(id) ON DELETE SET NULL,
+    after_import INTEGER,                -- a balance adjustment from Check balance…: the newest import that set the
+                                         -- account's balance when you checked (ledger.balance_difference); not a
+                                         -- reference, so it outlives that import being removed
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE UNIQUE INDEX IF NOT EXISTS transactions_fingerprint
@@ -349,7 +352,13 @@ class Database:
                 columns = [r["name"] for r in self.conn.execute("PRAGMA table_info(imports)")]
                 if "covers_from" not in columns:
                     self.conn.execute("ALTER TABLE imports ADD COLUMN covers_from TEXT")
-            # Next upgrade: `if version is not None and version < 10: ...`, then raise SCHEMA_VERSION.
+            if version is not None and version < 10:
+                # Check balance… no longer ends the balance check (issue #137): its balance adjustment remembers the
+                # newest import that set the balance then, so a later file's balance can take it over.
+                columns = [r["name"] for r in self.conn.execute("PRAGMA table_info(transactions)")]
+                if "after_import" not in columns:
+                    self.conn.execute("ALTER TABLE transactions ADD COLUMN after_import INTEGER")
+            # Next upgrade: `if version is not None and version < 11: ...`, then raise SCHEMA_VERSION.
             self.conn.execute("INSERT INTO meta (key, value) VALUES ('schema_version', ?) "
                               "ON CONFLICT(key) DO UPDATE SET value = excluded.value", (str(SCHEMA_VERSION),))
             if version is not None and version < SCHEMA_VERSION:

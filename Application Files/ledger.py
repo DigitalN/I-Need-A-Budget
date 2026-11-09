@@ -71,18 +71,40 @@ def account_by_key(conn, keys):
 
 def account_balance(conn, account_id, as_of=None):
     """The balance at the end of `as_of` (default: after everything imported), worked out
-    from the one balance the user gave us. None if they haven't given one yet."""
+    from the one balance the user gave us. None if they haven't given one yet.
+
+    A balance adjustment from Check balance… dated the balance's own day, made after the file that
+    gave it, is what the bank showed later that day: it comes after that balance, not in it (issue
+    #137). A Quicken file's balance is usually dated the day it was downloaded, so that's the usual
+    day to check."""
     acct = conn.execute("SELECT anchor_date, anchor_balance FROM accounts WHERE id = ?", (account_id,)).fetchone()
     if acct is None or acct["anchor_date"] is None:
         return None
     anchor = acct["anchor_date"]
     as_of = as_of or "9999-12-31"
+    late = "COALESCE(date = :anchor AND hint = :hint AND import_id IS NULL AND after_import >= :file, 0)"
     delta = conn.execute(
-        "SELECT COALESCE(SUM(CASE WHEN date > :anchor AND date <= :asof THEN amount "
-        "                         WHEN date > :asof AND date <= :anchor THEN -amount ELSE 0 END), 0) "
+        f"SELECT COALESCE(SUM(CASE WHEN (date > :anchor OR {late}) AND date <= :asof THEN amount "
+        f"                          WHEN date > :asof AND date <= :anchor AND NOT {late} THEN -amount ELSE 0 END), 0) "
         "FROM transactions WHERE account_id = :id",
-        {"anchor": anchor, "asof": as_of, "id": account_id}).fetchone()[0]
+        {"anchor": anchor, "asof": as_of, "id": account_id, "hint": ADJUSTMENT,
+         "file": anchor_import(conn, account_id)}).fetchone()[0]
     return acct["anchor_balance"] + delta
+
+
+def anchor_import(conn, account_id):
+    """The import whose file balance is the account's balance now, or None: a balance you typed, or a
+    file's from before version 7 recorded which import set it."""
+    return conn.execute(
+        "SELECT MAX(i.id) FROM imports i JOIN accounts a ON a.id = i.account_id WHERE a.id = ? "
+        "AND i.anchor_after_date = a.anchor_date AND i.anchor_after_balance = a.anchor_balance", (account_id,)).fetchone()[0]
+
+
+def newest_balance_import(conn, account_id):
+    """The newest import that set the account's balance (None: none has): what a balance adjustment
+    from Check balance… comes after."""
+    return conn.execute("SELECT MAX(id) FROM imports WHERE account_id = ? AND anchor_after_date IS NOT NULL",
+                        (account_id,)).fetchone()[0]
 
 
 # ── the balance check ────────────────────────────────────────
@@ -98,16 +120,78 @@ def account_balance(conn, account_id, as_of=None):
 # every import into the account, so it shrinks, or goes, as the missing transactions arrive, and Remove
 # import puts it back the way it was. Older history a file fills in (rows from before the day the starting
 # file covers from) was in the starting balance already, so it doesn't count (balance_difference).
+#
+# Check balance… doesn't end the check (issue #137). Its balance adjustment stands for what's happened since
+# the newest file's balance, so the check leaves it alone until a file whose balance is as new as it comes in
+# after it. That file takes it over: while it's the app's it becomes the check's own (it goes, or stays as what
+# that file doesn't explain); one you've categorized counts as one you kept.
 
 ADJUSTMENT_PAYEE = "Balance adjustment"
 
 
 @dataclass
+class Span:
+    """What an account's balance check covers: from the file balance it starts from to the newest one."""
+    check_from: int     # the import the check starts from
+    start_balance: int  # its balance ...
+    start_date: str     # ... and that balance's date
+    first_day: str      # the first day it covers (issue #136)
+    current: int        # the import that brought the newest balance
+    balance: int        # the newest balance ...
+    date: str           # ... and its date
+
+
+# A balance adjustment from Check balance… (it has no import) that the check has taken over: a file's balance as
+# new as it came in after it (the newest balance came from a later import than the newest one when you checked,
+# and is dated on or after it), inside what the check covers (it came after the file the check starts from, or is
+# dated after that file's balance).
+_TAKEN_OVER = ("(import_id IS NULL AND COALESCE(after_import, 0) < :current AND date <= :date "
+               "AND (COALESCE(after_import, 0) >= :check_from OR date > :start_date))")
+# The check's own balance adjustments, and those it has taken over.
+_CHECKED = f"account_id = :id AND hint = :hint AND (import_id >= :check_from OR {_TAKEN_OVER})"
+# One from Check balance… that the file the check starts from is as new as, made before that file came in: that
+# balance has it. One of the app's goes; one you kept stays out of the check.
+_IN_START = "(import_id IS NULL AND COALESCE(after_import, 0) < :check_from AND date <= :start_date)"
+
+
+def _span_params(account_id, span):
+    return {"id": account_id, "hint": ADJUSTMENT, "check_from": span.check_from, "current": span.current,
+            "date": span.date, "start_date": span.start_date}
+
+
+def check_span(conn, account_id):
+    """What the account's balance check covers, or None when its balance isn't checked (typed, or no file
+    balance to start from yet)."""
+    acct = conn.execute("SELECT anchor_date, anchor_balance, anchor_source, check_from FROM accounts WHERE id = ?",
+                        (account_id,)).fetchone()
+    if acct is None or acct["anchor_source"] != "file" or acct["check_from"] is None:
+        return None
+    start = conn.execute("SELECT anchor_after_balance, anchor_after_date, "
+                         "COALESCE(covers_from, first_date, anchor_after_date) AS first_day "
+                         "FROM imports WHERE id = ?", (acct["check_from"],)).fetchone()
+    current = anchor_import(conn, account_id)
+    if start is None or start["anchor_after_balance"] is None or current is None:
+        return None
+    return Span(acct["check_from"], start["anchor_after_balance"], start["anchor_after_date"], start["first_day"] or "",
+                current, acct["anchor_balance"], acct["anchor_date"])
+
+
+@dataclass
 class Difference:
-    waiting: int     # what no transaction explains, in cents: the balance adjustment that should wait
-    date: str        # the newest file balance's date: the adjustment's
-    check_from: int  # the import the check starts from
-    current: int     # the import that brought the newest balance
+    waiting: int  # what no transaction explains, in cents: the balance adjustment that should wait
+    span: Span
+
+    @property
+    def date(self):  # the newest file balance's date: the adjustment's
+        return self.span.date
+
+    @property
+    def check_from(self):
+        return self.span.check_from
+
+    @property
+    def current(self):
+        return self.span.current
 
 
 def balance_difference(conn, account_id):
@@ -116,7 +200,8 @@ def balance_difference(conn, account_id):
     one the check starts from, less the bank's transactions that arrived since (in a later import, up
     to the one that brought the newest balance, or in any later file that ends by then), less the
     balance adjustments you kept since. The adjustment waiting for you isn't counted: this is what it
-    should be.
+    should be. A balance adjustment from Check balance… counts once the check has taken it over (see
+    _TAKEN_OVER): one you kept, as kept; one of the app's becomes the one waiting.
 
     Older history isn't money that arrived since (issue #136): a row dated before the starting file's
     first day, in a file that starts before that day too, was in the starting balance already. A file's
@@ -124,44 +209,34 @@ def balance_difference(conn, account_id):
     its first row's date, else (no rows) its balance's date. Not the first row's date when it says: a
     card file covers the days things posted, so it has charges dated before its first day, and a charge
     dated before it that posted after its balance comes in a later file that starts on that day too."""
-    acct = conn.execute("SELECT anchor_date, anchor_balance, anchor_source, check_from FROM accounts WHERE id = ?",
-                        (account_id,)).fetchone()
-    if acct is None or acct["anchor_source"] != "file" or acct["check_from"] is None:
+    span = check_span(conn, account_id)
+    if span is None:
         return None
-    start = conn.execute("SELECT anchor_after_balance, COALESCE(covers_from, first_date, anchor_after_date) AS first_day "
-                         "FROM imports WHERE id = ?", (acct["check_from"],)).fetchone()
-    current = conn.execute("SELECT MAX(id) FROM imports WHERE account_id = ? AND anchor_after_date = ? "
-                           "AND anchor_after_balance = ?",
-                           (account_id, acct["anchor_date"], acct["anchor_balance"])).fetchone()[0]
-    if start is None or start["anchor_after_balance"] is None or current is None:
-        return None
-    first_day = start["first_day"] or ""
     arrived = conn.execute(
         "SELECT COALESCE(SUM(t.amount), 0) FROM transactions t JOIN imports i ON i.id = t.import_id "
         "WHERE t.account_id = ? AND t.fingerprint IS NOT NULL AND t.import_id > ? AND (t.import_id <= ? OR i.last_date <= ?) "
         "AND (t.date >= ? OR COALESCE(i.covers_from, i.first_date) >= ?)",
-        (account_id, acct["check_from"], current, acct["anchor_date"], first_day, first_day)).fetchone()[0]
-    kept = conn.execute(
-        "SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE account_id = ? AND hint = ? AND import_id >= ? "
-        "AND NOT (by_you = 0 AND status = 'review')", (account_id, ADJUSTMENT, acct["check_from"])).fetchone()[0]
-    return Difference(acct["anchor_balance"] - start["anchor_after_balance"] - arrived - kept, acct["anchor_date"],
-                      acct["check_from"], current)
+        (account_id, span.check_from, span.current, span.date, span.first_day, span.first_day)).fetchone()[0]
+    kept = conn.execute(f"SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE {_CHECKED} "
+                        "AND NOT (by_you = 0 AND status = 'review')", _span_params(account_id, span)).fetchone()[0]
+    return Difference(span.balance - span.start_balance - arrived - kept, span)
 
 
-def waiting_adjustments(conn, account_id, check_from):
+def waiting_adjustments(conn, account_id, span):
     """The account's balance adjustments that are the app's and wait in the Inbox, made since the
-    check started from `check_from`, newest first: what Inbox.check_balance keeps up to date."""
+    check started (or taken over by it, or in the balance it starts from), newest first: what
+    Inbox.check_balance keeps up to date."""
     return [r["id"] for r in conn.execute(
-        "SELECT id FROM transactions WHERE account_id = ? AND hint = ? AND by_you = 0 AND status = 'review' "
-        "AND import_id >= ? ORDER BY id DESC", (account_id, ADJUSTMENT, check_from))]
+        f"SELECT id FROM transactions WHERE ({_CHECKED} OR (account_id = :id AND hint = :hint AND {_IN_START})) "
+        "AND by_you = 0 AND status = 'review' ORDER BY id DESC", _span_params(account_id, span))]
 
 
-def kept_adjustments(conn, account_id, check_from):
-    """The balance adjustments you kept (categorized, or decided about) since the check started
-    from `check_from`, oldest first."""
+def kept_adjustments(conn, account_id, span):
+    """The balance adjustments you kept (categorized, or decided about) since the check started (or
+    taken over by it), oldest first."""
     return conn.execute(
-        "SELECT * FROM transactions WHERE account_id = ? AND hint = ? AND import_id >= ? "
-        "AND NOT (by_you = 0 AND status = 'review') ORDER BY date, id", (account_id, ADJUSTMENT, check_from)).fetchall()
+        f"SELECT * FROM transactions WHERE {_CHECKED} AND NOT (by_you = 0 AND status = 'review') ORDER BY date, id",
+        _span_params(account_id, span)).fetchall()
 
 
 def likely_gap(conn, account_id, check_from):

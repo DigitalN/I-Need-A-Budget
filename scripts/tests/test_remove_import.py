@@ -96,7 +96,7 @@ def test_an_existing_database_upgrades_with_imports_that_remember_nothing(tmp_pa
     again = db.Database(path)
     columns = [r["name"] for r in again.conn.execute("PRAGMA table_info(imports)")]
     assert {"anchor_before_date", "anchor_before_balance", "anchor_after_date", "anchor_after_balance"} <= set(columns)
-    assert again.get_meta("schema_version") == str(db.SCHEMA_VERSION) == "9"
+    assert again.get_meta("schema_version") == str(db.SCHEMA_VERSION) == "10"
     old = again.conn.execute("SELECT * FROM imports").fetchone()
     assert (old["filename"], old["anchor_after_date"]) == ("old.ofx", None)  # removing it leaves the balance as it is
-    assert list((tmp_path / "I Need A Budget Backups").glob("budget-before-upgrade-v6-to-v9-*.db"))
+    assert list((tmp_path / "I Need A Budget Backups").glob("budget-before-upgrade-v6-to-v10-*.db"))
