@@ -10,8 +10,12 @@ quits, go to `Documents/I Need A Budget Backups`.
 
 ## Consequences
 
-- A backup is made at every quit, and at launch only when the budget changed since the
-  newest backup (the last session didn't quit normally: a crash, a power cut).
+- A backup is made at a quit only when the budget changed since the newest backup, and at
+  launch likewise (the last session didn't quit normally: a crash, a power cut). Opening
+  the app just to look would otherwise add a complete copy to iCloud Drive at every quit,
+  and skipping loses nothing: the newest backup already holds the budget as it is. If that
+  backup was deleted by hand, that counts as a change, so the budget as it is always sits
+  in some backup.
 - Backups, the copies made before a database upgrade included, are kept four months. The
   newest backup from before today is never deleted for its age, so a long break can't
   empty the folder.
@@ -24,5 +28,7 @@ quits, go to `Documents/I Need A Budget Backups`.
   the write-ahead log into `budget.db` and empties it, so after a normal quit nothing
   else in the data folder still holds changes; after a crash, `budget.db-wal` and
   `budget.db-shm` are deleted first.
-- Decided 2026-10-14, for Windows and the Mac; built for the Mac alone in 1.3.2 once the
-  Windows plan was shelved. Backups used to be made at launch, one per day, 14 kept.
+- Decided 2026-10-14, for Windows and the Mac; built for the Mac alone in 1.3.3 once the
+  Windows plan was shelved. Backups used to be made at launch, one per day, 14 kept. A quit
+  with nothing changed since the newest backup makes none: decided 2026-11-08 (issue #133),
+  the maintainer's answer being "Yes, skip them".

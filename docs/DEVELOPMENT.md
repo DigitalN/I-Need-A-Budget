@@ -173,8 +173,9 @@ is up to date (1.0.0 and 1.0.1 also said that when the token couldn't see the re
   `Downloading`, `ready to install`, and on quit `Installed <version>`.
 - [ ] The maintainer's own copy updates the same way (within a day, or Settings → Check
   now, then quit). Its log shows `Backed up the budget to …/Documents/I Need A Budget
-  Backups/…` on quit. If the release raised the schema, it also shows `Upgraded the
-  database`, and that folder has the pre-upgrade copy.
+  Backups/…` on quit (`No backup made: …` if nothing changed since the newest one). If
+  the release raised the schema, it also shows `Upgraded the database`, and that folder
+  has the pre-upgrade copy.
 - [ ] CLAUDE.md and the README describe what's shipping (new features, decisions, gaps).
 
 ## How updates work

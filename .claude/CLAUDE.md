@@ -47,7 +47,10 @@ first**. The updater logs `Automatic updates off: <reason>`, `Up to date at`,
 `Downloading`, `ready to install`, `Installed …` or `Update check failed: …`. "Up to date"
 also when no release has been published yet: merging isn't releasing.
 `Page connected` means the window loaded and reached Python. `Backed up the budget to …`
-at every quit, and at launch only after a session that didn't quit normally.
+at a quit after a change (`No backup made: …` when nothing changed since the newest one),
+and at launch only when no backup holds the budget as it is: after a session that didn't
+quit normally, at the first launch of 1.3.3 (no file named in meta yet), or after the
+newest was deleted by hand.
 
 To reproduce without touching the user's data: `INAB_DATA_DIR=<tmp folder>` (logs go to
 `<tmp folder>/Logs/`, backups to `<tmp folder>/I Need A Budget Backups/`), and `INAB_TODAY=2026-10-12` to pin "today". To see the interface,
@@ -79,7 +82,8 @@ All in `Application Files/`:
   user's real database has real data in it: test every upgrade on a copy of it first.
 - `backups.py`: backups ([ADR 0004](../docs/adr/0004-live-budget-stays-out-of-synced-folders.md)).
   `at_quit` and `at_launch` (a backup only if `changed`: the budget's `digest` differs from
-  the one kept in meta at the last backup), one complete file each (`VACUUM INTO`, then
+  the one kept in meta at the last backup, or the file that backup made, whose name is kept
+  there too, is in neither backups folder), one complete file each (`VACUUM INTO`, then
   renamed), `prune` (four months; the `-wal`/`-shm` SQLite leaves beside a backup opened in
   place go with it), `move_old` (the data folder's old `Backups/`).
   `scripts/tests/test_backups.py` covers it, every way of quitting included.
@@ -540,19 +544,22 @@ Don't undo these without asking:
   a pop-up "<its own button> and quit". The maintainer's wording: "finish", never "save",
   which would suggest the rest might not be saved. Logging out or shutting down quits
   straight away. A downloaded update installs on quit.
-- **A backup at every quit, into Documents** (issue #21,
+- **A backup at a quit after a change, into Documents** (issues #21 and #133,
   [ADR 0004](../docs/adr/0004-live-budget-stays-out-of-synced-folders.md)):
   `~/Documents/I Need A Budget Backups`, which iCloud Drive can back up; the live budget
-  never moves there. One at every quit (the close button, ⌘Q, Restart now, quitting to
-  install an update: before the update goes in), and at launch only when the budget
-  changed since the newest one (a crash, a power cut). Named with the date and time
-  (`budget-2026-11-08-14-32-05.db`). Every one from the last four months is kept,
+  never moves there. One at a quit (the close button, ⌘Q, Restart now, quitting to
+  install an update: before the update goes in) only when the budget changed since the
+  newest one: opening the app just to look would add a complete copy every time, and
+  skipping loses nothing (the maintainer: "Yes, skip them"; the log says
+  `No backup made: …`). The newest one deleted by hand counts as a change, so the budget
+  as it is always sits in some backup. At launch likewise (a crash, a power cut). Named
+  with the date and time (`budget-2026-11-08-14-32-05.db`). Every one from the last four months is kept,
   before-upgrade copies included, and the newest from before today is never deleted for
   its age. With `INAB_DATA_DIR` they stay inside that folder. If Documents can't be
   written they go to the data folder's `Backups/` until it can. **To restore one:** quit
   the app, delete `budget.db-wal` and `budget.db-shm` in the data folder if they're
   there, and copy the backup in as `budget.db`. (Until 1.3.1: one a day at launch, 14
-  kept, in the data folder's `Backups/`, which the first launch of 1.3.2 moves over.)
+  kept, in the data folder's `Backups/`, which the first launch of 1.3.3 moves over.)
 - "Eating Out" was renamed **Food** (Actual's old name still matches through `old_names`).
 - **Update checks only at launch and on Check now**, never on a timer while the app is
   open (the maintainer's choice).
