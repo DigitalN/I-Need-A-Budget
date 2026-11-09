@@ -494,6 +494,12 @@ def _positive_balance(conn, account_id, balance, ours, answer):
     return -balance if _remembered(conn, account_id, "positive") == "owed" else balance
 
 
+def remember_owed(conn, account_id):
+    """A balance above zero in this card's files is what you owe, as you said (a file's balance
+    read as in your favour, given as owing): later files are read that way (_positive_balance)."""
+    _remember(conn, account_id, "positive", "owed")
+
+
 def _match_rows(part):
     """The rows to find a card file's account by: as the app will have them if the file is flipped."""
     return [replace(r, amount=-r.amount) for r in part.rows] if part.flip_guess else part.rows
