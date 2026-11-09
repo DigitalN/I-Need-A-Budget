@@ -51,7 +51,7 @@ def test_different_transactions_sharing_a_date_like_fitid_are_both_kept(app):
     # Another download with a different transaction on a day that already has one.
     later = write(app.test_downloads, "b.ofx", ofx([("20261008", "-4.50", "SAMPLE CAFE", "20261008"),
                                                     ("20261008", "-12.00", "SAMPLE BAKERY", "20261008")],
-                                                   "90.00", "20261012"))
+                                                   "88.00", "20261012"))
     [result] = call(app, "import_files", [str(later)])["results"]
     assert (result["added"], result["duplicates"]) == (1, 1)
     assert _amounts(app) == [-6120, -1200, -450]

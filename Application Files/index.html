@@ -533,10 +533,13 @@ function track(p) {
   p.then(done, done);
   return p;
 }
+// The undo step ⌘Z would reverse, as of the app's last answer (service.dispatch): a step's toast undoes that one.
+let lastStep = null;
 async function call(name, args) {
   const api = window.pywebview && window.pywebview.api;
   if (!api) throw new Error('The app bridge is not ready');
   const r = await track(api.call(name, args === undefined ? [] : args));
+  if (r && r.ok && 'step' in r) lastStep = r.step;
   if (!r || !r.ok) {
     const msg = (r && r.error) || 'Something went wrong';
     toast(msg, { error: true });
@@ -548,6 +551,7 @@ async function call(name, args) {
 // Like call(), but returns {ok, result, error} instead of showing errors as a toast.
 async function tryCall(name, args) {
   const r = await track(window.pywebview.api.call(name, args === undefined ? [] : args));
+  if (r && r.ok && 'step' in r) lastStep = r.step;
   if (r && r.ok && r.result && r.result.counts) setCounts(r.result.counts);
   return r || { ok: false, error: 'Something went wrong' };
 }
@@ -572,7 +576,8 @@ function toast(msg, opts = {}) {
     btn.type = 'button';
     btn.textContent = a.label;
     btn.onmousedown = e => e.preventDefault();  // the box you're in stays the one you're in
-    btn.onclick = () => { el.classList.remove('show'); a.run(); };
+    const run = a === undoAction ? undoStep(lastStep) : a.run;  // the step this message is about
+    btn.onclick = () => { el.classList.remove('show'); run(); };
     el.appendChild(btn);
   }
   if (opts.error) { errorsShown++; lastError = msg; }
@@ -581,14 +586,31 @@ function toast(msg, opts = {}) {
   clearTimeout(toastTimer);
   if (!opts.stay) toastTimer = setTimeout(() => el.classList.remove('show'), opts.action || opts.actions ? 7000 : (opts.error ? 6000 : 3200));
 }
-const undoAction = { label: 'Undo', run: () => doUndo() };
+// A step's toast offers Undo: it undoes the step the toast is about (the step as the toast showed),
+// without asking, since the message next to it says what it undoes.
+const undoAction = { label: 'Undo' };
+const undoStep = step => () => doUndo({ step });
 
-async function doUndo() {
+// ⌘Z (no `step`): asks first when the step is a big one (service.undo_step: "Undo Add account
+// Savings? Savings is deleted."), and undoes exactly the step it asked about. A toast's Undo
+// (`step`) doesn't ask. A step that's gone, or can't be undone any more, says so.
+let undoing = false;
+async function doUndo({ step } = {}) {
+  if (undoing) return;
+  undoing = true;
   try {
-    const r = await call('undo');
+    if (step === undefined) {
+      const next = await call('undo_step');
+      if (!next) return toast('Nothing to undo');
+      if (next.big && !await confirmBox(`Undo ${next.label}?`, next.undoes, 'Undo')) return;
+      step = next.step;
+    }
+    if (step === null) return toast('Nothing to undo');
+    const r = await call('undo', { step });
     toast(`Undone: ${r.undone}`);
     await refresh();
-  } catch (_) {}
+  } catch (_) {
+  } finally { undoing = false; }
 }
 
 // Dialog: resolves with the clicked action's value (or null). `check(dlg)` on an action
@@ -2033,6 +2055,10 @@ function itemCard(t, i) {
       `<button class="btn small" data-act="sub-link" data-id="${t.id}" data-sub="${c.id}">New price for ${esc(c.name)}${c.due_now ? ' (due now)' : ''}</button>`).join(' ')}</span>
       <button class="btn small" data-act="sub-new" data-id="${t.id}">A new subscription…</button>
       <span class="small muted">Or pick a category below for a one-off purchase.</span></div>` : '';
+  // The money a balance adjustment you kept stood for has arrived (Inbox._look_adjustment): the reason asks.
+  const adjust = t.adjustment_question ? `<div class="question">
+      <button class="btn small" data-act="adjust-remove" data-id="${t.id}">Remove it</button>
+      <button class="btn small" data-act="adjust-keep" data-id="${t.id}">Keep both</button></div>` : '';
   return `<div class="item" data-index="${i}" tabindex="-1">
     <div>
       <div class="who"><span class="link" style="color:inherit" data-act="rename" data-id="${t.id}" title="Rename or change payee">${who}</span>
@@ -2042,7 +2068,7 @@ function itemCard(t, i) {
       ${t.reason ? `<div class="why">💡 <span>${esc(t.reason)}</span></div>` : ''}
     </div>
     <div class="amount ${t.amount > 0 ? 'pos' : ''}">${money(t.amount, { sign: t.amount > 0 })}</div>
-    ${question}${sub}
+    ${question}${sub}${adjust}
     <div class="chips">${chipsHtml(t.suggestions || [])}
       <button class="chip" data-act="other" data-id="${t.id}">Other…</button><span class="sep"></span>
       <button class="btn small ghost" data-act="transfer" data-id="${t.id}">Transfer</button>
@@ -2293,7 +2319,13 @@ async function inboxAction(btn, e) {
     await call('link_subscription', [id, Number(btn.dataset.sub)]);
     toast('New price saved', { action: undoAction }); await renderInbox();
   } else if (act === 'sub-new') { if (await newSubscriptionDialog(id)) await renderInbox(); }
-  else if (act === 'always-ask') {
+  else if (act === 'adjust-remove') {
+    await call('remove_adjustment', [id]);
+    toast('Balance adjustment removed', { action: undoAction }); await renderInbox();
+  } else if (act === 'adjust-keep') {
+    await call('keep_both', [id]);
+    toast('Kept both: this one waits for a category', { action: undoAction }); await renderInbox();
+  } else if (act === 'always-ask') {
     const categorized = await call('set_always_ask', [Number(btn.dataset.payee), btn.dataset.on === '1']);
     toast(btn.dataset.on === '1' ? 'Each one is asked about on its own now, and none are categorized without asking'
       : categorized ? `${plural(categorized, 'transaction')} categorized without asking` : 'Grouped together again', { action: undoAction });
@@ -2756,7 +2788,7 @@ async function renderAccounts() {
       <p class="small muted" style="margin:6px 0 0">To pay it down faster, assign extra money to <b>${esc(d.name)} payment</b> on the Budget page.</p>
     </div>`;
   }).join('');
-  const importRows = imports.map(i => `<tr><td class="small">${esc(i.imported_at.slice(0, 16).replace('T', ' '))}</td><td>${esc(i.filename)}</td><td class="small muted">${esc(i.account_name || '')}</td>
+  const importRows = imports.map(i => `<tr><td class="small">${esc(i.imported_at.slice(0, 16).replace('T', ' '))}</td><td>${esc(i.filename)}${i.balance_note ? `<div class="small muted">${esc(i.balance_note)}</div>` : ''}</td><td class="small muted">${esc(i.account_name || '')}</td>
       <td class="small">${i.rows_new} new of ${i.rows_total}</td><td class="r"><button class="btn small" data-act="undo-import" data-import="${i.id}" ${i.rows_new ? '' : 'disabled'}>Remove</button></td></tr>`).join('');
   frame(`
     <div class="page-head"><h1>Accounts</h1><span class="spacer"></span><button class="btn" data-act="add-account">Add account…</button></div>
@@ -3172,10 +3204,12 @@ async function onboardingAction(btn) {
   }
   await renderOnboarding();
 }
+// What an import said about each account's balance (importer, Inbox.check_balance): shown with it.
+const balanceNotes = results => (results || []).filter(x => x.balance_note).map(x => `${x.account_name}: ${x.balance_note}`);
 function summarizeImport(r) {
   const parts = [];
   const several = new Set((r.results || []).filter((x, i, all) => all.findIndex(y => y.filename === x.filename) !== i).map(x => x.filename));
-  for (const x of r.results || []) parts.push(`${x.filename}${several.has(x.filename) ? ` (${x.account_name})` : ''}: ${x.added} new${x.duplicates ? `, ${x.duplicates} already there` : ''}`);
+  for (const x of r.results || []) parts.push(`${x.filename}${several.has(x.filename) ? ` (${x.account_name})` : ''}: ${x.added} new${x.duplicates ? `, ${x.duplicates} already there` : ''}${x.balance_note ? ` (${x.balance_note})` : ''}`);
   if (r.learnt) parts.push(`learnt ${r.learnt.examples} examples from ${r.learnt.filename}`);
   for (const e of r.errors || []) parts.push(`${e.filename}: ${e.error}`);
   return parts.join(' · ') || 'Nothing new';
@@ -3289,8 +3323,9 @@ window.appEvent = (name, payload) => {
         { action: { label: waiting.every(f => f.needs === 'new_account') ? 'Choose…' : 'Set up', run: () => setupFiles(waiting) } });
     }
     if (!results.length && !payload.learnt) return;
-    toast(added ? `Imported ${plural(added, 'new transaction')} from ${results.map(r => r.filename).join(', ')}${review ? ` · ${review} in the Inbox` : ''}`
-      : `Nothing new in ${results.map(r => r.filename).join(', ')}`,
+    const notes = balanceNotes(results).map(n => ` · ${n}`).join('');
+    toast((added ? `Imported ${plural(added, 'new transaction')} from ${results.map(r => r.filename).join(', ')}${review ? ` · ${review} in the Inbox` : ''}`
+      : `Nothing new in ${results.map(r => r.filename).join(', ')}`) + notes,
       review ? { action: { label: 'Open Inbox', run: () => navigate('inbox') } } : {});
     refreshWhenIdle();
   } else if (name === 'update') {
@@ -3407,7 +3442,9 @@ document.addEventListener('keydown', e => {
     return;
   }
   if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z' && !e.shiftKey && !e.target.closest('input, textarea')) {
-    e.preventDefault(); doUndo(); return;
+    e.preventDefault();
+    if (!$('#dlg').open) doUndo();  // not behind a pop-up: its question would replace the pop-up
+    return;
   }
   inboxKeys(e);
 });

@@ -30,7 +30,7 @@ import math
 from dataclasses import dataclass, field
 
 from ledger import assignable_category_ids, category_names, income_category, interest_category
-from payees import BANK_ENTRY_HINTS
+from payees import ADJUSTMENT, BANK_ENTRY_HINTS
 from util import days_between
 
 SURE_SHARE = 0.9      # share of the (weighted) votes the top category needs to be filed without asking
@@ -305,10 +305,10 @@ def analyze(conn, txn):
 
 def guess(txn, suggestion, income_id):
     """The category "Accept all" in the inbox gives an inbox item: its top suggestion.
-    None for an e-transfer, whatever its payee's Always ask (each is its own question),
-    an unusually big charge, and for money in the app can only call Income (unknown money in is
-    asked about)."""
-    if not suggestion.options or txn["hint"] == "etransfer" or suggestion.unusual:
+    None for an e-transfer, whatever its payee's Always ask (each is its own question), a
+    balance adjustment, an unusually big charge, and for money in the app can only call Income
+    (unknown money in is asked about)."""
+    if not suggestion.options or txn["hint"] in ("etransfer", ADJUSTMENT) or suggestion.unusual:
         return None
     if txn["amount"] > 0 and suggestion.options == [income_id]:
         return None

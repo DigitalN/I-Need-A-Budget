@@ -30,6 +30,12 @@ recurring charge, "Matched to X (similar name)" from how its payee was found.
 
 A recurring charge's price follows a charge only when it first arrives (`arrive()`) or
 when you choose "New price for…" (`new_price()`); the re-check never changes a price.
+
+A balance adjustment (hint 'adjustment') always waits for you: no guess, never in Accept all,
+never paired. The app's own one stands for what an account's newest file balance says that its
+transactions don't (`check_balance()`, after every import into the account): it shrinks, or
+goes, as the missing transactions arrive. One you kept is yours: when its money arrives, the app's
+new one cancelling it out asks whether to remove both (`remove_adjustment()` / `keep_both()`).
 """
 
 from dataclasses import dataclass
@@ -39,7 +45,8 @@ import subscriptions
 import transfers
 from errors import UserError
 from learn import always_ask, analyze, guess, unusual, unusual_reason
-from payees import BANK_ENTRY_HINTS, describe
+from payees import ADJUSTMENT, BANK_ENTRY_HINTS, describe
+from util import money, short_day
 
 SENT_BACK = "You sent this back"
 NOT_A_TRANSFER = "You said this isn't a transfer"
@@ -122,8 +129,10 @@ class Inbox:
 
     def _settle(self, txn, arriving):
         """An inbox item that isn't yours: categorized if the app is sure, else it waits.
-        True if it's out of the inbox."""
+        True if it's out of the inbox. A balance adjustment always waits, as it is."""
         c = self.conn
+        if txn["hint"] == ADJUSTMENT:
+            return False
         if transfers.pair(c, txn):
             return True
         mine = transfers.find_counterpart(c, txn, yours=True)
@@ -171,6 +180,72 @@ class Inbox:
                           "WHERE id = ?", (reason, txn["id"]))
         return False
 
+    # ── balance adjustments ──
+
+    def check_balance(self, account_id, import_id=None):
+        """Works the account's balance adjustment out again (ledger.balance_difference): after an
+        import into it (`import_id`), Remove import or a merge. The app's own one waiting in the
+        inbox becomes what no transaction explains, dated the newest file balance's date: made when
+        there's none, deleted when it comes to nothing. One you kept is never changed (docs/adr/0005).
+        Returns (before, after): what was waiting and what is now, in cents (0: none), or
+        (None, None) when the account's balance isn't checked."""
+        c = self.conn
+        diff = ledger.balance_difference(c, account_id)
+        if diff is None:
+            return None, None
+        waiting = [self._txn(i) for i in ledger.waiting_adjustments(c, account_id, diff.check_from)]
+        before = sum(t["amount"] for t in waiting)
+        for extra in waiting[1:]:
+            c.execute("DELETE FROM transactions WHERE id = ?", (extra["id"],))
+        if diff.waiting == 0:
+            if waiting:
+                c.execute("DELETE FROM transactions WHERE id = ?", (waiting[0]["id"],))
+            return before, 0
+        reason = self._adjustment_reason(account_id, diff)
+        if waiting:
+            c.execute("UPDATE transactions SET amount = ?, date = ?, reason = ?, import_id = ? WHERE id = ?",
+                      (diff.waiting, diff.date, reason, import_id or waiting[0]["import_id"], waiting[0]["id"]))
+        else:
+            payee = ledger.get_or_create_payee(c, ledger.ADJUSTMENT_PAYEE, "bank")
+            c.execute("INSERT INTO transactions (account_id, date, amount, payee_id, hint, status, reason, import_id) "
+                      "VALUES (?, ?, ?, ?, ?, 'review', ?, ?)",
+                      (account_id, diff.date, diff.waiting, payee, ADJUSTMENT, reason, import_id or diff.current))
+        return before, diff.waiting
+
+    def _adjustment_reason(self, account_id, diff):
+        """Why a balance adjustment waits: what the bank's balance says, and where a download may be missing."""
+        gap = ledger.likely_gap(self.conn, account_id, diff.check_from)
+        where = (f"a download may be missing between {short_day(gap[0])} and {short_day(gap[1])}" if gap
+                 else "a transaction may be missing, or counted twice")
+        return (f"By the bank's balance on {short_day(diff.date)}, {money(abs(diff.waiting))} more "
+                f"{'came in' if diff.waiting > 0 else 'went out'} than the transactions here show: {where}")
+
+    def remove_adjustment(self, txn_id):
+        """Remove it: the balance adjustments you kept whose money has arrived since (see
+        _arrived_for) go, and so does this one of the app's that was cancelling them out."""
+        c = self.conn
+        txn = self._txn(txn_id)
+        arrived = self._arrived_for(txn) if txn is not None and txn["hint"] == ADJUSTMENT and not txn["by_you"] else []
+        if not arrived:
+            raise UserError("That balance adjustment has already been dealt with.")
+        others = []
+        for kept in arrived:
+            others += transfers.unlink(c, kept["id"])[1:]
+            c.execute("DELETE FROM transactions WHERE id = ?", (kept["id"],))
+        c.execute("DELETE FROM transactions WHERE id = ?", (txn_id,))
+        self.ask_again(others, "Its other half was a balance adjustment that was removed")
+        self.check_balance(txn["account_id"])
+
+    def keep_both(self, txn_id):
+        """Keep both: this balance adjustment of the app's becomes yours, waiting for you to
+        categorize it, next to the one you kept and the transactions that arrived."""
+        txn = self._txn(txn_id)
+        if txn is None or txn["hint"] != ADJUSTMENT or txn["by_you"]:
+            raise UserError("That balance adjustment has already been dealt with.")
+        self.conn.execute("UPDATE transactions SET by_you = 1, reason = ? WHERE id = ?",
+                          ("You kept this as well as your earlier balance adjustment", txn_id))
+        self.check_balance(txn["account_id"])
+
     # ── what the Inbox page shows ──
 
     def view(self):
@@ -212,6 +287,8 @@ class Inbox:
         names = names if names is not None else ledger.category_names(c)
         s = analyze(c, txn)
         yours = bool(txn["by_you"])
+        if txn["hint"] == ADJUSTMENT:
+            return self._look_adjustment(txn, s, names)
         if self._income is None:
             self._income = ledger.income_category(c)
         item = {"id": txn["id"], "amount": txn["amount"], "suggestions": [{"id": cid, "name": names.get(cid, "?")} for cid in s.options],
@@ -245,6 +322,36 @@ class Inbox:
             item["group"], item["guess"] = "", None
         item["reason"] = ". ".join(r for r in reasons if r)
         return item
+
+    def _look_adjustment(self, txn, s, names):
+        """A balance adjustment's item: its own, with suggestions but no guess (never in Accept all),
+        saying why it's there (the reason it was made with). One of the app's whose money is what the
+        balance adjustments you kept stood for (they've arrived since) asks whether to remove them,
+        the way "Looks like the other half of…" asks."""
+        yours = bool(txn["by_you"])
+        item = {"id": txn["id"], "amount": txn["amount"], "guess": None, "mixed": False, "group": "", "yours": yours,
+                "suggestions": [{"id": cid, "name": names.get(cid, "?")} for cid in s.options],
+                "reason": txn["reason"] or (SENT_BACK if yours else "")}
+        arrived = [] if yours else self._arrived_for(txn)
+        if arrived:
+            item["adjustment_question"] = {"ids": [k["id"] for k in arrived], "amount": -txn["amount"]}
+            item["reason"] = (f"The {money(abs(txn['amount']))} your balance adjustment stood for has arrived: remove the adjustment?"
+                              if len(arrived) == 1 else
+                              f"The {money(abs(txn['amount']))} your balance adjustments stood for has arrived: remove them?")
+        return item
+
+    def _arrived_for(self, txn):
+        """The balance adjustments you kept that this one of the app's cancels out, worked out each
+        time: the newest of the same amount the other way, else all of them since the check started
+        when together they are. Arriving transactions explained them, so the check made this one."""
+        acct = self.conn.execute("SELECT check_from FROM accounts WHERE id = ?", (txn["account_id"],)).fetchone()
+        if acct is None or acct["check_from"] is None or txn["import_id"] is None or txn["import_id"] < acct["check_from"]:
+            return []
+        kept = ledger.kept_adjustments(self.conn, txn["account_id"], acct["check_from"])
+        same = [k for k in kept if k["amount"] == -txn["amount"]]
+        if same:
+            return same[-1:]
+        return kept if kept and sum(k["amount"] for k in kept) == -txn["amount"] else []
 
     def _similar_name(self, txn):
         """'Matched to Safeway (similar name)' when this transaction's payee was found by

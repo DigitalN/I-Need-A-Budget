@@ -71,8 +71,8 @@ from pathlib import Path
 import banks
 import csvlayout
 import ledger
-from payees import describe, transaction_hint
-from util import day_before, parse_date, to_cents
+from payees import ADJUSTMENT, describe, transaction_hint
+from util import day_before, money, parse_date, short_day, to_cents
 
 log = logging.getLogger("inab")
 
@@ -938,12 +938,12 @@ def _import_part(conn, fmt, part, filename, sha, archived_path, account_id=None,
     # or overlapping by a day) are different transactions, and a fare on the 16th isn't the 14th's
     # (issue #124; ledger.one_transaction_in_two_files).
     gone = {t["id"] for t in twins.values()}
-    others = [dict(r) for r in conn.execute(
+    others = [dict(r) for r in conn.execute(  # never a balance adjustment: it stands for rows still to come
         "SELECT t.id, t.date, t.amount, i.format AS kind, i.first_date AS first, i.last_date AS last "
         "FROM transactions t JOIN imports i ON i.id = t.import_id "
-        "WHERE t.account_id = ? AND t.date BETWEEN date(?, ?) AND date(?, ?)",
+        "WHERE t.account_id = ? AND t.date BETWEEN date(?, ?) AND date(?, ?) AND t.hint != ?",
         (account_id, part.first_date or "", f"-{ledger.OTHER_KIND_DAYS} days",
-         part.last_date or "", f"+{ledger.OTHER_KIND_DAYS} days"))
+         part.last_date or "", f"+{ledger.OTHER_KIND_DAYS} days", ADJUSTMENT))
         if r["id"] not in gone and not ledger.same_kind_of_file(r["kind"], kind)]
     left = [{"id": i, "date": row.date, "amount": row.amount, "first": part.first_date, "last": part.last_date}
             for i, row in enumerate(part.rows) if i not in twins]
@@ -990,7 +990,11 @@ def _import_part(conn, fmt, part, filename, sha, archived_path, account_id=None,
     if part.balance:
         # The bank's own balance beats one typed in by hand: a balance typed during the day
         # misses what the bank adds later that day, and every balance is worked out from
-        # this one. So a file's balance replaces any as old as it, or older.
+        # this one. So a file's balance replaces any as old as it, or older: a typed one without
+        # a word, and that's where the balance check starts. One from an earlier file is checked
+        # against this one by what arrived since (ledger.balance_difference): what no transaction
+        # explains waits in the Inbox as a balance adjustment (Inbox.check_balance, once the
+        # rows have arrived), so the budget's starting balance stays put.
         as_of, balance = part.balance
         ours = ledger.account_balance(conn, account_id, as_of)
         if part.card_file and ledger.is_debt(acct["kind"]) and not flipped and balance > 0:
@@ -998,20 +1002,18 @@ def _import_part(conn, fmt, part, filename, sha, archived_path, account_id=None,
             if balance < 0:
                 notes.append("The file's balance read as what you owe")
         if acct["anchor_date"] is None or as_of >= acct["anchor_date"]:
-            conn.execute("UPDATE accounts SET anchor_date = ?, anchor_balance = ? WHERE id = ?",
-                         (as_of, balance, account_id))
+            checked = acct["anchor_source"] == "file" and acct["check_from"] is not None
+            conn.execute("UPDATE accounts SET anchor_date = ?, anchor_balance = ?, anchor_source = 'file', check_from = ? "
+                         "WHERE id = ?", (as_of, balance, acct["check_from"] if checked else import_id, account_id))
             # Remembered so that removing this import puts the balance it replaced back.
-            conn.execute("UPDATE imports SET anchor_before_date = ?, anchor_before_balance = ?, anchor_after_date = ?, "
-                         "anchor_after_balance = ? WHERE id = ?",
-                         (acct["anchor_date"], acct["anchor_balance"], as_of, balance, import_id))
-            if ours != balance:
-                result.balance_note = "Balance taken from the file"
-                if ours is not None:
-                    log.info("%s: balance on %s corrected from the file by %+d cents", acct["name"], as_of,
-                             balance - ours)
-        elif ours is not None and ours != balance:
-            result.balance_note = (f"The file says the balance was {balance / 100:,.2f} on {as_of}, "
-                                   f"but the app has {ours / 100:,.2f}")
+            conn.execute("UPDATE imports SET anchor_before_date = ?, anchor_before_balance = ?, anchor_before_source = ?, "
+                         "anchor_after_date = ?, anchor_after_balance = ? WHERE id = ?",
+                         (acct["anchor_date"], acct["anchor_balance"], acct["anchor_source"], as_of, balance, import_id))
+            if not checked and ours is not None and ours != balance:
+                log.info("%s: balance on %s corrected from the file by %+d cents", acct["name"], as_of, balance - ours)
+        elif ours is not None and ours != balance and not ledger.is_debt(acct["kind"]):
+            # An older file's balance, by date: not for a card, whose files bring charges dated before they posted.
+            result.balance_note = f"The file says the balance was {money(balance)} on {short_day(as_of)}; the app has {money(ours)}"
     if notes:
         result.balance_note = ". ".join([*notes, result.balance_note] if result.balance_note else notes)
         log.info("%s: %s", filename, result.balance_note)

@@ -233,8 +233,12 @@ class Description:
 
 # The bank's own entries (interest, fees, rewards): never asked about (learn.py).
 BANK_ENTRY_HINTS = ("interest", "income", "fee")
-# Never a recurring charge, and no Always ask: a bank entry, or a transfer between your own accounts.
-TRANSFER_OR_BANK_ENTRY_HINTS = ("transfer",) + BANK_ENTRY_HINTS
+# A balance adjustment (Inbox.check_balance, service.reconcile): the app's, never bank wording. It always
+# waits for you, with no guess, and is never a transfer's other half or a copy of a bank's row.
+ADJUSTMENT = "adjustment"
+# Never a recurring charge, and no Always ask: a bank entry, a transfer between your own accounts, or a
+# balance adjustment.
+TRANSFER_OR_BANK_ENTRY_HINTS = ("transfer",) + BANK_ENTRY_HINTS + (ADJUSTMENT,)
 
 
 def transaction_hint(desc):

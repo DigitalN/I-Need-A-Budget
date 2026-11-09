@@ -16,6 +16,8 @@ half). Any other own-account transfer waits in the inbox for its other half, or 
 The inbox (inbox.py) decides when to pair; this module only pairs. It never pairs with a
 transaction you decided about (docs/adr/0005): one you categorized, split or sent back,
 or said isn't a transfer. A half arriving for one of those waits in the inbox instead.
+Nor with a balance adjustment: it stands for transactions that haven't arrived, and the
+real other half pairs with them when they do.
 """
 
 import re
@@ -50,6 +52,7 @@ def find_counterpart(conn, txn, window=PAIR_WINDOW_DAYS, yours=False):
         f"""
         SELECT * FROM transactions
          WHERE account_id != :account AND amount = :opposite AND transfer_id IS NULL AND id != :id
+           AND hint != 'adjustment'
            AND date BETWEEN date(:date, :minus) AND date(:date, :plus)
            AND {looks}
            AND {other_account}
