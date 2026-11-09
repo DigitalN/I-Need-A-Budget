@@ -292,9 +292,13 @@ with months it didn't exist).
 - **Every PR raises `VERSION` itself** (in `Application Files/main.py`), so merging is
   all the maintainer does: 1.0.1 → 1.0.2 by default, 1.0.x → 1.1.0 only for a change big
   enough to deserve it. Never leave the bump for a separate PR after the merge.
-- Merging to `main` is not a release, but it's the go-ahead for one: Claude then runs
-  `scripts/release.sh NOTES.md` (notes outside the repo). The maintainer never builds. Installed copies only update when a release is
-  published on GitHub.
+- **The next release waits until all the current work is done and no small fixes are
+  needed after it** (the maintainer's rule, after a release was started while two
+  sessions still had work to do). Done means no open PR, no session still working on
+  this repository, and no small fix still needed after them; if you can't tell, ask.
+  Then Claude runs `scripts/release.sh NOTES.md` (notes outside the repo). The
+  maintainer never builds. Installed copies only update when a release is published on
+  GitHub.
 - The repository is **public** (it was private at first). It's
   **GPL-3.0-only**, the maintainer's choice, made knowing the GPL allows selling: what
   they want is that nobody builds a closed product from it. `docs/NOTICE` is a section 7(b)
