@@ -13,17 +13,19 @@ import pytest
 
 import db
 from helpers import bank_csv, call, card_number, write
-from test_card_signs import card_ofx
+from test_card_signs import card_ofx, covers
 
 PAGE = (Path(__file__).resolve().parents[2] / "Application Files" / "index.html").read_text(encoding="utf-8")
 
 
-def ofx(rows, balance, as_of, acct_id="000111222333", org="SAMPLE CU"):
-    """A made-up OFX download. rows: (YYYYMMDD, amount, name, fitid)"""
+def ofx(rows, balance, as_of, acct_id="000111222333", org="SAMPLE CU", start=None):
+    """A made-up OFX download. rows: (YYYYMMDD, amount, name, fitid). `start`: the first day the file says it
+    covers (DTSTART, YYYYMMDD), if it says."""
     trn = "".join(f"<STMTTRN><TRNTYPE>OTHER<DTPOSTED>{d}<TRNAMT>{a}<FITID>{f}<NAME>{n}</STMTTRN>\n" for d, a, n, f in rows)
     return ("OFXHEADER:100\nDATA:OFXSGML\nVERSION:102\n\n<OFX><SIGNONMSGSRSV1><SONRS><FI><ORG>" + org +
             "<FID>00000</FI></SONRS></SIGNONMSGSRSV1><BANKMSGSRSV1><STMTTRNRS><STMTRS><CURDEF>CAD\n"
-            f"<BANKACCTFROM><BANKID>0000<ACCTID>{acct_id}<ACCTTYPE>CHECKING</BANKACCTFROM>\n<BANKTRANLIST>\n{trn}"
+            f"<BANKACCTFROM><BANKID>0000<ACCTID>{acct_id}<ACCTTYPE>CHECKING</BANKACCTFROM>\n<BANKTRANLIST>\n"
+            f"{covers(start, as_of)}{trn}"
             f"</BANKTRANLIST><LEDGERBAL><BALAMT>{balance}<DTASOF>{as_of}</LEDGERBAL></STMTRS></STMTTRNRS></BANKMSGSRSV1></OFX>\n")
 
 
@@ -221,8 +223,34 @@ def test_an_existing_database_learns_where_its_balances_came_from(tmp_path):
     again = db.Database(path)
     rows = {r["id"]: (r["anchor_source"], r["check_from"]) for r in again.conn.execute("SELECT * FROM accounts")}
     assert rows == {1: ("file", 1), 2: ("file", None), 3: ("typed", None), 4: (None, None)}
-    assert again.get_meta("schema_version") == "8"
-    assert list((tmp_path / "I Need A Budget Backups").glob("budget-before-upgrade-v7-to-v8-*.db"))
+    assert again.get_meta("schema_version") == "9"
+    assert list((tmp_path / "I Need A Budget Backups").glob("budget-before-upgrade-v7-to-v9-*.db"))
+
+
+def test_an_existing_database_keeps_where_each_file_says_it_starts(tmp_path):
+    """Version 9 keeps the first day each file says it covers (issue #136). Imports from before don't know it: the
+    check uses their first row's date, and what they recorded stays as it was."""
+    path = tmp_path / "budget.db"
+    database = db.Database(path)
+    c = database.conn
+    c.execute("INSERT INTO accounts (id, name, kind, anchor_date, anchor_balance, anchor_source) "
+              "VALUES (1, 'Chequing', 'chequing', '2026-10-10', 500, 'file')")
+    c.execute("INSERT INTO imports (id, filename, sha256, account_id, format, first_date, last_date, anchor_after_date, "
+              "anchor_after_balance) VALUES (1, 'a.ofx', 'x', 1, 'ofx', '2026-09-01', '2026-10-09', '2026-10-10', 500)")
+    c.execute("UPDATE accounts SET check_from = 1")
+    for suffix in ("ins", "upd", "del"):  # the undo triggers name every column
+        c.execute(f"DROP TRIGGER IF EXISTS undo_imports_{suffix}")
+    c.execute("ALTER TABLE imports DROP COLUMN covers_from")  # a version 8 database
+    c.execute("UPDATE meta SET value = '8' WHERE key = 'schema_version'")
+    c.commit()
+    database.close()
+    again = db.Database(path)
+    old = again.conn.execute("SELECT * FROM imports").fetchone()
+    assert (old["filename"], old["first_date"], old["anchor_after_date"], old["covers_from"]) == \
+        ("a.ofx", "2026-09-01", "2026-10-10", None)
+    assert again.conn.execute("SELECT anchor_source, check_from FROM accounts").fetchone()[:] == ("file", 1)
+    assert again.get_meta("schema_version") == "9"
+    assert list((tmp_path / "I Need A Budget Backups").glob("budget-before-upgrade-v8-to-v9-*.db"))
 
 
 # ── onboarding's 3. Balances (issue #135) ────────────────────────────────────
@@ -399,3 +427,120 @@ def test_3_balances_asks_what_the_bank_shows_now_for_an_account_without_one(app)
             "For the others, enter what your bank shows now.") in got["html"]
     assert "Balance · transactions up to Sep 2, 2026" in got["html"]
     assert [c["account_id"] for c in got["calls"]] == [a["id"] for a in accounts if a["balance"] is not None]
+
+
+# ── older history (issue #136) ──────────────────────────────────────────────
+#
+# A file reaching back before the first day of the file the check starts from brings older history: its rows dated
+# before that day were in the starting balance already, not money that moved since.
+
+AUGUST = [("20260805", "1000.00", "PAYROLL SAMPLE CO", "B1"), ("20260820", "-200.00", "SAMPLE GROCER CALGARY AB", "B2")]
+
+
+def test_an_older_file_imported_later_was_in_the_starting_balance_already(app):
+    """The issue's case: August's file after September's counted as money that moved since Sep 15, and a −$800.00
+    balance adjustment waited for good (the budget's starting balance moving with it)."""
+    _first_file(app)
+    call(app, "set_budget_start", "2026-08")
+    _import(app, "chequing-aug.ofx", ofx(AUGUST, "1050.00", "20260831"))
+    assert _adjustments(app) == []
+    assert call(app, "month", "2026-08")["summary"]["carried_rta"] == 25000  # the bank's balance on Jul 31
+    _import(app, "chequing-oct.ofx", ofx([("20260920", "-100.00", "SAMPLE HARDWARE CALGARY AB", "C1")], "2900.00",
+                                         "20261010"))
+    assert _adjustments(app) == []
+
+
+def test_an_older_file_after_a_starting_file_without_rows(app):
+    """A quiet month's file (a balance, no transactions) can be the one the check starts from: without rows or a
+    first day of its own it covers from its balance's date, and an older file after it adds nothing."""
+    _import(app, "chequing-quiet.ofx", ofx([], "1050.00", "20260831"))
+    call(app, "finish_onboarding", "2026-08")
+    _import(app, "chequing-aug.ofx", ofx(AUGUST, "1050.00", "20260820"))
+    assert _adjustments(app) == []
+    assert call(app, "month", "2026-08")["summary"]["carried_rta"] == 25000
+
+
+# A card's charge is dated when it's made, but its file covers the days things posted: the card's Oct 1–3 file
+# has a Sep 30 taxi that posted Oct 1.
+CARD_START = [("20260930", "-20.00", "SAMPLE TAXI", "K1"), ("20261002", "-30.00", "SAMPLE BAKERY", "K2")]
+
+
+def test_a_card_charge_dated_before_the_starting_files_first_day_that_posted_after_it_counts(app):
+    """The next file (Oct 1–12: it starts on Oct 1 too, not before) brings a Sep 29 parking charge that posted
+    Oct 4. The Oct 3 balance doesn't have it, so it counts. By the starting file's first row (Sep 30) it wouldn't,
+    and −$15.00 would wait for good."""
+    _import(app, "card-1.ofx", card_ofx(CARD_START, "-50.00", "20261003", start="20261001"))
+    call(app, "finish_onboarding", "2026-10")
+    later = CARD_START + [("20260929", "-15.00", "SAMPLE PARKING", "K3"), ("20261010", "-40.00", "SAMPLE GROCER", "K4")]
+    _import(app, "card-2.ofx", card_ofx(later, "-105.00", "20261012", start="20261001"))
+    assert _adjustments(app) == []
+    assert call(app, "accounts")[0]["balance"] == -10500
+
+
+# September's charges, which posted in September: the card's Oct 1–3 balance ($250.00 owing) already has them.
+CARD_SEPTEMBER_POSTED = [("20260905", "-60.00", "SAMPLE GROCER", "S1"), ("20260930", "-25.00", "SAMPLE CAFE", "S2")]
+
+
+def test_a_long_card_file_reaching_back_doesnt_count_what_the_starting_balance_had(app):
+    """A 90-day file (Jul 15 – Oct 20) after the Oct 1–3 one: its Sep 30 coffee is dated on or after the starting
+    file's first row (the Sep 30 taxi), but it posted Sep 30, so the Oct 3 balance had it. Only its Oct 15 charge is
+    new."""
+    _import(app, "card-oct.ofx", card_ofx(CARD_START, "-250.00", "20261003", start="20261001"))
+    call(app, "finish_onboarding", "2026-10")
+    long = CARD_SEPTEMBER_POSTED + CARD_START + [("20261015", "-10.00", "SAMPLE NEWS", "S3")]
+    _import(app, "card-90.ofx", card_ofx(long, "-260.00", "20261020", start="20260715"))
+    assert _adjustments(app) == []
+    assert call(app, "accounts")[0]["balance"] == -26000
+
+
+def test_the_cards_previous_months_file_adds_nothing(app):
+    _import(app, "card-oct.ofx", card_ofx(CARD_START, "-250.00", "20261003", start="20261001"))
+    call(app, "finish_onboarding", "2026-10")
+    _import(app, "card-sep.ofx", card_ofx(CARD_SEPTEMBER_POSTED, "-200.00", "20260930", start="20260901"))
+    assert _adjustments(app) == []
+    assert call(app, "accounts")[0]["balance"] == -25000
+
+
+def test_a_starting_file_without_rows_covers_from_the_day_it_says(app):
+    """The card's Oct 1–2 file has no charges yet (a balance only). The next file brings a charge made Oct 1 that
+    posted Oct 4: the Oct 2 balance doesn't have it, so it counts, though it's dated before that balance."""
+    _import(app, "card-1.ofx", card_ofx([], "-200.00", "20261002", start="20261001"))
+    call(app, "finish_onboarding", "2026-10")
+    _import(app, "card-2.ofx", card_ofx([("20261001", "-15.00", "SAMPLE PARKING", "K3")], "-215.00", "20261012",
+                                        start="20261001"))
+    assert _adjustments(app) == []
+
+
+def test_a_first_day_after_the_files_own_balance_says_nothing(app):
+    """A bank writing nonsense: a file "starting" Oct 20 whose balance is for Oct 3. It covers from its first row's
+    date (Sep 30) instead, and the next file's charges count."""
+    _import(app, "card-1.ofx", card_ofx(CARD_START, "-50.00", "20261003", start="20261020"))
+    call(app, "finish_onboarding", "2026-10")
+    later = CARD_START + [("20261010", "-40.00", "SAMPLE GROCER", "K4")]
+    _import(app, "card-2.ofx", card_ofx(later, "-90.00", "20261012", start="20261001"))
+    assert _adjustments(app) == []
+
+
+def test_merging_in_a_copy_with_older_history_adds_nothing(app):
+    _first_file(app)
+    # August's file went into an account of its own (a new account number, say).
+    path = write(app.test_downloads, "copy.ofx", ofx(AUGUST, "1050.00", "20260831", acct_id="000999888777",
+                                                      start="20260801"))
+    call(app, "set_file_accounts", str(path), [{"index": 0, "name": "Copy"}])
+    accounts = {a["name"]: a["id"] for a in call(app, "accounts")}
+    out = call(app, "merge_accounts", accounts["Copy"], accounts["SAMPLE CU Chequing"])
+    assert (out["moved"], out["dropped"]) == (2, 0)
+    assert _adjustments(app) == []
+    assert call(app, "accounts")[0]["balance"] == 300000
+
+
+def test_removing_the_starting_file_checks_from_the_next_files_first_day(app):
+    """With the file the check starts from removed, the check starts from the next file's balance, and August's
+    file, older than that one too, still adds nothing."""
+    _first_file(app)
+    _import(app, "chequing-2.ofx", ofx(MISSING + OCTOBER, "2600.00", "20261010", start="20260916"))
+    _import(app, "chequing-aug.ofx", ofx(AUGUST, "1050.00", "20260831", start="20260801"))
+    assert _adjustments(app) == []
+    first = next(i["id"] for i in call(app, "imports") if i["filename"] == "chequing-1.ofx")
+    call(app, "undo_import", first)
+    assert _adjustments(app) == []
