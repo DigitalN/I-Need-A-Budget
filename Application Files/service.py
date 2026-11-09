@@ -1573,7 +1573,10 @@ class BudgetService:
             stats = c.execute("SELECT MIN(date) AS first, MAX(date) AS last, COUNT(*) AS n FROM transactions "
                               "WHERE account_id = ?", (a["id"],)).fetchone()
             last_import = c.execute("SELECT MAX(imported_at) FROM imports WHERE account_id = ?", (a["id"],)).fetchone()[0]
-            out.append({**dict(a), "balance": ledger.account_balance(c, a["id"]), "is_debt": ledger.is_debt(a["kind"]),
+            balance = ledger.account_balance(c, a["id"])
+            # The day `balance` is for: it counts every transaction, so the later of its own date and the last one's.
+            balance_date = max(a["anchor_date"], stats["last"] or "") if balance is not None else None
+            out.append({**dict(a), "balance": balance, "balance_date": balance_date, "is_debt": ledger.is_debt(a["kind"]),
                         "kind_label": ledger.KIND_LABELS.get(a["kind"], a["kind"]), "first_date": stats["first"],
                         "last_date": stats["last"], "transactions": stats["n"], "last_import": last_import,
                         "duplicate_of": duplicates.get(a["id"]), "used": a["id"] in used})
@@ -1635,18 +1638,28 @@ class BudgetService:
 
     @exposed
     def set_balance(self, account_id, cents, date=None, in_favour=False):
-        """The balance the bank shows (for a card or line of credit: what you owe, as a
-        positive number, or with `in_favour` what you're owed: an overpaid card). Every other
-        balance is worked out from this one. A typed balance: the next file's balance replaces it
-        as it is (no balance adjustment), and checks start again from that file's."""
+        """The balance the bank shows at the end of `date` (default today; for a card or line of
+        credit: what you owe, as a positive number, or with `in_favour` what you're owed: an
+        overpaid card). Every other balance is worked out from this one. The balance the app already
+        has for that day changes nothing (issue #135): onboarding's 3. Balances saves every box, and
+        a file's balance left as it is keeps its date and its check. Any other is a typed balance:
+        the next file's balance replaces it as it is (no balance adjustment), and checks start again
+        from that file's. A card's file balance read as in your favour and given as owing (*In your
+        favour* unticked) also settles how its files write what you owe, like the answer to "Is
+        $120.50 what you owe…?"."""
         date = _date(date) if date else date
         with self.db.write("Set balance") as c:
-            acct = c.execute("SELECT kind FROM accounts WHERE id = ?", (account_id,)).fetchone()
+            acct = c.execute("SELECT kind, anchor_source, anchor_balance FROM accounts WHERE id = ?",
+                             (account_id,)).fetchone()
             if acct is None:
                 raise UserError("That account no longer exists.")
             value = _balance_sign(acct["kind"], _amount(cents), in_favour)
-            c.execute("UPDATE accounts SET anchor_date = ?, anchor_balance = ?, anchor_source = 'typed', check_from = NULL "
-                      "WHERE id = ?", (date or self.today(), value, account_id))
+            day = date or self.today()
+            if ledger.account_balance(c, account_id, day) != value:
+                if ledger.is_debt(acct["kind"]) and acct["anchor_source"] == "file" and acct["anchor_balance"] > 0 > value:
+                    importer.remember_owed(c, account_id)
+                c.execute("UPDATE accounts SET anchor_date = ?, anchor_balance = ?, anchor_source = 'typed', "
+                          "check_from = NULL WHERE id = ?", (day, value, account_id))
         return self.accounts()
 
     @exposed

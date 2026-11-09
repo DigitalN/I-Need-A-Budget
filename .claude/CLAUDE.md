@@ -183,17 +183,24 @@ All in `Application Files/`:
   or goes, as the missing transactions arrive, and Remove import puts it back. Once you've
   categorized it, it's yours: when its money arrives, the app's new one cancelling it out asks
   "The $300.00 your balance adjustment stood for has arrived: remove the adjustment?" (Remove it /
-  Keep both, `Inbox.remove_adjustment` / `keep_both`). A balance typed with Set balance, or the
-  bank's balance given to Reconcile (its adjustment waits the same way), ends the check: the next
-  file's balance is taken as it is and starts it again. An import's balance note
-  (`imports.balance_note`) shows in its toast and in Accounts → Imported files.
+  Keep both, `Inbox.remove_adjustment` / `keep_both`). A different balance typed with Set balance,
+  or the bank's balance given to Reconcile (its adjustment waits the same way), ends the check: the
+  next file's balance is taken as it is and starts it again. The balance the app already has for
+  that day changes nothing (`set_balance`, issue #135): onboarding's 3. Balances saves every box,
+  and a file's balance left as it is keeps its date and its check, with no undo step. Each row there
+  says which day its balance is for and whether a file gave it ("Balance on Sep 15, 2026, from your
+  file", `accounts`' `balance_date`); an amount changed there is a typed balance for that day. An
+  import's balance note (`imports.balance_note`) shows in its toast and in Accounts → Imported files.
 - **A card file's signs are settled at import, when the account is known** (`importer._flip`,
   `_positive_balance`, `balance_questions`). Charges negative and a balance above zero is a card in
   your favour for most banks and what you owe for some. With a balance in the account, the sign that
   agrees with the app's own balance for that date (this file's rows counted) wins; neither agreeing is
   a real difference, kept as the file wrote it. An account with no balance yet asks once ("Is $120.50
   what you owe…", `needs: 'balance_sign'`; not during onboarding, where the balance is read as
-  written) and remembers the answer (`account_sources` keys `signs:<id>:…`). Whether a file writes
+  written) and remembers the answer (`account_sources` keys `signs:<id>:…`). Unticking *In your
+  favour* on 3. Balances, for a card whose file balance was read that way, is remembered the same
+  way (`importer.remember_owed`): its later files are read as what you owe even when their balance
+  disagrees with the app's (a gap), not as written. Whether a file writes
   purchases as positive is decided once per account: by rows the account already holds, then the
   earlier decision, then how the file looks.
 - **Learning only uses `status = 'done'` transactions** (plus Actual examples). Rows waiting
