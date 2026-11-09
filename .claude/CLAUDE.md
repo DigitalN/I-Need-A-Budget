@@ -75,10 +75,10 @@ All in `Application Files/`:
   inverse SQL; `db.write("Label")` makes one undoable step; updates only record changed
   columns; a write without a label that changes anything clears undo, unless
   `keep_undo`; `big_step()` marks a step ⌘Z asks about first; see Key rules). Schema is at
-  version 9. To change it: raise `SCHEMA_VERSION`,
+  version 10. To change it: raise `SCHEMA_VERSION`,
   add the column to `SCHEMA` *and* an `ALTER TABLE` step in `_migrate` for existing
   databases. Upgrades copy the database to the backups folder
-  (`budget-before-upgrade-v9-to-v10-<date and time>.db`) first. The
+  (`budget-before-upgrade-v10-to-v11-<date and time>.db`) first. The
   user's real database has real data in it: test every upgrade on a copy of it first.
 - `backups.py`: backups ([ADR 0004](../docs/adr/0004-live-budget-stays-out-of-synced-folders.md)).
   `at_quit` and `at_launch` (a backup only if `changed`: the budget's `digest` differs from
@@ -117,7 +117,8 @@ All in `Application Files/`:
   guess), and every decision: `categorize(txn_ids, category_id, recheck_payee)`,
   `accept_all`, `split`, `mark_transfer`, `not_a_transfer`, `send_back`, `ask_again`,
   `same_payee`, `new_price`, `set_always_ask`, and the balance adjustment: `check_balance`
-  (after every import into an account), `remove_adjustment`, `keep_both`. **Only it puts a transaction in the inbox or
+  (after every import into an account), `remove_adjustment`, `keep_both`, `drop_adjustments`
+  (Set balance). **Only it puts a transaction in the inbox or
   takes it out**, from every page (the Transactions page and the transaction pop-up too).
   It asks learn.py for suggestions and subscriptions.py for the recurring-charge rules;
   service.py wraps each call in its undo step. `scripts/tests/test_inbox.py` drives it directly.
@@ -186,14 +187,29 @@ All in `Application Files/`:
   the Inbox as a **balance adjustment** (hint `adjustment`, payee "Balance adjustment") dated the
   newest balance's date, so the budget's starting balance stays put: no guess, never in Accept
   all, never a transfer's other half or a copy of a bank's row (`transfers.find_counterpart`,
-  the importer's and `cross_kind_pairs`' matching skip it). It's worked out from scratch after
+  the importer's and `cross_kind_pairs`' matching skip it; the one exception is below, for Check
+  balance…'s). It's worked out from scratch after
   every import into the account, Remove import and a merge (`Inbox.check_balance`): it shrinks,
   or goes, as the missing transactions arrive, and Remove import puts it back. Once you've
   categorized it, it's yours: when its money arrives, the app's new one cancelling it out asks
   "The $300.00 your balance adjustment stood for has arrived: remove the adjustment?" (Remove it /
-  Keep both, `Inbox.remove_adjustment` / `keep_both`). A different balance typed with Set balance,
-  or the bank's balance given to Reconcile (its adjustment waits the same way), ends the check: the
-  next file's balance is taken as it is and starts it again. The balance the app already has for
+  Keep both, `Inbox.remove_adjustment` / `keep_both`). A different balance typed with Set balance
+  ends the check: the next file's balance is taken as it is and starts it again. It stands for
+  everything, so the app's balance adjustments waiting for the account go (`Inbox.drop_adjustments`,
+  issue #137); yours stay. **Check balance… (`reconcile`) doesn't end the check** (issue #137). Its
+  balance adjustment ("To match the balance the bank shows") stands for what's happened since the
+  newest file's balance and remembers the newest import that set the balance then
+  (`transactions.after_import`, schema 10). The check leaves it alone until a file whose balance is
+  as new as it comes in after it, which takes it over (`ledger._TAKEN_OVER`): the app's becomes the
+  check's own (it goes, or stays as what that file doesn't explain); one you categorized counts as
+  kept, so its money arriving asks. The file a check starts from takes over the app's ones it's as
+  new as (a typed balance, or a file's from before 1.4, replaced). The bank's row of the same amount
+  within 3 days still takes its place as for a transaction you added by hand, keeping your category,
+  with the bank's name. Whatever the day, Check balance… changes the balance after everything
+  imported and never the days before: dated the day of a file's balance (a Quicken file's is
+  usually its download day), it comes after that balance (`ledger.account_balance`); on the day of a
+  typed balance, the bank's balance becomes that day's. Remove import of the file that took one
+  over doesn't bring it back (accepted on #137). The balance the app already has for
   that day changes nothing (`set_balance`, issue #135): onboarding's 3. Balances saves every box,
   and a file's balance left as it is keeps its date and its check, with no undo step. Each row there
   says which day its balance is for and whether a file gave it ("Balance on Sep 15, 2026, from your

@@ -999,12 +999,15 @@ def _import_part(conn, fmt, part, filename, sha, archived_path, account_id=None,
             "ORDER BY abs(julianday(date) - julianday(?)), id LIMIT 1",
             (account_id, row.amount, row.date, f"-{MANUAL_DAYS} days", row.date, f"+{MANUAL_DAYS} days", row.date)).fetchone()
         if mine is not None:
-            # It takes what the bank says and keeps what you decided (category, split, note, payee, by_you).
+            # It takes what the bank says and keeps what you decided (category, split, note, payee, by_you). A balance
+            # adjustment from Check balance… takes the bank's payee too: "Balance adjustment" was the app's (issue #137).
             payee_id, similar = ledger.resolve_payee(conn, desc)
             conn.execute("UPDATE transactions SET date = ?, raw_name = ?, raw_memo = ?, bank_type = ?, bank_category = ?, "
-                         "hint = ?, fingerprint = ?, fitid = ?, import_id = ?, payee_id = COALESCE(payee_id, ?) WHERE id = ?",
+                         "hint = ?, fingerprint = ?, fitid = ?, import_id = ?, after_import = NULL, "
+                         "payee_id = CASE WHEN hint = ? THEN ? ELSE COALESCE(payee_id, ?) END, "
+                         "similar_payee_id = CASE WHEN hint = ? THEN ? ELSE similar_payee_id END WHERE id = ?",
                          (row.date, row.name, row.memo, row.bank_type, row.bank_category, transaction_hint(desc), fp,
-                          keep_fitid, import_id, payee_id, mine["id"]))
+                          keep_fitid, import_id, ADJUSTMENT, payee_id, payee_id, ADJUSTMENT, similar, mine["id"]))
             result.duplicates += 1
             continue
         payee_id, similar = ledger.resolve_payee(conn, desc)

@@ -27,6 +27,11 @@ this is enforced in one place.
   a transfer, send back, or add by hand. The app's: what an import or the re-check
   categorizes ("also categorized 3 more like it"), and what removing an import or a
   balance adjustment from Reconcile sends to the inbox.
+- A balance adjustment from Check balance… (Reconcile) stays the app's until you categorize
+  it, like the balance check's own: the next file whose balance is as new as it takes it
+  over, and it goes, or stays as what that file doesn't explain. Once you've categorized it,
+  it's yours: when its money arrives, the Inbox asks before removing it (issue #137, decided
+  2026-11-09).
 - Not a transfer sends both halves back, and the app never pairs them again.
 - A transaction you sent back is its own inbox item, outside its payee's group and
   outside Accept all, still with suggestions.

@@ -34,8 +34,10 @@ when you choose "New price for…" (`new_price()`); the re-check never changes a
 A balance adjustment (hint 'adjustment') always waits for you: no guess, never in Accept all,
 never paired. The app's own one stands for what an account's newest file balance says that its
 transactions don't (`check_balance()`, after every import into the account): it shrinks, or
-goes, as the missing transactions arrive. One you kept is yours: when its money arrives, the app's
-new one cancelling it out asks whether to remove both (`remove_adjustment()` / `keep_both()`).
+goes, as the missing transactions arrive. One from Check balance… stands for what's happened since
+the newest file's balance: the next file whose balance is as new as it takes it over. One you kept
+is yours: when its money arrives, the app's new one cancelling it out asks whether to remove both
+(`remove_adjustment()` / `keep_both()`).
 """
 
 from dataclasses import dataclass
@@ -186,14 +188,15 @@ class Inbox:
         """Works the account's balance adjustment out again (ledger.balance_difference): after an
         import into it (`import_id`), Remove import or a merge. The app's own one waiting in the
         inbox becomes what no transaction explains, dated the newest file balance's date: made when
-        there's none, deleted when it comes to nothing. One you kept is never changed (docs/adr/0005).
+        there's none, deleted when it comes to nothing. So does one from Check balance… that a file's
+        balance as new as it has taken over (issue #137). One you kept is never changed (docs/adr/0005).
         Returns (before, after): what was waiting and what is now, in cents (0: none), or
         (None, None) when the account's balance isn't checked."""
         c = self.conn
         diff = ledger.balance_difference(c, account_id)
         if diff is None:
             return None, None
-        waiting = [self._txn(i) for i in ledger.waiting_adjustments(c, account_id, diff.check_from)]
+        waiting = [self._txn(i) for i in ledger.waiting_adjustments(c, account_id, diff.span)]
         before = sum(t["amount"] for t in waiting)
         for extra in waiting[1:]:
             c.execute("DELETE FROM transactions WHERE id = ?", (extra["id"],))
@@ -202,15 +205,22 @@ class Inbox:
                 c.execute("DELETE FROM transactions WHERE id = ?", (waiting[0]["id"],))
             return before, 0
         reason = self._adjustment_reason(account_id, diff)
-        if waiting:
-            c.execute("UPDATE transactions SET amount = ?, date = ?, reason = ?, import_id = ? WHERE id = ?",
-                      (diff.waiting, diff.date, reason, import_id or waiting[0]["import_id"], waiting[0]["id"]))
+        if waiting:  # one from Check balance… becomes the check's own
+            c.execute("UPDATE transactions SET amount = ?, date = ?, reason = ?, import_id = ?, after_import = NULL "
+                      "WHERE id = ?", (diff.waiting, diff.date, reason,
+                                       import_id or waiting[0]["import_id"] or diff.current, waiting[0]["id"]))
         else:
             payee = ledger.get_or_create_payee(c, ledger.ADJUSTMENT_PAYEE, "bank")
             c.execute("INSERT INTO transactions (account_id, date, amount, payee_id, hint, status, reason, import_id) "
                       "VALUES (?, ?, ?, ?, ?, 'review', ?, ?)",
                       (account_id, diff.date, diff.waiting, payee, ADJUSTMENT, reason, import_id or diff.current))
         return before, diff.waiting
+
+    def drop_adjustments(self, account_id):
+        """A balance you typed stands for everything (service.set_balance): the app's balance
+        adjustments waiting for the account go (issue #137). One you kept stays (docs/adr/0005)."""
+        self.conn.execute("DELETE FROM transactions WHERE account_id = ? AND hint = ? AND by_you = 0 "
+                          "AND status = 'review'", (account_id, ADJUSTMENT))
 
     def _adjustment_reason(self, account_id, diff):
         """Why a balance adjustment waits: what the bank's balance says, and where a download may be missing."""
@@ -343,11 +353,12 @@ class Inbox:
     def _arrived_for(self, txn):
         """The balance adjustments you kept that this one of the app's cancels out, worked out each
         time: the newest of the same amount the other way, else all of them since the check started
-        when together they are. Arriving transactions explained them, so the check made this one."""
-        acct = self.conn.execute("SELECT check_from FROM accounts WHERE id = ?", (txn["account_id"],)).fetchone()
-        if acct is None or acct["check_from"] is None or txn["import_id"] is None or txn["import_id"] < acct["check_from"]:
+        when together they are. Arriving transactions explained them, so the check made this one. One
+        from Check balance… counts among them once the check has taken it over (issue #137)."""
+        span = ledger.check_span(self.conn, txn["account_id"])
+        if span is None or txn["import_id"] is None or txn["import_id"] < span.check_from:
             return []
-        kept = ledger.kept_adjustments(self.conn, txn["account_id"], acct["check_from"])
+        kept = ledger.kept_adjustments(self.conn, txn["account_id"], span)
         same = [k for k in kept if k["amount"] == -txn["amount"]]
         if same:
             return same[-1:]

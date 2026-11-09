@@ -54,7 +54,9 @@ A transaction for money an account's balance says came in or went out that no tr
 explains: a missing download, or a transaction counted twice. Each file's balance is
 checked against the last one by what arrived in between; the difference waits in the inbox
 as a balance adjustment, never categorized without asking, and shrinks or goes as the
-missing transactions arrive. One you've categorized stays until you remove it.
+missing transactions arrive. Check balance… adds one for what the bank shows that the app
+doesn't; the next file whose balance is as new as it takes it over. One you've categorized
+stays until you remove it.
 _Avoid_: correction, reconciliation
 
 **Actual export**:
