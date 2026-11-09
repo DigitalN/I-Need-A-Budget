@@ -7,10 +7,19 @@ the page on its own thread, and the Downloads watcher has its own). Writes go th
 undone with ⌘Z.
 
 Undo uses the classic SQLite recipe: triggers on every table record the SQL that
-reverses each insert, update and delete into `undo_log`, grouped by action. Undoing
-runs a group's statements backwards. Updates only record the columns that changed, so
-undoing one action never reverts an unrelated change made later to the same row (an
-import pairing a transfer, say). The log is cleared at launch: undo is for this session.
+reverses each insert, update and delete into `undo_log`, grouped by step. Undoing
+runs a step's statements backwards. Updates only record the columns that changed, so
+undoing one step never reverts an unrelated change made later to the same row. The log
+is cleared at launch: undo is for this session.
+
+A change made without a label (an import, the re-check) clears the log when it changes
+anything: undoing an earlier step would replay its SQL over rows that change touched (deleting
+an account takes the transactions an import just put in it). The triggers watch for that.
+`keep_undo` is for a change no step can trip over: folding a group, a note as it's typed.
+
+A big step (adding, deleting or merging an account, group or category, Remove import...)
+says what undoing it does (`big_step`): ⌘Z asks before undoing it (`undo_step`). An undo
+that fails is a UserError, and its step is dropped, so ⌘Z never gets stuck on it.
 
 Money is stored in integer cents. Dates are ISO strings.
 """
@@ -23,10 +32,16 @@ from datetime import datetime
 from pathlib import Path
 
 import backups
+from errors import UserError
 
 log = logging.getLogger("inab")
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
+
+CANT_UNDO = "That can't be undone any more."
+
+# undo_state.active: what the triggers do with a change.
+_OFF, _RECORDING, _WATCHING, _CHANGED = 0, 1, 2, 3
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -40,8 +55,11 @@ CREATE TABLE IF NOT EXISTS accounts (
     kind TEXT NOT NULL,                  -- chequing | savings | cash | credit_card | line_of_credit
     bank TEXT,                           -- the bank or credit union, as the person calls it
     last4 TEXT,                          -- card digits, shown next to the name
-    anchor_date TEXT,                    -- a balance the user gave us, at the end of this day
+    anchor_date TEXT,                    -- the balance every other is worked out from, at the end of this day
     anchor_balance INTEGER,
+    anchor_source TEXT,                  -- where it came from: file | typed (none: no balance yet)
+    check_from INTEGER REFERENCES imports(id) ON DELETE SET NULL,  -- the import whose file balance later
+                                         -- files' balances are checked against (ledger.balance_difference)
     apr REAL,                            -- debt: yearly interest rate (%), for the payoff estimate
     planned_payment INTEGER,             -- debt: what you plan to pay each month
     sort INTEGER NOT NULL DEFAULT 0,
@@ -127,8 +145,10 @@ CREATE TABLE IF NOT EXISTS imports (
     archived_path TEXT,
     anchor_before_date TEXT,             -- the balance this import replaced (none: the account had none) ...
     anchor_before_balance INTEGER,
+    anchor_before_source TEXT,
     anchor_after_date TEXT,              -- ... and the one it set (none: it didn't move the balance)
-    anchor_after_balance INTEGER
+    anchor_after_balance INTEGER,
+    balance_note TEXT NOT NULL DEFAULT ''  -- what the import said about the balance, shown with it
 );
 
 CREATE TABLE IF NOT EXISTS subscriptions (
@@ -158,7 +178,7 @@ CREATE TABLE IF NOT EXISTS transactions (
     raw_memo TEXT NOT NULL DEFAULT '',
     bank_type TEXT NOT NULL DEFAULT '',  -- DEBIT / CREDIT / OTHER / ATM ...
     bank_category TEXT NOT NULL DEFAULT '',  -- the card's own category ("Restaurant")
-    hint TEXT NOT NULL DEFAULT '',       -- transfer | interest | income | cash | fee | etransfer
+    hint TEXT NOT NULL DEFAULT '',       -- transfer | interest | income | cash | fee | etransfer | adjustment
     category_id INTEGER REFERENCES categories(id) ON DELETE SET NULL,
     is_split INTEGER NOT NULL DEFAULT 0,
     transfer_account_id INTEGER REFERENCES accounts(id) ON DELETE SET NULL,
@@ -213,7 +233,8 @@ CREATE TABLE IF NOT EXISTS examples (
 
 CREATE TABLE IF NOT EXISTS undo_groups (
     grp INTEGER PRIMARY KEY,
-    label TEXT NOT NULL
+    label TEXT NOT NULL,
+    undoes TEXT                          -- a big step: what undoing it does ("Savings is deleted."); ⌘Z asks
 );
 CREATE TABLE IF NOT EXISTS undo_log (
     seq INTEGER PRIMARY KEY,
@@ -318,39 +339,70 @@ class Database:
                                      ("anchor_after_date", "TEXT"), ("anchor_after_balance", "INTEGER")):
                     if column not in columns:
                         self.conn.execute(f"ALTER TABLE imports ADD COLUMN {column} {kind}")
-            # Next upgrade: `if version is not None and version < 8: ...`, then raise SCHEMA_VERSION.
+            if version is not None and version < 8:
+                self._upgrade_to_8()
+            # Next upgrade: `if version is not None and version < 9: ...`, then raise SCHEMA_VERSION.
             self.conn.execute("INSERT INTO meta (key, value) VALUES ('schema_version', ?) "
                               "ON CONFLICT(key) DO UPDATE SET value = excluded.value", (str(SCHEMA_VERSION),))
             if version is not None and version < SCHEMA_VERSION:
                 log.info("Upgraded the database from version %d to %d", version, SCHEMA_VERSION)
+
+    def _upgrade_to_8(self):
+        """Where each balance came from (a file's balance is checked against the next file's: issue
+        #43), what each import said about its balance, and which undo steps ask first (#42)."""
+        def add(table, column, kind):
+            if column not in [r["name"] for r in self.conn.execute(f"PRAGMA table_info({table})")]:
+                self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {kind}")
+        add("accounts", "anchor_source", "TEXT")
+        add("accounts", "check_from", "INTEGER REFERENCES imports(id) ON DELETE SET NULL")
+        add("imports", "anchor_before_source", "TEXT")
+        add("imports", "balance_note", "TEXT NOT NULL DEFAULT ''")
+        add("undo_groups", "undoes", "TEXT")
+        # A balance an import set (imports remember that since version 7) came from that file, and
+        # later files are checked against it. One from an older import is from a file too, but which
+        # one isn't known: the next file's balance is taken as it is, and checks start from it. An
+        # account no Quicken file ever went into (the only files with a balance) has a typed one.
+        self.conn.execute(
+            "UPDATE accounts SET check_from = (SELECT MAX(i.id) FROM imports i WHERE i.account_id = accounts.id "
+            "AND i.anchor_after_date = accounts.anchor_date AND i.anchor_after_balance = accounts.anchor_balance) "
+            "WHERE anchor_date IS NOT NULL")
+        self.conn.execute(
+            "UPDATE accounts SET anchor_source = CASE WHEN check_from IS NOT NULL OR EXISTS (SELECT 1 FROM imports i "
+            "WHERE i.account_id = accounts.id AND i.format = 'ofx') THEN 'file' ELSE 'typed' END "
+            "WHERE anchor_date IS NOT NULL")
 
     def _backup_before_upgrade(self, version):
         target = backups.save(self, backups.upgrade_name(version, SCHEMA_VERSION, datetime.now()))
         log.info("Saved a copy of the database before upgrading it: %s", target)
 
     def _install_undo_triggers(self):
+        """Recording a step: each change's reverse SQL goes into undo_log. Watching a change made
+        without a label: the first change that really changes something marks it (_CHANGED), and
+        write() then clears the log."""
         with self.lock:
+            active = "(SELECT active FROM undo_state WHERE id = 1)"
             for table in UNDO_TABLES:
                 columns = [r["name"] for r in self.conn.execute(f"PRAGMA table_info({table})")]
                 for suffix in ("ins", "upd", "del"):
                     self.conn.execute(f"DROP TRIGGER IF EXISTS undo_{table}_{suffix}")
-                when = "WHEN (SELECT active FROM undo_state WHERE id = 1) = 1"
-                grp = "(SELECT grp FROM undo_state WHERE id = 1)"
-                self.conn.execute(
-                    f"CREATE TRIGGER undo_{table}_ins AFTER INSERT ON {table} {when} BEGIN "
-                    f"INSERT INTO undo_log (grp, sql) VALUES ({grp}, "
-                    f"'DELETE FROM {table} WHERE rowid = ' || NEW.rowid); END")
+
+                def trigger(suffix, when, timing, reverse_sql):
+                    self.conn.execute(
+                        f"CREATE TRIGGER undo_{table}_{suffix} {timing} ON {table} WHEN {when} BEGIN "
+                        f"INSERT INTO undo_log (grp, sql) SELECT grp, {reverse_sql} FROM undo_state "
+                        f"WHERE id = 1 AND active = {_RECORDING}; "
+                        f"UPDATE undo_state SET active = {_CHANGED} WHERE id = 1 AND active = {_WATCHING}; END")
+
+                either = f"{active} IN ({_RECORDING}, {_WATCHING})"
+                trigger("ins", either, "AFTER INSERT", f"'DELETE FROM {table} WHERE rowid = ' || NEW.rowid")
                 changed = " || ".join(
                     f"CASE WHEN OLD.{c} IS NOT NEW.{c} THEN ', {c} = ' || quote(OLD.{c}) ELSE '' END" for c in columns)
-                self.conn.execute(
-                    f"CREATE TRIGGER undo_{table}_upd AFTER UPDATE ON {table} {when} BEGIN "
-                    f"INSERT INTO undo_log (grp, sql) VALUES ({grp}, "
-                    f"'UPDATE {table} SET rowid = rowid' || {changed} || ' WHERE rowid = ' || OLD.rowid); END")
+                differs = " OR ".join(f"OLD.{c} IS NOT NEW.{c}" for c in columns)
+                trigger("upd", f"({active} = {_RECORDING} OR ({active} = {_WATCHING} AND ({differs})))", "AFTER UPDATE",
+                        f"'UPDATE {table} SET rowid = rowid' || {changed} || ' WHERE rowid = ' || OLD.rowid")
                 values = " || ', ' || ".join(f"quote(OLD.{c})" for c in columns)
-                self.conn.execute(
-                    f"CREATE TRIGGER undo_{table}_del BEFORE DELETE ON {table} {when} BEGIN "
-                    f"INSERT INTO undo_log (grp, sql) VALUES ({grp}, "
-                    f"'INSERT INTO {table} (rowid, {', '.join(columns)}) VALUES (' || OLD.rowid || ', ' || {values} || ')'); END")
+                trigger("del", either, "BEFORE DELETE",
+                        f"'INSERT INTO {table} (rowid, {', '.join(columns)}) VALUES (' || OLD.rowid || ', ' || {values} || ')'")
 
     # ── access ──
 
@@ -360,9 +412,11 @@ class Database:
             yield self.conn
 
     @contextmanager
-    def write(self, label=None):
+    def write(self, label=None, keep_undo=False):
         """A transaction. Nested calls join the outer one. With a `label`, the whole
-        change becomes one step of undo (the outermost label wins)."""
+        change becomes one step of undo (the outermost label wins). Without one, a change
+        it makes clears undo (an import, the re-check: see the module docstring), unless
+        `keep_undo`: a change no step's undo can trip over."""
         with self.lock:
             outer = self._depth == 0
             self._depth += 1
@@ -371,11 +425,13 @@ class Database:
                     self.conn.execute("BEGIN IMMEDIATE")
                     if label:
                         cur = self.conn.execute("INSERT INTO undo_groups (label) VALUES (?)", (label,))
-                        self.conn.execute("UPDATE undo_state SET active = 1, grp = ?", (cur.lastrowid,))
+                        self.conn.execute("UPDATE undo_state SET active = ?, grp = ?", (_RECORDING, cur.lastrowid))
+                    elif not keep_undo:
+                        self.conn.execute("UPDATE undo_state SET active = ?, grp = NULL", (_WATCHING,))
                 yield self.conn
                 if outer:
                     if label:
-                        self.conn.execute("UPDATE undo_state SET active = 0")
+                        self.conn.execute("UPDATE undo_state SET active = ?", (_OFF,))
                         self.conn.execute(
                             "DELETE FROM undo_groups WHERE grp = (SELECT grp FROM undo_state) "
                             "AND NOT EXISTS (SELECT 1 FROM undo_log WHERE grp = undo_groups.grp)")
@@ -385,24 +441,51 @@ class Database:
                         self.conn.execute(
                             "DELETE FROM undo_groups WHERE grp NOT IN "
                             "(SELECT grp FROM undo_groups ORDER BY grp DESC LIMIT 100)")
+                    elif not keep_undo:
+                        changed = self.conn.execute("SELECT active FROM undo_state WHERE id = 1").fetchone()[0] == _CHANGED
+                        self.conn.execute("UPDATE undo_state SET active = ?", (_OFF,))
+                        if changed:
+                            self._clear_undo()
                     self.conn.execute("COMMIT")
             except BaseException:
                 if outer:
                     self.conn.execute("ROLLBACK")
-                    self.conn.execute("UPDATE undo_state SET active = 0")
+                    self.conn.execute("UPDATE undo_state SET active = ?", (_OFF,))
                 raise
             finally:
                 self._depth -= 1
 
-    def undo_label(self):
-        with self.read() as c:
-            row = c.execute("SELECT label FROM undo_groups ORDER BY grp DESC LIMIT 1").fetchone()
-            return row["label"] if row else None
+    def _clear_undo(self):
+        self.conn.execute("DELETE FROM undo_log")
+        self.conn.execute("DELETE FROM undo_groups")
 
-    def undo(self):
-        """Reverses the last labelled change. Returns its label, or None if there's nothing to undo."""
+    def big_step(self, undoes):
+        """Inside a labelled write(): this step is a big one, and `undoes` says what undoing it
+        does ("Savings is deleted."). ⌘Z asks before undoing it; the Undo in its toast doesn't."""
+        self.conn.execute(f"UPDATE undo_groups SET undoes = ? WHERE grp = (SELECT grp FROM undo_state "
+                          f"WHERE id = 1 AND active = {_RECORDING})", (undoes,))
+
+    def undo_label(self):
+        step = self.undo_step()
+        return step["label"] if step else None
+
+    def undo_step(self):
+        """The step undo would reverse: {'step': its number, 'label', 'big', 'undoes'}, or None."""
+        with self.read() as c:
+            row = c.execute("SELECT grp, label, undoes FROM undo_groups ORDER BY grp DESC LIMIT 1").fetchone()
+            if row is None:
+                return None
+            return {"step": row["grp"], "label": row["label"], "big": row["undoes"] is not None,
+                    "undoes": row["undoes"] or ""}
+
+    def undo(self, step=None):
+        """Reverses the last step, or exactly `step` (undo_step()'s number), returning its label;
+        None if there's nothing to undo. A UserError when `step` isn't the last step any more, or
+        the undo fails (something since has changed what it would put back): that step is dropped."""
         with self.lock:
             row = self.conn.execute("SELECT grp, label FROM undo_groups ORDER BY grp DESC LIMIT 1").fetchone()
+            if step is not None and (row is None or row["grp"] != step):
+                raise UserError(CANT_UNDO)
             if row is None:
                 return None
             self.conn.execute("BEGIN IMMEDIATE")
@@ -415,6 +498,12 @@ class Database:
                 self.conn.execute("DELETE FROM undo_log WHERE grp = ?", (row["grp"],))
                 self.conn.execute("DELETE FROM undo_groups WHERE grp = ?", (row["grp"],))
                 self.conn.execute("COMMIT")
+            except Exception:
+                self.conn.execute("ROLLBACK")
+                log.warning("Couldn't undo %s: the step is dropped", row["label"], exc_info=True)
+                self.conn.execute("DELETE FROM undo_log WHERE grp = ?", (row["grp"],))
+                self.conn.execute("DELETE FROM undo_groups WHERE grp = ?", (row["grp"],))
+                raise UserError(CANT_UNDO) from None
             except BaseException:
                 self.conn.execute("ROLLBACK")
                 raise
@@ -428,7 +517,9 @@ class Database:
             return row["value"] if row else default
 
     def set_meta(self, key, value):
-        with self.write() as c:
+        """A flag of the app's own (onboarded, the last backup's fingerprint): no undo step's
+        SQL depends on one, so it leaves undo as it is."""
+        with self.write(keep_undo=True) as c:
             c.execute("INSERT INTO meta (key, value) VALUES (?, ?) "
                       "ON CONFLICT(key) DO UPDATE SET value = excluded.value", (key, None if value is None else str(value)))
 

@@ -64,15 +64,18 @@ All in `Application Files/`:
   window, the Downloads watcher thread, the updater, and `Api`, which exposes one method,
   `call(name, args)`, to the page. `VERSION` here is the app's only version number.
 - `service.py`: everything the page can ask for. `BudgetService.dispatch()` runs only
-  methods marked `@exposed`; results are `{"ok": true, "result": …}` or
+  methods marked `@exposed`; results are `{"ok": true, "result": …, "step": …}` (`step`: the
+  undo step ⌘Z would reverse after it, so a toast's Undo reverses exactly its own) or
   `{"ok": false, "error": "…"}`. Raise `UserError` (`errors.py`) for messages the user should see, in service.py, ledger.py and inbox.py alike; any other exception is logged with its traceback and shown as "Something went wrong (…). Details are in the log." Months and dates from the page are checked on the way in.
   The preview and most tests drive this same class.
 - `db.py`: schema, upgrades, the shared connection behind a lock, **undo** (triggers record
   inverse SQL; `db.write("Label")` makes one undoable step; updates only record changed
-  columns). Schema is at version 7. To change it: raise `SCHEMA_VERSION`,
+  columns; a write without a label that changes anything clears undo, unless
+  `keep_undo`; `big_step()` marks a step ⌘Z asks about first; see Key rules). Schema is at
+  version 8. To change it: raise `SCHEMA_VERSION`,
   add the column to `SCHEMA` *and* an `ALTER TABLE` step in `_migrate` for existing
   databases. Upgrades copy the database to the backups folder
-  (`budget-before-upgrade-v7-to-v8-<date and time>.db`) first. The
+  (`budget-before-upgrade-v8-to-v9-<date and time>.db`) first. The
   user's real database has real data in it: test every upgrade on a copy of it first.
 - `backups.py`: backups ([ADR 0004](../docs/adr/0004-live-budget-stays-out-of-synced-folders.md)).
   `at_quit` and `at_launch` (a backup only if `changed`: the budget's `digest` differs from
@@ -96,8 +99,9 @@ All in `Application Files/`:
   Tangerine's wording first, then other banks' (RBC, TD, BMO...), which only see text
   Tangerine's rules didn't match. `find_similar()` is the fuzzy match (rapidfuzz):
   "SAVEWAY 1532" → Safeway.
-- `ledger.py`: accounts and balances (worked out from one anchor balance), the special
-  categories (Income, a payment category per debt account, Interest & Fees),
+- `ledger.py`: accounts and balances (worked out from one anchor balance), the balance
+  check (`balance_difference`: what a file's balance says that the transactions don't), the
+  special categories (Income, a payment category per debt account, Interest & Fees),
   resolving/renaming/merging payees, spotting and merging an account imported twice.
 - `learn.py`: category guesses from history (amount- and recency-weighted votes), mixed
   payees, unusually big charges, refunds, e-transfer shares of a shared expense,
@@ -108,7 +112,8 @@ All in `Application Files/`:
   page shows: suggestions, today's reason, the item's question, its final group key and
   guess), and every decision: `categorize(txn_ids, category_id, recheck_payee)`,
   `accept_all`, `split`, `mark_transfer`, `not_a_transfer`, `send_back`, `ask_again`,
-  `same_payee`, `new_price`, `set_always_ask`. **Only it puts a transaction in the inbox or
+  `same_payee`, `new_price`, `set_always_ask`, and the balance adjustment: `check_balance`
+  (after every import into an account), `remove_adjustment`, `keep_both`. **Only it puts a transaction in the inbox or
   takes it out**, from every page (the Transactions page and the transaction pop-up too).
   It asks learn.py for suggestions and subscriptions.py for the recurring-charge rules;
   service.py wraps each call in its undo step. `scripts/tests/test_inbox.py` drives it directly.
@@ -157,7 +162,27 @@ All in `Application Files/`:
   account, or for a set-up CSV a question. Tangerine labels every bank account SAVINGS in
   its OFX/QFX files (chequing too): ACCTTYPE isn't trusted for Tangerine.
 - **A file's own balance (OFX LEDGERBAL) replaces any balance as old or older**: a
-  balance typed in during the day misses what the bank adds later that day.
+  balance typed in during the day misses what the bank adds later that day. Where it came
+  from is kept (`accounts.anchor_source`: `file` or `typed`). A typed one gives way to a
+  file's without a word, and that file's balance is where the **balance check** starts
+  (`accounts.check_from`, an import). Each later file's balance is checked against it **by
+  what arrived, never by date** (`ledger.balance_difference`, issue #43): the newest balance
+  − the one the check starts from − the bank's transactions that arrived since (in a later
+  import, up to the one with the newest balance, or in a later file ending by then; deleted
+  ones don't count) − the balance adjustments you kept since. Card files bring charges dated
+  before they posted, so by date a card looks off after most downloads. What's left waits in
+  the Inbox as a **balance adjustment** (hint `adjustment`, payee "Balance adjustment") dated the
+  newest balance's date, so the budget's starting balance stays put: no guess, never in Accept
+  all, never a transfer's other half or a copy of a bank's row (`transfers.find_counterpart`,
+  the importer's and `cross_kind_pairs`' matching skip it). It's worked out from scratch after
+  every import into the account, Remove import and a merge (`Inbox.check_balance`): it shrinks,
+  or goes, as the missing transactions arrive, and Remove import puts it back. Once you've
+  categorized it, it's yours: when its money arrives, the app's new one cancelling it out asks
+  "The $300.00 your balance adjustment stood for has arrived: remove the adjustment?" (Remove it /
+  Keep both, `Inbox.remove_adjustment` / `keep_both`). A balance typed with Set balance, or the
+  bank's balance given to Reconcile (its adjustment waits the same way), ends the check: the next
+  file's balance is taken as it is and starts it again. An import's balance note
+  (`imports.balance_note`) shows in its toast and in Accounts → Imported files.
 - **A card file's signs are settled at import, when the account is known** (`importer._flip`,
   `_positive_balance`, `balance_questions`). Charges negative and a balance above zero is a card in
   your favour for most banks and what you owe for some. With a balance in the account, the sign that
@@ -184,7 +209,9 @@ All in `Application Files/`:
   wait, never paired again.
 - **`reason` is only text to show; no code reads it back.** "Charged you again",
   "Matched to X (similar name)" and "You sent this back" are worked out each time
-  (`subscriptions.charged_when_it_shouldnt`, `payee_keys.how = 'similar'`, `by_you`).
+  (`subscriptions.charged_when_it_shouldnt`, `payee_keys.how = 'similar'`, `by_you`). A
+  balance adjustment's item shows its own (written again at every check: the bank's balance
+  that day and where a download may be missing).
 - **A recurring charge's price follows a charge only when it first arrives** or when you
   choose "New price for…"; the re-check never changes a price. Its category likewise:
   moving a recurring charge to another category only sends the charges that arrive from
@@ -213,6 +240,22 @@ All in `Application Files/`:
   leading underscore. AppKit calls run on the main thread (`AppHelper.callAfter`).
 - Every user-facing change should be undoable: wrap it in `db.write("Short label")`.
   Background imports aren't undoable (they're removed from Accounts → Imported files).
+- **An import or a re-check that changes something clears ⌘Z** (issue #42): undoing an
+  earlier step would replay its SQL over what they changed (deleting an account took the
+  rows an import had just put in it). `db.write()` without a label watches for a change and
+  clears the undo log; `keep_undo=True` is only for a change no step's undo can trip over
+  (folding a group, a note as it's typed, a file you said not to import, a meta flag,
+  finishing onboarding). **Big steps ask first when undone with ⌘Z**: adding, deleting or
+  merging an account, a group or a category; Add starter categories; Remove import; Learn
+  from Actual (the re-check after it is part of the step); Accept all; Catch up past months;
+  changing the budget's start month. Each calls `db.big_step("What undoing does.")` in its
+  write; the page asks "Undo Add account Savings? Savings is deleted." (Undo / Cancel) from
+  `undo_step`, then undoes exactly that step (`undo(step)`). Small steps (a typed amount, → and
+  ←, Move money, renames, Hide/Show, categorizing, editing or splitting a transaction, payee
+  and recurring charge changes) undo straight away. The Undo in a step's toast never asks: it
+  undoes the step the toast is about, or says "That can't be undone any more" (so does an undo
+  that fails; its step is dropped, and ⌘Z never gets stuck). ⌘Z does nothing while a pop-up
+  is open (its question would replace the pop-up).
 - `~/Documents` is iCloud-synced on this machine; `scripts/build.sh` builds in
   `~/Library/Caches` and runs `xattr -cr` before signing. One build at a time from any
   checkout or worktree (`scripts/build-lock.sh`, taken by build, package, install and

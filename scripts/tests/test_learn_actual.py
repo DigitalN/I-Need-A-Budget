@@ -44,6 +44,22 @@ def test_learning_is_one_undo_step_that_takes_its_categories_with_it(app):
     out = call(app, "import_files", [str(path)])
     assert out["learnt"]["categories_created"] == ["Eating Out", "Phone"]
     assert call(app, "bootstrap")["undo"] == "Learn from Actual"
+    step = call(app, "undo_step")  # a big step: ⌘Z asks first (issue #42)
+    assert step["big"] and step["undoes"] == ("What the app learnt from Actual export.csv is forgotten. "
+                                              "The 2 categories it made are deleted.")
     call(app, "undo")
     assert _examples(app) == 0
     assert {c["name"] for g in call(app, "categories") for c in g["categories"]} == before
+
+
+def test_what_the_recheck_categorizes_with_it_goes_back_with_it(app):
+    """The re-check after learning is part of the step: undoing it sends those back to the Inbox."""
+    from helpers import CARD_FILE, card_csv
+    call(app, "import_files", [str(write(app.test_downloads, CARD_FILE,
+                                         card_csv([("08/02/2026", "SAMPLE CAFE CALGARY AB", "-12.40", "Restaurant")])))])
+    assert len(call(app, "inbox")["items"]) == 1
+    out = call(app, "import_files", [str(write(app.test_downloads, "Actual export.csv", ACTUAL))])
+    assert out["rechecked"] == 1 and call(app, "inbox")["items"] == []
+    assert call(app, "undo_step")["undoes"].endswith("1 transaction it categorized goes back to the Inbox.")
+    call(app, "undo")
+    assert len(call(app, "inbox")["items"]) == 1

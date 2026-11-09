@@ -85,7 +85,7 @@ def test_a_card_files_flipped_signs_are_decided_once_per_account(app):
     assert _amounts(app) == [-4550, -3000, 10000]
     # one purchase alone says nothing about the file's signs: the account's earlier answer does
     later = [("20261012", "12.00", "SAMPLE TAXI", "A4"), ("20261013", "-50.00", "PAYMENT - THANK YOU", "A5")]
-    call(app, "import_files", [_file(app, "card-2.ofx", card_ofx(later, "0.00", "20261014"))])
+    call(app, "import_files", [_file(app, "card-2.ofx", card_ofx(later, "-38.00", "20261014"))])
     assert _amounts(app) == [-4550, -3000, -1200, 5000, 10000]
 
 
@@ -95,7 +95,7 @@ def test_rows_the_account_already_has_stop_a_file_of_refunds_being_flipped(app):
     call(app, "import_files", [_file(app, "card-1.ofx", card_ofx(credits, "0.00", "20261010"))])
     assert _amounts(app) == [-2000, 3000, 4550]
     again = credits + [("20261009", "10.00", "SAMPLE SHOP", "R4")]  # 3 of its 4 "purchases" are positive: it looks flipped
-    call(app, "import_files", [_file(app, "card-2.ofx", card_ofx(again, "0.00", "20261010"))])
+    call(app, "import_files", [_file(app, "card-2.ofx", card_ofx(again, "10.00", "20261010"))])
     assert _amounts(app) == [-2000, 1000, 3000, 4550]
 
 

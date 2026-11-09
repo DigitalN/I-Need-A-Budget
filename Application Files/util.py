@@ -129,6 +129,25 @@ def _year(text):
     return 2000 + int(text) if len(text) == 2 else int(text)
 
 
+def money(cents):
+    """12345 → '$123.45', -500 → '-$5.00': an amount in words the page shows as it is."""
+    return f"{'-' if cents < 0 else ''}${abs(cents) / 100:,.2f}"
+
+
+_MONTHS = ("January", "February", "March", "April", "May", "June", "July", "August", "September", "October",
+           "November", "December")
+
+
+def month_name(month):
+    """'2026-08' → 'August 2026'."""
+    return f"{_MONTHS[int(month[5:7]) - 1]} {month[:4]}"
+
+
+def short_day(day):
+    """'2026-09-15' → 'Sep 15'."""
+    return f"{_MONTHS[int(day[5:7]) - 1][:3]} {int(day[8:10])}"
+
+
 def today():
     return date.today().isoformat()
 

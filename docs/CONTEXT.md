@@ -44,6 +44,19 @@ _Avoid_: statement, export, download
 Bringing one file's transactions into the budget. An import can be removed again,
 taking its transactions with it.
 
+**Balance**:
+What's in an account at the end of a day. A Quicken file brings the bank's own; one typed
+in is yours, and gives way to the next file's. Every other day's balance is worked out
+from the newest one.
+
+**Balance adjustment**:
+A transaction for money an account's balance says came in or went out that no transaction
+explains: a missing download, or a transaction counted twice. Each file's balance is
+checked against the last one by what arrived in between; the difference waits in the inbox
+as a balance adjustment, never categorized without asking, and shrinks or goes as the
+missing transactions arrive. One you've categorized stays until you remove it.
+_Avoid_: correction, reconciliation
+
 **Actual export**:
 A file exported from Actual Budget. The app learns categories from it but never imports
 its transactions.

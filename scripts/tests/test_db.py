@@ -3,6 +3,7 @@
 
 from backups import FOLDER_NAME as BACKUPS
 from db import SCHEMA_VERSION, Database
+from errors import UserError
 
 
 def make(tmp_path):
@@ -30,11 +31,63 @@ def test_undo_leaves_later_unrelated_changes_alone(tmp_path):
     db = make(tmp_path)
     with db.write("Categorize transaction") as c:
         c.execute("UPDATE transactions SET category_id = 2 WHERE id = 1")
-    with db.write() as c:  # an import pairing a transfer: not undoable, and must survive
+    with db.write(keep_undo=True) as c:  # a change no step trips over: not undoable, and must survive
         c.execute("UPDATE transactions SET note = 'kept' WHERE id = 1")
     db.undo()
     row = db.conn.execute("SELECT category_id, note FROM transactions WHERE id = 1").fetchone()
     assert (row["category_id"], row["note"]) == (None, "kept")
+
+
+def test_a_change_without_a_label_clears_undo_when_it_changes_something(tmp_path):
+    """Issue #42: undo replayed its SQL over what an import had changed since."""
+    db = make(tmp_path)
+    with db.write("Add category") as c:
+        c.execute("INSERT INTO categories (id, group_id, name) VALUES (3, 1, 'Gifts')")
+    with db.write() as c:  # what the re-check does when it's sure of nothing new: changes no row
+        c.execute("UPDATE transactions SET status = 'review' WHERE id = 1")
+    assert db.undo_label() == "Add category"
+    with db.write() as c:  # an import
+        c.execute("INSERT INTO transactions (account_id, date, amount, category_id) VALUES (1, '2026-07-02', -50, 3)")
+    assert db.undo_label() is None and db.undo() is None
+    assert db.conn.execute("SELECT category_id FROM transactions WHERE amount = -50").fetchone()[0] == 3
+
+
+def test_an_undo_that_fails_is_a_message_and_its_step_is_dropped(tmp_path):
+    db = make(tmp_path)
+    with db.write("Rename category") as c:
+        c.execute("UPDATE categories SET name = 'Housing' WHERE id = 1")
+    with db.write("Delete transaction") as c:
+        c.execute("DELETE FROM transactions WHERE id = 1")
+    with db.write(keep_undo=True) as c:  # something reuses its id without clearing undo
+        c.execute("INSERT INTO transactions (id, account_id, date, amount) VALUES (1, 1, '2026-08-01', -7)")
+    try:
+        db.undo()
+        raise AssertionError("expected a UserError")
+    except UserError as e:
+        assert str(e) == "That can't be undone any more."
+    assert db.conn.execute("SELECT amount FROM transactions WHERE id = 1").fetchone()[0] == -7  # nothing half-done
+    assert db.undo() == "Rename category"  # never stuck
+    assert db.conn.execute("SELECT name FROM categories WHERE id = 1").fetchone()[0] == "Rent"
+
+
+def test_a_big_step_says_what_undoing_it_does_and_undo_takes_only_the_step_asked_about(tmp_path):
+    db = make(tmp_path)
+    with db.write("Add category Gifts") as c:
+        c.execute("INSERT INTO categories (id, group_id, name) VALUES (3, 1, 'Gifts')")
+        db.big_step("Gifts is deleted.")
+    big = db.undo_step()
+    assert (big["label"], big["big"], big["undoes"]) == ("Add category Gifts", True, "Gifts is deleted.")
+    with db.write("Rename category") as c:
+        c.execute("UPDATE categories SET name = 'Housing' WHERE id = 1")
+    small = db.undo_step()
+    assert (small["label"], small["big"], small["undoes"]) == ("Rename category", False, "")
+    try:
+        db.undo(big["step"])  # what ⌘Z asked about is no longer the last step
+        raise AssertionError("expected a UserError")
+    except UserError:
+        pass
+    assert db.undo(small["step"]) == "Rename category"
+    assert db.undo(big["step"]) == "Add category Gifts"
 
 
 def test_undo_brings_back_deleted_rows_and_their_children(tmp_path):

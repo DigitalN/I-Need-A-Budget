@@ -61,7 +61,8 @@ def test_a_file_without_a_bank_doesnt_join_an_account_at_a_named_bank_by_its_num
     _import(app, "b.ofx", ofx(None, [{"acct_id": "999888772333", "rows": [("20261002", "-7.00", "OTHER SHOP", "B1")]}]))
     assert len(call(app, "accounts")) == 2
     # The same account's next file (same whole number) still finds it.
-    _import(app, "c.ofx", ofx(None, [{"acct_id": "000111222333", "rows": [("20261003", "-6.00", "SAMPLE BAKERY", "A2")]}]))
+    _import(app, "c.ofx", ofx(None, [{"acct_id": "000111222333", "rows": [("20261003", "-6.00", "SAMPLE BAKERY", "A2")],
+                                      "balance": "94.00"}]))
     assert len(call(app, "accounts")) == 2
     assert len(call(app, "transactions", {"account_id": first["id"]})["items"]) == 2
 

@@ -8,12 +8,13 @@ commits. Amounts are cents.
 """
 
 from bisect import bisect_left, bisect_right
+from dataclasses import dataclass
 from datetime import date
 from functools import lru_cache
 
 import transfers
 from errors import UserError
-from payees import describe, find_similar, merchant_key, transaction_hint
+from payees import ADJUSTMENT, describe, find_similar, merchant_key, transaction_hint
 from util import add_days, day_before
 
 CASH_KINDS = ("chequing", "savings", "cash")
@@ -82,6 +83,95 @@ def account_balance(conn, account_id, as_of=None):
         "FROM transactions WHERE account_id = :id",
         {"anchor": anchor, "asof": as_of, "id": account_id}).fetchone()[0]
     return acct["anchor_balance"] + delta
+
+
+# ── the balance check ────────────────────────────────────────
+#
+# A file's balance (an OFX LEDGERBAL) becomes the account's: every other balance is worked out from it.
+# A balance typed by hand gives way to the next file's as it is (one typed during the day misses what
+# the bank adds later that day), and that file's balance is where the check starts (accounts.check_from).
+# Each later file's balance is checked against it, by what arrived rather than by date: card files bring
+# charges dated before they posted, so the transactions dated between two balances don't add up to the
+# difference between them, while the transactions that arrived between them do. What arrived and doesn't
+# explain waits in the Inbox as a balance adjustment, dated the newest balance's date, so the budget's
+# starting balance stays put (Inbox.check_balance keeps it). It's worked out again from scratch after
+# every import into the account, so it shrinks, or goes, as the missing transactions arrive, and Remove
+# import puts it back the way it was.
+
+ADJUSTMENT_PAYEE = "Balance adjustment"
+
+
+@dataclass
+class Difference:
+    waiting: int     # what no transaction explains, in cents: the balance adjustment that should wait
+    date: str        # the newest file balance's date: the adjustment's
+    check_from: int  # the import the check starts from
+    current: int     # the import that brought the newest balance
+
+
+def balance_difference(conn, account_id):
+    """What the account's newest file balance says that its transactions don't, or None when its
+    balance isn't checked (typed, or no file balance to start from yet). The newest balance, less the
+    one the check starts from, less the bank's transactions that arrived since (in a later import, up
+    to the one that brought the newest balance, or in any later file that ends by then), less the
+    balance adjustments you kept since. The adjustment waiting for you isn't counted: this is what it
+    should be."""
+    acct = conn.execute("SELECT anchor_date, anchor_balance, anchor_source, check_from FROM accounts WHERE id = ?",
+                        (account_id,)).fetchone()
+    if acct is None or acct["anchor_source"] != "file" or acct["check_from"] is None:
+        return None
+    start = conn.execute("SELECT anchor_after_balance FROM imports WHERE id = ?", (acct["check_from"],)).fetchone()
+    current = conn.execute("SELECT MAX(id) FROM imports WHERE account_id = ? AND anchor_after_date = ? "
+                           "AND anchor_after_balance = ?",
+                           (account_id, acct["anchor_date"], acct["anchor_balance"])).fetchone()[0]
+    if start is None or start["anchor_after_balance"] is None or current is None:
+        return None
+    arrived = conn.execute(
+        "SELECT COALESCE(SUM(t.amount), 0) FROM transactions t JOIN imports i ON i.id = t.import_id "
+        "WHERE t.account_id = ? AND t.fingerprint IS NOT NULL AND t.import_id > ? AND (t.import_id <= ? OR i.last_date <= ?)",
+        (account_id, acct["check_from"], current, acct["anchor_date"])).fetchone()[0]
+    kept = conn.execute(
+        "SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE account_id = ? AND hint = ? AND import_id >= ? "
+        "AND NOT (by_you = 0 AND status = 'review')", (account_id, ADJUSTMENT, acct["check_from"])).fetchone()[0]
+    return Difference(acct["anchor_balance"] - start["anchor_after_balance"] - arrived - kept, acct["anchor_date"],
+                      acct["check_from"], current)
+
+
+def waiting_adjustments(conn, account_id, check_from):
+    """The account's balance adjustments that are the app's and wait in the Inbox, made since the
+    check started from `check_from`, newest first: what Inbox.check_balance keeps up to date."""
+    return [r["id"] for r in conn.execute(
+        "SELECT id FROM transactions WHERE account_id = ? AND hint = ? AND by_you = 0 AND status = 'review' "
+        "AND import_id >= ? ORDER BY id DESC", (account_id, ADJUSTMENT, check_from))]
+
+
+def kept_adjustments(conn, account_id, check_from):
+    """The balance adjustments you kept (categorized, or decided about) since the check started
+    from `check_from`, oldest first."""
+    return conn.execute(
+        "SELECT * FROM transactions WHERE account_id = ? AND hint = ? AND import_id >= ? "
+        "AND NOT (by_you = 0 AND status = 'review') ORDER BY date, id", (account_id, ADJUSTMENT, check_from)).fetchall()
+
+
+def likely_gap(conn, account_id, check_from):
+    """(the last day a file covered, the first day the next file covers) for the first stretch of
+    days no file covered from the file the check starts from on: where a download may be missing.
+    None when the files leave no gap."""
+    # A file with a balance covers the days up to its balance's date, even with no transactions on them.
+    spans = conn.execute("SELECT first_date, MAX(last_date, COALESCE(anchor_after_date, last_date)) AS last_date "
+                         "FROM imports WHERE account_id = ? AND first_date IS NOT NULL ORDER BY first_date",
+                         (account_id,)).fetchall()
+    start = conn.execute("SELECT first_date FROM imports WHERE id = ?", (check_from,)).fetchone()
+    if start is None or start["first_date"] is None:
+        return None
+    covered = None
+    for span in spans:
+        if covered is not None and span["first_date"] > add_days(covered, 1):
+            if covered >= start["first_date"]:
+                return covered, span["first_date"]
+            covered = None
+        covered = span["last_date"] if covered is None else max(covered, span["last_date"])
+    return None
 
 
 def opening_cash(conn, start_month):
@@ -167,12 +257,12 @@ def cross_kind_pairs(conn, a_id, b_id, days=OTHER_KIND_DAYS, skip_a=(), skip_b=(
     def span(account_id):
         return conn.execute("SELECT MIN(date), MAX(date) FROM transactions WHERE account_id = ?", (account_id,)).fetchone()
 
-    def rows(account_id, skip, within):
+    def rows(account_id, skip, within):  # a balance adjustment is never a copy of anything
         return [dict(r) for r in conn.execute(
             "SELECT t.id, t.date, t.amount, COALESCE(i.format, '') AS kind, i.first_date AS first, i.last_date AS last "
             "FROM transactions t LEFT JOIN imports i ON i.id = t.import_id "
-            "WHERE t.account_id = ? AND t.date BETWEEN ? AND ?",
-            (account_id, add_days(within[0], -days), add_days(within[1], days))) if r["id"] not in skip]
+            "WHERE t.account_id = ? AND t.date BETWEEN ? AND ? AND t.hint != ?",
+            (account_id, add_days(within[0], -days), add_days(within[1], days), ADJUSTMENT)) if r["id"] not in skip]
     a_span, b_span = span(a_id), span(b_id)
     if a_span[0] is None or b_span[0] is None:
         return []
@@ -271,9 +361,10 @@ def merge_accounts(conn, from_id, into_id):
     for table in ("account_sources", "imports", "subscriptions"):
         conn.execute(f"UPDATE {table} SET account_id = ? WHERE account_id = ?", (into_id, from_id))
     if a["anchor_date"] is not None and (b["anchor_date"] is None or a["anchor_date"] > b["anchor_date"]):
-        # The newer balance wins (the copy's usually came from the bank's file).
-        conn.execute("UPDATE accounts SET anchor_date = ?, anchor_balance = ? WHERE id = ?",
-                     (a["anchor_date"], a["anchor_balance"], into_id))
+        # The newer balance wins (the copy's usually came from the bank's file), and the copy's balance
+        # check with it: its imports are this account's now.
+        conn.execute("UPDATE accounts SET anchor_date = ?, anchor_balance = ?, anchor_source = ?, check_from = ? "
+                     "WHERE id = ?", (a["anchor_date"], a["anchor_balance"], a["anchor_source"], a["check_from"], into_id))
     if is_debt(a["kind"]):
         old, new = payment_categories(conn).get(from_id), ensure_payment_envelope(conn, into_id)
         for r in conn.execute("SELECT month, assigned FROM budget WHERE category_id = ?", (old,)).fetchall():
