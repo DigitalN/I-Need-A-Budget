@@ -269,6 +269,7 @@ class Database:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.lock = threading.RLock()
         self._depth = 0
+        self._made = threading.local()  # the undo steps this thread's request made: see begin_request()
         self.conn = sqlite3.connect(str(self.path), check_same_thread=False, isolation_level=None)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
@@ -395,7 +396,9 @@ class Database:
     def _install_undo_triggers(self):
         """Recording a step: each change's reverse SQL goes into undo_log. Watching a change made
         without a label: the first change that really changes something marks it (_CHANGED), and
-        write() then clears the log."""
+        write() then clears the log. An update that changes no column is neither: a step of only
+        those is no step, so its toast has no Undo (issue #139). Columns are compared exactly
+        (COLLATE BINARY): a payee's name is NOCASE, and its new case was missed."""
         with self.lock:
             active = "(SELECT active FROM undo_state WHERE id = 1)"
             for table in UNDO_TABLES:
@@ -413,9 +416,10 @@ class Database:
                 either = f"{active} IN ({_RECORDING}, {_WATCHING})"
                 trigger("ins", either, "AFTER INSERT", f"'DELETE FROM {table} WHERE rowid = ' || NEW.rowid")
                 changed = " || ".join(
-                    f"CASE WHEN OLD.{c} IS NOT NEW.{c} THEN ', {c} = ' || quote(OLD.{c}) ELSE '' END" for c in columns)
-                differs = " OR ".join(f"OLD.{c} IS NOT NEW.{c}" for c in columns)
-                trigger("upd", f"({active} = {_RECORDING} OR ({active} = {_WATCHING} AND ({differs})))", "AFTER UPDATE",
+                    f"CASE WHEN OLD.{c} IS NOT NEW.{c} COLLATE BINARY THEN ', {c} = ' || quote(OLD.{c}) ELSE '' END"
+                    for c in columns)
+                differs = " OR ".join(f"OLD.{c} IS NOT NEW.{c} COLLATE BINARY" for c in columns)
+                trigger("upd", f"({either} AND ({differs}))", "AFTER UPDATE",
                         f"'UPDATE {table} SET rowid = rowid' || {changed} || ' WHERE rowid = ' || OLD.rowid")
                 values = " || ', ' || ".join(f"quote(OLD.{c})" for c in columns)
                 trigger("del", either, "BEFORE DELETE",
@@ -447,6 +451,7 @@ class Database:
                         self.conn.execute("UPDATE undo_state SET active = ?, grp = NULL", (_WATCHING,))
                 yield self.conn
                 if outer:
+                    made = changed = None
                     if label:
                         self.conn.execute("UPDATE undo_state SET active = ?", (_OFF,))
                         self.conn.execute(
@@ -458,12 +463,18 @@ class Database:
                         self.conn.execute(
                             "DELETE FROM undo_groups WHERE grp NOT IN "
                             "(SELECT grp FROM undo_groups ORDER BY grp DESC LIMIT 100)")
+                        made = self.conn.execute(
+                            "SELECT grp FROM undo_groups WHERE grp = (SELECT grp FROM undo_state)").fetchone()
                     elif not keep_undo:
                         changed = self.conn.execute("SELECT active FROM undo_state WHERE id = 1").fetchone()[0] == _CHANGED
                         self.conn.execute("UPDATE undo_state SET active = ?", (_OFF,))
                         if changed:
                             self._clear_undo()
                     self.conn.execute("COMMIT")
+                    if label:
+                        self._note_step(made[0] if made else None)
+                    elif changed:
+                        self._made.steps = []  # whatever this request made can't be undone any more
             except BaseException:
                 if outer:
                     self.conn.execute("ROLLBACK")
@@ -475,6 +486,21 @@ class Database:
     def _clear_undo(self):
         self.conn.execute("DELETE FROM undo_log")
         self.conn.execute("DELETE FROM undo_groups")
+
+    def begin_request(self):
+        """A request from the page starts (service.dispatch): what earlier ones on this thread made
+        is forgotten. See steps_made()."""
+        self._made.steps = None
+
+    def steps_made(self):
+        """The undo steps this thread's request has made, newest last: None when it neither wrote
+        with a label nor undid (a read, a note saved as it's typed), [] when it did but nothing is
+        left to undo (it changed nothing, undid a step, or an import cleared undo). The Undo in a
+        change's toast undoes the step it made, or isn't offered (issue #139)."""
+        return getattr(self._made, "steps", None)
+
+    def _note_step(self, grp):
+        self._made.steps = (getattr(self._made, "steps", None) or []) + ([grp] if grp else [])
 
     def big_step(self, undoes):
         """Inside a labelled write(): this step is a big one, and `undoes` says what undoing it
@@ -524,6 +550,7 @@ class Database:
             except BaseException:
                 self.conn.execute("ROLLBACK")
                 raise
+            self._note_step(None)  # it made no step of its own
             return row["label"]
 
     # ── meta ──
