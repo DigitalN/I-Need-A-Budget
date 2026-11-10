@@ -144,6 +144,21 @@ def test_a_budget_set_up_before_this_counts_every_account_it_has_as_from_onboard
     assert Database(tmp_path / "b.db").get_meta("last_onboarding_account") == str(old)  # written once
 
 
+def test_while_setting_up_every_account_counts(tmp_path):
+    """Until onboarding is finished nothing is new, not even an account kept by hand; once it is,
+    the Wallet (nothing older than a month before it was added) no longer holds the months back."""
+    db = Database(tmp_path / "b.db")
+    with db.write() as c:
+        chequing = ledger.create_account(c, "Chequing", "chequing")
+        wallet = ledger.create_account(c, "Wallet", "cash")
+        c.execute("INSERT INTO transactions (account_id, date, amount) VALUES (?, '2026-06-10', -100)", (chequing,))
+        c.execute("INSERT INTO transactions (account_id, date, amount) VALUES (?, '2026-10-05', -100)", (wallet,))
+        assert Figures(c, TODAY).coverage == "2026-10"
+        c.execute("INSERT INTO meta (key, value) VALUES ('last_onboarding_account', ?)", (str(wallet),))
+        assert Figures(c, TODAY).coverage == "2026-06"
+    db.close()
+
+
 def test_an_account_is_added_on_the_apps_today(tmp_path):
     """INAB_TODAY pins today for the dev preview and the tests: an account's created_at follows it,
     so "within a month of when it was added" compares like with like."""
