@@ -393,12 +393,14 @@ class BudgetService:
             for result in file_results:
                 arrived = inbox.arrive(result.new_ids)
                 result.categorized, result.to_review = arrived.categorized, arrived.waiting
-            for result in file_results:
-                # Every import into an account works its balance adjustment out again (ledger.balance_difference).
-                before, after = inbox.check_balance(result.account_id, result.import_id)
-                note = _adjustment_note(before, after)
-                if note:
-                    result.balance_note = ". ".join(n for n in (result.balance_note, note) if n)
+            # Every import into an account works its balance adjustment out again (ledger.balance_difference), and only
+            # then are its notes worked out (issue #138): what a balance the file states for a day says against the
+            # app's for that day, with this import in it, and what's waiting now.
+            checked = [(result, inbox.check_balance(result.account_id, result.import_id)) for result in file_results]
+            for result, (before, after, asks) in checked:
+                notes = (result.balance_note, importer.stated_balance_note(c, result),
+                         _adjustment_note(before, after, asks))
+                result.balance_note = ". ".join(n for n in notes if n)
                 c.execute("UPDATE imports SET balance_note = ? WHERE id = ?", (result.balance_note, result.import_id))
             if archive:
                 archived = self._archive(path)
@@ -407,6 +409,8 @@ class BudgetService:
         for result in file_results:
             log.info("Imported %s into %s: %d new, %d already there, %d categorized, %d to review", path.name,
                      result.account_name, result.added, result.duplicates, result.categorized, result.to_review)
+            if result.balance_note:
+                log.info("%s: %s", path.name, result.balance_note)
         return [r.as_dict() for r in file_results]
 
     def _inbox(self, c):
@@ -1879,11 +1883,16 @@ def _count(n, one, many=None):
     return f"{n} {one if n == 1 else many or one + 's'}"
 
 
-def _adjustment_note(before, after):
+def _adjustment_note(before, after, asks=0):
     """What an import says about the account's balance adjustment (Inbox.check_balance): `before`
-    and `after` are what's waiting, in cents (0: none); '' when it didn't change."""
+    and `after` are what's waiting, in cents (0: none); '' when it didn't change. `asks`: how many
+    balance adjustments you kept the one waiting now asks whether to remove, their money having
+    arrived: the note says what the Inbox asks (issue #138)."""
     if before is None or before == after:
         return ""
+    if asks:
+        return (f"The {money(abs(after))} your balance adjustment{'' if asks == 1 else 's'} stood for has arrived: "
+                f"the Inbox asks whether to remove {'it' if asks == 1 else 'them'}")
     if after == 0:
         return "The missing transactions arrived: the balance adjustment is gone"
     if before == 0:

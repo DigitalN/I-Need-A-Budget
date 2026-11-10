@@ -191,12 +191,13 @@ class Inbox:
         there's none, deleted when it comes to nothing. So does one from Check balance… that a file's
         balance as new as it has taken over (issue #137), and one an earlier check made inside the
         balance a check that started again starts from. One you kept is never changed (docs/adr/0005).
-        Returns (before, after): what was waiting and what is now, in cents (0: none), or
-        (None, None) when the account's balance isn't checked."""
+        Returns (before, after, asks): what was waiting and what is now, in cents (0: none), and how
+        many balance adjustments you kept the one waiting now asks whether to remove, their money having
+        arrived (_arrived_for: the Inbox's question); (None, None, 0) when the account's balance isn't checked."""
         c = self.conn
         diff = ledger.balance_difference(c, account_id)
         if diff is None:
-            return None, None
+            return None, None, 0
         waiting = [self._txn(i) for i in ledger.waiting_adjustments(c, account_id, diff.span)]
         before = sum(t["amount"] for t in waiting)
         for extra in waiting[1:]:
@@ -204,7 +205,7 @@ class Inbox:
         if diff.waiting == 0:
             if waiting:
                 c.execute("DELETE FROM transactions WHERE id = ?", (waiting[0]["id"],))
-            return before, 0
+            return before, 0, 0
         reason = self._adjustment_reason(account_id, diff)
         if waiting:
             # One from Check balance…, or from an earlier check, becomes this check's own: it takes this check's
@@ -214,12 +215,14 @@ class Inbox:
             c.execute("UPDATE transactions SET amount = ?, date = ?, reason = ?, import_id = ?, after_import = NULL "
                       "WHERE id = ?", (diff.waiting, diff.date, reason, import_id or made_by or diff.current,
                                        waiting[0]["id"]))
+            txn_id = waiting[0]["id"]
         else:
             payee = ledger.get_or_create_payee(c, ledger.ADJUSTMENT_PAYEE, "bank")
-            c.execute("INSERT INTO transactions (account_id, date, amount, payee_id, hint, status, reason, import_id) "
-                      "VALUES (?, ?, ?, ?, ?, 'review', ?, ?)",
-                      (account_id, diff.date, diff.waiting, payee, ADJUSTMENT, reason, import_id or diff.current))
-        return before, diff.waiting
+            txn_id = c.execute("INSERT INTO transactions (account_id, date, amount, payee_id, hint, status, reason, "
+                               "import_id) VALUES (?, ?, ?, ?, ?, 'review', ?, ?)",
+                               (account_id, diff.date, diff.waiting, payee, ADJUSTMENT, reason,
+                                import_id or diff.current)).lastrowid
+        return before, diff.waiting, len(self._arrived_for(self._txn(txn_id)))
 
     def drop_adjustments(self, account_id):
         """A balance you typed stands for everything (service.set_balance): the app's balance

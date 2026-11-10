@@ -103,19 +103,19 @@ def test_a_waiting_adjustment_shrinks_and_goes_as_the_missing_transactions_arriv
     _first_file(app)
     _second_file(app)
     # The missing downloads turn up: September's second half, in two older files.
-    out = _import(app, "chequing-sep-a.ofx", ofx(MISSING[:1], "2850.00", "20260922"))
+    out = _import(app, "chequing-sep-a.ofx", ofx(MISSING[:1], "2900.00", "20260922"))
     assert [a["amount"] for a in _adjustments(app)] == [-20000]
-    assert "now -$200.00" in out["results"][0]["balance_note"]
-    out = _import(app, "chequing-sep-b.ofx", ofx(MISSING[1:], "2650.00", "20260930"))
+    assert out["results"][0]["balance_note"] == "The balance adjustment waiting in the Inbox is now -$200.00"
+    out = _import(app, "chequing-sep-b.ofx", ofx(MISSING[1:], "2700.00", "20260930"))
     assert _adjustments(app) == []
-    assert "the balance adjustment is gone" in out["results"][0]["balance_note"]
+    assert out["results"][0]["balance_note"] == "The missing transactions arrived: the balance adjustment is gone"
     assert call(app, "accounts")[0]["balance"] == 260000
 
 
 def test_removing_the_file_that_filled_the_gap_puts_the_adjustment_back(app):
     _first_file(app)
     _second_file(app)
-    _import(app, "chequing-sep.ofx", ofx(MISSING, "2650.00", "20260930"))
+    _import(app, "chequing-sep.ofx", ofx(MISSING, "2700.00", "20260930"))
     assert _adjustments(app) == []
     call(app, "undo_import", call(app, "imports")[0]["id"])
     assert [a["amount"] for a in _adjustments(app)] == [-30000]
@@ -131,7 +131,7 @@ def test_one_you_categorized_asks_when_its_money_arrives_and_remove_it_takes_bot
     categories = {c["name"]: c["id"] for g in call(app, "categories") for c in g["categories"]}
     [adjustment] = _adjustments(app)
     call(app, "categorize", txn_ids=[adjustment["id"]], category_id=categories["Income"])  # yours now
-    _import(app, "chequing-sep.ofx", ofx(MISSING, "2650.00", "20260930"))
+    _import(app, "chequing-sep.ofx", ofx(MISSING, "2700.00", "20260930"))
     [question] = _adjustments(app)  # the app's new one, cancelling yours out
     assert question["amount"] == 30000 and question["guess"] is None
     assert question["reason"] == "The $300.00 your balance adjustment stood for has arrived: remove the adjustment?"
@@ -150,7 +150,7 @@ def test_keep_both_makes_the_new_adjustment_yours(app):
     categories = {c["name"]: c["id"] for g in call(app, "categories") for c in g["categories"]}
     [adjustment] = _adjustments(app)
     call(app, "categorize", txn_ids=[adjustment["id"]], category_id=categories["Income"])
-    _import(app, "chequing-sep.ofx", ofx(MISSING, "2650.00", "20260930"))
+    _import(app, "chequing-sep.ofx", ofx(MISSING, "2700.00", "20260930"))
     [question] = _adjustments(app)
     call(app, "keep_both", question["id"])
     [kept] = _adjustments(app)
@@ -158,6 +158,89 @@ def test_keep_both_makes_the_new_adjustment_yours(app):
     # A later download changes nothing: both are yours, and they cancel out.
     _import(app, "chequing-3.ofx", ofx([("20261012", "-20.00", "SAMPLE BAKERY", "A7")], "2580.00", "20261012"))
     assert [a["id"] for a in _adjustments(app)] == [kept["id"]]
+
+
+# ── what an import's balance note says (issue #138) ──
+#
+# It's worked out once the import is done: its rows in, and the balance adjustment worked out again. It's shown in the
+# import's toast and in Accounts → Imported files.
+
+
+def _income(app):
+    return next(c["id"] for g in call(app, "categories") for c in g["categories"] if c["name"] == "Income")
+
+
+def test_an_older_files_balance_is_compared_once_the_adjustment_is_worked_out_again(app):
+    _first_file(app)
+    _second_file(app)
+    out = _import(app, "chequing-sep-a.ofx", ofx(MISSING[:1], "2900.00", "20260922"))  # the bank's balance that day
+    assert out["results"][0]["balance_note"] == "The balance adjustment waiting in the Inbox is now -$200.00"
+
+
+def test_the_note_says_when_the_money_a_kept_adjustment_stood_for_arrives(app):
+    _first_file(app)
+    _second_file(app)
+    income = next(c["id"] for g in call(app, "categories") for c in g["categories"] if c["name"] == "Income")
+    call(app, "categorize", txn_ids=[_adjustments(app)[0]["id"]], category_id=income)
+    out = _import(app, "chequing-sep.ofx", ofx(MISSING, "2700.00", "20260930"))
+    assert out["results"][0]["balance_note"] == ("The $300.00 your balance adjustment stood for has arrived: "
+                                                 "the Inbox asks whether to remove it")
+
+
+def test_an_older_files_balance_that_still_disagrees_is_said(app):
+    """Of the $300.00 October's balance is missing, $50.00 is a charge on Sep 17 that's in no file (so the Sep 25
+    payment is $150.00). The file that fills the gap covers Sep 18–22: the bank had $2,850.00 on Sep 22, and once
+    that file is in, the app has $2,900.00 that day. Both are said."""
+    _first_file(app)
+    _second_file(app)
+    out = _import(app, "chequing-sep-a.ofx", ofx(MISSING[:1], "2850.00", "20260922", start="20260918"))
+    assert out["results"][0]["balance_note"] == (
+        "The file says the balance was $2,850.00 on Sep 22; the app has $2,900.00. "
+        "The balance adjustment waiting in the Inbox is now -$200.00")
+    assert call(app, "imports")[0]["balance_note"] == out["results"][0]["balance_note"]  # Accounts → Imported files
+
+
+def test_the_note_says_so_when_a_kept_adjustments_money_arrives_in_two_files(app):
+    _first_file(app)
+    _second_file(app)
+    call(app, "categorize", txn_ids=[_adjustments(app)[0]["id"]], category_id=_income(app))  # yours now
+    # $100.00 of it: the app's +$100.00 waits on its own, and nothing asks yet.
+    out = _import(app, "chequing-sep-a.ofx", ofx(MISSING[:1], "2900.00", "20260922"))
+    assert out["results"][0]["balance_note"] == ("By the bank's balance, $100.00 more came in than the transactions "
+                                                 "show: a balance adjustment is waiting in the Inbox")
+    # The rest: the Inbox asks, and the note says so (it said "…is now $300.00").
+    out = _import(app, "chequing-sep-b.ofx", ofx(MISSING[1:], "2700.00", "20260930"))
+    [question] = [a for a in _adjustments(app) if not a["yours"]]
+    assert question["reason"] == "The $300.00 your balance adjustment stood for has arrived: remove the adjustment?"
+    assert out["results"][0]["balance_note"] == ("The $300.00 your balance adjustment stood for has arrived: "
+                                                 "the Inbox asks whether to remove it")
+    # A later download that changes nothing doesn't say it again.
+    out = _import(app, "chequing-3.ofx", ofx([("20261012", "-20.00", "SAMPLE BAKERY", "A7")], "2580.00", "20261012"))
+    assert out["results"][0]["balance_note"] == ""
+    assert [a["id"] for a in _adjustments(app) if not a["yours"]] == [question["id"]]
+
+
+def test_the_note_says_them_when_the_money_of_two_kept_adjustments_arrives(app, monkeypatch):
+    _first_file(app)
+    _second_file(app)  # −$300.00
+    call(app, "categorize", txn_ids=[_adjustments(app)[0]["id"]], category_id=_income(app))
+    monkeypatch.setenv("INAB_TODAY", "2026-10-21")
+    # Oct 20: an Oct 15 bakery charge comes in, and a $50.00 gym payment on Oct 17 doesn't.
+    bakery = ("20261015", "-20.00", "SAMPLE BAKERY CALGARY AB", "A8")
+    out = _import(app, "chequing-3.ofx", ofx([bakery], "2530.00", "20261020"))
+    assert out["results"][0]["balance_note"] == ("By the bank's balance, $50.00 more went out than the transactions "
+                                                 "show: a balance adjustment is waiting in the Inbox")
+    [gym] = [a for a in _adjustments(app) if not a["yours"]]
+    call(app, "categorize", txn_ids=[gym["id"]], category_id=_income(app))
+    # One long download brings all of it.
+    rows = MISSING + OCTOBER + [bakery, ("20261017", "-50.00", "SAMPLE GYM CALGARY AB", "A9")]
+    out = _import(app, "chequing-4.ofx", ofx(rows, "2530.00", "20261020"))
+    [question] = [a for a in _adjustments(app) if not a["yours"]]
+    assert question["reason"] == "The $350.00 your balance adjustments stood for has arrived: remove them?"
+    assert out["results"][0]["balance_note"] == ("The $350.00 your balance adjustments stood for has arrived: "
+                                                 "the Inbox asks whether to remove them")
+    call(app, "remove_adjustment", question["id"])
+    assert _adjustments(app) == [] and _start(app) == 105000
 
 
 def test_an_adjustment_is_never_a_transfers_other_half_nor_a_copy_of_a_bank_row(app):
@@ -201,7 +284,7 @@ def test_merging_in_a_copy_with_the_missing_transactions_explains_the_gap(app):
     _second_file(app)
     assert len(_adjustments(app)) == 1
     # The missing download went into an account of its own (a new account number, say).
-    path = write(app.test_downloads, "copy.ofx", ofx(SEPTEMBER + MISSING, "2650.00", "20260930", acct_id="000999888777"))
+    path = write(app.test_downloads, "copy.ofx", ofx(SEPTEMBER + MISSING, "2700.00", "20260930", acct_id="000999888777"))
     call(app, "set_file_accounts", str(path), [{"index": 0, "name": "Copy"}])
     accounts = {a["name"]: a["id"] for a in call(app, "accounts")}
     out = call(app, "merge_accounts", accounts["Copy"], accounts["SAMPLE CU Chequing"])
@@ -632,10 +715,12 @@ def test_a_categorized_check_balance_adjustment_asks_when_its_money_arrives(app,
     [mine] = _adjustments(app)
     call(app, "categorize", txn_ids=[mine["id"]], category_id=income)  # yours now
     monkeypatch.setenv("INAB_TODAY", "2026-10-21")
-    _import(app, "chequing-3.ofx", ofx(LATE + LATER, "2570.00", "20261020"))
+    out = _import(app, "chequing-3.ofx", ofx(LATE + LATER, "2570.00", "20261020"))
     [question] = _adjustments(app)  # the app's, cancelling yours out
     assert question["amount"] == 1000 and question["adjustment_question"]["ids"] == [mine["id"]]
     assert question["reason"] == "The $10.00 your balance adjustment stood for has arrived: remove the adjustment?"
+    assert out["results"][0]["balance_note"] == ("The $10.00 your balance adjustment stood for has arrived: "
+                                                 "the Inbox asks whether to remove it")
     assert _start(app) == 105000
     call(app, "remove_adjustment", question["id"])
     assert _adjustments(app) == [] and mine["id"] not in [t["id"] for t in call(app, "transactions", {})["items"]]
@@ -806,10 +891,12 @@ def test_a_categorized_adjustment_asks_when_the_file_that_starts_the_check_bring
     [mine] = _adjustments(app)
     call(app, "categorize", txn_ids=[mine["id"]], category_id=food)  # yours now
     monkeypatch.setenv("INAB_TODAY", "2026-10-21")
-    _import(app, "chequing-2.ofx", ofx(MISSING + OCTOBER + LATE + LATER, "2570.00", "20261020"))
+    out = _import(app, "chequing-2.ofx", ofx(MISSING + OCTOBER + LATE + LATER, "2570.00", "20261020"))
     [question] = _adjustments(app)  # the app's, cancelling yours out
     assert question["amount"] == 11000 and question["adjustment_question"]["ids"] == [mine["id"]]
     assert question["reason"] == "The $110.00 your balance adjustment stood for has arrived: remove the adjustment?"
+    assert out["results"][0]["balance_note"] == ("The $110.00 your balance adjustment stood for has arrived: "
+                                                 "the Inbox asks whether to remove it")
     assert _start(app) == 105000
     call(app, "remove_adjustment", question["id"])
     assert _adjustments(app) == [] and mine["id"] not in [t["id"] for t in call(app, "transactions", {})["items"]]
