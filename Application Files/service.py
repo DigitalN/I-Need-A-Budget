@@ -1689,9 +1689,12 @@ class BudgetService:
         a file's balance left as it is keeps its date and its check. Any other is a typed balance:
         the next file's balance replaces it as it is (no balance adjustment), and checks start again
         from that file's. It stands for everything, so the app's balance adjustments waiting for the
-        account go (issue #137); yours stay. A card's file balance read as in your favour and given as
-        owing (*In your favour* unticked) also settles how its files write what you owe, like the
-        answer to "Is $120.50 what you owe…?"."""
+        account go (issue #137); yours stay. On a card's file balance, *In your favour* changed also
+        settles how its files write a balance above zero, like the answer to "Is $120.50 what you
+        owe…?" (issue #143): unticked (the balance for that day above zero, given as owing), for a
+        file balance read as in your favour, what you owe; ticked (owing, given as in your favour), as
+        the files write it. Only the amount changed says nothing, and so does a balance no file gave
+        (typed: what the bank shows now, which can really have changed sign since)."""
         date = _date(date) if date else date
         with self.db.write("Set balance") as c:
             acct = c.execute("SELECT kind, anchor_source, anchor_balance FROM accounts WHERE id = ?",
@@ -1700,9 +1703,13 @@ class BudgetService:
                 raise UserError("That account no longer exists.")
             value = _balance_sign(acct["kind"], _amount(cents), in_favour)
             day = date or self.today()
-            if ledger.account_balance(c, account_id, day) != value:
-                if ledger.is_debt(acct["kind"]) and acct["anchor_source"] == "file" and acct["anchor_balance"] > 0 > value:
-                    importer.remember_owed(c, account_id)
+            shown = ledger.account_balance(c, account_id, day)  # what 3. Balances showed for that day
+            if shown != value:
+                if ledger.is_debt(acct["kind"]) and acct["anchor_source"] == "file":
+                    if acct["anchor_balance"] > 0 and shown > 0 > value:
+                        importer.remember_positive(c, account_id, "owed")
+                    elif shown < 0 < value:
+                        importer.remember_positive(c, account_id, "favour")
                 self._inbox(c).drop_adjustments(account_id)
                 c.execute("UPDATE accounts SET anchor_date = ?, anchor_balance = ?, anchor_source = 'typed', "
                           "check_from = NULL WHERE id = ?", (day, value, account_id))
