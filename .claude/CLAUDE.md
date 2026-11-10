@@ -378,8 +378,9 @@ with months it didn't exist).
   set by the PRs themselves, so merging is all the maintainer does. The first PR after a
   release raises it (1.0.1 → 1.0.2 by default, 1.0.x → 1.1.0 only for a change big enough
   to deserve it); the PRs after it leave it alone until that version is released, so PRs
-  made side by side don't clash on it. It's 1.4.0 until 1.4 is released (the maintainer's
-  choice, 2026-11-09). Never leave the bump for a separate PR after the merge.
+  made side by side don't clash on it. It's 1.4.1 until 1.4.1 is released: 1.4.0 came out on
+  2026-11-10, and #147's PR, the first after it, raised it. Never leave the bump for a separate
+  PR after the merge.
 - **A release happens only when the maintainer says it's ready** (their rule since
   2026-11-09, as bugs kept turning up). A merge, a finished list or every session being
   done is never the go-ahead. Then Claude runs `scripts/release.sh NOTES.md` (notes
