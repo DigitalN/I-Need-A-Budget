@@ -147,11 +147,16 @@ class Span:
 # dated after that file's balance).
 _TAKEN_OVER = ("(import_id IS NULL AND COALESCE(after_import, 0) < :current AND date <= :date "
                "AND (COALESCE(after_import, 0) >= :check_from OR date > :start_date))")
+# A balance adjustment inside the balance the check starts from, from before that file came in: one from Check
+# balance… it's as new as, or one an earlier check made. That's an account whose balance wasn't checked yet (a typed
+# one, or a file's from before 1.4), or a check that started again (Set balance, Merge into…, Remove import of the
+# file it started from). That balance has it, so the check takes it over too: one of the app's is worked out again
+# (one from Check balance… goes), and one you kept counts as kept, so a Keep both pair still cancels out and the Inbox
+# asks before removing one whose money has arrived.
+_IN_START = ("(((import_id IS NULL AND COALESCE(after_import, 0) < :check_from) OR import_id < :check_from) "
+             "AND date <= :start_date)")
 # The check's own balance adjustments, and those it has taken over.
-_CHECKED = f"account_id = :id AND hint = :hint AND (import_id >= :check_from OR {_TAKEN_OVER})"
-# One from Check balance… that the file the check starts from is as new as, made before that file came in: that
-# balance has it. One of the app's goes; one you kept stays out of the check.
-_IN_START = "(import_id IS NULL AND COALESCE(after_import, 0) < :check_from AND date <= :start_date)"
+_CHECKED = f"account_id = :id AND hint = :hint AND (import_id >= :check_from OR {_TAKEN_OVER} OR {_IN_START})"
 
 
 def _span_params(account_id, span):
@@ -201,7 +206,7 @@ def balance_difference(conn, account_id):
     to the one that brought the newest balance, or in any later file that ends by then), less the
     balance adjustments you kept since. The adjustment waiting for you isn't counted: this is what it
     should be. A balance adjustment from Check balance… counts once the check has taken it over (see
-    _TAKEN_OVER): one you kept, as kept; one of the app's becomes the one waiting.
+    _TAKEN_OVER and _IN_START): one you kept, as kept; one of the app's becomes the one waiting.
 
     Older history isn't money that arrived since (issue #136): a row dated before the starting file's
     first day, in a file that starts before that day too, was in the starting balance already. A file's
@@ -227,13 +232,13 @@ def waiting_adjustments(conn, account_id, span):
     check started (or taken over by it, or in the balance it starts from), newest first: what
     Inbox.check_balance keeps up to date."""
     return [r["id"] for r in conn.execute(
-        f"SELECT id FROM transactions WHERE ({_CHECKED} OR (account_id = :id AND hint = :hint AND {_IN_START})) "
-        "AND by_you = 0 AND status = 'review' ORDER BY id DESC", _span_params(account_id, span))]
+        f"SELECT id FROM transactions WHERE {_CHECKED} AND by_you = 0 AND status = 'review' ORDER BY id DESC",
+        _span_params(account_id, span))]
 
 
 def kept_adjustments(conn, account_id, span):
     """The balance adjustments you kept (categorized, or decided about) since the check started (or
-    taken over by it), oldest first."""
+    taken over by it, or in the balance it starts from), oldest first."""
     return conn.execute(
         f"SELECT * FROM transactions WHERE {_CHECKED} AND NOT (by_you = 0 AND status = 'review') ORDER BY date, id",
         _span_params(account_id, span)).fetchall()
