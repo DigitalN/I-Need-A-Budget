@@ -45,7 +45,8 @@ this is enforced in one place.
   unless you chose One at a time. Either way, a recurring charge still learns its category
   from the one you categorize, but its other waiting charges follow only the inbox's way;
   otherwise they keep waiting, with that category as their suggestion (issue #63, decided
-  2026-11-08).
+  2026-11-08). They're still the app's, so the next re-check puts them in that category, as
+  it does with any payee's leftovers it's sure of (decided 2026-11-09).
 - "Charged you again" and "Matched to … (similar name)" are worked out each time from the
   recurring charge and the payee match, not kept as text. `reason` is only text to show;
   no code reads it.

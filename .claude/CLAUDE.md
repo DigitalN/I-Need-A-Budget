@@ -336,13 +336,16 @@ the average of what a category actually spent in the 3/6/12 whole months before 
 (`budget.usual_spending`: from every month with data for all accounts, before the budget
 start too, and from the category's own first spending, so a new bill isn't averaged
 with months it didn't exist). **A new account doesn't count** there (`Figures.coverage`,
-issue #83): one added after the budget was set up whose first transaction is within a month
-of when it was added (`accounts.created_at`) has no older history to miss, so Usual, the
-Dashboard's whole months and its "above usual" marks stay. Onboarding's accounts always
-count (a card with a month downloaded really is missing history): `finish_onboarding` keeps
-the newest of them as meta `last_onboarding_account`, and a budget set up before 1.4.0 has
-every account it had then counted as onboarding's (`db._migrate`, written once). An old
-account added late with only recent transactions counts as new (the accepted cost).
+issue #83): one whose first transaction is within a month of when it was added
+(`accounts.created_at`), or later, has no older history to miss, so Usual, the Dashboard's
+whole months and its "above usual" marks stay. That's one added after the budget was set up,
+or one kept by hand whenever it was added (decided 2026-11-09: no download can be missing from
+the Wallet, so the half #75 adds to an empty one doesn't hide every Usual). Onboarding's
+accounts that get files always count (a card with a month downloaded really is missing
+history): `finish_onboarding` keeps the newest account as meta `last_onboarding_account`, and
+a budget set up before 1.4.0 has every account it had then counted as onboarding's
+(`db._migrate`, written once). While setting up, every account counts. An old account added
+late with only recent transactions counts as new (the accepted cost).
 
 ## Releasing
 
@@ -466,6 +469,8 @@ Don't undo these without asking:
     categorizes the others (`categorize(..., recheck_payee=False)`), not even a recurring
     charge's other charges: it still learns the category, which they then have as their
     suggestion and guess (issue #63). The inbox's way, they follow it (`Inbox._follow`).
+    They're still the app's, so the next re-check (the next launch, an import) puts them in
+    it, as it does with any payee's leftovers it's sure of (the maintainer's call, 2026-11-09).
   - **Outside the inbox** (the Transactions page, the transaction pop-up, the
     "Categorized automatically" list) a category change changes only that transaction,
     the same way: no payee re-check (the maintainer's call: a mixed payee like a warehouse

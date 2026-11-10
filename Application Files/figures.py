@@ -59,17 +59,21 @@ class Figures:
     def coverage(self):
         """The first month every account has data for: whole months from here on count
         towards Usual, the Dashboard's months and its "above usual" marks. A new account
-        doesn't count (issue #83): one added after the budget was set up (after onboarding's,
-        meta `last_onboarding_account`) whose first transaction is within a month of when it
-        was added has no older history to miss. One from onboarding always counts: a card with
-        a month downloaded really is missing its history. With only new accounts, every month
-        since the first transaction is a whole one."""
+        doesn't count (issue #83): one whose first transaction is within a month of when it
+        was added, or later, has no older history to miss. That's one added after the budget
+        was set up (after onboarding's, meta `last_onboarding_account`), or one kept by hand
+        whenever it was added: no download can be missing from the Wallet (decided
+        2026-11-09). One from onboarding that gets files always counts: a card with a month
+        downloaded really is missing its history. So does every account while the budget is
+        being set up. With only new accounts, every month since the first transaction is a
+        whole one."""
         row = self.conn.execute("SELECT value FROM meta WHERE key = 'last_onboarding_account'").fetchone()
         firsts = self.conn.execute(
-            "SELECT MIN(t.date) AS first, (a.id > :last AND MIN(t.date) >= date(a.created_at, '-1 month')) AS new "
+            f"SELECT MIN(t.date) AS first, ((a.id > :last OR {ledger.KEPT_BY_HAND_SQL}) "
+            "AND MIN(t.date) >= date(a.created_at, '-1 month')) AS new "
             "FROM transactions t JOIN accounts a ON a.id = t.account_id GROUP BY a.id",
             {"last": int(row["value"]) if row else None}).fetchall()
-        old = [month_of(r["first"]) for r in firsts if not r["new"]]
+        old = [month_of(r["first"]) for r in firsts if row is None or not r["new"]]
         if old:
             return max(old)
         return min(month_of(r["first"]) for r in firsts) if firsts else self.current

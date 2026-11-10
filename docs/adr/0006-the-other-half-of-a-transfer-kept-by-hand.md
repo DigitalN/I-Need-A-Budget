@@ -33,6 +33,10 @@ and yours, because you marked the transfer.
   takes the added half's place, as it does for any transaction added by hand, and keeps the
   transfer. It's the bank's from then on.
 - A balance adjustment is never the other half, so marking a transfer never pairs with one.
+- The added half is often an empty Wallet's first transaction. No download can be missing from
+  an account kept by hand, so its first transaction doesn't hold Usual back, whenever the
+  account was added (issue #83's test for a new account; decided 2026-11-09). Otherwise a
+  Wallet made while setting up would hide every category's Usual until a month had passed.
 - Only transfers you mark: an import's own guess that a row is a transfer to an account
   kept by hand still waits for its other half.
 - Decided 2026-11-08, built for 1.4.0.

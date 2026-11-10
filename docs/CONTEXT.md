@@ -253,9 +253,9 @@ _Avoid_: Needs, average, estimate
 
 **Whole month**:
 A finished month every account has data for, so what was spent in it can be compared:
-Usual and the Dashboard's months count only these. A new account (added after the budget was
-set up, with nothing older than a month before that) has no history to miss, so it doesn't
-make a month less than whole.
+Usual and the Dashboard's months count only these. A new account, with nothing older than a
+month before it was added, has no history to miss, so it doesn't make a month less than
+whole: one added after the budget was set up, or one kept by hand whenever it was added.
 _Avoid_: complete month, full month
 
 **Above usual**:

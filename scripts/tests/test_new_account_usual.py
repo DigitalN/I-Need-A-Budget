@@ -3,12 +3,13 @@
 first transaction is within a month of when it was added, has no older history to miss, so it
 doesn't move the first month every account has data for (Figures.coverage). Accounts from
 onboarding keep that rule: there, a card with one month downloaded really is missing history.
-Made-up data only."""
+An account kept by hand (the Wallet) has no download to be missing, so it gets the same test
+whenever it was added (decided 2026-11-09). Made-up data only."""
 
 import ledger
 from db import Database
 from figures import Figures
-from helpers import call
+from helpers import CARD_FILE, call, card_csv, write
 
 TODAY = "2026-10-12"  # conftest's INAB_TODAY
 FOOD = {"2026-06": -40000, "2026-07": -42000, "2026-08": -38000, "2026-09": -40000}
@@ -30,6 +31,14 @@ class Budget:
 
     def spend(self, account, day, cents):
         call(self.app, "add_transaction", account, day, "Sample Grocer", cents, self.food)
+
+    def add_wallet(self):
+        self.wallet = call(self.app, "add_account", "Wallet", "cash", 4000, "2026-05-31")
+
+    def card_file(self):
+        """A card from its bank's file, whose download only goes back to October."""
+        call(self.app, "import_files", [str(write(self.app.test_downloads, CARD_FILE, card_csv([
+            ("10/02/2026", "SAMPLE GROCER CALGARY AB", "-25.00", "Groceries")])))])
 
     def card(self, added_on=None, monkeypatch=None):
         """A card added on `added_on` (default today)."""
@@ -76,9 +85,30 @@ def test_a_card_added_months_ago_with_no_older_history_counts_as_new_too(app, mo
 def test_a_card_from_onboarding_keeps_todays_rule(app):
     """Set up with a card whose download only goes back to October: its older history is missing,
     so no month before October is a whole month."""
-    b = Budget(app, onboarding=[lambda b: b.spend(b.card(), "2026-10-02", -2500)])
+    b = Budget(app, onboarding=[Budget.card_file])
     assert b.usual() is None
     assert b.whole_months() == [False, False, False, True]
+
+
+def test_a_wallet_from_onboarding_doesnt_hide_usual_when_it_gets_its_first_transaction(app):
+    """A Wallet made while setting up stays empty until a cash withdrawal is marked as a transfer to
+    it (the app adds its other half, #75) or a cash purchase is added by hand. No download can be
+    missing from an account kept by hand, so that first transaction doesn't hold Usual back."""
+    b = Budget(app, onboarding=[Budget.add_wallet])
+    withdrawal = call(app, "add_transaction", b.chequing, "2026-10-05", "Cash withdrawal", -10000)["id"]
+    assert call(app, "update_transaction", withdrawal, {"transfer_account_id": b.wallet})["added_to"] == "Wallet"
+    assert b.usual() == 40000 and b.whole_months() == [True] * 4
+    b.spend(b.wallet, "2026-10-06", -1500)  # a cash purchase, added by hand
+    assert b.usual() == 40000 and b.whole_months() == [True] * 4
+
+
+def test_an_account_kept_by_hand_with_older_history_typed_in_still_counts(app):
+    """A Wallet you typed August's cash into (more than a month before it was added): it has older
+    history, and the months before its first are missing its part, as for any account."""
+    b = Budget(app, onboarding=[Budget.add_wallet])
+    b.spend(b.wallet, "2026-08-01", -1500)
+    assert b.usual() == round((38000 + 1500 + 40000) / 2)
+    assert b.whole_months() == [False, True, True, True]
 
 
 def test_an_old_account_added_late_with_its_history_still_counts(app):
@@ -100,7 +130,7 @@ def test_a_budget_set_up_before_this_counts_every_account_it_has_as_from_onboard
     """It doesn't know which accounts onboarding made: all of those it has when it's opened."""
     db = Database(tmp_path / "b.db")
     with db.write() as c:
-        old = ledger.create_account(c, "Card", "credit_card")
+        old = ledger.create_account(c, "Card", "credit_card", keys=("number:sample:0003",))  # it gets files
         c.execute("INSERT INTO meta (key, value) VALUES ('onboarded', '1')")
         c.execute("INSERT INTO transactions (account_id, date, amount) VALUES (?, '2026-10-02', -100)", (old,))
     db.close()

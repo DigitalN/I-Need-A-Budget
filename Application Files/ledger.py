@@ -62,17 +62,20 @@ def used_account_ids(conn):
         "WHERE c.debt_account_id IS NOT NULL AND b.assigned != 0")}
 
 
+# An account kept by hand, as SQL about the account `a` (see kept_by_hand).
+KEPT_BY_HAND_SQL = ("(NOT EXISTS (SELECT 1 FROM imports WHERE account_id = a.id) "
+                    "AND NOT EXISTS (SELECT 1 FROM account_sources WHERE account_id = a.id) "
+                    "AND NOT EXISTS (SELECT 1 FROM transactions WHERE account_id = a.id "
+                    "AND (import_id IS NOT NULL OR fingerprint IS NOT NULL OR fitid IS NOT NULL)))")
+
+
 def kept_by_hand(conn, account_id):
     """Whether no file has ever brought this account's transactions: the Wallet, or any account you
     keep by hand. Not one a file went into (an import, or a transaction that came from a file) or
     that a file would find (account_sources): that one gets files, and a transfer's other half
-    comes with them (issue #75)."""
-    row = conn.execute(
-        "SELECT NOT EXISTS (SELECT 1 FROM imports WHERE account_id = a.id) "
-        "AND NOT EXISTS (SELECT 1 FROM account_sources WHERE account_id = a.id) "
-        "AND NOT EXISTS (SELECT 1 FROM transactions WHERE account_id = a.id "
-        "AND (import_id IS NOT NULL OR fingerprint IS NOT NULL OR fitid IS NOT NULL)) "
-        "FROM accounts a WHERE a.id = ?", (account_id,)).fetchone()
+    comes with them (issue #75). No download can be missing from one kept by hand either
+    (figures.Figures.coverage, issue #83)."""
+    row = conn.execute(f"SELECT {KEPT_BY_HAND_SQL} FROM accounts a WHERE a.id = ?", (account_id,)).fetchone()
     return bool(row and row[0])
 
 
