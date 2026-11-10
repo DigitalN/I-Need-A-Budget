@@ -705,8 +705,9 @@ def stated_balance_note(conn, result):
     """What's off when a balance the file states for a day isn't the app's for that day: an older file's
     own balance ("The file says the balance was $2,850.00 on Sep 22; the app has $2,900.00"), or a
     set-up CSV's running balance before its first row, which doesn't continue the account's ("This
-    file's balance on Oct 3 was $1,070.00; the app has $1,060.00"). '' when they agree, or there's
-    nothing to compare.
+    file's balance on Oct 3 was $1,070.00; the app has $1,060.00"). For a cash account only: a card's
+    files date purchases, which post later, so by date its balances don't add up (_import_part). ''
+    when they agree, or there's nothing to compare.
 
     Worked out once the import is done (service._import_one): its rows in, and the account's balance
     adjustment worked out again (Inbox.check_balance). Before that, "the app has" left out what the
@@ -1058,7 +1059,9 @@ def _import_part(conn, fmt, part, filename, sha, archived_path, account_id=None,
         elif not ledger.is_debt(acct["kind"]):
             # An older file's balance, by date: not for a card, whose files bring charges dated before they posted.
             result.stated_balance = (as_of, balance, OLDER_BALANCE)
-    if part.opening:
+    if part.opening and not ledger.is_debt(acct["kind"]):
+        # A set-up CSV's balance before its first row, by date: not for a card, whose CSVs date purchases, which post
+        # later (its balance moves as they post).
         result.stated_balance = (*part.opening, CSV_OPENING)
     result.balance_note = ". ".join(notes)
     return result
