@@ -515,6 +515,127 @@ def test_3_balances_asks_what_the_bank_shows_now_for_an_account_without_one(app)
     assert [c["account_id"] for c in got["calls"]] == [a["id"] for a in accounts if a["balance"] is not None]
 
 
+# ── 3. Balances: what a card's box says, and a row you typed (issue #143) ────
+#
+# On a file's row, *In your favour* changed says how the card's files write a balance above zero, like the two answers
+# to "Is $120.50 what you owe…?"; changing only the amount says nothing. Any other row is what the bank shows now, a
+# balance you typed on an earlier visit too (onboarding starts again at step 1 on every launch until it's finished).
+
+def _csv(app, name, rows):
+    return call(app, "import_files", [str(write(app.test_downloads, name, bank_csv(rows)))])
+
+
+def _continue(app, accounts, edit=""):
+    """3. Balances drawn from `accounts`, `edit` done there, Continue: its set_balance calls go to the service."""
+    got = _balances_step(accounts, edit)
+    for args in got["calls"]:
+        call(app, "set_balance", **args)
+    return got
+
+
+def test_changing_only_the_amount_of_a_cards_box_that_shows_owing_remembers_nothing(app):
+    """The issue's first case. The card's file balance ($120.50 on Sep 30) is read as in your favour, but the file has
+    a charge after that day, so 3. Balances shows owing $9.50 on Oct 2, In your favour unticked. Changing only the
+    amount unticks nothing: how its files write a balance above zero stays unsettled."""
+    _import(app, "card-1.ofx", card_ofx(CARD_SEPTEMBER + [("20261002", "-130.00", "SAMPLE GROCER", "S3")], "120.50", "20260930"))
+    [card] = call(app, "accounts")
+    assert (card["balance"], card["balance_date"]) == (-950, "2026-10-02")
+    got = _continue(app, [card], f"box({card['id']}).value = '10.00';")
+    assert "Amount owing on Oct 2, 2026, from your file" in got["html"]
+    call(app, "finish_onboarding", "2026-09")
+    # A $20.00 payment; the bank's next file says $5.00 while the app has $10.00 in your favour (a $5.00 gap): neither
+    # sign agrees, so it's read as the file writes it, as the first file was.
+    _import(app, "card-2.ofx", card_ofx([("20261005", "20.00", "PAYMENT - THANK YOU", "P1")], "5.00", "20261010"))
+    assert call(app, "accounts")[0]["balance"] == 500  # not owing $5.00
+
+
+def test_unticking_in_your_favour_with_another_amount_is_remembered_too(app):
+    """Unticking is what's remembered, whatever the amount: the box showed $120.50 in your favour, given as $125.00
+    owing."""
+    card = _card_read_as_in_your_favour(app)
+    _continue(app, [card], f"box({card['id']}).value = '125.00'; favour({card['id']}).checked = false;")
+    call(app, "finish_onboarding", "2026-09")
+    # The bank says $160.50 while the app has you owing $155.00: $5.50 is in no file.
+    _import(app, "card-2.ofx", card_ofx(CARD_OCTOBER, "160.50", "20261010"))
+    assert call(app, "accounts")[0]["balance"] == -16050  # what you owe, not $160.50 in your favour
+
+
+def test_unticking_a_box_a_payment_put_in_your_favour_remembers_nothing(app):
+    """The file wrote what you owe below zero (owing $50.00 on Sep 30), and a $70.00 payment after it put the box at
+    $20.00 in your favour. Unticking it there says nothing about a balance above zero in the card's files."""
+    _import(app, "card-1.ofx", card_ofx(CARD_SEPTEMBER + [("20261002", "70.00", "PAYMENT - THANK YOU", "S3")], "-50.00", "20260930"))
+    [card] = call(app, "accounts")
+    assert (card["balance"], card["balance_date"]) == (2000, "2026-10-02")
+    _continue(app, [card], f"favour({card['id']}).checked = false;")
+    call(app, "finish_onboarding", "2026-09")
+    # A $100.00 payment: the bank says $75.00 while the app has $80.00 in your favour ($5.00 is in no file).
+    _import(app, "card-2.ofx", card_ofx([("20261005", "100.00", "PAYMENT - THANK YOU", "P1")], "75.00", "20261010"))
+    assert call(app, "accounts")[0]["balance"] == 7500  # as the file writes it, not owing $75.00
+
+
+def test_ticking_in_your_favour_back_on_a_files_row_is_remembered(app):
+    """The other way round. On the first visit you untick the card's $120.50, so "owed" is remembered. On a later visit
+    its next file says $100.00, read as owing because of that, and you tick In your favour: it's remembered, so a file
+    whose balance disagrees with the app's is read as the file writes it again."""
+    card = _card_read_as_in_your_favour(app)
+    call(app, "set_balance", account_id=card["id"], cents=12050, in_favour=False, date=card["balance_date"])  # visit 1
+    _import(app, "card-2.ofx", card_ofx([("20261005", "-20.50", "SAMPLE BAKERY", "O2")], "100.00", "20261010"))
+    [card] = call(app, "accounts")
+    assert (card["balance"], card["anchor_source"]) == (-10000, "file")
+    got = _continue(app, [card], f"favour({card['id']}).checked = true;")  # visit 2
+    assert "Amount owing on Oct 10, 2026, from your file" in got["html"]
+    call(app, "finish_onboarding", "2026-09")
+    # A $30.00 charge and a $10.00 one that's in no file: the bank says $60.00 while the app has $70.00 in your favour.
+    _import(app, "card-3.ofx", card_ofx([("20261015", "-30.00", "SAMPLE CAFE", "O3")], "60.00", "20261020"))
+    assert call(app, "accounts")[0]["balance"] == 6000  # not owing $60.00
+
+
+def test_a_balance_typed_on_an_earlier_visit_is_todays_when_its_changed(app):
+    """The issue's second case. Savings (only CSVs) was typed as $250.00 on Oct 1, onboarding left unfinished, and a
+    later visit's CSV brings a $10.00 deposit on Oct 5. Today (Oct 12) the bank shows $255.00 (a $5.00 fee on Oct 8 is
+    in no file yet): typed over the box, it's the balance today, as the step says, so the fee's file leaves it."""
+    _csv(app, "Savings.CSV", [("09/20/2026", "SAMPLE INTEREST", "SAMPLE INTEREST", "1.25")])
+    [savings] = call(app, "accounts")
+    call(app, "set_balance", account_id=savings["id"], cents=25000, date="2026-10-01")  # the first visit
+    _csv(app, "Savings 2.CSV", [("10/05/2026", "SAMPLE DEPOSIT", "SAMPLE DEPOSIT", "10.00")])
+    got = _continue(app, call(app, "accounts"), f"box({savings['id']}).value = '255.00';")
+    assert "Enter what your bank shows now for each account." in got["html"]
+    assert "Balance · transactions up to Oct 5, 2026" in got["html"] and 'value="260.00"' in got["html"]
+    assert got["calls"] == [{"account_id": savings["id"], "cents": 25500, "in_favour": False}]  # no day: today's
+    _csv(app, "Savings 3.CSV", [("10/08/2026", "SAMPLE FEE", "SAMPLE FEE", "-5.00")])
+    assert call(app, "accounts")[0]["balance"] == 25500  # not $250.00, as the balance on Oct 5 would leave it
+
+
+def test_a_files_balance_you_changed_is_todays_when_you_come_back_to_it(app):
+    """Changed on the step, a file's balance is a typed one: after Back (or on a later visit) its row is like a row
+    without one, what the bank shows now. Left as it is, nothing changes; changed again, it's today's balance."""
+    _import(app, "chequing-1.ofx", ofx(SEPTEMBER, "3000.00", "20260915"))
+    [chequing] = call(app, "accounts")
+    _continue(app, [chequing], f"box({chequing['id']}).value = '2,950.00';")
+    accounts = call(app, "accounts")
+    got = _continue(app, accounts)  # Back to 3. Balances, and Continue with the box as it is
+    assert "Balance · transactions up to Sep 10, 2026" in got["html"] and "from your file" not in got["html"]
+    assert call(app, "accounts") == accounts  # still $2,950.00 on Sep 15
+    _continue(app, accounts, f"box({chequing['id']}).value = '2,940.00';")
+    [chequing] = call(app, "accounts")
+    assert (chequing["anchor_source"], chequing["anchor_date"], chequing["balance"]) == ("typed", "2026-10-12", 294000)
+
+
+def test_in_your_favour_changed_on_a_row_you_typed_remembers_nothing(app):
+    """A row you typed is what the bank shows now, and a card can really go from owing to in your favour (a payment):
+    ticking it there says nothing about how the card's files are written, so the "owed" you unticked for stays."""
+    card = _card_read_as_in_your_favour(app)
+    call(app, "set_balance", account_id=card["id"], cents=12050, in_favour=False, date=card["balance_date"])  # visit 1
+    [card] = call(app, "accounts")
+    got = _continue(app, [card], f"box({card['id']}).value = '20.00'; favour({card['id']}).checked = true;")  # visit 2
+    assert "Amount owing (the balance on the card) · transactions up to Sep 12, 2026" in got["html"]
+    assert got["calls"] == [{"account_id": card["id"], "cents": 2000, "in_favour": True}]
+    call(app, "finish_onboarding", "2026-09")
+    # A $100.00 charge and a $5.00 one that's in no file: the bank says $85.00 while the app has you owing $80.00.
+    _import(app, "card-2.ofx", card_ofx([("20261014", "-100.00", "SAMPLE HARDWARE", "O4")], "85.00", "20261020"))
+    assert call(app, "accounts")[0]["balance"] == -8500  # still read as what you owe
+
+
 # ── older history (issue #136) ──────────────────────────────────────────────
 #
 # A file reaching back before the first day of the file the check starts from brings older history: its rows dated

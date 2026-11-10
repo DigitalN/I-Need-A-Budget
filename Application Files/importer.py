@@ -518,10 +518,11 @@ def _positive_balance(conn, account_id, balance, ours, answer):
     return -balance if _remembered(conn, account_id, "positive") == "owed" else balance
 
 
-def remember_owed(conn, account_id):
-    """A balance above zero in this card's files is what you owe, as you said (a file's balance
-    read as in your favour, given as owing): later files are read that way (_positive_balance)."""
-    _remember(conn, account_id, "positive", "owed")
+def remember_positive(conn, account_id, answer):
+    """How this card's files write a balance above zero, as you said on 3. Balances by changing *In
+    your favour* on a file's balance: 'owed' or 'favour', like the answer to "Is $120.50 what you
+    owe…?". Later files are read that way (_positive_balance)."""
+    _remember(conn, account_id, "positive", answer)
 
 
 def _match_rows(part):

@@ -3209,16 +3209,18 @@ async function renderOnboarding() {
       <div class="row" style="margin-top:16px"><button class="btn" data-ob="back">Back</button><span class="spacer"></span><button class="btn primary" data-ob="next">Continue</button></div>`;
   } else if (ob.step === 2) {
     await loadAccounts();
-    // A file's balance is shown for its own day, so you'd only change it if it's wrong (issue #135).
-    const fromFiles = state.accounts.some(a => a.anchor_source === 'file');
-    const others = !fromFiles || state.accounts.some(a => a.anchor_source !== 'file');
+    // A file's balance is shown for its own day, so you'd only change it if it's wrong (issue #135). Any other row is
+    // what your bank shows now, a balance you typed on an earlier visit too (issue #143).
+    const fromFile = a => a.anchor_source === 'file';
+    const fromFiles = state.accounts.some(fromFile);
+    const others = !fromFiles || state.accounts.some(a => !fromFile(a));
     body = `<h3>3. Balances</h3>
       <p class="muted">${[fromFiles && 'The balances from your files are filled in: change one only if it\'s wrong.',
         others && (fromFiles ? 'For the others, enter what your bank shows now.' : 'Enter what your bank shows now for each account.')].filter(Boolean).join(' ')}</p>
-      <div class="card">${state.accounts.map(a => `<div class="settings-row"><div class="what"><b>${esc(a.name)}</b><span>${a.balance === null
-          ? `${a.is_debt ? 'Amount owing (the balance on the card)' : 'Balance'}${a.last_date ? ` · transactions up to ${dayYear(a.last_date)}` : ''}`
-          : `${a.is_debt ? 'Amount owing' : 'Balance'} on ${dayYear(a.balance_date)}${a.anchor_source === 'file' ? ', from your file' : ''}`}</span></div>
-          <span class="row"><input style="width:150px;text-align:right" data-ob-balance="${a.id}"${a.balance !== null ? ` data-ob-date="${a.balance_date}"` : ''} value="${a.balance !== null ? moneyPlain(a.is_debt ? Math.abs(a.balance) : a.balance) : ''}" placeholder="0.00">${a.is_debt ? favourBox(a.id, a.balance > 0) : ''}</span></div>`).join('') || '<p class="faint">No accounts yet: go back and import a file.</p>'}</div>
+      <div class="card">${state.accounts.map(a => `<div class="settings-row"><div class="what"><b>${esc(a.name)}</b><span>${fromFile(a)
+          ? `${a.is_debt ? 'Amount owing' : 'Balance'} on ${dayYear(a.balance_date)}, from your file`
+          : `${a.is_debt ? 'Amount owing (the balance on the card)' : 'Balance'}${a.last_date ? ` · transactions up to ${dayYear(a.last_date)}` : ''}`}</span></div>
+          <span class="row"><input style="width:150px;text-align:right" data-ob-balance="${a.id}"${fromFile(a) ? ` data-ob-date="${a.balance_date}"` : ''} value="${a.balance !== null ? moneyPlain(a.is_debt ? Math.abs(a.balance) : a.balance) : ''}" placeholder="0.00">${a.is_debt ? favourBox(a.id, a.balance > 0) : ''}</span></div>`).join('') || '<p class="faint">No accounts yet: go back and import a file.</p>'}</div>
       <div class="row" style="margin-top:16px"><button class="btn" data-ob="back">Back</button><span class="spacer"></span><button class="btn primary" data-ob="save-balances">Continue</button></div>`;
   } else {
     const os = await call('onboarding_state');
@@ -3264,7 +3266,7 @@ async function onboardingAction(btn) {
       const cents = parseMoney(el.value);
       if (cents === null) continue;
       if (Number.isNaN(cents)) return toast('One of the balances isn\'t an amount', { error: true });
-      // A box drawn with a balance is for that balance's day: left as it is, it changes nothing.
+      // A file's row is for its balance's day, any other for today: left as it is, a box changes nothing.
       const day = el.dataset.obDate ? { date: el.dataset.obDate } : {};
       await call('set_balance', { account_id: Number(el.dataset.obBalance), cents, in_favour: inFavour(el.dataset.obBalance), ...day });
     }
