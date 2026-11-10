@@ -223,9 +223,10 @@ All in `Application Files/`:
   import's balance note (`imports.balance_note`) shows in its toast and in Accounts → Imported files.
   It's worked out once the import is done, its balance adjustment worked out again (issue #138): only
   then is a balance the file states for a day (an older file's own, a set-up CSV's before its first
-  row, `importer.stated_balance_note`) compared with the app's for that day, and when the money of a
-  balance adjustment you kept arrives it says what the Inbox asks ("The $300.00 your balance
-  adjustment stood for has arrived: the Inbox asks whether to remove it").
+  row, `importer.stated_balance_note`; chequing and savings only, as a card's files date purchases,
+  which post later) compared with the app's for that day, and when the money of a balance
+  adjustment you kept arrives it says what the Inbox asks ("The $300.00 your balance adjustment
+  stood for has arrived: the Inbox asks whether to remove it").
 - **A card file's signs are settled at import, when the account is known** (`importer._flip`,
   `_positive_balance`, `balance_questions`). Charges negative and a balance above zero is a card in
   your favour for most banks and what you owe for some. With a balance in the account, the sign that

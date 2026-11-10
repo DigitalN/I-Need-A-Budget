@@ -175,3 +175,37 @@ def test_the_next_csv_after_a_balance_typed_for_today_says_nothing_when_it_conti
                  "2026-10-09,SAMPLE BAKERY,-5.00,1060.00\n2026-10-15,SAMPLE BOOKS,-20.00,1040.00\n")
     [result] = call(app, "import_files", [str(path)])["results"]
     assert (result["added"], result["balance_note"]) == (3, "")  # it said "the app has $1,060.00" for Oct 4
+
+
+# A card's CSV dates each purchase, but lists them, and moves its balance, as they post: by date, its balance before its
+# first row is off by whatever posted out of order. Like an older card file's, it isn't compared (#157's review).
+NEXT_VISA_AS_POSTED = ("10/08/2026,SAMPLE TAXI,25.00,,625.00\n10/07/2026,SAMPLE LUNCH,15.00,,640.00\n"
+                       "10/09/2026,SAMPLE BOOKS,10.00,,650.00\n")
+
+
+def test_a_card_csv_listed_as_things_posted_says_nothing_about_its_balance(app, monkeypatch):
+    """The bank's $600.00 before the taxi posted doesn't have the Oct 7 lunch, which posted after it; once the file is
+    in, the app's Oct 7 has it."""
+    app.db.set_meta("onboarded", "1")
+    _set_up(app, VISA, "TD Visa", "credit_card")
+    call(app, "set_balance", _accounts(app)["TD Visa"]["id"], 60000, "2026-10-06")  # owe $600.00, as the bank says
+    monkeypatch.setenv("INAB_TODAY", "2026-10-10")
+    path = write(app.test_downloads, "accountactivity.csv", NEXT_VISA_AS_POSTED)
+    [result] = call(app, "import_files", [str(path)])["results"]
+    assert (result["added"], result["balance_note"]) == (3, "")  # it said "…on Oct 7 was -$600.00; the app has -$615.00"
+
+
+# The last file's hotel is dated Oct 8, and the next file starts with an Oct 7 lunch that posted after it.
+VISA_TO_OCT_8 = ("10/04/2026,SAMPLE AIRLINE,500.00,,500.00\n10/05/2026,PAYMENT - THANK YOU,,100.00,400.00\n"
+                 "10/08/2026,SAMPLE HOTEL,200.00,,600.00\n")
+NEXT_AFTER_OCT_8 = ("10/07/2026,SAMPLE LUNCH,15.00,,615.00\n10/09/2026,SAMPLE TAXI,25.00,,640.00\n"
+                    "10/10/2026,SAMPLE BOOKS,10.00,,650.00\n")
+
+
+def test_a_card_csv_whose_first_purchase_is_dated_before_the_last_files_last_says_nothing(app):
+    app.db.set_meta("onboarded", "1")
+    _set_up(app, VISA_TO_OCT_8, "TD Visa", "credit_card")
+    call(app, "set_balance", _accounts(app)["TD Visa"]["id"], 60000, "2026-10-08")  # owe $600.00 at the end of Oct 8
+    path = write(app.test_downloads, "accountactivity.csv", NEXT_AFTER_OCT_8)
+    [result] = call(app, "import_files", [str(path)])["results"]
+    assert (result["added"], result["balance_note"]) == (3, "")  # it said "the app has -$385.00" (before #138, -$400.00)
