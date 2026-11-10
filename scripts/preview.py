@@ -72,6 +72,7 @@ def main():
         "app_info": lambda: {"version": "preview", "data_dir": str(data), "log_path": "", "updates": None},
         "open_license": lambda: subprocess.run(["open", "-t", str(ROOT / "LICENSE")], check=True) and True,
     })
+    service.read_imported_files()  # as the app does at launch, after an upgrade (issue #148)
 
     class Handler(BaseHTTPRequestHandler):
         def _send(self, code, body, content_type):

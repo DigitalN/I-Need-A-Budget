@@ -36,7 +36,7 @@ from errors import UserError
 
 log = logging.getLogger("inab")
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 CANT_UNDO = "That can't be undone any more."
 
@@ -219,6 +219,24 @@ CREATE TABLE IF NOT EXISTS splits (
 );
 CREATE INDEX IF NOT EXISTS splits_transaction ON splits(transaction_id);
 
+-- Which files each transaction was in, and how each has it (issue #148). An import stores only the rows its account
+-- doesn't have yet, so a row two downloads share is one transaction, under the file that brought it first. Remove
+-- import deletes a transaction only when no other import has it: otherwise it moves under the earliest one left,
+-- taking that file's date, wording, fingerprint and bank ID (service.BudgetService.undo_import).
+CREATE TABLE IF NOT EXISTS import_rows (
+    import_id INTEGER NOT NULL REFERENCES imports(id) ON DELETE CASCADE,
+    transaction_id INTEGER NOT NULL REFERENCES transactions(id) ON DELETE CASCADE,
+    date TEXT NOT NULL,                  -- the row as this file has it ...
+    raw_name TEXT NOT NULL DEFAULT '',
+    raw_memo TEXT NOT NULL DEFAULT '',
+    bank_type TEXT NOT NULL DEFAULT '',
+    bank_category TEXT NOT NULL DEFAULT '',
+    fingerprint TEXT,                    -- ... its importer.fingerprint() in this file
+    fitid TEXT,                          -- ... and its bank ID there (none: the file has none, or repeats it)
+    PRIMARY KEY (import_id, transaction_id)
+);
+CREATE INDEX IF NOT EXISTS import_rows_transaction ON import_rows(transaction_id);
+
 CREATE TABLE IF NOT EXISTS budget (
     month TEXT NOT NULL,
     category_id INTEGER NOT NULL REFERENCES categories(id) ON DELETE CASCADE,
@@ -258,7 +276,7 @@ INSERT OR IGNORE INTO undo_state (id, active) VALUES (1, 0);
 # Tables whose changes can be undone.
 UNDO_TABLES = ("meta", "accounts", "account_sources", "category_groups", "categories", "payees", "payee_keys",
                "imports", "subscriptions", "transactions", "splits", "budget", "examples", "csv_layouts",
-               "ignored_files")
+               "ignored_files", "import_rows")
 
 
 class Database:
@@ -367,7 +385,19 @@ class Database:
                 columns = [r["name"] for r in self.conn.execute("PRAGMA table_info(imports)")]
                 if "covers_to" not in columns:
                     self.conn.execute("ALTER TABLE imports ADD COLUMN covers_to TEXT")
-            # Next upgrade: `if version is not None and version < 12: ...`, then raise SCHEMA_VERSION.
+            if version is not None and version < 12:
+                # Which files each transaction was in (issue #148). Until now only the file it's under was known: each
+                # transaction from a file is noted as that file's, as it has it. The other files that have it are found
+                # by reading the files kept in Imported Files again, once, at the next launch
+                # (service.BudgetService.read_imported_files).
+                self.conn.execute(
+                    "INSERT OR IGNORE INTO import_rows (import_id, transaction_id, date, raw_name, raw_memo, bank_type, "
+                    "bank_category, fingerprint, fitid) SELECT import_id, id, date, raw_name, raw_memo, bank_type, "
+                    "bank_category, fingerprint, fitid FROM transactions WHERE fingerprint IS NOT NULL "
+                    "AND import_id IN (SELECT id FROM imports)")
+                self.conn.execute("INSERT INTO meta (key, value) VALUES ('read_imported_files', '1') "
+                                  "ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+            # Next upgrade: `if version is not None and version < 13: ...`, then raise SCHEMA_VERSION.
             self.conn.execute("INSERT INTO meta (key, value) VALUES ('schema_version', ?) "
                               "ON CONFLICT(key) DO UPDATE SET value = excluded.value", (str(SCHEMA_VERSION),))
             if version is not None and version < SCHEMA_VERSION:

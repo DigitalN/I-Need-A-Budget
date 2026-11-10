@@ -58,6 +58,8 @@ it takes the bank's date, text and IDs and keeps what you decided.
 
 New rows are only added here: each Result's `new_ids` then arrive in the inbox
 (inbox.Inbox.arrive), which categorizes what it can.
+Every row is noted with the transaction it is (`import_rows`: the rows matched as well as the
+ones added), so Remove import keeps a transaction another imported file has (issue #148).
 """
 
 import csv
@@ -934,6 +936,91 @@ def import_parsed(conn, parsed, filename, sha, archived_path=None, accounts=None
             for i, part in enumerate(parsed.parts)]
 
 
+def _usable_fitids(rows):
+    """Each row's bank ID, or None where it repeats within the file. A bank's transaction ID is a hint, not proof:
+    banks repeat them (one per day, 1, 2, 3… in every download, one for two identical coffees). One that repeats
+    within the file says nothing about its rows, which the fingerprint tells apart (it counts identical rows)."""
+    repeated = {f for f, n in Counter(r.fitid for r in rows if r.fitid).items() if n > 1}
+    return [None if row.fitid in repeated else row.fitid for row in rows]
+
+
+def _twins(conn, account_id, kind, part, fps, fitids):
+    """{row index: (id, fitid) of the transaction in the account that the file's row is}, for the rows the account
+    already has. First every row's exact twin: its fingerprint, else its bank ID. Those transactions leave the pool.
+
+    Then, over every row left at once, the rows from a different kind of file (this bank's CSV, when this is its
+    Quicken file, or a layout set up again): the same amount, a day or two either side, is the same transaction,
+    whatever each file called it and whenever it was dated (posting moves a date). Each is matched once, nearest date
+    first: not in the order of the file, where a new row would take the twin of an old one. Only where one of the two
+    rows falls within the other's file dates: the rows at the edges of two downloads (one ending Oct 15, the next
+    starting Oct 16, or overlapping by a day) are different transactions, and a fare on the 16th isn't the 14th's
+    (issue #124; ledger.one_transaction_in_two_files)."""
+    twins = {}
+    for i, (row, fp) in enumerate(zip(part.rows, fps)):
+        existing = conn.execute("SELECT id, fitid FROM transactions WHERE account_id = ? AND fingerprint = ?",
+                                (account_id, fp)).fetchone()
+        if existing is None and fitids[i]:
+            # The same ID counts only for the same amount, about when it was (posting moves a date).
+            existing = conn.execute(
+                "SELECT id, fitid FROM transactions WHERE account_id = ? AND fitid = ? AND amount = ? "
+                "AND date BETWEEN date(?, ?) AND date(?, ?)",
+                (account_id, fitids[i], row.amount, row.date, f"-{FITID_DAYS} days", row.date, f"+{FITID_DAYS} days")
+            ).fetchone()
+        if existing is not None:
+            twins[i] = existing
+    gone = {t["id"] for t in twins.values()}
+    others = [dict(r) for r in conn.execute(  # never a balance adjustment: it stands for rows still to come
+        "SELECT t.id, t.date, t.amount, i.format AS kind, i.first_date AS first, i.last_date AS last "
+        "FROM transactions t JOIN imports i ON i.id = t.import_id "
+        "WHERE t.account_id = ? AND t.date BETWEEN date(?, ?) AND date(?, ?) AND t.hint != ?",
+        (account_id, part.first_date or "", f"-{ledger.OTHER_KIND_DAYS} days",
+         part.last_date or "", f"+{ledger.OTHER_KIND_DAYS} days", ADJUSTMENT))
+        if r["id"] not in gone and not ledger.same_kind_of_file(r["kind"], kind)]
+    left = [{"id": i, "date": row.date, "amount": row.amount, "first": part.first_date, "last": part.last_date}
+            for i, row in enumerate(part.rows) if i not in twins]
+    for i, other_id in ledger.pair_nearest(left, others, allowed=ledger.one_transaction_in_two_files):
+        twins[i] = conn.execute("SELECT id, fitid FROM transactions WHERE id = ?", (other_id,)).fetchone()
+    return twins
+
+
+def _note(conn, import_id, txn_id, row, fp, fitid):
+    """Notes that this import's file has this transaction, and how (issue #148): what Remove import moves it to when
+    the file it's under is removed. Returns whether it's new."""
+    return conn.execute(
+        "INSERT OR IGNORE INTO import_rows (import_id, transaction_id, date, raw_name, raw_memo, bank_type, "
+        "bank_category, fingerprint, fitid) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (import_id, txn_id, row.date, row.name, row.memo, row.bank_type, row.bank_category, fp, fitid)).rowcount > 0
+
+
+def note_kept_file(conn, imp, path):
+    """An import from before version 12 noted only the transactions it added. This reads its file again (kept in
+    Imported Files) and notes every transaction in its account that the file has, found as an import finds them
+    (issue #148). It changes no transaction. Returns how many notes it added. Call inside db.write()."""
+    acct = conn.execute("SELECT kind FROM accounts WHERE id = ?", (imp["account_id"],)).fetchone()
+    parsed = parse(path, conn)
+    if acct is None or parsed.format == "actual":
+        return 0
+    part = _part_of(conn, parsed, imp["account_id"])
+    if part is None:
+        return 0
+    if part.card_file and ledger.is_debt(acct["kind"]) and _flip(conn, part, imp["account_id"])[0]:
+        part = replace(part, rows=[replace(r, amount=-r.amount) for r in part.rows])
+    fps, fitids = fingerprints(part.rows), _usable_fitids(part.rows)
+    return sum(_note(conn, imp["id"], t["id"], part.rows[i], fps[i], fitids[i])
+               for i, t in _twins(conn, imp["account_id"], imp["format"], part, fps, fitids).items())
+
+
+def _part_of(conn, parsed, account_id):
+    """The part of a file that went into this account: its only one, or the one the account is found for."""
+    if len(parsed.parts) == 1:
+        return parsed.parts[0]
+    for part in parsed.parts:
+        rows = _match_rows(part)
+        if find_account(conn, part.account, rows, fingerprints(rows)) == account_id:
+            return part
+    return None
+
+
 def _import_part(conn, fmt, part, filename, sha, archived_path, account_id=None, kind=None, answer=None):
     kind = kind or fmt
     result = Result(filename, fmt, total=len(part.rows), first_date=part.first_date, last_date=part.last_date)
@@ -964,48 +1051,8 @@ def _import_part(conn, fmt, part, filename, sha, archived_path, account_id=None,
          part.covers_to, archived_path)).lastrowid
     result.import_id = import_id
 
-    # A bank's transaction ID is a hint, not proof: banks repeat them (one per day, 1, 2, 3…
-    # in every download, one for two identical coffees). One that repeats within the file says
-    # nothing about its rows, which the fingerprint tells apart (it counts identical rows).
-    repeated = {f for f, n in Counter(r.fitid for r in part.rows if r.fitid).items() if n > 1}
-    fitids = [None if row.fitid in repeated else row.fitid for row in part.rows]
-
-    # First every row's exact twin: its fingerprint, else its bank ID. Those old rows leave the pool.
-    twins = {}
-    for i, (row, fp) in enumerate(zip(part.rows, fps)):
-        existing = conn.execute("SELECT id, fitid FROM transactions WHERE account_id = ? AND fingerprint = ?",
-                                (account_id, fp)).fetchone()
-        if existing is None and fitids[i]:
-            # The same ID counts only for the same amount, about when it was (posting moves a date).
-            existing = conn.execute(
-                "SELECT id, fitid FROM transactions WHERE account_id = ? AND fitid = ? AND amount = ? "
-                "AND date BETWEEN date(?, ?) AND date(?, ?)",
-                (account_id, fitids[i], row.amount, row.date, f"-{FITID_DAYS} days", row.date, f"+{FITID_DAYS} days")
-            ).fetchone()
-        if existing is not None:
-            twins[i] = existing
-
-    # Then, over every row left at once, the rows from a different kind of file (this bank's CSV, when
-    # this is its Quicken file, or a layout set up again): the same amount, a day or two either side,
-    # is the same transaction, whatever each file called it and whenever it was dated (posting moves a
-    # date). Each is matched once, nearest date first: not in the order of the file, where a new
-    # row would take the twin of an old one. Only where one of the two rows falls within the other's
-    # file dates: the rows at the edges of two downloads (one ending Oct 15, the next starting Oct 16,
-    # or overlapping by a day) are different transactions, and a fare on the 16th isn't the 14th's
-    # (issue #124; ledger.one_transaction_in_two_files).
-    gone = {t["id"] for t in twins.values()}
-    others = [dict(r) for r in conn.execute(  # never a balance adjustment: it stands for rows still to come
-        "SELECT t.id, t.date, t.amount, i.format AS kind, i.first_date AS first, i.last_date AS last "
-        "FROM transactions t JOIN imports i ON i.id = t.import_id "
-        "WHERE t.account_id = ? AND t.date BETWEEN date(?, ?) AND date(?, ?) AND t.hint != ?",
-        (account_id, part.first_date or "", f"-{ledger.OTHER_KIND_DAYS} days",
-         part.last_date or "", f"+{ledger.OTHER_KIND_DAYS} days", ADJUSTMENT))
-        if r["id"] not in gone and not ledger.same_kind_of_file(r["kind"], kind)]
-    left = [{"id": i, "date": row.date, "amount": row.amount, "first": part.first_date, "last": part.last_date}
-            for i, row in enumerate(part.rows) if i not in twins]
-    for i, other_id in ledger.pair_nearest(left, others, allowed=ledger.one_transaction_in_two_files):
-        twins[i] = conn.execute("SELECT id, fitid FROM transactions WHERE id = ?", (other_id,)).fetchone()
-
+    fitids = _usable_fitids(part.rows)
+    twins = _twins(conn, account_id, kind, part, fps, fitids)
     for i, (row, fp) in enumerate(zip(part.rows, fps)):
         fitid, existing = fitids[i], twins.get(i)
         # The ID is kept only where no other transaction in the account has it (it's unique there).
@@ -1014,6 +1061,7 @@ def _import_part(conn, fmt, part, filename, sha, archived_path, account_id=None,
         if existing is not None:
             if keep_fitid and not existing["fitid"]:
                 conn.execute("UPDATE transactions SET fitid = ? WHERE id = ?", (keep_fitid, existing["id"]))
+            _note(conn, import_id, existing["id"], row, fp, fitid)
             result.duplicates += 1
             continue
         desc = describe(row.name, row.memo, acct["kind"])
@@ -1034,6 +1082,7 @@ def _import_part(conn, fmt, part, filename, sha, archived_path, account_id=None,
                          "similar_payee_id = CASE WHEN hint = ? THEN ? ELSE similar_payee_id END WHERE id = ?",
                          (row.date, row.name, row.memo, row.bank_type, row.bank_category, transaction_hint(desc), fp,
                           keep_fitid, import_id, ADJUSTMENT, payee_id, payee_id, ADJUSTMENT, similar, mine["id"]))
+            _note(conn, import_id, mine["id"], row, fp, fitid)
             result.duplicates += 1
             continue
         payee_id, similar = ledger.resolve_payee(conn, desc)
@@ -1043,6 +1092,7 @@ def _import_part(conn, fmt, part, filename, sha, archived_path, account_id=None,
             "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (account_id, row.date, row.amount, payee_id, row.name, row.memo, row.bank_type, row.bank_category,
              transaction_hint(desc), fp, keep_fitid, import_id, similar)).lastrowid)
+        _note(conn, import_id, result.new_ids[-1], row, fp, fitid)
     result.added = len(result.new_ids)
     conn.execute("UPDATE imports SET rows_new = ? WHERE id = ?", (result.added, import_id))
 

@@ -516,6 +516,8 @@ const monthOnly = m => new Date(m + '-15T12:00').toLocaleDateString('en-CA', { m
 const day = d => d ? new Date(d + 'T12:00').toLocaleDateString('en-CA', { month: 'short', day: 'numeric' }) : '';
 const dayYear = d => d ? new Date(d + 'T12:00').toLocaleDateString('en-CA', { month: 'short', day: 'numeric', year: 'numeric' }) : '';
 const plural = (n, one, many) => `${n} ${n === 1 ? one : (many || one + 's')}`;
+// Remove import's message: what went, and what stays because another imported file has it (issue #148).
+const removedText = r => !r.stayed ? `Removed ${plural(r.removed, 'transaction')}` : r.removed ? `Removed ${plural(r.removed, 'transaction')} · ${r.stayed} ${r.stayed === 1 ? 'stays: another file has it' : 'stay: another file has them'}` : `Nothing removed: another file has ${r.stayed === 1 ? 'its transaction' : `all ${r.stayed} transactions`}`;
 const addMonths = (m, n) => { let [y, mo] = m.split('-').map(Number); const i = y * 12 + mo - 1 + n; return `${Math.floor(i / 12)}-${String(i % 12 + 1).padStart(2, '0')}`; };
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const debounce = (fn, ms) => { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; };
@@ -2863,7 +2865,7 @@ async function renderAccounts() {
       ${closedRows ? `<details class="card"><summary style="cursor:default;font-weight:600">Closed accounts</summary>
         <table><tbody>${closedRows}</tbody></table></details>` : ''}
       ${importRows ? `<details class="card"><summary style="cursor:default;font-weight:600">Imported files</summary>
-        <p class="small muted">Removing an import deletes the transactions it added (not ones another file also had).</p>
+        <p class="small muted">Removing an import deletes the transactions only its file has.</p>
         <table><tbody>${importRows}</tbody></table></details>` : ''}
     </div>`);
 }
@@ -2957,9 +2959,9 @@ async function accountAction(btn) {
     await loadCategories();
     toast('Account added', { action: undoAction });
   } else if (act === 'undo-import') {
-    if (!await confirmBox('Remove this import?', 'Deletes the transactions this file added.', 'Remove', true)) return;
+    if (!await confirmBox('Remove this import?', 'Deletes the transactions only this file has.', 'Remove', true)) return;
     const r = await call('undo_import', [Number(btn.dataset.import)]);
-    toast(`Removed ${plural(r.removed, 'transaction')}`, { action: undoAction });
+    toast(removedText(r), { action: undoAction });
   }
   await renderAccounts();
 }
