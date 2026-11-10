@@ -270,7 +270,7 @@ def test_the_digest_leaves_out_what_make_keeps_in_meta(tmp_path):
     assert backups.digest(db) != before
 
 
-def test_the_digest_sees_the_columns_schemas_9_and_10_added(tmp_path):
+def test_the_digest_sees_the_columns_schemas_9_to_11_added(tmp_path):
     db = open_db(tmp_path)
     with db.write() as c:
         account = c.execute("INSERT INTO accounts (name, kind) VALUES ('Chequing', 'chequing')").lastrowid
@@ -286,6 +286,10 @@ def test_the_digest_sees_the_columns_schemas_9_and_10_added(tmp_path):
     backups.make(db, datetime(2026, 11, 8, 15, 0, 0))
     with db.write() as c:
         c.execute("UPDATE transactions SET after_import = ? WHERE id = ?", (imported, txn))  # schema 10
+    assert backups.changed(db)
+    backups.make(db, datetime(2026, 11, 8, 16, 0, 0))
+    with db.write() as c:
+        c.execute("UPDATE imports SET covers_to = '2026-09-30' WHERE id = ?", (imported,))  # schema 11
     assert backups.changed(db)
 
 

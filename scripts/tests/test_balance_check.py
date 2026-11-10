@@ -7,11 +7,13 @@ import json
 import re
 import shutil
 import subprocess
+from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
 
 import db
+import ledger
 from helpers import bank_csv, call, card_number, categories, write
 from test_card_signs import card_ofx, covers
 
@@ -309,8 +311,8 @@ def test_an_existing_database_learns_where_its_balances_came_from(tmp_path):
     again = db.Database(path)
     rows = {r["id"]: (r["anchor_source"], r["check_from"]) for r in again.conn.execute("SELECT * FROM accounts")}
     assert rows == {1: ("file", 1), 2: ("file", None), 3: ("typed", None), 4: (None, None)}
-    assert again.get_meta("schema_version") == "10"
-    assert list((tmp_path / "I Need A Budget Backups").glob("budget-before-upgrade-v7-to-v10-*.db"))
+    assert again.get_meta("schema_version") == "11"
+    assert list((tmp_path / "I Need A Budget Backups").glob("budget-before-upgrade-v7-to-v11-*.db"))
 
 
 def test_an_existing_database_keeps_where_each_file_says_it_starts(tmp_path):
@@ -335,8 +337,8 @@ def test_an_existing_database_keeps_where_each_file_says_it_starts(tmp_path):
     assert (old["filename"], old["first_date"], old["anchor_after_date"], old["covers_from"]) == \
         ("a.ofx", "2026-09-01", "2026-10-10", None)
     assert again.conn.execute("SELECT anchor_source, check_from FROM accounts").fetchone()[:] == ("file", 1)
-    assert again.get_meta("schema_version") == "10"
-    assert list((tmp_path / "I Need A Budget Backups").glob("budget-before-upgrade-v8-to-v10-*.db"))
+    assert again.get_meta("schema_version") == "11"
+    assert list((tmp_path / "I Need A Budget Backups").glob("budget-before-upgrade-v8-to-v11-*.db"))
 
 
 # ── onboarding's 3. Balances (issue #135) ────────────────────────────────────
@@ -753,6 +755,239 @@ def test_removing_the_starting_file_checks_from_the_next_files_first_day(app):
     assert _adjustments(app) == []
 
 
+# ── a starting file that stops before its balance's day (issue #146) ─────────
+#
+# A download of a past date range lists its transactions up to the range's last day (a Quicken file's DTEND), with the
+# bank's balance on the day it was made: that balance has what went through in between already.
+
+
+def _past(text, last_day):
+    """A made-up download of a past date range: it says it covers up to `last_day` (YYYYMMDD), written as Tangerine
+    writes it (the midnight after that day), and its balance is the bank's on the day it was made."""
+    after = date(int(last_day[:4]), int(last_day[4:6]), int(last_day[6:])) + timedelta(days=1)
+    return re.sub(r"<DTEND>\d{8}235959", f"<DTEND>{after:%Y%m%d}000000", text, count=1)
+
+
+def test_a_starting_file_whose_rows_stop_before_its_balance_doesnt_count_them_twice(app):
+    """The issue's case: two downloads on Oct 12, each with that day's balance ($2,600.00), for Sep 1–15 and Sep 16 –
+    Oct 12. "$400.00 more came in" waited for good, and September's starting Ready to assign was $650.00."""
+    first = ofx(SEPTEMBER, "2600.00", "20261012", start="20260901").replace("<DTEND>20261012", "<DTEND>20260915")
+    _import(app, "chequing-a.ofx", first)
+    _import(app, "chequing-b.ofx", ofx(MISSING + OCTOBER, "2600.00", "20261012", start="20260916"))
+    call(app, "finish_onboarding", "2026-09")
+    assert _adjustments(app) == [] and _start(app) == 105000
+
+
+# A card's statement (the days things went through, Sep 3 – Oct 2) and its current period (Oct 3–12), both downloaded
+# Oct 12 with that day's balance (owing $140.00). Each has a charge made before its first day that went through in it.
+CARD_STATEMENT = [("20260901", "-20.00", "SAMPLE TAXI", "C1"), ("20260910", "-40.00", "SAMPLE GROCER", "C2"),
+                  ("20260930", "-25.00", "SAMPLE CAFE", "C3")]
+CARD_CURRENT = [("20261001", "-15.00", "SAMPLE PARKING", "C4"), ("20261005", "-30.00", "SAMPLE BAKERY", "C5"),
+                ("20261010", "-10.00", "SAMPLE BOOKS", "C6")]
+
+
+def _card_statement(app):
+    _import(app, "card-sep.qfx", _past(card_ofx(CARD_STATEMENT, "-140.00", "20261012", start="20260903"), "20261002"))
+    call(app, "finish_onboarding", "2026-09")
+
+
+def test_a_cards_statement_and_current_period_downloaded_the_same_day_add_nothing(app):
+    """"$55.00 more came in" (the current period's charges) waited for good."""
+    _card_statement(app)
+    _import(app, "card-oct.qfx", card_ofx(CARD_CURRENT, "-140.00", "20261012", start="20261003"))
+    assert _adjustments(app) == [] and call(app, "accounts")[0]["balance"] == -14000
+
+
+def test_a_cards_download_the_same_day_that_overlaps_the_statement_goes_by_date(app):
+    """Sep 20 – Oct 12, downloaded Oct 12 too (owing $125.00, as the statement's balance): it starts before the
+    statement's last day, so what it brings dated after that day (Oct 5's and Oct 10's charges) was in that balance."""
+    _import(app, "card-sep.qfx", _past(card_ofx(CARD_STATEMENT, "-125.00", "20261012", start="20260903"), "20261002"))
+    call(app, "finish_onboarding", "2026-09")
+    overlap = CARD_STATEMENT[2:] + CARD_CURRENT[1:]
+    _import(app, "card-oct.qfx", card_ofx(overlap, "-125.00", "20261012", start="20260920"))
+    assert _adjustments(app) == [] and call(app, "accounts")[0]["balance"] == -12500
+
+
+def test_a_cards_current_period_downloaded_later_counts_by_its_days(app):
+    """Accepted: a card goes by the days its downloads cover, never by a charge's date. With the current period
+    downloaded only on Oct 20 (Oct 3–20, owing $160.00: a charge from Oct 12 that went through after the statement's
+    download on top), its charges count, and the $55.00 the statement's balance had waits."""
+    _card_statement(app)
+    later = CARD_CURRENT + [("20261012", "-20.00", "SAMPLE GAS", "C7")]
+    _import(app, "card-oct.qfx", card_ofx(later, "-160.00", "20261020", start="20261003"))
+    assert [a["amount"] for a in _adjustments(app)] == [5500]
+
+
+def _two_downloads_on_oct_12(app):
+    """The issue's case, the way Tangerine writes a past range."""
+    _import(app, "chequing-a.ofx", _past(ofx(SEPTEMBER, "2600.00", "20261012", start="20260901"), "20260915"))
+    _import(app, "chequing-b.ofx", ofx(MISSING + OCTOBER, "2600.00", "20261012", start="20260916"))
+    call(app, "finish_onboarding", "2026-09")
+
+
+ETRANSFER = [("20261012", "-45.00", "SAMPLE E-TRANSFER", "N1")]  # dated Oct 12, the day of the past range's balance
+NEXT_WEEK = [("20261015", "-20.00", "SAMPLE CAFE CALGARY AB", "N2")]
+
+
+def test_a_later_days_download_brings_what_went_through_after_the_balances_day_download(app):
+    """With a download from Oct 12 in, what went through that day before it is in it. So the $45.00 e-transfer dated
+    Oct 12 that Oct 20's download (Oct 1–20, $2,535.00) brings went through after it, and counts."""
+    _two_downloads_on_oct_12(app)
+    _import(app, "chequing-c.ofx", ofx(OCTOBER + ETRANSFER + NEXT_WEEK, "2535.00", "20261020", start="20261001"))
+    assert _adjustments(app) == [] and _start(app) == 105000
+
+
+def test_chequing_goes_by_date_with_a_download_that_ends_after_the_balances_day(app):
+    """Sep 1–15 downloaded Oct 12 ($2,600.00), then only Sep 16 – Oct 20, on Oct 20 ($2,580.00): what it brings from
+    before Oct 12 was in that balance, and Oct 15's charge counts."""
+    _import(app, "chequing-a.ofx", _past(ofx(SEPTEMBER, "2600.00", "20261012", start="20260901"), "20260915"))
+    call(app, "finish_onboarding", "2026-09")
+    _import(app, "chequing-b.ofx", ofx(MISSING + OCTOBER + NEXT_WEEK, "2580.00", "20261020", start="20260916"))
+    assert _adjustments(app) == [] and _start(app) == 105000
+
+
+def _oct_12_only_in_that_balance(app, balance):
+    """Sep 1–15 downloaded Oct 12, then only Sep 16 – Oct 20 on Oct 20 ($2,535.00), with the e-transfer dated Oct 12:
+    no download covers Oct 12 but that balance."""
+    _import(app, "chequing-a.ofx", _past(ofx(SEPTEMBER, balance, "20261012", start="20260901"), "20260915"))
+    call(app, "finish_onboarding", "2026-09")
+    _import(app, "chequing-b.ofx", ofx(MISSING + OCTOBER + ETRANSFER + NEXT_WEEK, "2535.00", "20261020", start="20260916"))
+
+
+def test_on_the_balances_day_with_no_download_from_it_what_went_through_was_in_that_balance(app):
+    """A balance covers its whole day: the e-transfer went through on Oct 12 before the download ($2,555.00 has it)."""
+    _oct_12_only_in_that_balance(app, "2555.00")
+    assert _adjustments(app) == [] and _start(app) == 105000
+
+
+def test_on_the_balances_day_with_no_download_from_it_what_went_through_after_waits(app):
+    """Accepted: dates can't say whether it went through before or after the download. After it (the bank's $2,600.00
+    on Oct 12 doesn't have it), "$45.00 more went out" waits, and September starts at $1,095.00."""
+    _oct_12_only_in_that_balance(app, "2600.00")
+    [adjustment] = _adjustments(app)
+    assert adjustment["amount"] == -4500 and "$45.00 more went out" in adjustment["reason"]
+    assert _start(app) == 109500
+
+
+def test_a_second_download_the_same_day_of_files_that_end_on_their_balances_day_counts(app):
+    """Downloads that end on their balance's day change nothing: Sep 1 – Oct 12 at 9 a.m. ($2,600.00), then again at
+    5 p.m. with a $20.00 charge in between ($2,580.00). By the first one's last transaction (Oct 3) instead of the last
+    day it says it covers, the charge wouldn't count, and −$20.00 would wait."""
+    _import(app, "chequing-1.ofx", ofx(SEPTEMBER + MISSING + OCTOBER, "2600.00", "20261012", start="20260901"))
+    call(app, "finish_onboarding", "2026-09")
+    later = SEPTEMBER + MISSING + OCTOBER + [("20261012", "-20.00", "SAMPLE CAFE CALGARY AB", "N3")]
+    _import(app, "chequing-2.ofx", ofx(later, "2580.00", "20261012", start="20260901"))
+    assert _adjustments(app) == [] and call(app, "accounts")[0]["balance"] == 258000
+
+
+def test_a_later_downloads_row_from_the_balances_day_counts_when_the_starting_file_ends_on_it(app):
+    """Only a file that stops early makes its balance's day count as in that balance: Sep 1–15, downloaded the morning
+    of Sep 15 ($3,000.00), then Sep 15 – Oct 10 with a $30.00 lunch from that afternoon ($2,570.00 on Oct 10)."""
+    _import(app, "chequing-1.ofx", ofx(SEPTEMBER, "3000.00", "20260915", start="20260901"))
+    call(app, "finish_onboarding", "2026-09")
+    lunch = [("20260915", "-30.00", "SAMPLE CAFE CALGARY AB", "L1")]
+    _import(app, "chequing-2.ofx", ofx(lunch + MISSING + OCTOBER, "2570.00", "20261010", start="20260915"))
+    assert _adjustments(app) == [] and _start(app) == 105000
+
+
+OCT_8 = [("20261008", "-50.00", "SAMPLE GROCER CALGARY AB", "G1")]  # in the bank's $2,550.00 on Oct 12
+
+
+def _past_range_after_the_first_file(app):
+    """The check starts from Sep 1–15 ($3,000.00 on Sep 15). Then Sep 16 – Oct 5, downloaded Oct 12 ($2,550.00): it
+    stops before Oct 8's charge."""
+    _first_file(app)
+    _import(app, "chequing-2.ofx", _past(ofx(MISSING + OCTOBER, "2550.00", "20261012", start="20260916"), "20261005"))
+
+
+def test_the_reason_says_a_download_may_be_missing_after_the_last_day_a_file_covers(app):
+    """It said "between Sep 15 and Sep 20": that file's first transaction, though it says it covers from Sep 16, and
+    nothing about the days after Oct 5."""
+    _past_range_after_the_first_file(app)
+    [adjustment] = _adjustments(app)
+    assert adjustment["amount"] == -5000
+    assert "a download may be missing between Oct 5 and Oct 12" in adjustment["reason"]
+
+
+def test_the_starting_file_covers_up_to_its_balances_day_in_the_reason(app):
+    """Sep 1–15 downloaded Oct 12, then Oct 1–10 downloaded Oct 20 ($2,580.00, with a $20.00 charge from Oct 15 in no
+    file). Sep 16 – Oct 12 is in the first balance: no "between Sep 15 and Oct 1"."""
+    _import(app, "chequing-a.ofx", _past(ofx(SEPTEMBER, "2600.00", "20261012", start="20260901"), "20260915"))
+    call(app, "finish_onboarding", "2026-09")
+    _import(app, "chequing-b.ofx", _past(ofx(OCTOBER, "2580.00", "20261020", start="20261001"), "20261010"))
+    [adjustment] = _adjustments(app)
+    assert adjustment["amount"] == -2000
+    assert "a download may be missing between Oct 12 and Oct 20" in adjustment["reason"]
+
+
+def test_a_starting_file_without_rows_says_where_a_download_may_be_missing_too(app):
+    """The card's Oct 1–2 file has no charges (a balance only), then Oct 10–20: by the days the first one says it
+    covers, nothing covers Oct 3–9. It said "a transaction may be missing, or counted twice"."""
+    _import(app, "card-1.ofx", card_ofx([], "-200.00", "20261002", start="20261001"))
+    call(app, "finish_onboarding", "2026-10")
+    _import(app, "card-2.ofx", card_ofx([("20261012", "-15.00", "SAMPLE PARKING", "K3")], "-255.00", "20261020",
+                                        start="20261010"))
+    [adjustment] = _adjustments(app)
+    assert adjustment["amount"] == -4000 and "a download may be missing between Oct 2 and Oct 10" in adjustment["reason"]
+
+
+def test_removing_the_starting_file_checks_from_the_next_files_last_day(app):
+    """Oct 1–12, downloaded Oct 12 too, brings Oct 8's charge. With Sep 1–15 removed, the check starts from Sep 16 –
+    Oct 5, whose balance has that charge already."""
+    _past_range_after_the_first_file(app)
+    _import(app, "chequing-3.ofx", ofx(OCTOBER + OCT_8, "2550.00", "20261012", start="20261001"))
+    assert _adjustments(app) == []
+    first = next(i["id"] for i in call(app, "imports") if i["filename"] == "chequing-1.ofx")
+    call(app, "undo_import", first)
+    assert _adjustments(app) == [] and call(app, "accounts")[0]["balance"] == 255000
+
+
+@pytest.mark.parametrize("dtend, last_day", [
+    ("20261013000000.000[-5:EST]", "2026-10-12"),  # midnight is the end of the day before (Tangerine's)
+    ("20261012143005.000[-5:EST]", "2026-10-12"),  # the moment it was downloaded
+    ("20260916000000.000[-5:EST]", "2026-09-15"),  # a past range
+    ("20261012", "2026-10-12"),                    # a day, no time
+    ("20261016000000.000[-5:EST]", "2026-10-15"),  # after its own balance's day: kept, and the check ends on Oct 12
+    ("20260815000000.000[-5:EST]", None),          # before its own first day: says nothing
+    (None, None),                                  # it doesn't say
+])
+def test_how_a_files_last_day_is_read(app, dtend, last_day):
+    text = ofx(SEPTEMBER, "2600.00", "20261012", start="20260901")
+    _import(app, "chequing-1.ofx", re.sub(r"<DTEND>[^<\n]*", f"<DTEND>{dtend}" if dtend else "", text))
+    assert app.db.conn.execute("SELECT covers_to FROM imports").fetchone()[0] == last_day
+    # The check starting from it ends on the last day it covers, its balance's day at the latest (and when it doesn't say).
+    span = ledger.check_span(app.db.conn, call(app, "accounts")[0]["id"])
+    assert span.last_day == (min(last_day, "2026-10-12") if last_day else "2026-10-12")
+
+
+def test_an_existing_database_gets_a_place_to_keep_the_last_day_each_file_covers(tmp_path):
+    """Version 11 keeps the last day each file says it covers (issue #146). Imports from before don't know it: a check
+    starting from one ends on its balance's day, as it did, and everything else stays as it was."""
+    path = tmp_path / "budget.db"
+    database = db.Database(path)
+    c = database.conn
+    c.execute("INSERT INTO accounts (id, name, kind, anchor_date, anchor_balance, anchor_source) "
+              "VALUES (1, 'Chequing', 'chequing', '2026-10-12', 260000, 'file')")
+    c.execute("INSERT INTO imports (id, filename, sha256, account_id, format, first_date, last_date, covers_from, "
+              "anchor_after_date, anchor_after_balance) "
+              "VALUES (1, 'a.ofx', 'x', 1, 'ofx', '2026-09-01', '2026-09-10', '2026-09-01', '2026-10-12', 260000)")
+    c.execute("UPDATE accounts SET check_from = 1")
+    for suffix in ("ins", "upd", "del"):  # the undo triggers name every column
+        c.execute(f"DROP TRIGGER IF EXISTS undo_imports_{suffix}")
+    c.execute("ALTER TABLE imports DROP COLUMN covers_to")  # a version 10 database
+    c.execute("UPDATE meta SET value = '10' WHERE key = 'schema_version'")
+    c.commit()
+    database.close()
+    again = db.Database(path)
+    old = again.conn.execute("SELECT * FROM imports").fetchone()
+    assert (old["filename"], old["first_date"], old["last_date"], old["covers_from"], old["anchor_after_date"],
+            old["covers_to"]) == ("a.ofx", "2026-09-01", "2026-09-10", "2026-09-01", "2026-10-12", None)
+    assert again.conn.execute("SELECT anchor_source, check_from FROM accounts").fetchone()[:] == ("file", 1)
+    assert ledger.check_span(again.conn, 1).last_day == "2026-10-12"
+    assert again.get_meta("schema_version") == "11"
+    assert list((tmp_path / "I Need A Budget Backups").glob("budget-before-upgrade-v10-to-v11-*.db"))
+
+
 # ── Check balance… (issue #137) ──────────────────────────────────────────────
 #
 # Check balance… doesn't end the check. Its balance adjustment stands for what's happened since the newest file's
@@ -814,8 +1049,8 @@ def test_an_existing_database_gets_a_place_to_remember_what_a_check_balance_came
     again = db.Database(path)
     old = again.conn.execute("SELECT * FROM transactions").fetchone()
     assert (old["date"], old["amount"], old["hint"], old["after_import"]) == ("2026-10-12", -1000, "adjustment", None)
-    assert again.get_meta("schema_version") == "10"
-    assert list((tmp_path / "I Need A Budget Backups").glob("budget-before-upgrade-v9-to-v10-*.db"))
+    assert again.get_meta("schema_version") == "11"
+    assert list((tmp_path / "I Need A Budget Backups").glob("budget-before-upgrade-v9-to-v11-*.db"))
 
 
 def test_a_later_file_that_doesnt_explain_it_leaves_the_rest_as_the_accounts_balance_adjustment(app, monkeypatch):

@@ -78,10 +78,10 @@ All in `Application Files/`:
   when it changes none; a write without a label that changes anything clears undo, unless
   `keep_undo`; `big_step()` marks a step ⌘Z asks about first;
   `steps_made()` is the step a request made, for its toast's Undo; see Key rules). Schema is at
-  version 10. To change it: raise `SCHEMA_VERSION`,
+  version 11. To change it: raise `SCHEMA_VERSION`,
   add the column to `SCHEMA` *and* an `ALTER TABLE` step in `_migrate` for existing
   databases. Upgrades copy the database to the backups folder
-  (`budget-before-upgrade-v10-to-v11-<date and time>.db`) first. The
+  (`budget-before-upgrade-v11-to-v12-<date and time>.db`) first. The
   user's real database has real data in it: test every upgrade on a copy of it first.
 - `backups.py`: backups ([ADR 0004](../docs/adr/0004-live-budget-stays-out-of-synced-folders.md)).
   `at_quit` and `at_launch` (a backup only if `changed`: the budget's `digest` differs from
@@ -185,7 +185,19 @@ All in `Application Files/`:
   `DTSTART`; one after its own balance's date says nothing), else its first row's date, else
   its balance's date. Not the first row's date when it says: a card file covers the days things
   posted, so it has charges dated before its first day, and a charge dated before it that posted
-  after its balance comes in a later file that starts on that day too, and counts. An older
+  after its balance comes in a later file that starts on that day too, and counts. **Nor does
+  what a starting file that stops early had** (issue #146): a download of a past date range lists
+  rows up to the range's last day, with the bank's balance on the day it was made. A file's last
+  day is the one it says it covers to (`imports.covers_to`, a Quicken file's `DTEND`, midnight
+  being the end of the day before), else its last row's date; the starting file's is its
+  balance's date at the latest, and that date when it doesn't say (not its last row's: a second
+  download the same day would miss what went through in between). When that's before the
+  balance's date, a later download ending by that date counts nothing dated after that last day
+  (nothing at all when it starts after it); for chequing and savings, a row dated in between
+  counts from no download, and one dated the balance's day only once a download covering that
+  day and ending on it has come in. A card goes by its downloads' days only (#158: one with only
+  closed statements). Where a download may be missing goes by the days files say they cover too,
+  and after the newest one up to the newest balance's day. An older
   file's own balance is only compared by date, in its note (chequing and savings). What's left waits in
   the Inbox as a **balance adjustment** (hint `adjustment`, payee "Balance adjustment") dated the
   newest balance's date, so the budget's starting balance stays put: no guess, never in Accept

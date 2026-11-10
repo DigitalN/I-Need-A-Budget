@@ -36,7 +36,7 @@ from errors import UserError
 
 log = logging.getLogger("inab")
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 CANT_UNDO = "That can't be undone any more."
 
@@ -144,6 +144,7 @@ CREATE TABLE IF NOT EXISTS imports (
     last_date TEXT,
     covers_from TEXT,                    -- the first day the file says it covers (a Quicken file's DTSTART;
                                          -- none: it doesn't say): see ledger.balance_difference
+    covers_to TEXT,                      -- ... and the last (its DTEND; midnight is the end of the day before)
     archived_path TEXT,
     anchor_before_date TEXT,             -- the balance this import replaced (none: the account had none) ...
     anchor_before_balance INTEGER,
@@ -359,7 +360,14 @@ class Database:
                 columns = [r["name"] for r in self.conn.execute("PRAGMA table_info(transactions)")]
                 if "after_import" not in columns:
                     self.conn.execute("ALTER TABLE transactions ADD COLUMN after_import INTEGER")
-            # Next upgrade: `if version is not None and version < 11: ...`, then raise SCHEMA_VERSION.
+            if version is not None and version < 11:
+                # The last day each file says it covers, so what a file that stops before its balance's day had in that
+                # balance already isn't counted again (issue #146). Imports made before this don't know it: their last
+                # row's date stands in, and a check starting from one ends on its balance's day, as it did.
+                columns = [r["name"] for r in self.conn.execute("PRAGMA table_info(imports)")]
+                if "covers_to" not in columns:
+                    self.conn.execute("ALTER TABLE imports ADD COLUMN covers_to TEXT")
+            # Next upgrade: `if version is not None and version < 12: ...`, then raise SCHEMA_VERSION.
             self.conn.execute("INSERT INTO meta (key, value) VALUES ('schema_version', ?) "
                               "ON CONFLICT(key) DO UPDATE SET value = excluded.value", (str(SCHEMA_VERSION),))
             if version is not None and version < SCHEMA_VERSION:
