@@ -91,7 +91,8 @@ def test_a_balance_that_doesnt_continue_the_accounts_is_said_not_asked_about(app
                                                            "10/06/2026,SAMPLE GYM,30.00,,4990.00\n")
     out = call(app, "import_files", [str(odd)])
     assert not out["needs_setup"] and [r["added"] for r in out["results"]] == [3]
-    assert "This file's balance on Oct 3 was $5,010.00; the app has $2,434.30" in out["results"][0]["balance_note"]
+    # Compared once the file is in (issue #138): the balance was typed for today, so Oct 3's has this file's rows in it.
+    assert "This file's balance on Oct 3 was $5,010.00; the app has $2,454.30" in out["results"][0]["balance_note"]
 
 
 HEAD = "Date,Description,Amount,Balance\n"
@@ -137,3 +138,74 @@ def test_what_is_off_about_the_balance_is_said_with_the_import(app):
                  "2026-10-08,SAMPLE BAKERY,-5.00,1045.00\n2026-10-09,SAMPLE BAKERY,-5.00,1040.00\n")
     [result] = call(app, "import_files", [str(path)])["results"]
     assert "This file's balance" not in result["balance_note"]
+
+
+# A file's balance is compared with the app's once the file's rows are in (issue #138). Before, a file whose rows
+# came before the account's balance was always off by its own rows.
+
+
+def _sample_chequing(app, text):
+    app.db.set_meta("onboarded", "1")
+    path = write(app.test_downloads, "activity.csv", text)
+    setup = call(app, "csv_setup", str(path))
+    call(app, "setup_csv", str(path), setup["layout"],
+         {"name": "Sample Chequing", "kind": "chequing", "bank": "Sample CU"})
+    return _accounts(app)["Sample Chequing"]["id"]
+
+
+def test_an_older_csv_that_continues_the_balance_says_nothing(app):
+    acct = _sample_chequing(app, HEAD + "2026-09-01,SAMPLE EMPLOYER PAY,2000.00,3050.00\n"
+                                        "2026-09-10,SAMPLE CAFE,-50.00,3000.00\n"
+                                        "2026-09-12,SAMPLE GROCER,-20.00,2980.00\n")
+    call(app, "set_balance", acct, 298000, "2026-09-15")
+    # August's download, filled in later: $250.00 before its first row ("the app has $1,050.00" until its rows are in).
+    august = write(app.test_downloads, "activity.csv", HEAD + "2026-08-05,SAMPLE EMPLOYER PAY,1000.00,1250.00\n"
+                   "2026-08-12,SAMPLE GROCER,-100.00,1150.00\n2026-08-20,SAMPLE PHONE CO,-100.00,1050.00\n")
+    [result] = call(app, "import_files", [str(august)])["results"]
+    assert (result["added"], result["balance_note"]) == (3, "")
+
+
+def test_the_next_csv_after_a_balance_typed_for_today_says_nothing_when_it_continues(app, monkeypatch):
+    acct = _sample_chequing(app, HEAD + "2026-10-01,SAMPLE CAFE,-10.00,990.00\n"
+                                        "2026-10-02,SAMPLE GROCER,-20.00,970.00\n"
+                                        "2026-10-03,SAMPLE EMPLOYER PAY,100.00,1070.00\n")
+    call(app, "set_balance", acct, 106000)  # Oct 12: what the bank shows now, with two charges no file has yet
+    monkeypatch.setenv("INAB_TODAY", "2026-10-20")
+    path = write(app.test_downloads, "activity.csv", HEAD + "2026-10-05,SAMPLE BAKERY,-5.00,1065.00\n"
+                 "2026-10-09,SAMPLE BAKERY,-5.00,1060.00\n2026-10-15,SAMPLE BOOKS,-20.00,1040.00\n")
+    [result] = call(app, "import_files", [str(path)])["results"]
+    assert (result["added"], result["balance_note"]) == (3, "")  # it said "the app has $1,060.00" for Oct 4
+
+
+# A card's CSV dates each purchase, but lists them, and moves its balance, as they post: by date, its balance before its
+# first row is off by whatever posted out of order. Like an older card file's, it isn't compared (#157's review).
+NEXT_VISA_AS_POSTED = ("10/08/2026,SAMPLE TAXI,25.00,,625.00\n10/07/2026,SAMPLE LUNCH,15.00,,640.00\n"
+                       "10/09/2026,SAMPLE BOOKS,10.00,,650.00\n")
+
+
+def test_a_card_csv_listed_as_things_posted_says_nothing_about_its_balance(app, monkeypatch):
+    """The bank's $600.00 before the taxi posted doesn't have the Oct 7 lunch, which posted after it; once the file is
+    in, the app's Oct 7 has it."""
+    app.db.set_meta("onboarded", "1")
+    _set_up(app, VISA, "TD Visa", "credit_card")
+    call(app, "set_balance", _accounts(app)["TD Visa"]["id"], 60000, "2026-10-06")  # owe $600.00, as the bank says
+    monkeypatch.setenv("INAB_TODAY", "2026-10-10")
+    path = write(app.test_downloads, "accountactivity.csv", NEXT_VISA_AS_POSTED)
+    [result] = call(app, "import_files", [str(path)])["results"]
+    assert (result["added"], result["balance_note"]) == (3, "")  # it said "…on Oct 7 was -$600.00; the app has -$615.00"
+
+
+# The last file's hotel is dated Oct 8, and the next file starts with an Oct 7 lunch that posted after it.
+VISA_TO_OCT_8 = ("10/04/2026,SAMPLE AIRLINE,500.00,,500.00\n10/05/2026,PAYMENT - THANK YOU,,100.00,400.00\n"
+                 "10/08/2026,SAMPLE HOTEL,200.00,,600.00\n")
+NEXT_AFTER_OCT_8 = ("10/07/2026,SAMPLE LUNCH,15.00,,615.00\n10/09/2026,SAMPLE TAXI,25.00,,640.00\n"
+                    "10/10/2026,SAMPLE BOOKS,10.00,,650.00\n")
+
+
+def test_a_card_csv_whose_first_purchase_is_dated_before_the_last_files_last_says_nothing(app):
+    app.db.set_meta("onboarded", "1")
+    _set_up(app, VISA_TO_OCT_8, "TD Visa", "credit_card")
+    call(app, "set_balance", _accounts(app)["TD Visa"]["id"], 60000, "2026-10-08")  # owe $600.00 at the end of Oct 8
+    path = write(app.test_downloads, "accountactivity.csv", NEXT_AFTER_OCT_8)
+    [result] = call(app, "import_files", [str(path)])["results"]
+    assert (result["added"], result["balance_note"]) == (3, "")  # it said "the app has -$385.00" (before #138, -$400.00)

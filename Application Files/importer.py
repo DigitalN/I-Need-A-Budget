@@ -138,6 +138,7 @@ class Part:
     flip_guess: bool = None  # from the rows alone: do they write purchases as positive? None: too few purchases to tell
     covers_from: str = None  # the first day the file says it covers (a Quicken file's DTSTART), when it says: a card
                              # file covers the days things posted, so it can have charges dated before it
+    opening: tuple = None  # (day, cents): a set-up CSV's running balance at the end of the day before its first row
 
     @property
     def first_date(self):
@@ -643,9 +644,9 @@ def _parse_csv(text, filename, conn):
         raise NeedsSetup("layout", f"{e}. Set the file up again from the Inbox.") from None
     key = csv_account_key(layout["id"], filename)
     account_id = csv_account(conn, layout["id"], key, rows, balance)
-    note = csv_balance_note(conn, account_id or ledger.account_by_key(conn, [key]), balance)
     hint = AccountHint([key], "chequing", base_name(filename), create=False, account_id=account_id)
-    return Parsed("csv", [Part(hint, rows, notes=[note] if note else [])], kind=layout_kind(layout))
+    opening = (day_before(balance["date"]), balance["sign"] * balance["opening"]) if balance else None
+    return Parsed("csv", [Part(hint, rows, opening=opening)], kind=layout_kind(layout))
 
 
 # How well a set-up CSV fits an account (csv_fit), from -1 to 1.
@@ -661,7 +662,7 @@ def csv_fit(conn, account_id, rows, balance, trusted=False):
     does (a bank account's rises with money in; a card's can go either way, by bank), and one
     that continues the balance the app has. `trusted`: the person already said this file name
     is this account, so a balance that doesn't continue (a missed download, a balance typed a
-    little wrong) isn't held against it: csv_balance_note says so instead."""
+    little wrong) isn't held against it: stated_balance_note says so instead."""
     acct = conn.execute("SELECT kind FROM accounts WHERE id = ?", (account_id,)).fetchone()
     if acct is None:
         return UNKNOWN
@@ -694,21 +695,29 @@ def csv_fit(conn, account_id, rows, balance, trusted=False):
     return UNLIKELY if UNLIKELY in scores else UNKNOWN
 
 
-def csv_balance_note(conn, account_id, balance):
-    """What's off when a set-up CSV's running balance doesn't continue the account's: 'This file's
-    balance on Oct 3 was $1,070.00; the app has $1,060.00'. '' when it continues, or there's
-    nothing to compare."""
-    if account_id is None or balance is None:
+# What an import says when a balance its file states for a day isn't the app's for that day (stated_balance_note).
+OLDER_BALANCE = "The file says the balance was {theirs} on {day}; the app has {ours}"
+CSV_OPENING = "This file's balance on {day} was {theirs}; the app has {ours}"
+
+
+def stated_balance_note(conn, result):
+    """What's off when a balance the file states for a day isn't the app's for that day: an older file's
+    own balance ("The file says the balance was $2,850.00 on Sep 22; the app has $2,900.00"), or a
+    set-up CSV's running balance before its first row, which doesn't continue the account's ("This
+    file's balance on Oct 3 was $1,070.00; the app has $1,060.00"). For a cash account only: a card's
+    files date purchases, which post later, so by date its balances don't add up (_import_part). ''
+    when they agree, or there's nothing to compare.
+
+    Worked out once the import is done (service._import_one): its rows in, and the account's balance
+    adjustment worked out again (Inbox.check_balance). Before that, "the app has" left out what the
+    file's own rows change about that day (issue #138)."""
+    if result.stated_balance is None:
         return ""
-    day = day_before(balance["date"])
-    ours, theirs = ledger.account_balance(conn, account_id, day), balance["sign"] * balance["opening"]
+    day, theirs, words = result.stated_balance
+    ours = ledger.account_balance(conn, result.account_id, day)
     if ours is None or ours == theirs:
         return ""
-    def money(cents):
-        return f"{'-' if cents < 0 else ''}${abs(cents) / 100:,.2f}"
-    month, number = int(day[5:7]), int(day[8:])
-    when = f"{('Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec')[month - 1]} {number}"
-    return f"This file's balance on {when} was {money(theirs)}; the app has {money(ours)}"
+    return words.format(theirs=money(theirs), day=short_day(day), ours=money(ours))
 
 
 def csv_account(conn, layout_id, key, rows, balance):
@@ -786,9 +795,11 @@ class Result:
     balance_note: str = ""
     import_id: int = None
     new_ids: list = field(default_factory=list)  # for the inbox
+    stated_balance: tuple = None  # (day, cents, words): a balance the file states for a day, compared with the
+                                  # app's once the import is done (stated_balance_note)
 
     def as_dict(self):
-        return {k: v for k, v in self.__dict__.items() if k != "new_ids"}
+        return {k: v for k, v in self.__dict__.items() if k not in ("new_ids", "stated_balance")}
 
 
 def find_account(conn, hint, rows=(), fps=()):
@@ -1044,12 +1055,14 @@ def _import_part(conn, fmt, part, filename, sha, archived_path, account_id=None,
                          (acct["anchor_date"], acct["anchor_balance"], acct["anchor_source"], as_of, balance, import_id))
             if not checked and ours is not None and ours != balance:
                 log.info("%s: balance on %s corrected from the file by %+d cents", acct["name"], as_of, balance - ours)
-        elif ours is not None and ours != balance and not ledger.is_debt(acct["kind"]):
+        elif not ledger.is_debt(acct["kind"]):
             # An older file's balance, by date: not for a card, whose files bring charges dated before they posted.
-            result.balance_note = f"The file says the balance was {money(balance)} on {short_day(as_of)}; the app has {money(ours)}"
-    if notes:
-        result.balance_note = ". ".join([*notes, result.balance_note] if result.balance_note else notes)
-        log.info("%s: %s", filename, result.balance_note)
+            result.stated_balance = (as_of, balance, OLDER_BALANCE)
+    if part.opening and not ledger.is_debt(acct["kind"]):
+        # A set-up CSV's balance before its first row, by date: not for a card, whose CSVs date purchases, which post
+        # later (its balance moves as they post).
+        result.stated_balance = (*part.opening, CSV_OPENING)
+    result.balance_note = ". ".join(notes)
     return result
 
 
