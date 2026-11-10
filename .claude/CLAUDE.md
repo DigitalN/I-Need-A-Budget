@@ -53,7 +53,7 @@ quit normally, at the first launch of 1.4.0 (no file named in meta yet), or afte
 newest was deleted by hand.
 
 To reproduce without touching the user's data: `INAB_DATA_DIR=<tmp folder>` (logs go to
-`<tmp folder>/Logs/`, backups to `<tmp folder>/I Need A Budget Backups/`), and `INAB_TODAY=2026-10-12` to pin "today". To see the interface,
+`<tmp folder>/Logs/`, backups to `<tmp folder>/I Need A Budget Backups/`), and `INAB_TODAY=2026-10-12` to pin "today" (an account added then is added that day: `util.stamp`). To see the interface,
 run the dev preview (`python3 scripts/preview.py`, or the `preview` entry in
 `.claude/launch.json`) and open it in the browser pane: it's the real page driving the
 real engine over localhost. Claude's shell can't screenshot the app's own window.
@@ -122,7 +122,8 @@ All in `Application Files/`:
   takes it out**, from every page (the Transactions page and the transaction pop-up too).
   It asks learn.py for suggestions and subscriptions.py for the recurring-charge rules;
   service.py wraps each call in its undo step. `scripts/tests/test_inbox.py` drives it directly.
-- `transfers.py`: pairing the two halves of a transfer between own accounts, for the inbox.
+- `transfers.py`: pairing the two halves of a transfer between own accounts, for the inbox
+  (which adds the other half in an account kept by hand: see Key rules).
 - `subscriptions.py`: detection (steady rhythm; same price, or a once-a-month bill that
   varies), tracking with a name, category, price type and optional end date, price-change
   questions, "charged you again" alerts (after cancelling or after the end date, at any price). It links
@@ -186,9 +187,9 @@ All in `Application Files/`:
   file's own balance is only compared by date, in its note (chequing and savings). What's left waits in
   the Inbox as a **balance adjustment** (hint `adjustment`, payee "Balance adjustment") dated the
   newest balance's date, so the budget's starting balance stays put: no guess, never in Accept
-  all, never a transfer's other half or a copy of a bank's row (`transfers.find_counterpart`,
-  the importer's and `cross_kind_pairs`' matching skip it; the one exception is below, for Check
-  balance…'s). It's worked out from scratch after
+  all, never a transfer's other half or a copy of a bank's row (`transfers.find_counterpart` and
+  `make_transfer`, the importer's and `cross_kind_pairs`' matching skip it; the one exception is
+  below, for Check balance…'s). It's worked out from scratch after
   every import into the account, Remove import and a merge (`Inbox.check_balance`): it shrinks,
   or goes, as the missing transactions arrive, and Remove import puts it back. Once you've
   categorized it, it's yours: when its money arrives, the app's new one cancelling it out asks
@@ -242,6 +243,21 @@ All in `Application Files/`:
   pairs with it (a half arriving for one you categorized waits in the inbox: "Looks like
   the other half of…"; Transfer pairs them). Not a transfer sends both halves back to
   wait, never paired again.
+- **A transfer with an account kept by hand gets its other half from the app** (issue #75,
+  [ADR 0006](../docs/adr/0006-the-other-half-of-a-transfer-kept-by-hand.md)). Kept by hand: the
+  Wallet, or any account no file has brought transactions to (`ledger.kept_by_hand`: no import,
+  no row from a file, no `account_sources` key). Marking a transfer with one (Transfer…, from
+  either side) pairs it with the opposite amount there within 10 days, else adds that half
+  (`Inbox.mark_transfer`): a transaction added by hand, paired, yours, hint `added_half`, the
+  same payee and date; one ⌘Z removes both, no question first; the toast says "added to
+  Wallet". It only exists because of the transfer, so whatever ends the transfer takes it away
+  (`Inbox._let_go`): Not a transfer from either side ("removed from Wallet"), a category or a split
+  on the other half, marking that one with another account, deleting it or removing its import, a
+  merge putting both in one account. Deciding about the half itself (a category, a split, another
+  other half) makes it an ordinary one of yours (`_adopt`); the bank's row taking its place (the
+  account's first file, `importer.MANUAL_DAYS`) makes it the bank's. Accounts that get files wait
+  for theirs, and a closed account gets nothing new. The app's own guesses (an import's "its
+  other half isn't imported yet") still wait.
 - **`reason` is only text to show; no code reads it back.** "Charged you again",
   "Matched to X (similar name)" and "You sent this back" are worked out each time
   (`subscriptions.charged_when_it_shouldnt`, `payee_keys.how = 'similar'`, `by_you`). A
@@ -319,7 +335,17 @@ on the Budget page; it was "Needs", which the maintainer read as the budgeted am
 the average of what a category actually spent in the 3/6/12 whole months before a month
 (`budget.usual_spending`: from every month with data for all accounts, before the budget
 start too, and from the category's own first spending, so a new bill isn't averaged
-with months it didn't exist).
+with months it didn't exist). **A new account doesn't count** there (`Figures.coverage`,
+issue #83): one whose first transaction is within a month of when it was added
+(`accounts.created_at`), or later, has no older history to miss, so Usual, the Dashboard's
+whole months and its "above usual" marks stay. That's one added after the budget was set up,
+or one kept by hand whenever it was added (decided 2026-11-09: no download can be missing from
+the Wallet, so the half #75 adds to an empty one doesn't hide every Usual). Onboarding's
+accounts that get files always count (a card with a month downloaded really is missing
+history): `finish_onboarding` keeps the newest account as meta `last_onboarding_account`, and
+a budget set up before 1.4.0 has every account it had then counted as onboarding's
+(`db._migrate`, written once). While setting up, every account counts. An old account added
+late with only recent transactions counts as new (the accepted cost).
 
 ## Releasing
 
@@ -440,11 +466,15 @@ Don't undo these without asking:
   grouped together. Categorizing one teaches the app and re-checks the rest of that
   payee, **except**:
   - **"One at a time"** on a group means exactly that: categorizing one never
-    categorizes the others (`categorize(..., recheck_payee=False)`).
+    categorizes the others (`categorize(..., recheck_payee=False)`), not even a recurring
+    charge's other charges: it still learns the category, which they then have as their
+    suggestion and guess (issue #63). The inbox's way, they follow it (`Inbox._follow`).
+    They're still the app's, so the next re-check (the next launch, an import) puts them in
+    it, as it does with any payee's leftovers it's sure of (the maintainer's call, 2026-11-09).
   - **Outside the inbox** (the Transactions page, the transaction pop-up, the
-    "Categorized automatically" list) a category change changes only that transaction:
-    no payee re-check (the maintainer's call: a mixed payee like a warehouse store, food
-    one week and household the next, must stay as they put it).
+    "Categorized automatically" list) a category change changes only that transaction,
+    the same way: no payee re-check (the maintainer's call: a mixed payee like a warehouse
+    store, food one week and household the next, must stay as they put it).
   - **A payee is just a name; e-transfers start with Always ask on**
     ([ADR 0001](../docs/adr/0001-payee-is-just-a-name.md)). Anyone you e-transfer with
     gets Always ask when first seen, so their e-transfers are never categorized without
@@ -627,8 +657,8 @@ Don't undo these without asking:
   **Net worth** (a bar per month-end: cash above zero, owed below, the net worth line;
   YNAB's style, the maintainer's pick over a daily line; this month's figure in the
   header) and **In and out** (Income and Spending bars per month, the table's figures).
-  Both show the months chosen; a month before every account has data is faded with "Not
-  every account has data" in its tooltip (Net worth once started at that month, so an
+  Both show the months chosen; a month before every account has data (a new one aside: see
+  Usual) is faded with "Not every account has data" in its tooltip (Net worth once started at that month, so an
   account added recently made every months choice look the same). Then **Spending**: Income, total
   spending, and the category groups in Budget page order (closed every time the page
   opens; hidden categories only if they spent), months as columns. Figures are Spent's. A whole month at least **$25 and 25%**

@@ -32,7 +32,8 @@ this is enforced in one place.
   over, and it goes, or stays as what that file doesn't explain. Once you've categorized it,
   it's yours: when its money arrives, the Inbox asks before removing it (issue #137, decided
   2026-11-09).
-- Not a transfer sends both halves back, and the app never pairs them again.
+- Not a transfer sends both halves back, and the app never pairs them again. A half the app
+  added for a transfer with an account kept by hand goes instead (docs/adr/0006).
 - A transaction you sent back is its own inbox item, outside its payee's group and
   outside Accept all, still with suggestions.
 - The re-check only changes inbox items that aren't yours, and never a recurring charge's
@@ -41,7 +42,11 @@ this is enforced in one place.
 - A category change outside the inbox changes only that transaction: no re-check of its
   payee (a mixed payee like a warehouse store, food one week and household the next,
   must stay as you put it). In the inbox, categorizing one still re-checks its payee
-  unless you chose One at a time.
+  unless you chose One at a time. Either way, a recurring charge still learns its category
+  from the one you categorize, but its other waiting charges follow only the inbox's way;
+  otherwise they keep waiting, with that category as their suggestion (issue #63, decided
+  2026-11-08). They're still the app's, so the next re-check puts them in that category, as
+  it does with any payee's leftovers it's sure of (decided 2026-11-09).
 - "Charged you again" and "Matched to … (similar name)" are worked out each time from the
   recurring charge and the payee match, not kept as text. `reason` is only text to show;
   no code reads it.

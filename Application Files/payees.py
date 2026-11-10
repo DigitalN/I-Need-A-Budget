@@ -236,9 +236,13 @@ BANK_ENTRY_HINTS = ("interest", "income", "fee")
 # A balance adjustment (Inbox.check_balance, service.reconcile): the app's, never bank wording. It always
 # waits for you, with no guess, and is never a transfer's other half or a copy of a bank's row.
 ADJUSTMENT = "adjustment"
+# The other half of a transfer you marked with an account kept by hand (the Wallet), which the app added
+# there (Inbox.mark_transfer, issue #75): it only exists because of the transfer, so it goes when the
+# transfer ends. Never bank wording either: the bank's row taking its place (importer) gives it the bank's.
+ADDED_HALF = "added_half"
 # Never a recurring charge, and no Always ask: a bank entry, a transfer between your own accounts, or a
 # balance adjustment.
-TRANSFER_OR_BANK_ENTRY_HINTS = ("transfer",) + BANK_ENTRY_HINTS + (ADJUSTMENT,)
+TRANSFER_OR_BANK_ENTRY_HINTS = ("transfer",) + BANK_ENTRY_HINTS + (ADJUSTMENT, ADDED_HALF)
 
 
 def transaction_hint(desc):

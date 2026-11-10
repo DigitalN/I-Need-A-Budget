@@ -15,7 +15,7 @@ from functools import lru_cache
 import transfers
 from errors import UserError
 from payees import ADJUSTMENT, describe, find_similar, merchant_key, transaction_hint
-from util import add_days, day_before
+from util import add_days, day_before, stamp
 
 CASH_KINDS = ("chequing", "savings", "cash")
 DEBT_KINDS = ("credit_card", "line_of_credit")
@@ -34,12 +34,13 @@ def is_debt(kind):
 # ── accounts ──────────────────────────────────────────────────
 
 def create_account(conn, name, kind, keys=(), last4=None, anchor_date=None, anchor_balance=None, bank=None):
+    """A new account, added now (created_at, on the app's today: util.stamp)."""
     if kind not in ACCOUNT_KINDS:
         raise ValueError(f"Unknown account type: {kind}")
     sort = conn.execute("SELECT COALESCE(MAX(sort), 0) + 1 FROM accounts").fetchone()[0]
     cur = conn.execute(
-        "INSERT INTO accounts (name, kind, bank, last4, anchor_date, anchor_balance, sort) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (name, kind, bank or None, last4, anchor_date, anchor_balance, sort))
+        "INSERT INTO accounts (name, kind, bank, last4, anchor_date, anchor_balance, sort, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (name, kind, bank or None, last4, anchor_date, anchor_balance, sort, stamp()))
     account_id = cur.lastrowid
     for key in keys:
         conn.execute("INSERT OR IGNORE INTO account_sources (key, account_id) VALUES (?, ?)", (key, account_id))
@@ -59,6 +60,23 @@ def used_account_ids(conn):
         "UNION SELECT transfer_account_id FROM transactions WHERE transfer_account_id IS NOT NULL "
         "UNION SELECT c.debt_account_id FROM categories c JOIN budget b ON b.category_id = c.id "
         "WHERE c.debt_account_id IS NOT NULL AND b.assigned != 0")}
+
+
+# An account kept by hand, as SQL about the account `a` (see kept_by_hand).
+KEPT_BY_HAND_SQL = ("(NOT EXISTS (SELECT 1 FROM imports WHERE account_id = a.id) "
+                    "AND NOT EXISTS (SELECT 1 FROM account_sources WHERE account_id = a.id) "
+                    "AND NOT EXISTS (SELECT 1 FROM transactions WHERE account_id = a.id "
+                    "AND (import_id IS NOT NULL OR fingerprint IS NOT NULL OR fitid IS NOT NULL)))")
+
+
+def kept_by_hand(conn, account_id):
+    """Whether no file has ever brought this account's transactions: the Wallet, or any account you
+    keep by hand. Not one a file went into (an import, or a transaction that came from a file) or
+    that a file would find (account_sources): that one gets files, and a transfer's other half
+    comes with them (issue #75). No download can be missing from one kept by hand either
+    (figures.Figures.coverage, issue #83)."""
+    row = conn.execute(f"SELECT {KEPT_BY_HAND_SQL} FROM accounts a WHERE a.id = ?", (account_id,)).fetchone()
+    return bool(row and row[0])
 
 
 def account_by_key(conn, keys):

@@ -515,8 +515,8 @@ def test_the_dashboard(app):
     call(app, "save_settings", {"dashboard_months": 3})  # the months you chose come back
     assert [m["month"] for m in call(app, "dashboard")["spending"]["months"]][0] == "2026-07"
 
-    # A card that only has October: Net worth still follows the months chosen, and the
-    # months before it are marked as not every account having data.
+    # A card added now that only has October: Net worth still follows the months chosen. It's a new
+    # card, not one missing its history (issue #83), so every month is still a whole one.
     call(app, "import_files", [str(write(app.test_downloads, CARD_FILE, card_csv([
         ("10/03/2026", "SAMPLE GROCER CALGARY AB", "-40.00", "Groceries")])))])
     card = next(a for a in call(app, "accounts") if a["kind"] == "credit_card")
@@ -524,5 +524,14 @@ def test_the_dashboard(app):
     for months, first in ((3, "2026-07"), (6, "2026-06"), ("all", "2026-06")):
         nw = call(app, "dashboard", months)["net_worth"]
         assert nw["months"] == months_between(first, "2026-10")
-        assert nw["complete"] == [False] * (len(nw["months"]) - 1) + [True]
+        assert nw["complete"] == [True] * len(nw["months"])
         assert nw["owed"] == [0] * (len(nw["months"]) - 1) + [4000]  # nothing owed before it
+    # Its next file goes back to August: it had history after all, and the months before August are
+    # marked as not every account having data.
+    call(app, "import_files", [str(write(app.test_downloads, CARD_FILE.replace(".CSV", "-2.CSV"), card_csv([
+        ("08/14/2026", "SAMPLE ARCADE CALGARY AB", "-9.00", "Entertainment"),
+        ("10/03/2026", "SAMPLE GROCER CALGARY AB", "-40.00", "Groceries")])))])
+    for months, first in ((3, "2026-07"), (6, "2026-06")):
+        d = call(app, "dashboard", months)
+        whole = [m >= "2026-08" for m in months_between(first, "2026-10")]
+        assert d["net_worth"]["complete"] == whole and [m["complete"] for m in d["spending"]["months"]] == whole

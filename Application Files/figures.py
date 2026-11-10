@@ -58,9 +58,25 @@ class Figures:
     @cached_property
     def coverage(self):
         """The first month every account has data for: whole months from here on count
-        towards Usual."""
-        firsts = [r[0] for r in self.conn.execute("SELECT MIN(date) FROM transactions GROUP BY account_id")]
-        return max(month_of(d) for d in firsts) if firsts else self.current
+        towards Usual, the Dashboard's months and its "above usual" marks. A new account
+        doesn't count (issue #83): one whose first transaction is within a month of when it
+        was added, or later, has no older history to miss. That's one added after the budget
+        was set up (after onboarding's, meta `last_onboarding_account`), or one kept by hand
+        whenever it was added: no download can be missing from the Wallet (decided
+        2026-11-09). One from onboarding that gets files always counts: a card with a month
+        downloaded really is missing its history. So does every account while the budget is
+        being set up. With only new accounts, every month since the first transaction is a
+        whole one."""
+        row = self.conn.execute("SELECT value FROM meta WHERE key = 'last_onboarding_account'").fetchone()
+        firsts = self.conn.execute(
+            f"SELECT MIN(t.date) AS first, ((a.id > :last OR {ledger.KEPT_BY_HAND_SQL}) "
+            "AND MIN(t.date) >= date(a.created_at, '-1 month')) AS new "
+            "FROM transactions t JOIN accounts a ON a.id = t.account_id GROUP BY a.id",
+            {"last": int(row["value"]) if row else None}).fetchall()
+        old = [month_of(r["first"]) for r in firsts if row is None or not r["new"]]
+        if old:
+            return max(old)
+        return min(month_of(r["first"]) for r in firsts) if firsts else self.current
 
     @cached_property
     def _roles(self):
@@ -320,7 +336,7 @@ class Figures:
         """Cash, what's owed and net worth (cash − owed) at the end of each month (this
         month: so far), from every account that has a balance, closed ones included. Before
         an account's first transaction its balance is the one it started with, so a month
-        before every account has data isn't `complete`."""
+        before every account has data isn't `complete` (a new account aside: see coverage)."""
         known = [a for a in self._accounts if a["anchor_date"]]
         out = {"months": months, "complete": [m >= self.coverage for m in months], "cash": [], "owed": [], "net": []}
         for m in months:

@@ -15,13 +15,14 @@ TODAY = "2026-10-12"
 
 
 class Budget:
-    """A throwaway database with a chequing account, a card and a few categories."""
+    """A throwaway database with a chequing account, a card and a few categories. Both get files
+    (their rows are added as an import adds them), so neither is kept by hand (issue #75)."""
 
     def __init__(self, path):
         self.db = Database(path)
         self.c = self.db.conn
-        self.chequing = ledger.create_account(self.c, "Chequing", "chequing")
-        self.card = ledger.create_account(self.c, "Mastercard", "credit_card")
+        self.chequing = ledger.create_account(self.c, "Chequing", "chequing", keys=("number:sample:0001",))
+        self.card = ledger.create_account(self.c, "Mastercard", "credit_card", keys=("number:sample:0002",))
         group = self.c.execute("INSERT INTO category_groups (name, sort) VALUES ('Everyday', 1)").lastrowid
         self.cat = {name: self.c.execute("INSERT INTO categories (group_id, name) VALUES (?, ?)", (group, name)).lastrowid
                     for name in ("Food", "Household", "Fun Money", "Subscriptions")}
@@ -225,14 +226,65 @@ def test_new_price_follows_the_charge_and_categorizes_it_as_yours(b):
     assert b.c.execute("SELECT amount FROM subscriptions WHERE id = ?", (sub,)).fetchone()[0] == 3899
 
 
-def test_a_recurring_charge_learns_its_category_and_its_waiting_charges_follow(b):
-    charges = [b.add(b.card, f"2026-0{m}-24", -3850, "SAMPLE PAYPLAN TORONTO ON") for m in (7, 8, 9)]
-    subscriptions.create(b.c, b.get(charges[0])["payee_id"], "Couch", 3850)
+def _couch(b, months=(7, 8, 9)):
+    """Three charges of a recurring charge with no category yet, waiting in the inbox."""
+    charges = [b.add(b.card, f"2026-0{m}-24", -3850, "SAMPLE PAYPLAN TORONTO ON") for m in months]
+    sub = subscriptions.create(b.c, b.get(charges[0])["payee_id"], "Couch", 3850)
     b.inbox.arrive(charges)
     assert b.waiting() == charges  # no category to go to yet
-    out = b.inbox.categorize([charges[0]], b.cat["Household"])  # outside the inbox: still learnt
+    return sub, charges
+
+
+def _category_of(b, sub):
+    return b.c.execute("SELECT category_id FROM subscriptions WHERE id = ?", (sub,)).fetchone()[0]
+
+
+def test_a_recurring_charge_learns_its_category_and_its_waiting_charges_follow_the_inbox_way(b):
+    sub, charges = _couch(b)
+    out = b.inbox.categorize([charges[0]], b.cat["Household"], recheck_payee=True)
     assert out.also == 2 and b.waiting() == []
     assert [b.get(i)["by_you"] for i in charges] == [1, 0, 0]
+    assert _category_of(b, sub) == b.cat["Household"]
+
+
+def test_one_at_a_time_on_a_recurring_charge_leaves_its_other_charges_waiting(b):
+    """Issue #63: One at a time categorized the others when the payee is a recurring charge. It
+    still learns the category, which its other charges then have as their suggestion and guess."""
+    sub, charges = _couch(b)
+    out = b.inbox.categorize([charges[0]], b.cat["Household"], recheck_payee=False)
+    assert out.also == 0 and b.waiting() == charges[1:]
+    assert _category_of(b, sub) == b.cat["Household"]
+    for i in charges[1:]:
+        item = b.item(i)
+        assert item["suggestions"][0]["id"] == item["guess"] == b.cat["Household"]  # one click, or Accept all
+    assert b.inbox.accept_all(charges[1:]).categorized == 2 and b.waiting() == []
+
+
+def test_outside_the_inbox_a_recurring_charge_learns_but_only_that_transaction_changes(b):
+    """The Transactions page and the transaction pop-up (Inbox.categorize's default)."""
+    sub, charges = _couch(b)
+    out = b.inbox.categorize([charges[1]], b.cat["Household"])
+    assert out.also == 0 and b.waiting() == [charges[0], charges[2]]
+    assert _category_of(b, sub) == b.cat["Household"]
+
+
+def test_one_at_a_time_on_a_group_that_mixes_two_recurring_charges(b):
+    """One payee billing two things (two recurring charges, told apart by price), all four charges
+    waiting as one group. One at a time on one charge: only it is categorized, and only its recurring
+    charge learns. The inbox's way on the other then categorizes the rest, each where its own goes."""
+    music = [b.add(b.card, f"2026-0{m}-04", -1099, "APPLE.COM/BILL TORONTO ON") for m in (8, 9)]
+    storage = [b.add(b.card, f"2026-0{m}-11", -399, "APPLE.COM/BILL TORONTO ON") for m in (8, 9)]
+    payee = b.get(music[0])["payee_id"]
+    subs = [subscriptions.create(b.c, payee, "Music", 1099), subscriptions.create(b.c, payee, "Storage", 399)]
+    b.inbox.arrive(music + storage)
+    groups = {b.item(i)["group"] for i in music + storage}
+    assert len(groups) == 1 and "" not in groups  # one group
+    b.inbox.categorize([music[0]], b.cat["Fun Money"], recheck_payee=False)
+    assert b.waiting() == [music[1]] + storage
+    assert [_category_of(b, s) for s in subs] == [b.cat["Fun Money"], None]
+    b.inbox.categorize([storage[0]], b.cat["Household"], recheck_payee=True)
+    assert b.waiting() == []
+    assert [b.get(i)["category_id"] for i in music + storage] == [b.cat["Fun Money"]] * 2 + [b.cat["Household"]] * 2
 
 
 def test_whats_this_for_is_asked_when_a_charge_goes_to_subscriptions(b):
