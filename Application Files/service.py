@@ -110,6 +110,20 @@ def _rows(cursor):
     return [dict(r) for r in cursor]
 
 
+# What a table's rows are called in "That … no longer exists.".
+_WHAT = {"categories": "category", "category_groups": "group", "accounts": "account", "transactions": "transaction",
+         "subscriptions": "recurring charge", "payees": "payee", "imports": "import"}
+
+
+def _existing(c, table, row_id, columns="id"):
+    """The row a change is aimed at, or a UserError when it's gone (an undo took it away while a
+    pop-over still showed it, say): the change then changes nothing and has no Undo (issue #139)."""
+    row = c.execute(f"SELECT {columns} FROM {table} WHERE id = ?", (row_id,)).fetchone()
+    if row is None:
+        raise UserError(f"That {_WHAT[table]} no longer exists.")
+    return row
+
+
 class BudgetService:
     def __init__(self, db, settings, data_dir, hooks=None):
         self.db = db
@@ -122,18 +136,25 @@ class BudgetService:
     # ── plumbing ──
 
     def dispatch(self, name, args=None):
-        """`step` in the answer: the undo step ⌘Z would reverse after this (None: nothing to undo),
-        so the Undo in a step's toast reverses exactly that step."""
+        """`step` in the answer to a change (a write with an undo label) or an undo: the undo step
+        it made, so the Undo in its toast reverses exactly that step; None when it made none (it
+        changed nothing, it was an undo, or an import cleared undo), so its toast has no Undo (issue
+        #139: the step ⌘Z would undo next was then something else you did). A read, or a change
+        that isn't an undo step (a note saved as it's typed), has no `step`."""
         fn = EXPOSED.get(name)
         if fn is None:
             return {"ok": False, "error": f"Unknown request: {name}"}
         try:
+            self.db.begin_request()
             if isinstance(args, dict):
                 result = fn(self, **args)
             else:
                 result = fn(self, *(args or []))
-            step = self.db.undo_step()
-            return {"ok": True, "result": result, "step": step["step"] if step else None}
+            out = {"ok": True, "result": result}
+            made = self.db.steps_made()
+            if made is not None:
+                out["step"] = made[-1] if made else None
+            return out
         except (UserError, importer.ImportError_, csvlayout.LayoutError) as e:  # messages for the person
             return {"ok": False, "error": str(e)}
         except Exception as e:  # anything else is a bug: logged, and no raw Python on the page
@@ -719,26 +740,25 @@ class BudgetService:
         other halves of their transfers are the app's to decide about again (Inbox.ask_again),
         and the account's balance adjustment is worked out again without it."""
         with self.db.write("Remove import") as c:
-            imp = c.execute("SELECT * FROM imports WHERE id = ?", (import_id,)).fetchone()
+            imp = _existing(c, "imports", import_id, "*")
             rows = c.execute("SELECT id, transfer_id FROM transactions WHERE import_id = ?", (import_id,)).fetchall()
             ids = {r["id"] for r in rows}
             others = [r["transfer_id"] for r in rows if r["transfer_id"] and r["transfer_id"] not in ids]
             c.execute("DELETE FROM transactions WHERE import_id = ?", (import_id,))
-            if imp is not None:
-                if imp["anchor_after_date"] is not None:
-                    self._take_back_balance(c, imp)
-                self._take_back_check(c, imp)
-                # A balance adjustment from Check balance… made after this import now comes after the one before it:
-                # the next import can be given this one's number, and a file's balance as new as it still takes it over.
-                c.execute("UPDATE transactions SET after_import = (SELECT MAX(id) FROM imports WHERE account_id = ? "
-                          "AND id < ? AND anchor_after_date IS NOT NULL) WHERE after_import = ?",
-                          (imp["account_id"], import_id, import_id))
+            if imp["anchor_after_date"] is not None:
+                self._take_back_balance(c, imp)
+            self._take_back_check(c, imp)
+            # A balance adjustment from Check balance… made after this import now comes after the one before it:
+            # the next import can be given this one's number, and a file's balance as new as it still takes it over.
+            c.execute("UPDATE transactions SET after_import = (SELECT MAX(id) FROM imports WHERE account_id = ? "
+                      "AND id < ? AND anchor_after_date IS NOT NULL) WHERE after_import = ?",
+                      (imp["account_id"], import_id, import_id))
             c.execute("DELETE FROM imports WHERE id = ?", (import_id,))
             inbox = self._inbox(c)
             inbox.ask_again(others, "Its other half was removed with its import")
-            if imp is not None and imp["account_id"] is not None:
+            if imp["account_id"] is not None:
                 inbox.check_balance(imp["account_id"])
-            name = imp["filename"] if imp is not None else "the file"
+            name = imp["filename"]
             self.db.big_step(f"The import of {name} comes back." if not ids else
                              f"The transaction from {name} comes back." if len(ids) == 1 else
                              f"The {len(ids)} transactions from {name} come back.")
@@ -884,6 +904,7 @@ class BudgetService:
     def rename_group(self, group_id, name):
         name = _clean_name(name)
         with self.db.write(f"Rename group to {name}") as c:
+            _existing(c, "category_groups", group_id)
             _group_name_free(c, name, group_id)
             c.execute("UPDATE category_groups SET name = ? WHERE id = ?", (name, group_id))
         return True
@@ -891,9 +912,7 @@ class BudgetService:
     @exposed
     def delete_group(self, group_id):
         with self.db.write("Delete group") as c:
-            g = c.execute("SELECT name, role FROM category_groups WHERE id = ?", (group_id,)).fetchone()
-            if g is None:
-                return False
+            g = _existing(c, "category_groups", group_id, "name, role")
             if g["role"] != "normal":
                 raise UserError("This group is needed by the app and can't be deleted.")
             if c.execute("SELECT 1 FROM categories WHERE group_id = ?", (group_id,)).fetchone():
@@ -924,6 +943,7 @@ class BudgetService:
     def set_group_collapsed(self, group_id, collapsed):
         """Folding a group isn't an undo step, and leaves undo as it is."""
         with self.db.write(keep_undo=True) as c:
+            _existing(c, "category_groups", group_id)
             c.execute("UPDATE category_groups SET collapsed = ? WHERE id = ?", (1 if collapsed else 0, group_id))
         return True
 
@@ -968,9 +988,7 @@ class BudgetService:
         """Only a category never used (a typo just made): a used one can only be hidden
         (ledger.used_category_ids)."""
         with self.db.write("Delete category") as c:
-            row = c.execute("SELECT name, debt_account_id FROM categories WHERE id = ?", (category_id,)).fetchone()
-            if row is None:
-                return False
+            row = _existing(c, "categories", category_id, "name, debt_account_id")
             if row["debt_account_id"]:
                 raise UserError("A card's payment category can't be deleted.")
             if int(category_id) in ledger.own_category_ids(c):
@@ -1008,6 +1026,7 @@ class BudgetService:
     @exposed
     def set_category_hidden(self, category_id, hidden):
         with self.db.write("Hide category" if hidden else "Show category") as c:
+            _existing(c, "categories", category_id)
             c.execute("UPDATE categories SET hidden = ? WHERE id = ?", (1 if hidden else 0, category_id))
         return True
 
@@ -1017,6 +1036,7 @@ class BudgetService:
         if value is not None and value < 0:
             raise UserError("A budgeted amount can't be negative.")
         with self.db.write("Change budgeted amount") as c:
+            _existing(c, "categories", category_id)
             c.execute("UPDATE categories SET monthly_budget = ? WHERE id = ?", (value, category_id))
         return True
 
@@ -1072,6 +1092,7 @@ class BudgetService:
         month = _month(month)
         cents = _amount(cents)
         with self.db.write("Assign money") as c:
+            _existing(c, "categories", category_id)
             self._set_assigned(c, month, category_id, cents)
         return self.month(month)
 
@@ -1082,6 +1103,9 @@ class BudgetService:
         if cents <= 0:
             raise UserError("Enter an amount to move.")
         with self.db.write("Move money") as c:
+            for category_id in (from_id, to_id):
+                if category_id:
+                    _existing(c, "categories", category_id)
             if from_id:
                 self._set_assigned(c, month, from_id, self._assigned(c, month, from_id) - cents)
             if to_id:
@@ -1119,6 +1143,7 @@ class BudgetService:
                 cents = int(a["amount"])
                 if cents:
                     cid = int(a["category_id"])
+                    _existing(c, "categories", cid)
                     self._set_assigned(c, month, cid, self._assigned(c, month, cid) + cents)
         return self.month(month)
 
@@ -1228,6 +1253,7 @@ class BudgetService:
         if len(note) > 5000:
             raise UserError("That note is too long.")
         with self.db.write(keep_undo=True) as c:
+            _existing(c, "categories", category_id)
             c.execute("UPDATE categories SET note = ? WHERE id = ?", (note, category_id))
         return True
 
@@ -1339,6 +1365,7 @@ class BudgetService:
     @exposed
     def same_payee(self, txn_id, same):
         with self.db.write("Payee match") as c:
+            _existing(c, "transactions", int(txn_id))
             self._inbox(c).same_payee(int(txn_id), same)
         return self.counts()
 
@@ -1346,6 +1373,8 @@ class BudgetService:
     def link_subscription(self, txn_id, sub_id):
         """This charge is a subscription you track, at a new price."""
         with self.db.write("New subscription price") as c:
+            _existing(c, "transactions", int(txn_id))
+            _existing(c, "subscriptions", int(sub_id))
             self._inbox(c).new_price(int(txn_id), int(sub_id))
         return self.counts()
 
@@ -1356,8 +1385,8 @@ class BudgetService:
         `amount` says otherwise)."""
         name = _clean_name(name)
         with self.db.write(f"Track {name}") as c:
-            txn = c.execute("SELECT * FROM transactions WHERE id = ?", (txn_id,)).fetchone()
-            if txn is None or txn["amount"] >= 0 or txn["payee_id"] is None:
+            txn = _existing(c, "transactions", txn_id, "*")
+            if txn["amount"] >= 0 or txn["payee_id"] is None:
                 raise UserError("Only a charge can start a subscription.")
             category_id = int(category_id) if category_id else txn["category_id"]
             if category_id:
@@ -1376,6 +1405,7 @@ class BudgetService:
         """The person says this charge isn't recurring: don't ask about this payee at this
         price again, and don't suggest it on the Subscriptions page."""
         with self.db.write("Not a subscription") as c:
+            _existing(c, "transactions", txn_id)
             txn = c.execute("SELECT t.*, p.name AS payee_name FROM transactions t JOIN payees p ON p.id = t.payee_id "
                             "WHERE t.id = ?", (txn_id,)).fetchone()
             if txn is None or txn["amount"] >= 0:
@@ -1393,6 +1423,7 @@ class BudgetService:
         """Switches a payee's Always ask on or off. Switched off, its waiting transactions
         the app is now sure about are categorized. Returns how many."""
         with self.db.write("Change payee setting") as c:
+            _existing(c, "payees", payee_id)
             return self._inbox(c).set_always_ask(payee_id, always_ask)
 
     # ── transactions ──
@@ -1477,6 +1508,7 @@ class BudgetService:
     @exposed
     def rename_payee(self, payee_id, name):
         with self.db.write("Rename payee") as c:
+            _existing(c, "payees", payee_id)
             return ledger.rename_payee(c, payee_id, name)
 
     @exposed
@@ -1524,6 +1556,7 @@ class BudgetService:
                     c.execute("UPDATE transactions SET amount = ? WHERE id = ?", (new_amount, txn_id))
             if "transfer_account_id" in changes:
                 if changes["transfer_account_id"]:
+                    _existing(c, "accounts", int(changes["transfer_account_id"]))
                     inbox.mark_transfer(txn_id, int(changes["transfer_account_id"]))
                 else:
                     inbox.not_a_transfer(txn_id)
@@ -1567,6 +1600,7 @@ class BudgetService:
         """Deletes a transaction. Its other half, if it was a transfer, is the app's to
         decide about again."""
         with self.db.write("Delete transaction") as c:
+            _existing(c, "transactions", txn_id)
             others = transfers.unlink(c, txn_id)[1:]
             c.execute("DELETE FROM transactions WHERE id = ?", (txn_id,))
             self._inbox(c).ask_again(others, "Its other half was deleted")
@@ -1625,6 +1659,7 @@ class BudgetService:
         if set(changes) == {"closed"}:
             label = "Close account" if changes["closed"] else "Reopen account"
         with self.db.write(label) as c:
+            _existing(c, "accounts", account_id)
             if "name" in changes:
                 name = _clean_name(changes["name"])
                 if c.execute("SELECT 1 FROM accounts WHERE name = ? COLLATE NOCASE AND id != ?",
@@ -1710,25 +1745,22 @@ class BudgetService:
     def merge_accounts(self, from_id, into_id):
         """`from_id` is the same account as `into_id`: see ledger.merge_accounts()."""
         with self.db.write("Merge accounts") as c:
-            name = c.execute("SELECT name FROM accounts WHERE id = ?", (into_id,)).fetchone()
-            copy = c.execute("SELECT name FROM accounts WHERE id = ?", (from_id,)).fetchone()
+            copy = _existing(c, "accounts", from_id, "name")
+            name = _existing(c, "accounts", into_id, "name")
             moved, dropped, unpaired, asked = ledger.merge_accounts(c, int(from_id), int(into_id))
             inbox = self._inbox(c)
-            inbox.ask_again(unpaired, f"No longer a transfer: both halves are in {name['name'] if name else 'one account'}")
+            inbox.ask_again(unpaired, f"No longer a transfer: both halves are in {name['name']}")
             inbox.ask_again(asked, "Its other half is a duplicate of one you decided about")
             inbox.check_balance(int(into_id))  # the copy's transactions may be what the balance was missing
-            self.db.big_step(f"{copy['name'] if copy else 'The other account'} comes back as an account of its own, "
-                             f"with its transactions.")
+            self.db.big_step(f"{copy['name']} comes back as an account of its own, with its transactions.")
         log.info("Merged account %s into %s: %d moved, %d duplicates dropped", from_id, into_id, moved, dropped)
-        return {"into": name["name"] if name else "", "moved": moved, "dropped": dropped, "counts": self.counts()}
+        return {"into": name["name"], "moved": moved, "dropped": dropped, "counts": self.counts()}
 
     @exposed
     def delete_account(self, account_id):
         """Only an account never used: a used one can only be closed (ledger.used_account_ids)."""
         with self.db.write("Delete account") as c:
-            row = c.execute("SELECT name FROM accounts WHERE id = ?", (account_id,)).fetchone()
-            if row is None:
-                return False
+            row = _existing(c, "accounts", account_id, "name")
             if int(account_id) in ledger.used_account_ids(c):
                 raise UserError(f"{row['name']} has been used, so it can only be closed.")
             c.execute("DELETE FROM accounts WHERE id = ?", (account_id,))
@@ -1761,6 +1793,9 @@ class BudgetService:
                            ends_on=None):
         name = _clean_name(name) if name else None
         with self.db.write("Track subscription") as c:
+            _existing(c, "payees", candidate["payee_id"])
+            if category_id:
+                ledger.check_category(c, int(category_id))
             sub_id = subscriptions.track(c, candidate, kind, name, int(category_id) if category_id else None, pricing,
                                          _end_date(ends_on))
             self._inbox(c).recheck([candidate["payee_id"]])  # its waiting charges go to its category
@@ -1779,7 +1814,8 @@ class BudgetService:
         with self.db.write(f"Add subscription {name}") as c:
             if category_id:
                 ledger.check_category(c, int(category_id))
-            payee_id = payee if isinstance(payee, int) else ledger.get_or_create_payee(c, _clean_name(payee))
+            payee_id = _existing(c, "payees", payee)["id"] if isinstance(payee, int) else \
+                ledger.get_or_create_payee(c, _clean_name(payee))
             sub_id = subscriptions.create(c, payee_id, name, amount, cadence, kind,
                                           int(category_id) if category_id else None, pricing, _end_date(ends_on))
             self._inbox(c).recheck([payee_id])
@@ -1788,12 +1824,14 @@ class BudgetService:
     @exposed
     def dismiss_subscription(self, candidate):
         with self.db.write("Not a subscription") as c:
+            _existing(c, "payees", candidate["payee_id"])
             return subscriptions.dismiss(c, candidate)
 
     @exposed
     def update_subscription(self, sub_id, changes):
         changes = dict(changes or {})
         with self.db.write("Edit subscription") as c:
+            _existing(c, "subscriptions", sub_id)
             for field in ("name", "note", "kind", "cadence"):
                 if field in changes:
                     value = str(changes[field] or "").strip()
@@ -1829,6 +1867,7 @@ class BudgetService:
     @exposed
     def cancel_subscription(self, sub_id, cancelled_on=None):
         with self.db.write("Mark subscription cancelled") as c:
+            _existing(c, "subscriptions", sub_id)
             c.execute("UPDATE subscriptions SET status = 'cancelled', cancelled_on = ? WHERE id = ?",
                       (cancelled_on or self.today(), sub_id))
         return True
@@ -1836,6 +1875,7 @@ class BudgetService:
     @exposed
     def reactivate_subscription(self, sub_id):
         with self.db.write("Mark subscription active") as c:
+            _existing(c, "subscriptions", sub_id)
             c.execute("UPDATE subscriptions SET status = 'active', cancelled_on = NULL WHERE id = ?", (sub_id,))
             self._recheck_subscription(c, sub_id)
         return True
@@ -1843,6 +1883,7 @@ class BudgetService:
     @exposed
     def delete_subscription(self, sub_id):
         with self.db.write("Stop tracking subscription") as c:
+            _existing(c, "subscriptions", sub_id)
             c.execute("DELETE FROM subscriptions WHERE id = ?", (sub_id,))
         return True
 
