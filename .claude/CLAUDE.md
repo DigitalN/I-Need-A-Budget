@@ -205,7 +205,16 @@ All in `Application Files/`:
   the importer's and `cross_kind_pairs`' matching skip it; the one exception is below, for Check
   balance…'s). It's worked out from scratch after
   every import into the account, Remove import and a merge (`Inbox.check_balance`): it shrinks,
-  or goes, as the missing transactions arrive, and Remove import puts it back. Once you've
+  or goes, as the missing transactions arrive, and Remove import puts it back. **After Merge into…
+  the check works as if the copy's files had gone into the account in the first place**, whichever
+  balance wins (issue #147): it carries on from whichever account's check started first, so both
+  accounts' waiting balance adjustments are worked out again as one and a gap neither has stays; a
+  transaction both had counts from the file that brought it first (the one kept takes the copy's
+  import when that came first; one seen in a different kind of file keeps its own, or the next file
+  of its kind would bring it in again); the other account's Check balance… adjustments that the
+  winning balance is as new as are taken over. When the winning balance isn't checked (typed, or a
+  file's from before 1.4), the app's balance adjustments the other account had waiting, dated on or
+  before it, go, as for Set balance (`ledger.adjustments_a_merge_ends`). Once you've
   categorized it, it's yours: when its money arrives, the app's new one cancelling it out asks
   "The $300.00 your balance adjustment stood for has arrived: remove the adjustment?" (Remove it /
   Keep both, `Inbox.remove_adjustment` / `keep_both`). A different balance typed with Set balance
@@ -218,8 +227,9 @@ All in `Application Files/`:
   as new as it comes in after it, which takes it over (`ledger._TAKEN_OVER`): the app's becomes the
   check's own (it goes, or stays as what that file doesn't explain); one you categorized counts as
   kept, so its money arriving asks. The file a check starts from takes over every balance adjustment
-  inside its balance from before it came in (a typed balance, or a file's from before 1.4, replaced; or
-  a check started again by Set balance, Merge into… or Remove import of its file): the app's are worked
+  inside its balance from before it came in (a typed balance, or a file's from before 1.4, replaced; a
+  check started again by Set balance or Remove import of its file; or the other account's at Merge
+  into…): the app's are worked
   out again, and one you categorized counts as kept, so it asks the same way (`ledger._IN_START`). The
   bank's row of the same amount
   within 3 days still takes its place as for a transaction you added by hand, keeping your category,
@@ -459,7 +469,9 @@ Don't undo these without asking:
   type" (editable, and Edit… changes name and bank any time); existing ones keep theirs.
 - **An account imported twice** is flagged (Inbox and Accounts) and fixed with Merge
   into…: copies dropped (keeping your categories, notes, splits, transfers, bank IDs), the
-  rest moved, undoable.
+  rest moved, undoable. The newer balance stays (on the same day, the one an import would
+  keep: a file's over a typed one, the later download), and the balance check carries on as
+  if the copy's files had gone into the account in the first place (issue #147).
 - **A used category or account can only be hidden or closed**, never deleted (deleting
   one sent its transactions back to the inbox and took its assigned money with it). No
   Merge into… for categories either (the maintainer's call, issue #29). Deleting a

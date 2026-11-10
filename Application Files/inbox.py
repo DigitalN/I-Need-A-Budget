@@ -224,11 +224,15 @@ class Inbox:
                                 import_id or diff.current)).lastrowid
         return before, diff.waiting, len(self._arrived_for(self._txn(txn_id)))
 
-    def drop_adjustments(self, account_id):
+    def drop_adjustments(self, account_id, ids=None):
         """A balance you typed stands for everything (service.set_balance): the app's balance
-        adjustments waiting for the account go (issue #137). One you kept stays (docs/adr/0005)."""
+        adjustments waiting for the account go (issue #137). One you kept stays (docs/adr/0005).
+        `ids`: only those (Merge into…: ledger.adjustments_a_merge_ends, issue #147)."""
+        if ids is not None and not ids:
+            return
+        only = f" AND id IN ({','.join('?' * len(ids))})" if ids else ""
         self.conn.execute("DELETE FROM transactions WHERE account_id = ? AND hint = ? AND by_you = 0 "
-                          "AND status = 'review'", (account_id, ADJUSTMENT))
+                          f"AND status = 'review'{only}", (account_id, ADJUSTMENT, *(ids or ())))
 
     def _adjustment_reason(self, account_id, diff):
         """Why a balance adjustment waits: what the bank's balance says, and where a download may be missing."""
