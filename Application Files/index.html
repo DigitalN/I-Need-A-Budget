@@ -642,7 +642,7 @@ async function drawPanelAgain() {
   const p = openPanel;
   if (!p || $('#dlg').open) return;
   const a = document.activeElement, inside = !!a && p.el.contains(a);
-  const again = { scroll: p.el.scrollTop, box: inside ? a.id : '',
+  const again = { scroll: p.el.scrollTop, box: inside ? a.id : '', text: inside ? a.value : '',
     start: inside ? (a.selectionStart ?? null) : null, end: inside ? (a.selectionEnd ?? null) : null };
   await p.close();
   await p.open(again);
@@ -653,6 +653,9 @@ function placeIn(dr, again) {
   dr.scrollTop = again.scroll;
   const box = again.box && dr.querySelector('#' + CSS.escape(again.box));
   if (!box) return;
+  // Nothing saves Move money's amount: what you'd typed goes back. (The other boxes were saved as it
+  // closed and are drawn from that: Budgeted's +50 put back as typed would be added twice.)
+  if (box.id === 'move-amount') box.value = again.text;
   box.focus({ preventScroll: true });
   if (again.start !== null && box.setSelectionRange) box.setSelectionRange(again.start, again.end);
 }

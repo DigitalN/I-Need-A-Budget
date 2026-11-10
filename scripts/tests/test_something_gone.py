@@ -78,6 +78,7 @@ CHANGES = [  # (request, its arguments given the made-up budget `b`, what's gone
     ("merge_accounts", lambda b: [GONE, b["acct"]], "account"),
     ("merge_accounts", lambda b: [b["acct"], GONE], "account"),
     ("set_balance", lambda b: [GONE, 100000], "account"),
+    ("update_transaction", lambda b: [b["txn"], {"transfer_account_id": GONE}], "account"),
     ("delete_transaction", lambda b: [GONE], "transaction"),
     ("update_transaction", lambda b: [GONE, {"note": "Lunch"}], "transaction"),
     ("not_a_subscription", lambda b: [GONE], "transaction"),

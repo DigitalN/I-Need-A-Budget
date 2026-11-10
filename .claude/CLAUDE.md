@@ -74,8 +74,9 @@ All in `Application Files/`:
   The preview and most tests drive this same class.
 - `db.py`: schema, upgrades, the shared connection behind a lock, **undo** (triggers record
   inverse SQL; `db.write("Label")` makes one undoable step; an update records only the
-  columns it changes, and nothing when it changes none; a write without a label that changes
-  anything clears undo, unless `keep_undo`; `big_step()` marks a step ⌘Z asks about first;
+  columns it changes (compared exactly: a payee renamed by case only counts), and nothing
+  when it changes none; a write without a label that changes anything clears undo, unless
+  `keep_undo`; `big_step()` marks a step ⌘Z asks about first;
   `steps_made()` is the step a request made, for its toast's Undo; see Key rules). Schema is at
   version 10. To change it: raise `SCHEMA_VERSION`,
   add the column to `SCHEMA` *and* an `ALTER TABLE` step in `_migrate` for existing

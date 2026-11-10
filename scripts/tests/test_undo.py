@@ -216,6 +216,41 @@ def test_a_change_that_changed_nothing_has_no_undo(app):
     assert undone["ok"] and undone["step"] is None
 
 
+def _payee(app, txn):
+    return app.db.conn.execute("SELECT payee_id FROM transactions WHERE id = ?", (txn,)).fetchone()[0]
+
+
+def _payee_name(app, payee):
+    return app.db.conn.execute("SELECT name FROM payees WHERE id = ?", (payee,)).fetchone()[0]
+
+
+def test_a_payee_renamed_by_case_only_is_undone(app):
+    """A payee's name is compared without case (COLLATE NOCASE), and so was it in the undo trigger:
+    undoing a rename that only changed the case left the new case (found in the review of #150)."""
+    acct = call(app, "add_account", "SAMPLE Chequing", "chequing", 100000, "2026-10-01")
+    payee = _payee(app, call(app, "add_transaction", acct, "2026-10-05", "sample cafe", -1200)["id"])
+    renamed = app.dispatch("rename_payee", [payee, "Sample Cafe"])
+    assert renamed["ok"] and renamed["step"] is not None
+    call(app, "undo")
+    assert _payee_name(app, payee) == "sample cafe"
+
+
+def test_a_second_case_only_rename_has_its_own_step(app):
+    """Re-casing a payee a second time changed no column the trigger could see, so it made no step:
+    its toast had no Undo, and ⌘Z undid the step before it (the $50.00 assigned to Food)."""
+    ids = categories(app, {"Fun": ["Food"]})
+    acct = call(app, "add_account", "SAMPLE Chequing", "chequing", 100000, "2026-10-01")
+    payee = _payee(app, call(app, "add_transaction", acct, "2026-10-05", "sample cafe", -1200)["id"])
+    call(app, "rename_payee", payee, "Sample Cafe")
+    call(app, "set_assigned", "2026-10", ids["Food"], 5000)
+    renamed = app.dispatch("rename_payee", [payee, "SAMPLE CAFE"])
+    assert renamed["ok"] and renamed["step"] is not None and renamed["step"] == call(app, "undo_step")["step"]
+    call(app, "undo")  # ⌘Z right after it
+    food = app.db.conn.execute("SELECT assigned FROM budget WHERE month = '2026-10' AND category_id = ?",
+                               (ids["Food"],)).fetchone()[0]
+    assert _payee_name(app, payee) == "Sample Cafe" and food == 5000
+
+
 # ── the page: ⌘Z asks for a big step, a toast's Undo doesn't ─────────────────
 
 def _undo_script(body):
@@ -335,7 +370,31 @@ openPanel = popOver();
 await undoStep(7)();
 """))
     assert got["calls"] == [["undo", {"step": 7}]]
-    assert got["drawn"] == ["categories", "page", "close", ["open", {"scroll": 340, "box": "", "start": None, "end": None}]]
+    assert got["drawn"] == ["categories", "page", "close",
+                            ["open", {"scroll": 340, "box": "", "text": "", "start": None, "end": None}]]
+
+
+def test_the_redraw_keeps_an_amount_typed_in_move_money():
+    """Budgeted, Notes and the name are saved as the pop-over closes and drawn from what's saved; Move
+    money's amount isn't saved anywhere, so the redraw put back an empty box (found in the review of #150)."""
+    parts = [re.search(rf"^{p}", PAGE, re.S | re.M).group(0)
+             for p in (r"let openPanel = null;$", r"async function drawPanelAgain\(.*?^}$", r"function placeIn\(.*?^}$")]
+    script = """
+const CSS = { escape: s => s };
+const shown = { '#dlg': { open: false } };
+const $ = s => shown[s] || null;
+const box = (value, start) => ({ id: 'move-amount', value, selectionStart: start, selectionEnd: start,
+  focus() {}, setSelectionRange(a, b) { this.selectionStart = a; this.selectionEnd = b; } });
+const typed = box('50', 2), drawn = box('', 0);
+const document = { activeElement: typed };
+const out = {};
+""" + "\n".join(parts) + """
+openPanel = { el: { scrollTop: 300, contains: el => el === typed }, close: async () => { openPanel = null; },
+  open: async again => { placeIn({ set scrollTop(v) { out.scroll = v; }, querySelector: () => drawn }, again); } };
+(async () => { await drawPanelAgain(); out.value = drawn.value; out.cursor = drawn.selectionStart; console.log(JSON.stringify(out)); })();
+"""
+    got = _run(script)
+    assert (got["scroll"], got["value"], got["cursor"]) == (300, "50", 2)
 
 
 def test_a_pop_over_under_a_pop_up_is_left_for_the_pop_up_to_reopen():

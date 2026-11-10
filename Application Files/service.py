@@ -1552,6 +1552,7 @@ class BudgetService:
                     c.execute("UPDATE transactions SET amount = ? WHERE id = ?", (new_amount, txn_id))
             if "transfer_account_id" in changes:
                 if changes["transfer_account_id"]:
+                    _existing(c, "accounts", int(changes["transfer_account_id"]))
                     inbox.mark_transfer(txn_id, int(changes["transfer_account_id"]))
                 else:
                     inbox.not_a_transfer(txn_id)

@@ -397,7 +397,8 @@ class Database:
         """Recording a step: each change's reverse SQL goes into undo_log. Watching a change made
         without a label: the first change that really changes something marks it (_CHANGED), and
         write() then clears the log. An update that changes no column is neither: a step of only
-        those is no step, so its toast has no Undo (issue #139)."""
+        those is no step, so its toast has no Undo (issue #139). Columns are compared exactly
+        (COLLATE BINARY): a payee's name is NOCASE, and its new case was missed."""
         with self.lock:
             active = "(SELECT active FROM undo_state WHERE id = 1)"
             for table in UNDO_TABLES:
@@ -415,8 +416,9 @@ class Database:
                 either = f"{active} IN ({_RECORDING}, {_WATCHING})"
                 trigger("ins", either, "AFTER INSERT", f"'DELETE FROM {table} WHERE rowid = ' || NEW.rowid")
                 changed = " || ".join(
-                    f"CASE WHEN OLD.{c} IS NOT NEW.{c} THEN ', {c} = ' || quote(OLD.{c}) ELSE '' END" for c in columns)
-                differs = " OR ".join(f"OLD.{c} IS NOT NEW.{c}" for c in columns)
+                    f"CASE WHEN OLD.{c} IS NOT NEW.{c} COLLATE BINARY THEN ', {c} = ' || quote(OLD.{c}) ELSE '' END"
+                    for c in columns)
+                differs = " OR ".join(f"OLD.{c} IS NOT NEW.{c} COLLATE BINARY" for c in columns)
                 trigger("upd", f"({either} AND ({differs}))", "AFTER UPDATE",
                         f"'UPDATE {table} SET rowid = rowid' || {changed} || ' WHERE rowid = ' || OLD.rowid")
                 values = " || ', ' || ".join(f"quote(OLD.{c})" for c in columns)
