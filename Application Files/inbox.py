@@ -232,7 +232,7 @@ class Inbox:
 
     def _adjustment_reason(self, account_id, diff):
         """Why a balance adjustment waits: what the bank's balance says, and where a download may be missing."""
-        gap = ledger.likely_gap(self.conn, account_id, diff.check_from)
+        gap = ledger.likely_gap(self.conn, account_id, diff.span)
         where = (f"a download may be missing between {short_day(gap[0])} and {short_day(gap[1])}" if gap
                  else "a transaction may be missing, or counted twice")
         return (f"By the bank's balance on {short_day(diff.date)}, {money(abs(diff.waiting))} more "

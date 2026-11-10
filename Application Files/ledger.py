@@ -119,7 +119,9 @@ def newest_balance_import(conn, account_id):
 # starting balance stays put (Inbox.check_balance keeps it). It's worked out again from scratch after
 # every import into the account, so it shrinks, or goes, as the missing transactions arrive, and Remove
 # import puts it back the way it was. Older history a file fills in (rows from before the day the starting
-# file covers from) was in the starting balance already, so it doesn't count (balance_difference).
+# file covers from) was in the starting balance already, so it doesn't count (balance_difference). Nor does
+# what happened between the starting file's last day and its balance's day, when it stops before that day (a
+# download of a past date range, whose balance is the bank's on the day it was made): that balance has it.
 #
 # Check balance… doesn't end the check (issue #137). Its balance adjustment stands for what's happened since
 # the newest file's balance, so the check leaves it alone until a file whose balance is as new as it comes in
@@ -135,7 +137,9 @@ class Span:
     check_from: int     # the import the check starts from
     start_balance: int  # its balance ...
     start_date: str     # ... and that balance's date
-    first_day: str      # the first day it covers (issue #136)
+    first_day: str      # the first day it covers (issue #136) ...
+    last_day: str       # ... and the last (issue #146): its balance's date at the latest
+    cash: bool          # chequing or savings, whose transactions are dated the day they go through (not a card's)
     current: int        # the import that brought the newest balance
     balance: int        # the newest balance ...
     date: str           # ... and its date
@@ -157,28 +161,50 @@ _IN_START = ("(((import_id IS NULL AND COALESCE(after_import, 0) < :check_from) 
              "AND date <= :start_date)")
 # The check's own balance adjustments, and those it has taken over.
 _CHECKED = f"account_id = :id AND hint = :hint AND (import_id >= :check_from OR {_TAKEN_OVER} OR {_IN_START})"
+# A bank's transaction t, from a later file's import i, that the balance the check starts from had already, when the
+# file it starts from stops before the day that balance is for (issue #146: a download of a past date range, whose
+# balance is the bank's on the day it was made):
+# - from a later download that ends by that day (made the same day, or another past range inside those days), what's
+#   dated after the starting file's last day, and all of it when it starts after that day (a card's charges are dated
+#   a day or two before they go through);
+# - for chequing and savings, whose transactions are dated the day they go through, what's dated after that last day
+#   and before that balance's day, from any download. On that balance's day itself, it was there (a balance covers its
+#   whole day) until a download that covers that day and ends on it has come in: what went through before that
+#   download is in it, so what a later day's download brings went through after it.
+# What can't be told (a file whose days aren't known) counts.
+_HAD_ALREADY = (
+    "COALESCE(:last_day < :start_date AND ("
+    "(COALESCE(i.covers_to, i.last_date) <= :start_date "
+    "AND (t.date > :last_day OR COALESCE(i.covers_from, i.first_date) > :last_day)) "
+    "OR (:cash AND t.date > :last_day AND t.date < :start_date) "
+    "OR (:cash AND t.date = :start_date AND NOT EXISTS (SELECT 1 FROM imports j WHERE j.account_id = :id "
+    "AND j.id != :check_from AND COALESCE(j.covers_to, j.last_date) = :start_date "
+    "AND COALESCE(j.covers_from, j.first_date) <= :start_date))), 0)")
 
 
 def _span_params(account_id, span):
     return {"id": account_id, "hint": ADJUSTMENT, "check_from": span.check_from, "current": span.current,
-            "date": span.date, "start_date": span.start_date}
+            "date": span.date, "start_date": span.start_date, "first_day": span.first_day,
+            "last_day": span.last_day, "cash": span.cash}
 
 
 def check_span(conn, account_id):
     """What the account's balance check covers, or None when its balance isn't checked (typed, or no file
-    balance to start from yet)."""
-    acct = conn.execute("SELECT anchor_date, anchor_balance, anchor_source, check_from FROM accounts WHERE id = ?",
+    balance to start from yet). The file it starts from covers up to the last day it says (`imports.covers_to`,
+    a Quicken file's DTEND), its balance's date at the latest; when it doesn't say, up to that date."""
+    acct = conn.execute("SELECT kind, anchor_date, anchor_balance, anchor_source, check_from FROM accounts WHERE id = ?",
                         (account_id,)).fetchone()
     if acct is None or acct["anchor_source"] != "file" or acct["check_from"] is None:
         return None
     start = conn.execute("SELECT anchor_after_balance, anchor_after_date, "
-                         "COALESCE(covers_from, first_date, anchor_after_date) AS first_day "
+                         "COALESCE(covers_from, first_date, anchor_after_date) AS first_day, "
+                         "MIN(COALESCE(covers_to, anchor_after_date), anchor_after_date) AS last_day "
                          "FROM imports WHERE id = ?", (acct["check_from"],)).fetchone()
     current = anchor_import(conn, account_id)
     if start is None or start["anchor_after_balance"] is None or current is None:
         return None
     return Span(acct["check_from"], start["anchor_after_balance"], start["anchor_after_date"], start["first_day"] or "",
-                current, acct["anchor_balance"], acct["anchor_date"])
+                start["last_day"], not is_debt(acct["kind"]), current, acct["anchor_balance"], acct["anchor_date"])
 
 
 @dataclass
@@ -213,15 +239,24 @@ def balance_difference(conn, account_id):
     first day is the one it says it covers from (`imports.covers_from`, a Quicken file's DTSTART), else
     its first row's date, else (no rows) its balance's date. Not the first row's date when it says: a
     card file covers the days things posted, so it has charges dated before its first day, and a charge
-    dated before it that posted after its balance comes in a later file that starts on that day too."""
+    dated before it that posted after its balance comes in a later file that starts on that day too.
+
+    Nor is what happened after the starting file's last day, when it stops before its balance's day (issue
+    #146): a download of a past date range has the bank's balance on the day it was made, so that balance has
+    what went through in between. A file's last day is the one it says it covers to (`imports.covers_to`, a
+    Quicken file's DTEND), else its last row's date; the starting file's is its balance's date at the latest,
+    and that date when it doesn't say (check_span). What doesn't count then is _HAD_ALREADY's: a card's
+    charges are dated before they go through, so a card goes by the days its downloads cover, never by a
+    charge's date."""
     span = check_span(conn, account_id)
     if span is None:
         return None
     arrived = conn.execute(
         "SELECT COALESCE(SUM(t.amount), 0) FROM transactions t JOIN imports i ON i.id = t.import_id "
-        "WHERE t.account_id = ? AND t.fingerprint IS NOT NULL AND t.import_id > ? AND (t.import_id <= ? OR i.last_date <= ?) "
-        "AND (t.date >= ? OR COALESCE(i.covers_from, i.first_date) >= ?)",
-        (account_id, span.check_from, span.current, span.date, span.first_day, span.first_day)).fetchone()[0]
+        "WHERE t.account_id = :id AND t.fingerprint IS NOT NULL AND t.import_id > :check_from "
+        "AND (t.import_id <= :current OR i.last_date <= :date) "
+        "AND (t.date >= :first_day OR COALESCE(i.covers_from, i.first_date) >= :first_day) "
+        f"AND NOT {_HAD_ALREADY}", _span_params(account_id, span)).fetchone()[0]
     kept = conn.execute(f"SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE {_CHECKED} "
                         "AND NOT (by_you = 0 AND status = 'review')", _span_params(account_id, span)).fetchone()[0]
     return Difference(span.balance - span.start_balance - arrived - kept, span)
@@ -244,24 +279,34 @@ def kept_adjustments(conn, account_id, span):
         _span_params(account_id, span)).fetchall()
 
 
-def likely_gap(conn, account_id, check_from):
+def likely_gap(conn, account_id, span):
     """(the last day a file covered, the first day the next file covers) for the first stretch of
-    days no file covered from the file the check starts from on: where a download may be missing.
-    None when the files leave no gap."""
-    # A file with a balance covers the days up to its balance's date, even with no transactions on them.
-    spans = conn.execute("SELECT first_date, MAX(last_date, COALESCE(anchor_after_date, last_date)) AS last_date "
-                         "FROM imports WHERE account_id = ? AND first_date IS NOT NULL ORDER BY first_date",
-                         (account_id,)).fetchall()
-    start = conn.execute("SELECT first_date FROM imports WHERE id = ?", (check_from,)).fetchone()
-    if start is None or start["first_date"] is None:
+    days no file covered from the file the check starts from on, or (the last day the files cover,
+    the newest balance's date) when they stop before it: where a download may be missing. None when
+    the files leave no gap. A file covers the days it says (`covers_from` to `covers_to`, a Quicken
+    file's DTSTART and DTEND: issue #146), else from its first transaction to its last one or its
+    balance's date, whichever is later. The file the check starts from covers up to its balance's
+    date, even when it stops before: that balance has what went through by then."""
+    files = conn.execute(
+        "SELECT COALESCE(covers_from, first_date) AS first_day, CASE WHEN id = :start "
+        "THEN MAX(COALESCE(last_date, anchor_after_date), COALESCE(anchor_after_date, last_date)) "
+        "ELSE COALESCE(covers_to, MAX(COALESCE(last_date, anchor_after_date), COALESCE(anchor_after_date, last_date)), "
+        "covers_from) END AS last_day "
+        "FROM imports WHERE account_id = :id AND COALESCE(covers_from, first_date) IS NOT NULL ORDER BY first_day",
+        {"id": account_id, "start": span.check_from}).fetchall()
+    start = conn.execute("SELECT COALESCE(covers_from, first_date) FROM imports WHERE id = ?",
+                         (span.check_from,)).fetchone()
+    if start is None or start[0] is None:
         return None
     covered = None
-    for span in spans:
-        if covered is not None and span["first_date"] > add_days(covered, 1):
-            if covered >= start["first_date"]:
-                return covered, span["first_date"]
+    for file in files:
+        if covered is not None and file["first_day"] > add_days(covered, 1):
+            if covered >= start[0]:
+                return covered, file["first_day"]
             covered = None
-        covered = span["last_date"] if covered is None else max(covered, span["last_date"])
+        covered = file["last_day"] if covered is None else max(covered, file["last_day"])
+    if covered is not None and start[0] <= covered < span.date:
+        return covered, span.date
     return None
 
 
