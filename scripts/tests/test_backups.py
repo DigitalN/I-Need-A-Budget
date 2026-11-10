@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 import backups
-from db import Database
+from db import SCHEMA_VERSION, Database
 
 MAIN = Path(__file__).resolve().parents[2] / "Application Files" / "main.py"
 QUIT = datetime(2026, 11, 8, 14, 32, 5)
@@ -74,6 +74,54 @@ def test_a_backup_copied_back_after_quitting_is_the_budget_you_get(tmp_path):
     db.conn.close()  # without closing the database properly, as the app quits
     shutil.copyfile(old, tmp_path / "budget.db")
     assert [r[0] for r in Database(tmp_path / "budget.db").conn.execute("SELECT name FROM categories")] == ["Groceries"]
+
+
+def test_restoring_a_backup_after_a_crash(tmp_path):
+    """CLAUDE.md's steps: with the app closed, delete budget.db-wal and budget.db-shm, then copy the
+    backup in as budget.db. After a crash the -wal still holds pages that would be mixed in."""
+    db = open_db(tmp_path)
+    add_category(db, "Groceries")
+    good = backups.at_quit(db, datetime(2026, 11, 7, 9, 0, 0))
+    add_category(db, "Rent")
+    crashed = tmp_path / "after a crash"
+    crashed.mkdir()
+    for f in ("budget.db", "budget.db-wal", "budget.db-shm"):  # the files as a crash leaves them
+        shutil.copyfile(tmp_path / f, crashed / f)
+    assert (crashed / "budget.db-wal").stat().st_size > 0
+    (crashed / "budget.db-wal").unlink()
+    (crashed / "budget.db-shm").unlink()
+    shutil.copyfile(good, crashed / "budget.db")
+    restored = open_db(crashed)
+    assert [r[0] for r in restored.conn.execute("SELECT name FROM categories")] == ["Groceries"]
+    assert restored.conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+    assert restored.get_meta("schema_version") == str(SCHEMA_VERSION)
+    made = backups.at_launch(restored, QUIT)  # the budget as restored gets a backup of its own
+    assert made is not None and categories_in(made) == ["Groceries"]
+
+
+class FullDisk:
+    """The database's connection, but VACUUM INTO writes half a file, then finds the disk full."""
+
+    def __init__(self, conn):
+        self._conn = conn
+
+    def execute(self, sql, *args):
+        if sql.startswith("VACUUM INTO"):
+            Path(args[0][0]).write_bytes(b"half a budget")
+            raise sqlite3.OperationalError("database or disk is full")
+        return self._conn.execute(sql, *args)
+
+
+def test_a_full_disk_part_way_through_a_copy_leaves_nothing_under_a_backups_name(tmp_path):
+    db = open_db(tmp_path)
+    add_category(db, "Groceries")
+    db.conn = FullDisk(db.conn)
+    try:
+        assert backups.at_quit(db, QUIT) is None  # tried in the backups folder, then in the data folder
+    finally:
+        db.conn = db.conn._conn
+    assert names(tmp_path / backups.FOLDER_NAME) == [] and names(tmp_path / "Backups") == []
+    assert backups.changed(db)  # so the next launch or quit tries again
 
 
 def test_backups_are_named_with_the_date_and_time():
@@ -220,6 +268,25 @@ def test_the_digest_leaves_out_what_make_keeps_in_meta(tmp_path):
     assert backups.digest(db) == before
     db.set_meta("onboarded", "1")  # anything else in meta is the budget's
     assert backups.digest(db) != before
+
+
+def test_the_digest_sees_the_columns_schemas_9_and_10_added(tmp_path):
+    db = open_db(tmp_path)
+    with db.write() as c:
+        account = c.execute("INSERT INTO accounts (name, kind) VALUES ('Chequing', 'chequing')").lastrowid
+        imported = c.execute("INSERT INTO imports (account_id, filename, sha256, format) "
+                             "VALUES (?, 'made-up.qfx', 'made-up', 'ofx')", (account,)).lastrowid
+        payee = c.execute("INSERT INTO payees (name) VALUES ('SAMPLE CAFE CALGARY AB')").lastrowid
+        txn = c.execute("INSERT INTO transactions (account_id, date, amount, payee_id, status) "
+                        "VALUES (?, '2026-10-01', -500, ?, 'review')", (account, payee)).lastrowid
+    backups.make(db, QUIT)
+    with db.write() as c:
+        c.execute("UPDATE imports SET covers_from = '2026-09-01' WHERE id = ?", (imported,))  # schema 9
+    assert backups.changed(db)
+    backups.make(db, datetime(2026, 11, 8, 15, 0, 0))
+    with db.write() as c:
+        c.execute("UPDATE transactions SET after_import = ? WHERE id = ?", (imported, txn))  # schema 10
+    assert backups.changed(db)
 
 
 def test_a_budget_with_no_backup_file_in_meta_counts_as_changed(tmp_path):
@@ -495,6 +562,39 @@ def test_a_backups_folder_that_cant_be_written_falls_back_to_the_data_folder(tmp
     assert not (tmp_path / "data" / "Backups").exists()
 
 
+def test_the_first_launch_of_1_4_with_documents_refused_then_allowed(tmp_path, caplog):
+    """Don't Allow: the copy before the upgrade and the launch backup wait in the data folder's
+    Backups/ with 1.3.1's, one line in the log each. Allowed later: the next launch moves them all
+    over, and makes no backup."""
+    data, documents = tmp_path / "data", tmp_path / "Documents"
+    folder = documents / backups.FOLDER_NAME
+    documents.mkdir()
+    db = Database(data / "budget.db", backup_dir=folder)
+    add_category(db, "Groceries")
+    db.conn.execute("UPDATE meta SET value = '7' WHERE key = 'schema_version'")  # as 1.3.1 left it
+    db.conn.close()
+    touch(data / "Backups", *OLD)
+    documents.chmod(0o500)
+    try:
+        with caplog.at_level(logging.INFO, logger="inab"):
+            db = Database(data / "budget.db", backup_dir=folder)
+            made = backups.at_launch(db, datetime(2026, 11, 9, 8, 0, 0))
+        assert made == data / "Backups" / "budget-2026-11-09-08-00-00.db"
+        upgrade = [n for n in names(data / "Backups") if n.startswith("budget-before-upgrade-v7-to-v")]
+        assert len(upgrade) == 1 and set(OLD) <= set(names(data / "Backups"))
+        assert not [r for r in caplog.records if r.exc_info]  # lines, not tracebacks
+        warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+        assert len([w for w in warnings if w.startswith("Couldn't save a backup in")]) == 2
+        assert len([w for w in warnings if w.startswith("Moving the old backups failed")]) == 1
+        db.conn.close()
+    finally:
+        documents.chmod(0o700)
+    db = Database(data / "budget.db", backup_dir=folder)
+    assert backups.at_launch(db, datetime(2026, 11, 10, 8, 0, 0)) is None
+    assert names(folder) == sorted(OLD + upgrade + [made.name]) and not (data / "Backups").exists()
+    assert not backups.changed(db)
+
+
 # ── where they go, and every way of quitting ──
 
 def load_main(monkeypatch, home, data=None):
@@ -537,7 +637,37 @@ class FakeNSApp:
         self.terminated = True
 
 
-ROUTES = ["close button", "⌘Q", "Restart now", "quit to install an update"]
+ROUTES = ["close button", "⌘Q", "Quit in the Dock", "Restart now", "quit to install an update",
+          "logging out or shutting down"]
+
+
+class AppleEvent:
+    """The Apple event a quit comes with: logging out, restarting or shutting down gives a reason."""
+
+    def __init__(self, reason):
+        self.reason = reason
+
+    def attributeDescriptorForKeyword_(self, keyword):
+        return self.reason if keyword == int.from_bytes(b"why?", "big") else None
+
+
+def the_mac_asks_to_quit(monkeypatch, app, event):
+    """What macOS does for ⌘Q, Quit in the Dock, logging out and shutting down: it asks the app's
+    delegate (main.py's applicationShouldTerminate_), with the Apple event the quit came with."""
+    AppKit = pytest.importorskip("AppKit")
+    cocoa = pytest.importorskip("webview.platforms.cocoa")
+
+    class Events:
+        @staticmethod
+        def sharedAppleEventManager():
+            return Events()
+
+        def currentAppleEvent(self):
+            return event
+
+    app._install_quit_handler()
+    monkeypatch.setattr(AppKit, "NSAppleEventManager", Events)
+    return cocoa.BrowserView.AppDelegate.alloc().init().applicationShouldTerminate_(None)
 
 
 def start_app(monkeypatch, tmp_path):
@@ -556,25 +686,45 @@ def start_app(monkeypatch, tmp_path):
     return main, app, ns_app
 
 
-def quit_by(route, main, app, ns_app):
-    if route == "close button":  # with no page to ask, the window closes and the app quits
-        assert app._on_closing() is True
-    elif route == "⌘Q":  # the page has saved what you were typing
+def quit_by(route, main, app, ns_app, monkeypatch):
+    import AppKit
+
+    asked = []
+    monkeypatch.setattr(app, "_ask_page_to_quit", lambda: asked.append(route) or False)  # a page that's there
+    if route == "close button":
+        assert app._on_closing() is False and asked  # the page saves what you were typing, then quits
+        main.Api(app).quit()
+        assert ns_app.terminated
+    elif route in ("⌘Q", "Quit in the Dock"):  # the Dock's comes as an Apple event with no reason
+        event = AppleEvent(None) if route == "Quit in the Dock" else None
+        assert the_mac_asks_to_quit(monkeypatch, app, event) == AppKit.NSTerminateCancel
+        assert asked and not app._updater.installs  # nothing until the page answers
         main.Api(app).quit()
         assert ns_app.terminated
     elif route == "Restart now":
         app._restart_into_update()
         assert ns_app.terminated
+    elif route == "logging out or shutting down":  # straight away, without asking the page: the Mac is waiting
+        assert the_mac_asks_to_quit(monkeypatch, app, AppleEvent("logging out")) == AppKit.NSTerminateNow
+        assert not asked
     else:
         app._before_quit()
     app._before_quit()  # asked again while quitting: nothing more
+
+
+def test_the_close_button_with_no_page_to_ask_quits_straight_away(tmp_path, monkeypatch):
+    main, app, ns_app = start_app(monkeypatch, tmp_path)
+    add_category(app._db, "Groceries")
+    assert app._on_closing() is True  # the window closes, and the app quits
+    made = names(main.BACKUP_DIR)
+    assert len(made) == 1 and app._updater.installs == [(False, made)]
 
 
 @pytest.mark.parametrize("route", ROUTES)
 def test_every_way_of_quitting_leaves_a_backup_with_the_latest_changes(route, tmp_path, monkeypatch):
     main, app, ns_app = start_app(monkeypatch, tmp_path)
     add_category(app._db, "Groceries")
-    quit_by(route, main, app, ns_app)
+    quit_by(route, main, app, ns_app, monkeypatch)
 
     made = names(main.BACKUP_DIR)
     assert len(made) == 1 and categories_in(main.BACKUP_DIR / made[0]) == ["Groceries"]
@@ -589,7 +739,7 @@ def test_every_way_of_quitting_with_nothing_changed_makes_no_backup_and_the_upda
     main, app, ns_app = start_app(monkeypatch, tmp_path)
     add_category(app._db, "Groceries")
     earlier = backups.at_quit(app._db, QUIT)  # the last time the app quit
-    quit_by(route, main, app, ns_app)
+    quit_by(route, main, app, ns_app, monkeypatch)
 
     assert names(main.BACKUP_DIR) == [earlier.name]
     relaunch = route == "Restart now"
