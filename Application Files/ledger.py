@@ -147,10 +147,14 @@ class Span:
 # dated after that file's balance).
 _TAKEN_OVER = ("(import_id IS NULL AND COALESCE(after_import, 0) < :current AND date <= :date "
                "AND (COALESCE(after_import, 0) >= :check_from OR date > :start_date))")
-# One from Check balance… that the file the check starts from is as new as, made before that file came in (on an
-# account whose balance wasn't checked yet: a typed one, or a file's from before 1.4): that balance has it, so the
-# check takes it over too. One of the app's goes; one you kept counts as kept, so the Inbox asks before removing it.
-_IN_START = "(import_id IS NULL AND COALESCE(after_import, 0) < :check_from AND date <= :start_date)"
+# A balance adjustment inside the balance the check starts from, from before that file came in: one from Check
+# balance… it's as new as, or one an earlier check made. That's an account whose balance wasn't checked yet (a typed
+# one, or a file's from before 1.4), or a check that started again (Set balance, Merge into…, Remove import of the
+# file it started from). That balance has it, so the check takes it over too: one of the app's is worked out again
+# (one from Check balance… goes), and one you kept counts as kept, so a Keep both pair still cancels out and the Inbox
+# asks before removing one whose money has arrived.
+_IN_START = ("(((import_id IS NULL AND COALESCE(after_import, 0) < :check_from) OR import_id < :check_from) "
+             "AND date <= :start_date)")
 # The check's own balance adjustments, and those it has taken over.
 _CHECKED = f"account_id = :id AND hint = :hint AND (import_id >= :check_from OR {_TAKEN_OVER} OR {_IN_START})"
 

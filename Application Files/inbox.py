@@ -189,7 +189,8 @@ class Inbox:
         import into it (`import_id`), Remove import or a merge. The app's own one waiting in the
         inbox becomes what no transaction explains, dated the newest file balance's date: made when
         there's none, deleted when it comes to nothing. So does one from Check balance… that a file's
-        balance as new as it has taken over (issue #137). One you kept is never changed (docs/adr/0005).
+        balance as new as it has taken over (issue #137), and one an earlier check made inside the
+        balance a check that started again starts from. One you kept is never changed (docs/adr/0005).
         Returns (before, after): what was waiting and what is now, in cents (0: none), or
         (None, None) when the account's balance isn't checked."""
         c = self.conn
@@ -205,10 +206,14 @@ class Inbox:
                 c.execute("DELETE FROM transactions WHERE id = ?", (waiting[0]["id"],))
             return before, 0
         reason = self._adjustment_reason(account_id, diff)
-        if waiting:  # one from Check balance… becomes the check's own
+        if waiting:
+            # One from Check balance…, or from an earlier check, becomes this check's own: it takes this check's
+            # import, so the question about yours shows (_arrived_for).
+            made_by = waiting[0]["import_id"]
+            made_by = made_by if made_by is not None and made_by >= diff.check_from else None
             c.execute("UPDATE transactions SET amount = ?, date = ?, reason = ?, import_id = ?, after_import = NULL "
-                      "WHERE id = ?", (diff.waiting, diff.date, reason,
-                                       import_id or waiting[0]["import_id"] or diff.current, waiting[0]["id"]))
+                      "WHERE id = ?", (diff.waiting, diff.date, reason, import_id or made_by or diff.current,
+                                       waiting[0]["id"]))
         else:
             payee = ledger.get_or_create_payee(c, ledger.ADJUSTMENT_PAYEE, "bank")
             c.execute("INSERT INTO transactions (account_id, date, amount, payee_id, hint, status, reason, import_id) "
