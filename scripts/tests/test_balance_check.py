@@ -892,9 +892,10 @@ def test_keep_both_still_holds_after_set_balance_and_the_next_file(app, monkeypa
 
 
 def test_a_question_waiting_when_a_newer_copy_is_merged_in_counts_once(app, monkeypatch):
-    """The question about yours is still waiting at the merge: its money counts once (#145: a second +$410.00 joins it,
-    and September starts at $640.00)."""
-    _yours_whose_money_arrived(app, monkeypatch)
+    """The question about yours is still waiting at the merge (#145's first commit: a second +$410.00 joined it, and
+    September started at $640.00): its money counts once, and it still asks about yours."""
+    question = _yours_whose_money_arrived(app, monkeypatch)
     _merge_in_a_newer_copy(app, monkeypatch)
-    assert [a["amount"] for a in _adjustments(app) if not a["yours"]] == [41000]
-    assert _start(app) == 105000
+    [waiting] = [a for a in _adjustments(app) if not a["yours"]]
+    assert waiting["amount"] == 41000 and _start(app) == 105000
+    assert (waiting.get("adjustment_question") or {}).get("ids") == question["adjustment_question"]["ids"]
