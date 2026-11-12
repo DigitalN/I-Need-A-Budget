@@ -32,9 +32,12 @@ was using.
   `meta`, issue #153), so a backup carries them and changing one counts as a change for
   backups. A new budget starts with Next month and 3 months. `settings.json` keeps what
   belongs to this Mac (Appearance, Import from Downloads and its folder, updates, the
-  Dashboard's months) and, under `moved_to_the_budget`, what this Mac's budget ran on when
-  the two moved: a backup from before 1.4.1 restored later takes those, and on a Mac that
-  never ran an older version, what a copy without them ran on (This month, 3).
+  Dashboard's months) and, for a copy from before 1.4.1, the two at its top level as they
+  were when they moved, never changed after. 1.4.0 reads them there, so going back a version
+  doesn't switch them either; a backup from before 1.4.1 restored later takes them, and on a
+  Mac that never ran an older version, what a copy without them ran on (This month, 3).
+- Settings a version doesn't know (a later version's) are kept in `settings.json` as they
+  are, so going back a version and forward again loses none.
 - Changing a default reaches only new copies and new budgets. To change what existing
   ones use, change it in the app, or ask the maintainer first: it's their rule.
 - Decided 2026-11-12 (issue #166), with #153's default option.

@@ -299,6 +299,7 @@ def test_a_card_payment_rows_available_is_whats_set_aside_less_what_you_owe(tmp_
         chequing = ledger.create_account(c, "Chequing", "chequing", anchor_date="2026-06-30", anchor_balance=500_000)
         card = ledger.create_account(c, "Card", "credit_card", anchor_date="2026-06-30", anchor_balance=-120_000)
         favour = ledger.create_account(c, "Card B", "credit_card", anchor_date="2026-06-30", anchor_balance=20_000)
+        unknown = ledger.create_account(c, "Card C", "credit_card")  # no balance yet
         group = c.execute("INSERT INTO category_groups (name, sort) VALUES ('Everyday', 1)").lastrowid
         food = c.execute("INSERT INTO categories (group_id, name) VALUES (?, 'Food')", (group,)).lastrowid
         c.execute("INSERT INTO meta (key, value) VALUES ('budget_start', ?)", (START,))
@@ -326,6 +327,10 @@ def test_a_card_payment_rows_available_is_whats_set_aside_less_what_you_owe(tmp_
     view, _ = october({payment[favour]: 5_000})
     assert {k: view["categories"][payment[favour]][k] for k in ("shown", "owed_left")} == {"shown": 25_000, "owed_left": 0}
     assert view["groups"][debt_group]["available"] == -120_000 + 25_000
+    # A card without a balance yet: what you owe isn't known, so it shows what's in the category, and no →.
+    view, _ = october({payment[unknown]: 30_000})
+    assert {k: view["categories"][payment[unknown]][k] for k in ("owing", "not_covered", "shown", "owed_left")} == \
+        {"owing": None, "not_covered": None, "shown": 30_000, "owed_left": 0}
     # A past month goes by the balance at its end.
     with db.write() as c:
         transfer(c, chequing, card, "2026-10-05", 50_000)  # paid $500.00, with $300.00 set aside

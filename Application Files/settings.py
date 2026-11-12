@@ -12,7 +12,8 @@ before 1.4.1 launches, its settings.json is written out whole with the values it
 using: a value it had stays, and one it had no value for keeps what it ran on (`RAN_ON`,
 `BUDGET_RAN_ON`), never a newer default. 1.0.5 made This month the default and copies with
 no Overspending saved went from Next month to This month without a word: that's what this
-rule is for.
+rule is for. Settings this version doesn't know (a later version's) are kept as they are,
+so going back a version and forward again loses none.
 """
 
 import json
@@ -64,10 +65,10 @@ BUDGET_DEFAULTS = {
 # default from 1.0.5 to 1.4.0. Never change these.
 BUDGET_RAN_ON = {"overspending": "this_month", "average_months": 3}
 
-# In settings.json, written once by a copy from before 1.4.1: what its budget ran on when
-# the two settings moved into it. A backup from before then, restored later, takes these.
-MOVED = "moved_to_the_budget"
-_OLD_KEYS = ("overspending", "carry_overspending", "average_months")  # only a file from before 1.4.1 has these
+# A copy from before 1.4.1 keeps the two at settings.json's top level, as they were when they
+# moved into the budget, and never changes them after: 1.4.0 reads them there, and a backup
+# from before 1.4.1 restored later takes them. A copy made since has neither.
+_OLD_KEYS = ("overspending", "carry_overspending", "average_months")  # 1.0.3's switch is written out as Overspending
 
 
 def validate(raw, missing=DEFAULTS):
@@ -111,12 +112,13 @@ class Settings:
         self._path = Path(path)
         self._lock = threading.Lock()
         self._listeners = []
-        self._before = None  # MOVED: what a budget from before 1.4.1 ran on, on this Mac (None: none did)
+        self._before = None  # what a budget from before 1.4.1 ran on, on this Mac (None: none did)
+        self._others = {}    # settings this version doesn't know (a later version's), kept as they are
         self._values = self._load()
 
     def _load(self):
         """A new copy's settings start as DEFAULTS. A copy from before 1.4.1 writes out every
-        setting with the value it was using, and keeps what its budget ran on under MOVED."""
+        setting with the value it was using, the two that moved into the budget included."""
         if not self._path.exists():
             values = dict(DEFAULTS)
             self._write(values)
@@ -129,17 +131,16 @@ class Settings:
             return dict(RAN_ON)
         raw = raw if isinstance(raw, dict) else {}
         values = validate(raw, RAN_ON)
-        if isinstance(raw.get(MOVED), dict):
-            self._before = validate_budget(raw[MOVED], BUDGET_RAN_ON)
-        elif any(key in raw for key in _OLD_KEYS):
+        if any(key in raw for key in _OLD_KEYS):
             self._before = validate_budget(raw, BUDGET_RAN_ON)
+        self._others = {k: v for k, v in raw.items() if k not in DEFAULTS and k not in _OLD_KEYS}
         if raw != self._file(values):
             self._write(values)
             log.info("Wrote out the settings as this copy had them")
         return values
 
     def _file(self, values):
-        return {**values, MOVED: self._before} if self._before else dict(values)
+        return {**self._others, **values, **(self._before or {})}
 
     def _write(self, values):
         self._path.parent.mkdir(parents=True, exist_ok=True)

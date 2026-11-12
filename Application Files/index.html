@@ -910,7 +910,7 @@ async function renderBudget() {
       const pillClass = avail === null ? 'zero' : (short ? 'owed' : (avail < 0 ? 'neg' : (avail > 0 ? 'pos' : 'zero')));
       let monthly;
       if (c.debt_account_id) {
-        monthly = c.owing || c.set_aside ? `<span class="sub-note">${owingText(c.owing, m => `owe ${m}`)} · ${money(c.set_aside)} set aside</span>` : '';
+        monthly = c.owing != null && (c.owing || c.set_aside) ? `<span class="sub-note">${owingText(c.owing, m => `owe ${m}`)} · ${money(c.set_aside)} set aside</span>` : '';
       } else if (c.monthly_budget !== null) {
         monthly = `<span class="monthly num" data-cat="${c.id}">${money(c.monthly_budget)}</span>`;
       } else if (c.usual) {
@@ -920,7 +920,7 @@ async function renderBudget() {
       }
       const overNote = c.overspent_credit ? ` title="${esc(money(c.overspent_credit))} of this was on a card without money in the category: it became debt"` :
         (c.overspent_cash ? ` title="${esc(money(c.overspent_cash))} overspent: ${OVERSPENT_NOTE[view.overspending]}"` :
-        (short ? ` title="${esc(money(-avail))} not set aside yet"` : (c.debt_account_id && avail > 0 ? ` title="${esc(money(avail))} more than you owe"` : '')));
+        (short ? ` title="${esc(money(-avail))} not set aside yet"` : (c.debt_account_id && c.owing != null && avail > 0 ? ` title="${esc(money(avail))} more than you owe"` : '')));
       // Each cell's content is wrapped so the row can fold away while a group is dragged.
       const cell = html => `<div class="cell"><div>${html}</div></div>`;
       rows.push(`<tr class="cat ${c.hidden ? 'hidden-cat' : ''}" data-cat-row="${c.id}">

@@ -8,8 +8,8 @@ import backups
 from db import Database
 from helpers import call
 from service import BudgetService
-from settings import (BUDGET_DEFAULTS, BUDGET_RAN_ON, DEFAULTS, MOVED, RAN_ON, Settings, budget_settings,
-                      validate, validate_budget)
+from settings import (BUDGET_DEFAULTS, BUDGET_RAN_ON, DEFAULTS, RAN_ON, Settings, budget_settings, validate,
+                      validate_budget)
 
 # What a copy from before 1.4.1 has in settings.json when it has saved something since 1.1.1.
 OLD_FILE = {"theme": "dark", "auto_import": False, "downloads_dir": "/tmp/sample downloads",
@@ -68,7 +68,7 @@ def test_an_upgrade_leaves_every_saved_setting_alone(tmp_path):
     app = _launch(tmp_path)
     mine = {k: v for k, v in OLD_FILE.items() if k in DEFAULTS}
     assert app.settings.get() == mine
-    assert _file(tmp_path) == {**mine, MOVED: {"overspending": "carry_over", "average_months": 6}}
+    assert _file(tmp_path) == OLD_FILE  # the two stay where 1.4.0 reads them
     assert call(app, "get_settings") == {**mine, "overspending": "carry_over", "average_months": 6}
     assert call(app, "month", "2026-10")["overspending"] == "carry_over"
     # The next launch changes nothing: it's the budget's now, and this Mac's file stays as it is.
@@ -86,7 +86,7 @@ def test_a_missing_setting_keeps_what_the_copy_was_using(tmp_path):
         {"theme": "system", "auto_import": True, "downloads_dir": "", "update_automatically": True, "average_months": 3}))
     _old_budget(tmp_path)
     app = _launch(tmp_path)
-    assert _file(tmp_path) == {**RAN_ON, MOVED: {"overspending": "this_month", "average_months": 3}}
+    assert _file(tmp_path) == {**RAN_ON, "overspending": "this_month", "average_months": 3}
     assert call(app, "month", "2026-10")["overspending"] == "this_month"
     assert call(app, "get_settings")["dashboard_months"] == 6
 
@@ -100,10 +100,25 @@ def test_the_old_carry_over_switch_is_kept(tmp_path):
         _old_budget(folder)
         app = _launch(folder)
         assert call(app, "get_settings")["overspending"] == rule
-        assert "carry_overspending" not in _file(folder)
+        assert "carry_overspending" not in _file(folder) and _file(folder)["overspending"] == rule
         call(app, "save_settings", {"overspending": "next_month"})
         app.db.close()
         assert call(_launch(folder), "get_settings")["overspending"] == "next_month"
+
+
+def test_going_back_a_version_and_forward_again_changes_no_setting(tmp_path):
+    """After the move, settings.json still has the two where 1.4.0 reads them, as they were, whatever
+    the budget is changed to; and a setting this version doesn't know (a later one's) is kept."""
+    (tmp_path / "settings.json").write_text(json.dumps({**OLD_FILE, "a_later_setting": [1, 2]}))
+    _old_budget(tmp_path)
+    app = _launch(tmp_path)
+    call(app, "save_settings", {"overspending": "next_month", "theme": "light", "a_later_setting": "junk"})
+    assert call(app, "get_settings")["overspending"] == "next_month"
+    written = _file(tmp_path)
+    assert (written["overspending"], written["average_months"]) == ("carry_over", 6)  # what 1.4.0 runs on
+    assert written["theme"] == "light" and written["a_later_setting"] == [1, 2]
+    app.db.close()
+    assert call(_launch(tmp_path), "get_settings")["overspending"] == "next_month"  # the budget's own
 
 
 def test_what_copies_ran_on_never_changes():

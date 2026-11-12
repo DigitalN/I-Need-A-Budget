@@ -280,10 +280,11 @@ All in `Application Files/`:
   takes what it ran on (`RAN_ON`, `BUDGET_RAN_ON`: This month for Overspending, Carry over when
   1.0.3's switch was on), and Overspending and Usual's months move into the budget
   (`settings.move_into_budget`, at every launch for a budget without them). `settings.json`
-  keeps them under `moved_to_the_budget`: a backup from before 1.4.1 restored on that Mac gets
-  those; on a Mac that never ran an older version, This month and 3. Never change `RAN_ON` or
-  `BUDGET_RAN_ON`; a new setting goes into `RAN_ON` with the value that keeps what copies did
-  before it existed.
+  keeps the two at its top level as they were at the move, never changed after: 1.4.0 reads them
+  there if someone goes back a version, and a backup from before 1.4.1 restored on that Mac gets
+  them; on a Mac that never ran an older version, This month and 3. Settings it doesn't know (a
+  later version's) are kept as they are. Never change `RAN_ON` or `BUDGET_RAN_ON`; a new setting
+  goes into `RAN_ON` with the value that keeps what copies did before it existed.
 - **Learning only uses `status = 'done'` transactions** (plus Actual examples). Rows waiting
   in the inbox never teach the app anything, and count in no category: no tentative
   category, Spent/Usual/the budget only count `status = 'done'`

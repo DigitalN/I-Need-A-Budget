@@ -185,7 +185,8 @@ class Figures:
         Available column shows, and a group's `available` adds those up. For a card's payment
         category that's what's set aside less what you owe (issue #166): below zero is what
         isn't set aside yet, zero all of it, above zero more than you owe; it's its Available
-        while that's below zero, overspent like any category's. `owed_left`: what → adds to its
+        while that's below zero, overspent like any category's, and while the card has no
+        balance yet (`owing` None: what you owe isn't known). `owed_left`: what → adds to its
         Assigned to set all of it aside (and cover that overspending), `owed_assigned` the
         Assigned that makes. `overspent`:
         (category, amount) for each one below zero, in budget order, and their total.
@@ -216,13 +217,15 @@ class Figures:
                 row["shown"] = row["available"]
                 if cat["debt_account_id"] in accounts:
                     as_of = last_day(month) if month < self.current else None
-                    owing = -(self._balance(cat["debt_account_id"], as_of) or 0)
+                    balance = self._balance(cat["debt_account_id"], as_of)
+                    owing = None if balance is None else -balance  # None: no balance yet, so not known
                     row["owing"] = owing
                     row["set_aside"] = max(row["available"] or 0, 0)
-                    row["not_covered"] = max(0, owing - row["set_aside"])
+                    row["not_covered"] = None if owing is None else max(0, owing - row["set_aside"])
                     if f:
-                        row["shown"] = row["set_aside"] - owing if row["available"] >= 0 else row["available"]
-                        row["owed_left"] = max(0, max(owing, 0) - row["available"])
+                        known = owing is not None
+                        row["shown"] = row["set_aside"] - owing if known and row["available"] >= 0 else row["available"]
+                        row["owed_left"] = max(0, max(owing, 0) - row["available"]) if known else 0
                         row["owed_assigned"] = row["assigned"] + row["owed_left"]
                 if (row["available"] or 0) < 0:
                     overspent.append((cat["id"], -row["available"]))
