@@ -286,3 +286,51 @@ def test_a_past_months_card_row_owes_what_it_owed_then(app):
     call(app, "add_transaction", card, "2026-10-05", "SAMPLE STORE", -200000, food)
     row = next(x for g in call(app, "month", "2026-08")["groups"] for x in g["categories"] if x["debt_account_id"] == card)
     assert row["owing"] == 0
+
+
+def test_a_card_payment_rows_available_is_whats_set_aside_less_what_you_owe(tmp_path):
+    """Issue #166, made-up: you owe $1,200.00 on the card. Its Available shows what's set aside
+    less that: below zero what isn't set aside yet, zero all of it, above zero more than you owe
+    (and a card in your favour adds its credit). → adds what isn't set aside yet. While it's
+    overspent it shows that, like any category. The Debt Payments group adds up what its rows
+    show; the check under Ready to assign still counts what's set aside as in a category."""
+    db = Database(tmp_path / "b.db")
+    with db.write() as c:
+        chequing = ledger.create_account(c, "Chequing", "chequing", anchor_date="2026-06-30", anchor_balance=500_000)
+        card = ledger.create_account(c, "Card", "credit_card", anchor_date="2026-06-30", anchor_balance=-120_000)
+        favour = ledger.create_account(c, "Card B", "credit_card", anchor_date="2026-06-30", anchor_balance=20_000)
+        group = c.execute("INSERT INTO category_groups (name, sort) VALUES ('Everyday', 1)").lastrowid
+        food = c.execute("INSERT INTO categories (group_id, name) VALUES (?, 'Food')", (group,)).lastrowid
+        c.execute("INSERT INTO meta (key, value) VALUES ('budget_start', ?)", (START,))
+        payment = ledger.payment_categories(c)
+        debt_group = c.execute("SELECT group_id FROM categories WHERE id = ?", (payment[card],)).fetchone()[0]
+
+    def october(assigned, month="2026-10"):
+        with db.write() as c:
+            c.execute("DELETE FROM budget")
+            for cid, cents in assigned.items():
+                c.execute("INSERT INTO budget (month, category_id, assigned) VALUES ('2026-10', ?, ?)", (cid, cents))
+        with db.read() as c:
+            view = Figures(c, TODAY).month(month)
+        return view, {k: view["categories"][payment[card]].get(k) for k in ("available", "shown", "owed_left", "owed_assigned")}
+
+    view, row = october({payment[card]: 30_000})
+    assert row == {"available": 30_000, "shown": -90_000, "owed_left": 90_000, "owed_assigned": 120_000}
+    assert view["categories"][payment[card]]["not_covered"] == 90_000  # the pop-over's Not set aside yet
+    assert view["summary"]["in_categories"] == 30_000 and view["summary"]["off"] == 0  # it's in the bank
+    assert view["categories"][food]["shown"] == view["categories"][food]["available"] == 0
+    assert october({payment[card]: 120_000})[1] == {"available": 120_000, "shown": 0, "owed_left": 0, "owed_assigned": 120_000}
+    assert october({payment[card]: 150_000})[1] == {"available": 150_000, "shown": 30_000, "owed_left": 0,
+                                                   "owed_assigned": 150_000}
+    # A card $200.00 in your favour: what's set aside and the credit are both extra.
+    view, _ = october({payment[favour]: 5_000})
+    assert {k: view["categories"][payment[favour]][k] for k in ("shown", "owed_left")} == {"shown": 25_000, "owed_left": 0}
+    assert view["groups"][debt_group]["available"] == -120_000 + 25_000
+    # A past month goes by the balance at its end.
+    with db.write() as c:
+        transfer(c, chequing, card, "2026-10-05", 50_000)  # paid $500.00, with $300.00 set aside
+    view, row = october({payment[card]: 30_000}, "2026-09")
+    assert row["shown"] == -120_000  # nothing was set aside in September
+    view, row = october({payment[card]: 30_000})
+    assert row == {"available": -20_000, "shown": -20_000, "owed_left": 90_000, "owed_assigned": 120_000}  # overspent
+    assert view["overspent"] == [(payment[card], 20_000)]

@@ -181,7 +181,13 @@ class Figures:
         against: Cash, and `off` when the two don't agree (None before the budget starts).
         `categories` and `groups`: Assigned, Spent ('activity'), Available and the rest, by
         id (before the budget starts only Spent); Usual is from the whole months before
-        `month` (before this month, for this month and later ones). `overspent`:
+        `month` (before this month, for this month and later ones). `shown`: what the
+        Available column shows, and a group's `available` adds those up. For a card's payment
+        category that's what's set aside less what you owe (issue #166): below zero is what
+        isn't set aside yet, zero all of it, above zero more than you owe; it's its Available
+        while that's below zero, overspent like any category's. `owed_left`: what → adds to its
+        Assigned to set all of it aside (and cover that overspending), `owed_assigned` the
+        Assigned that makes. `overspent`:
         (category, amount) for each one below zero, in budget order, and their total.
         `short_later`: later months whose Ready to assign is below zero."""
         end = max(month, self.current)
@@ -207,18 +213,23 @@ class Figures:
                     "usual": budget.usual_spending(history, usual_for, self.coverage, self.usual_months)
                     if not cat["debt_account_id"] else None,
                 }
+                row["shown"] = row["available"]
                 if cat["debt_account_id"] in accounts:
                     as_of = last_day(month) if month < self.current else None
                     owing = -(self._balance(cat["debt_account_id"], as_of) or 0)
                     row["owing"] = owing
                     row["set_aside"] = max(row["available"] or 0, 0)
                     row["not_covered"] = max(0, owing - row["set_aside"])
+                    if f:
+                        row["shown"] = row["set_aside"] - owing if row["available"] >= 0 else row["available"]
+                        row["owed_left"] = max(0, max(owing, 0) - row["available"])
+                        row["owed_assigned"] = row["assigned"] + row["owed_left"]
                 if (row["available"] or 0) < 0:
                     overspent.append((cat["id"], -row["available"]))
                 categories[cat["id"]] = row
                 rows.append(row)
             groups[g["id"]] = {"assigned": sum(x["assigned"] for x in rows), "activity": sum(x["activity"] for x in rows),
-                               "available": sum((x["available"] or 0) for x in rows)}
+                               "available": sum((x["shown"] or 0) for x in rows)}
         summary = None
         if figures:
             cash = self._cash(last_day(month))

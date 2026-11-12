@@ -19,6 +19,7 @@
   --faint: #aeaeb2; --line: rgba(0,0,0,.08); --line-strong: rgba(0,0,0,.14); --hover: rgba(0,0,0,.04);
   --accent: #007aff; --accent-soft: rgba(0,122,255,.12); --pos: #1f9d55; --pos-soft: rgba(31,157,85,.13);
   --neg: #d70015; --neg-soft: rgba(215,0,21,.10); --warn: #b25e00; --warn-soft: rgba(255,149,0,.15);
+  --owed: #a35600;  /* a card's payment category short of what you owe: amber, not red (4.8:1 on --warn-soft) */
   --shadow: 0 1px 2px rgba(0,0,0,.05), 0 0 0 .5px rgba(0,0,0,.06); --pop: 0 10px 30px rgba(0,0,0,.18), 0 0 0 .5px rgba(0,0,0,.1);
   --seg-bg: rgba(0,0,0,.06); --seg-on: #ffffff; --input: #ffffff;
   --series-1: #2a78d6; --series-2: #eb6834;  /* chart series, checked for colour blindness on --card */
@@ -30,6 +31,7 @@
     --faint: #636366; --line: rgba(255,255,255,.08); --line-strong: rgba(255,255,255,.16); --hover: rgba(255,255,255,.05);
     --accent: #0a84ff; --accent-soft: rgba(10,132,255,.2); --pos: #32d74b; --pos-soft: rgba(50,215,75,.16);
     --neg: #ff6961; --neg-soft: rgba(255,105,97,.16); --warn: #ffb340; --warn-soft: rgba(255,179,64,.16);
+    --owed: #ffb340;
     --shadow: 0 0 0 .5px rgba(255,255,255,.08); --pop: 0 10px 30px rgba(0,0,0,.5), 0 0 0 .5px rgba(255,255,255,.12);
     --seg-bg: rgba(255,255,255,.08); --seg-on: #636366; --input: #1c1c1e;
     --series-1: #3987e5; --series-2: #d95926;
@@ -41,6 +43,7 @@
   --faint: #636366; --line: rgba(255,255,255,.08); --line-strong: rgba(255,255,255,.16); --hover: rgba(255,255,255,.05);
   --accent: #0a84ff; --accent-soft: rgba(10,132,255,.2); --pos: #32d74b; --pos-soft: rgba(50,215,75,.16);
   --neg: #ff6961; --neg-soft: rgba(255,105,97,.16); --warn: #ffb340; --warn-soft: rgba(255,179,64,.16);
+  --owed: #ffb340;
   --shadow: 0 0 0 .5px rgba(255,255,255,.08); --pop: 0 10px 30px rgba(0,0,0,.5), 0 0 0 .5px rgba(255,255,255,.12);
   --seg-bg: rgba(255,255,255,.08); --seg-on: #636366; --input: #1c1c1e;
   --series-1: #3987e5; --series-2: #d95926;
@@ -136,6 +139,7 @@ select { padding-right: 24px; }
 .pill.pos { background: var(--pos-soft); color: var(--pos); }
 .pill.neg { background: var(--neg-soft); color: var(--neg); }
 .pill.zero { background: var(--seg-bg); color: var(--muted); }
+.pill.owed { background: var(--warn-soft); color: var(--owed); }  /* still to set aside for a card: not overspending */
 .tag { display: inline-block; border-radius: 4px; padding: 0 6px; font-size: 11px; font-weight: 600; background: var(--seg-bg); color: var(--muted); }
 .tag.warn { background: var(--warn-soft); color: var(--warn); }
 .tag.bad { background: var(--neg-soft); color: var(--neg); }
@@ -899,11 +903,14 @@ async function renderBudget() {
       <td class="r num">${view.before_start ? '' : money(g.available)}</td></tr>`);
     for (const c of collapsed ? [] : g.categories) {
       if (c.hidden && !state.showHidden && !c.assigned && !c.activity && !c.available) continue;
-      const avail = c.available;
-      const pillClass = avail === null ? 'zero' : (avail < 0 ? 'neg' : (avail > 0 ? 'pos' : 'zero'));
+      // A card's payment category shows what's set aside less what you owe (issue #166): below
+      // zero is what isn't set aside yet, in amber, since it isn't overspending (red is, as for any category).
+      const avail = c.shown;
+      const short = c.debt_account_id && avail < 0 && c.available >= 0;
+      const pillClass = avail === null ? 'zero' : (short ? 'owed' : (avail < 0 ? 'neg' : (avail > 0 ? 'pos' : 'zero')));
       let monthly;
       if (c.debt_account_id) {
-        monthly = c.owing ? `<span class="sub-note">${owingText(c.owing, m => `owe ${m}`)}${c.not_covered ? ` · <span class="warn">${money(c.not_covered)} not set aside</span>` : ''}</span>` : '';
+        monthly = c.owing || c.set_aside ? `<span class="sub-note">${owingText(c.owing, m => `owe ${m}`)} · ${money(c.set_aside)} set aside</span>` : '';
       } else if (c.monthly_budget !== null) {
         monthly = `<span class="monthly num" data-cat="${c.id}">${money(c.monthly_budget)}</span>`;
       } else if (c.usual) {
@@ -912,7 +919,8 @@ async function renderBudget() {
         monthly = `<span class="monthly faint" data-cat="${c.id}">—</span>`;
       }
       const overNote = c.overspent_credit ? ` title="${esc(money(c.overspent_credit))} of this was on a card without money in the category: it became debt"` :
-        (c.overspent_cash ? ` title="${esc(money(c.overspent_cash))} overspent: ${OVERSPENT_NOTE[view.overspending]}"` : '');
+        (c.overspent_cash ? ` title="${esc(money(c.overspent_cash))} overspent: ${OVERSPENT_NOTE[view.overspending]}"` :
+        (short ? ` title="${esc(money(-avail))} not set aside yet"` : (c.debt_account_id && avail > 0 ? ` title="${esc(money(avail))} more than you owe"` : '')));
       // Each cell's content is wrapped so the row can fold away while a group is dragged.
       const cell = html => `<div class="cell"><div>${html}</div></div>`;
       rows.push(`<tr class="cat ${c.hidden ? 'hidden-cat' : ''}" data-cat-row="${c.id}">
@@ -1154,8 +1162,17 @@ async function saveAssigned(input) {
 }
 // A category's Assigned box with an arrow from each side, so it can be filled without
 // typing: → assigns what's budgeted (the column to its left), ← what it spent this month
-// (the column to its right). Each shows only when it would change something.
+// (the column to its right). Each shows only when it would change something. A card's
+// payment category has no ←: its Spent is card spending set aside less payments, not what
+// it needs. Its → sets aside what you owe that isn't yet (issue #166), and covers it first
+// when it's overspent.
 function assignBox(c) {
+  if (c.debt_account_id) {
+    const what = c.available >= 0 ? 'Set aside what you owe' : c.owing > 0 ? 'Cover the overspending and set aside what you owe' : 'Cover the overspending';
+    const owed = c.owed_left > 0
+      ? `<button class="copy-arrow" data-copy-owed="${c.id}" tabindex="-1" title="${what}, ${esc(money(c.owed_left))}">→</button>` : '';
+    return `${owed}<input class="money-input" data-assign="${c.id}" data-relative value="${moneyOrBlank(c.assigned)}" placeholder="0.00" inputmode="decimal"><span class="copy-gap"></span>`;
+  }
   const spent = -c.activity;
   const fromBudget = c.monthly_budget && c.monthly_budget !== c.assigned
     ? `<button class="copy-arrow" data-copy-budget="${c.id}" tabindex="-1" title="Assign the budgeted ${esc(money(c.monthly_budget))}">→</button>` : '';
@@ -1166,8 +1183,8 @@ function assignBox(c) {
 async function assignFromArrow(id, which) {
   const c = findCat(id);
   if (!c) return;
-  const cents = which === 'spent' ? -c.activity : c.monthly_budget;
-  if (!cents || cents < 0) return;
+  const cents = which === 'owed' ? c.owed_assigned : which === 'spent' ? -c.activity : c.monthly_budget;
+  if (which === 'owed' ? !c.owed_left : (!cents || cents < 0)) return;
   await call('set_assigned', [shownMonth(), id, cents]);
   await renderBudget();
   toast(`Assigned ${money(cents)} to ${c.name}`, { action: undoAction });
@@ -3446,6 +3463,8 @@ document.addEventListener('click', async e => {
   if (copy) return assignFromArrow(Number(copy.dataset.copyBudget), 'budget');
   const copySpent = e.target.closest('.btable [data-copy-spent]');
   if (copySpent) return assignFromArrow(Number(copySpent.dataset.copySpent), 'spent');
+  const copyOwed = e.target.closest('.btable [data-copy-owed]');
+  if (copyOwed) return assignFromArrow(Number(copyOwed.dataset.copyOwed), 'owed');
   const g = e.target.closest('.btable .group');
   if (g) { await call('set_group_collapsed', [Number(g.dataset.group), !g.classList.contains('collapsed')]); return renderBudget(); }
   const cat = e.target.closest('.btable [data-cat]');
