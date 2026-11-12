@@ -142,7 +142,12 @@ All in `Application Files/`:
 - `updater.py`, `launch.py`: updates from the repo's GitHub releases (anonymously, or
   with a token if there is one); moving into Applications;
   relaunching.
-- `settings.py`: JSON settings, validated on every load and save.
+- `settings.py`: settings, validated on every load and save: this Mac's in `settings.json`
+  (Appearance, Import from Downloads and its folder, updates, the Dashboard's months), and the
+  budget's own, Overspending and Usual's months (`average_months`), in its `meta` (issue #153:
+  a backup carries them, and changing one is a change for `backups.changed`). Figures reads
+  them from there (`budget_settings`). Changing Overspending in Settings is no undo step and
+  leaves ⌘Z as it is (`keep_undo`). An update never changes a setting a copy uses (Key rules).
 - `util.py`: money in cents, months and dates.
 - `index.html`: the whole interface, vanilla JS, no external resources. Pages: Dashboard
   (where it opens), Budget, Inbox, Transactions, Accounts, Subscriptions, Settings, plus
@@ -267,6 +272,19 @@ All in `Application Files/`:
   its sign). Whether a file writes
   purchases as positive is decided once per account: by rows the account already holds, then the
   earlier decision, then how the file looks.
+- **An update never changes a setting a copy uses** ([ADR 0007](../docs/adr/0007-an-update-never-changes-a-setting-a-copy-uses.md),
+  issue #166; 1.0.5 switched copies with no Overspending saved from Next month to This month
+  without a word). A default is only for a new copy (`settings.DEFAULTS`) or a new budget
+  (`BUDGET_DEFAULTS`, written as `db.py` makes the database). The first launch of 1.4.1 writes
+  `settings.json` out whole with what the copy was using: a value it had stays, a missing one
+  takes what it ran on (`RAN_ON`, `BUDGET_RAN_ON`: This month for Overspending, Carry over when
+  1.0.3's switch was on), and Overspending and Usual's months move into the budget
+  (`settings.move_into_budget`, at every launch for a budget without them). `settings.json`
+  keeps the two at its top level as they were at the move, never changed after: 1.4.0 reads them
+  there if someone goes back a version, and a backup from before 1.4.1 restored on that Mac gets
+  them; on a Mac that never ran an older version, This month and 3. Settings it doesn't know (a
+  later version's) are kept as they are. Never change `RAN_ON` or `BUDGET_RAN_ON`; a new setting
+  goes into `RAN_ON` with the value that keeps what copies did before it existed.
 - **Learning only uses `status = 'done'` transactions** (plus Actual examples). Rows waiting
   in the inbox never teach the app anything, and count in no category: no tentative
   category, Spent/Usual/the budget only count `status = 'done'`
@@ -350,12 +368,16 @@ All in `Application Files/`:
 ## Budget rules (summary; budget.py has the detail)
 
 Ready to assign starts as the cash in chequing/savings when the budget starts; income
-adds, assigning takes. Overspending is paid for the way the **Overspending** setting says:
-**This month** (the default) takes it out of Ready to assign in the month it happens, so
-Ready to assign is always money really there (the maintainer saw Ready to assign at about
-twice what was in the bank under YNAB's rule and asked for this); **Next month** is
-YNAB's and Actual's rule; **Carry over** leaves it in the category below zero next month.
-The first two reset the category next month. Ready to assign + Σ positive Available −
+adds, assigning takes. Overspending is paid for the way the budget's **Overspending** setting
+says: **Next month** (a new budget's default since 1.4.1, issue #166; YNAB's and Actual's rule,
+and the app's before 1.0.5) takes it out of next month's Ready to assign; **This month** takes
+it out in the month it happens, so Ready to assign is always money really there (the
+maintainer saw Ready to assign at about twice what was in the bank under YNAB's rule and asked
+for it in 1.0.5; it was the default from 1.0.5 to 1.4.0, and budgets from then keep it); **Carry
+over** leaves it in the category below zero next month. The first two reset the category next
+month. In 1.4.1 the maintainer made Next month the default again: with This month, assigning to
+a category already overspent in cash left Ready to assign as it was (it had come out already),
+which read as broken. Don't switch the default back without asking them. Ready to assign + Σ positive Available −
 overspending not taken yet + money in waiting in the inbox == cash, and the Budget page
 shows that line under it ("= $X in Chequing − $Y in categories − $Z waiting in the
 Inbox", flagged if it's ever off). Money out waiting in the inbox has already come off
@@ -538,7 +560,10 @@ Don't undo these without asking:
   once read "Still needs" as being asked to assign twice; the window shows Budgeted /
   Already in / Assign. Beside each Assigned box, **→** assigns exactly the budgeted
   amount and **←** exactly what it spent this month, undoably; each shows only when it
-  would change something (→ not for a $0 budget).
+  would change something (→ not for a $0 budget). A card's payment category has no ←, ever
+  (its Spent is card spending set aside less payments: assigning it set aside too much), and
+  its → adds what isn't set aside yet ("Set aside what you owe, $900.00"; `owed_left` and
+  `owed_assigned` from figures.py), so its Available reaches $0.00 (issue #166).
 - **Assigned boxes:** empty when nothing's assigned (0.00 is only the placeholder: the
   maintainer kept typing into the middle of "0.00"); clicking into any amount box selects
   it so typing replaces it, also the box Return or Tab moved you to; another click in a box
@@ -555,7 +580,15 @@ Don't undo these without asking:
   $170, `-20` → $100 (so `-50` in an empty box is still −$50). Anywhere else a leading
   minus is a negative amount. Escape in an Assigned box puts it back and saves nothing.
 - **A card's payment category is money set aside, not paid**: it stays in the bank until
-  a payment, so what you owe doesn't change. Its pop-over shows You owe / Set aside / Not
+  a payment, so what you owe doesn't change. On the Budget page (issue #166) its **Available**
+  is what's set aside less what you owe (`shown`, worked out in figures.py; past months by the
+  balance at the month's end): below zero in **amber** (`pill owed`: still to set aside, not
+  overspending), $0.00 when all of it is, green only for more than you owe (a card in your
+  favour: what's set aside plus the credit); while the category itself is below zero it's
+  overspent, red, like any category. Its **Budgeted** reads "owe $1,200.00 · $300.00 set
+  aside"; Spent stays. Showing set-aside money in green read as spare money. The Debt Payments
+  group's Available adds up what its rows show; the check under Ready to assign still counts
+  what's set aside as in categories, since it's in the bank. Its pop-over shows You owe / Set aside / Not
   set aside yet, its lines say "Set aside for card spending in Food" and "Paid to the card
   from Chequing", and its total says "This month", never "Spent" (the maintainer read
   "Spent" as money already paid to the card).
@@ -658,10 +691,12 @@ Don't undo these without asking:
   fits one. The log says `Window <w>×<h>` at launch.
 - Budget can start months back; past months are caught up with one click ("Catch up").
 - **Overspending** is a setting with three choices (the maintainer wanted to choose how
-  the rollover works): This month (default), Next month (YNAB), Carry over (a friend
-  coming from YNAB asked for it; it was an on/off switch in 1.0.3–1.0.4, and `settings.py`
-  turns that switch into Carry over). Only cash overspending; card overspending is debt
-  on the card whichever is chosen.
+  the rollover works): Next month (YNAB; a new budget's default since 1.4.1, issue #166),
+  This month (the default from 1.0.5 to 1.4.0: budgets from then keep it), Carry over (a
+  friend coming from YNAB asked for it; it was an on/off switch in 1.0.3–1.0.4, and
+  `settings.py` turns that switch into Carry over). It's the budget's own, kept in it (issue
+  #153). Only cash overspending; card overspending is debt on the card whichever is chosen.
+  Showing what This month covered as Assigned was offered and declined (2026-11-12).
 - **Settings is kept short** (the maintainer's mock-up): Appearance, Import from
   Downloads, Overspending, Learn from Actual; updates, Release notes,
   Check now (GitHub access only when needed); Open buttons for the data, imported

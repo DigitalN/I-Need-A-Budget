@@ -18,6 +18,7 @@ from functools import cached_property
 
 import budget
 import ledger
+from settings import budget_settings
 from util import add_months, first_day, last_day, month_of, months_between
 
 ABOVE_USUAL_CENTS = 2500  # a whole month is "above usual" at least $25 ...
@@ -25,14 +26,16 @@ ABOVE_USUAL_PERCENT = 25  # ... and 25% over its Usual
 
 
 class Figures:
-    def __init__(self, conn, today, overspending="this_month", usual_months=3):
+    def __init__(self, conn, today, overspending=None, usual_months=None):
         """`conn` must stay open (inside db.read() or db.write()) while this is used.
-        `overspending` and `usual_months` are the settings of the same names."""
+        `overspending` and `usual_months` (the Overspending setting and Usual's months): the
+        budget's own (settings.budget_settings) unless given."""
         self.conn = conn
         self.today = today
         self.current = month_of(today)
-        self.overspending = overspending
-        self.usual_months = usual_months
+        kept = budget_settings(conn)
+        self.overspending = overspending or kept["overspending"]
+        self.usual_months = usual_months or kept["average_months"]
         self._computed = None  # (end, budget.compute's months through end)
         self._balances = {}
 
@@ -178,7 +181,14 @@ class Figures:
         against: Cash, and `off` when the two don't agree (None before the budget starts).
         `categories` and `groups`: Assigned, Spent ('activity'), Available and the rest, by
         id (before the budget starts only Spent); Usual is from the whole months before
-        `month` (before this month, for this month and later ones). `overspent`:
+        `month` (before this month, for this month and later ones). `shown`: what the
+        Available column shows, and a group's `available` adds those up. For a card's payment
+        category that's what's set aside less what you owe (issue #166): below zero is what
+        isn't set aside yet, zero all of it, above zero more than you owe; it's its Available
+        while that's below zero, overspent like any category's, and while the card has no
+        balance yet (`owing` None: what you owe isn't known). `owed_left`: what → adds to its
+        Assigned to set all of it aside (and cover that overspending), `owed_assigned` the
+        Assigned that makes. `overspent`:
         (category, amount) for each one below zero, in budget order, and their total.
         `short_later`: later months whose Ready to assign is below zero."""
         end = max(month, self.current)
@@ -204,18 +214,25 @@ class Figures:
                     "usual": budget.usual_spending(history, usual_for, self.coverage, self.usual_months)
                     if not cat["debt_account_id"] else None,
                 }
+                row["shown"] = row["available"]
                 if cat["debt_account_id"] in accounts:
                     as_of = last_day(month) if month < self.current else None
-                    owing = -(self._balance(cat["debt_account_id"], as_of) or 0)
+                    balance = self._balance(cat["debt_account_id"], as_of)
+                    owing = None if balance is None else -balance  # None: no balance yet, so not known
                     row["owing"] = owing
                     row["set_aside"] = max(row["available"] or 0, 0)
-                    row["not_covered"] = max(0, owing - row["set_aside"])
+                    row["not_covered"] = None if owing is None else max(0, owing - row["set_aside"])
+                    if f:
+                        known = owing is not None
+                        row["shown"] = row["set_aside"] - owing if known and row["available"] >= 0 else row["available"]
+                        row["owed_left"] = max(0, max(owing, 0) - row["available"]) if known else 0
+                        row["owed_assigned"] = row["assigned"] + row["owed_left"]
                 if (row["available"] or 0) < 0:
                     overspent.append((cat["id"], -row["available"]))
                 categories[cat["id"]] = row
                 rows.append(row)
             groups[g["id"]] = {"assigned": sum(x["assigned"] for x in rows), "activity": sum(x["activity"] for x in rows),
-                               "available": sum((x["available"] or 0) for x in rows)}
+                               "available": sum((x["shown"] or 0) for x in rows)}
         summary = None
         if figures:
             cash = self._cash(last_day(month))

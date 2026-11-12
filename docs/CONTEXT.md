@@ -183,7 +183,8 @@ towards Usual.
 
 **Backup**:
 A copy of the whole budget, made when the app quits after something changed and kept for
-four months. Restoring one puts the budget back as it was then.
+four months. Restoring one puts the budget back as it was then, its Overspending and
+Usual's months included.
 _Avoid_: export, snapshot
 
 **Cash**:
@@ -212,7 +213,8 @@ _Avoid_: archived, deleted
 
 **Payment category**:
 The category each debt account gets, holding money set aside to pay it. Card spending
-from a funded category moves that money here.
+from a funded category moves that money here. On the Budget page its Available is what's
+set aside less what you owe: below zero is what isn't set aside yet.
 _Avoid_: payment envelope
 
 **Income**:
@@ -254,8 +256,9 @@ _Avoid_: overspent, over budget
 
 **Overspending**:
 A category below zero because cash spending went past what was in it. Card spending past
-it is new debt instead. The Overspending setting says how it's paid for: This month, Next
-month or Carry over.
+it is new debt instead. The Overspending setting, the budget's own, says how it's paid for:
+Next month (a new budget's), This month or Carry over. A card's payment category short of
+what you owe isn't overspent: that's money not set aside yet.
 
 **Cover**:
 To move money into an overspent category until it's back to zero.

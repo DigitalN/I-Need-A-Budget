@@ -242,6 +242,51 @@ def test_a_categorys_monthly_amount_is_called_budgeted():
     assert "Monthly Budgeted Amount" in PAGE and "data-copy-budget" in PAGE and "data-copy-spent" in PAGE
 
 
+def test_a_card_payment_row_sets_aside_what_you_owe_and_has_no_left_arrow():
+    """Issue #166: a card's payment category has no ← (its Spent is card spending set aside
+    less payments, not what it needs), and its → adds what isn't set aside yet, the Assigned
+    figures.py worked out. Ordinary categories keep both arrows. Runs the page's own code in Node."""
+    parts = [re.search(r"^const money = .*?^};$", PAGE, re.S | re.M).group(0)]
+    parts += [re.search(rf"^const {name} = [^\n]*$", PAGE, re.M).group(0) for name in ("esc", "moneyPlain", "moneyOrBlank")]
+    parts += [re.search(rf"^(async )?function {name}\(.*?^}}$", PAGE, re.S | re.M).group(0)
+              for name in ("assignBox", "assignFromArrow")]
+    rows = {
+        # you owe $1,200.00, $300.00 set aside: → adds $900.00
+        "short": {"id": 1, "debt_account_id": 7, "assigned": 10000, "activity": -45000, "available": 30000,
+                  "owing": 120000, "owed_left": 90000, "owed_assigned": 100000, "monthly_budget": None},
+        "covered": {"id": 2, "debt_account_id": 7, "assigned": 120000, "activity": -45000, "available": 120000,
+                    "owing": 120000, "owed_left": 0, "owed_assigned": 120000, "monthly_budget": None},
+        "overspent": {"id": 3, "debt_account_id": 7, "assigned": 0, "activity": -20000, "available": -20000,
+                      "owing": 70000, "owed_left": 90000, "owed_assigned": 90000, "monthly_budget": None},
+        "food": {"id": 4, "debt_account_id": None, "assigned": 10000, "activity": -15000, "available": -5000,
+                 "monthly_budget": 20000},
+    }
+    script = "\n".join(parts) + f"""
+const rows = {json.dumps(rows)};
+const out = {{ html: Object.fromEntries(Object.entries(rows).map(([k, c]) => [k, assignBox(c)])), assigned: [] }};
+const findCat = id => Object.values(rows).find(c => c.id === id);
+const call = async (name, args) => out.assigned.push([name, ...args]);
+const renderBudget = async () => {{}}, toast = () => {{}}, undoAction = null, shownMonth = () => '2026-10';
+(async () => {{
+  await assignFromArrow(1, 'owed');
+  await assignFromArrow(2, 'owed');
+  await assignFromArrow(4, 'spent');
+  console.log(JSON.stringify(out));
+}})();
+"""
+    got = _run_node(script)
+    html = got["html"]
+    assert 'data-copy-owed="1"' in html["short"] and 'title="Set aside what you owe, $900.00"' in html["short"]
+    assert "data-copy-owed" not in html["covered"]
+    assert 'title="Cover the overspending and set aside what you owe, $900.00"' in html["overspent"]
+    for k in ("short", "covered", "overspent"):
+        assert "data-copy-spent" not in html[k] and "data-copy-budget" not in html[k] and 'class="copy-gap"' in html[k]
+    assert 'data-copy-budget="4"' in html["food"] and 'data-copy-spent="4"' in html["food"]
+    assert "data-copy-owed" not in html["food"]
+    assert got["assigned"] == [["set_assigned", "2026-10", 1, 100000], ["set_assigned", "2026-10", 4, 15000]]
+    assert "e.target.closest('.btable [data-copy-owed]')" in PAGE  # the click reaches it
+
+
 def test_amount_boxes_start_empty_and_redraws_keep_your_place():
     """An Assigned box with nothing in it is empty (0.00 is only its placeholder), clicking
     into an amount selects it, and redrawing the Budget page doesn't scroll it back up."""

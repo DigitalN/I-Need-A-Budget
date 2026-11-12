@@ -749,3 +749,28 @@ def test_every_way_of_quitting_with_nothing_changed_makes_no_backup_and_the_upda
     relaunch = route == "Restart now"
     assert app._updater.installs[0] == (relaunch, [earlier.name])
     assert not (tmp_path / "home").exists()  # nothing near the real Documents
+
+
+def test_a_backup_restored_on_another_mac_keeps_the_overspending_choice(app, tmp_path):
+    """Overspending and Usual's months are the budget's own (issue #153): a backup carries them."""
+    from helpers import call
+    from service import BudgetService
+    from settings import Settings
+
+    wallet = call(app, "add_account", "Wallet", "cash", 100000, "2026-08-31")
+    call(app, "finish_onboarding", "2026-09")
+    food = call(app, "add_category", call(app, "add_group", "Everyday"), "Food")
+    call(app, "add_transaction", wallet, "2026-09-10", "SAMPLE CAFE CALGARY AB", -5000, food)  # overspent
+    call(app, "save_settings", {"overspending": "carry_over"})
+
+    def october(service):
+        month = call(service, "month", "2026-10")
+        row = next(c for g in month["groups"] for c in g["categories"] if c["id"] == food)
+        return month["summary"]["ready_to_assign"], row["available"]
+
+    assert october(app) == (100000, -5000)
+    another_mac = tmp_path / "another Mac"
+    another_mac.mkdir()
+    shutil.copyfile(backups.at_quit(app.db, QUIT), another_mac / "budget.db")
+    restored = BudgetService(Database(another_mac / "budget.db"), Settings(another_mac / "settings.json"), another_mac)
+    assert october(restored) == (100000, -5000)
