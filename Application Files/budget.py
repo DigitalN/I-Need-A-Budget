@@ -12,17 +12,20 @@
   to assign until it's categorized. Money in on a card changes nothing until then.
 - A category's **available** = what carried over + assigned this month + its activity
   (spending is negative, refunds and reimbursements positive).
-- **Overspending** (available below zero) is paid for one of three ways, a setting
-  (`overspending`):
-  - `this_month` (the default): it comes out of Ready to assign in the month it happens
+- **Overspending** (available below zero) is paid for one of three ways, the budget's
+  own setting (`overspending`, kept in it: settings.py):
+  - `next_month` (YNAB and Actual Budget; a new budget's default): it comes out of next
+    month's Ready to assign ("Overspent in September"), so until then this month's figure
+    still counts money that's been spent. Assigning to cover it uses Ready to assign now.
+    The category shows below zero until the month ends, then starts the next month at zero.
+  - `this_month`: the same, but it comes out of Ready to assign in the month it happens
     ("Overspent in October"). That money has already left the bank, so Ready to assign
-    is always money you really have. The category shows below zero until the month
-    ends, then starts the next month at zero. Covering it (assigning to it, or Catch
-    up) doesn't change Ready to assign, since the money is already gone; covering it
-    from another category gives Ready to assign that much back.
-  - `next_month` (YNAB and Actual Budget): the same, but it comes out of next month's
-    Ready to assign ("Overspent in September"), so until then this month's figure still
-    counts money that's been spent. Assigning to cover it uses Ready to assign now.
+    is always money you really have. Covering it (assigning to it, or Catch up) doesn't
+    change Ready to assign, since the money is already gone; covering it from another
+    category gives Ready to assign that much back. It was the default from 1.0.5 to
+    1.4.0, and budgets from then keep it (docs/adr/0007); new ones start on `next_month`
+    since 1.4.1 (issue #166), because assigning to a category already overspent leaving
+    Ready to assign as it was read as broken.
   - `carry_over`: the category starts next month below zero, still owing what it
     overspent, and Ready to assign is left alone. Money assigned to it next month
     covers that first.
@@ -60,7 +63,7 @@ from util import add_months, months_between
 OVERSPENDING = ("this_month", "next_month", "carry_over")
 
 
-def compute(start, end, categories, lines, payments, assigned, opening_cash, overspending="this_month"):
+def compute(start, end, categories, lines, payments, assigned, opening_cash, overspending):
     """Budget figures for every month from `start` to `end`.
 
     categories: [{'id', 'role': 'normal' | 'income' | 'payment', 'debt_account_id'}]

@@ -256,6 +256,7 @@ def test_catch_up_and_assigning_a_paycheque(app):
     call(app, "set_balance", accounts["Chequing"], 500000, "2026-10-12")
     call(app, "set_balance", accounts["Tangerine Mastercard"], 12000, "2026-10-12")
     call(app, "finish_onboarding", "2026-07")
+    call(app, "save_settings", {"overspending": "this_month"})
 
     view = call(app, "catch_up", "2026-07")
     cats = {c["name"]: c for g in view["groups"] for c in g["categories"]}
@@ -297,6 +298,9 @@ def test_the_overspending_setting(app):
     call(app, "set_monthly_budget", ids["Food"], 50000)
 
     food = lambda v: next(c for g in v["groups"] for c in g["categories"] if c["id"] == ids["Food"])
+    assert call(app, "month", "2026-10")["overspending"] == "next_month"  # a new budget's (issue #166)
+
+    call(app, "save_settings", {"overspending": "this_month"})
     september, october = call(app, "month", "2026-09"), call(app, "month", "2026-10")
     assert october["overspending"] == "this_month"
     assert september["summary"]["overspent"] == 8000 and september["summary"]["ready_to_assign"] == 100000
@@ -305,13 +309,13 @@ def test_the_overspending_setting(app):
     plan = call(app, "assign_plan", month="2026-09", amount=0)["plan"]
     assert (plan[0]["amount"], plan[0]["covered"]) == (8000, 8000)
 
-    app.settings.update({"overspending": "next_month"})
+    call(app, "save_settings", {"overspending": "next_month"})
     september, october = call(app, "month", "2026-09"), call(app, "month", "2026-10")
     assert september["summary"]["ready_to_assign"] == 108000 and september["summary"]["overspent_pending"] == 8000
     assert october["summary"]["overspent_last_month"] == 8000 and october["summary"]["ready_to_assign"] == 100000
     assert call(app, "assign_plan", month="2026-09", amount=0)["plan"][0]["amount"] == 0  # covering it costs money
 
-    app.settings.update({"overspending": "carry_over"})
+    call(app, "save_settings", {"overspending": "carry_over"})
     october = call(app, "month", "2026-10")
     assert october["overspending"] == "carry_over"
     assert food(october)["available"] == -8000 and october["summary"]["overspent_pending"] == 8000  # still owed
@@ -397,6 +401,7 @@ def test_ready_to_assign_adds_up_to_whats_in_the_bank(app):
     accounts = {a["name"]: a["id"] for a in call(app, "accounts")}
     assert call(app, "month", "2026-10")["summary"] is None  # no budget yet
     call(app, "finish_onboarding", "2026-09")
+    call(app, "save_settings", {"overspending": "this_month"})  # Rent's overspending is already out of it
     assert call(app, "month", "2026-10")["summary"]["cash"] is None  # Chequing has no balance yet
     call(app, "set_balance", accounts["Chequing"], 300000, "2026-10-12")
     call(app, "set_balance", accounts["Tangerine Mastercard"], 7000, "2026-10-12")
@@ -504,7 +509,7 @@ def test_the_dashboard(app):
     assert sp["income"][3] == 200000 and sp["income_group"]
     assert (d["inbox"], d["cash"], d["has_debt"]) == (1, 100000, False)
     assert [o["name"] for o in d["overspent"]] == ["Food"]  # nothing assigned in October
-    assert d["summary"]["ready_to_assign"] + d["summary"]["in_categories"] == d["cash"]
+    assert d["summary"]["ready_to_assign"] + d["summary"]["in_categories"] - d["summary"]["overspent_pending"] == d["cash"]
     nw = d["net_worth"]  # Chequing's balance at the end of each month (October: so far)
     assert nw["months"] == ["2026-06", "2026-07", "2026-08", "2026-09", "2026-10"]
     assert nw["cash"] == [-1600, -12000, -28400, 130000, 100000] and nw["owed"] == [0] * 5

@@ -18,6 +18,7 @@ from functools import cached_property
 
 import budget
 import ledger
+from settings import budget_settings
 from util import add_months, first_day, last_day, month_of, months_between
 
 ABOVE_USUAL_CENTS = 2500  # a whole month is "above usual" at least $25 ...
@@ -25,14 +26,16 @@ ABOVE_USUAL_PERCENT = 25  # ... and 25% over its Usual
 
 
 class Figures:
-    def __init__(self, conn, today, overspending="this_month", usual_months=3):
+    def __init__(self, conn, today, overspending=None, usual_months=None):
         """`conn` must stay open (inside db.read() or db.write()) while this is used.
-        `overspending` and `usual_months` are the settings of the same names."""
+        `overspending` and `usual_months` (the Overspending setting and Usual's months): the
+        budget's own (settings.budget_settings) unless given."""
         self.conn = conn
         self.today = today
         self.current = month_of(today)
-        self.overspending = overspending
-        self.usual_months = usual_months
+        kept = budget_settings(conn)
+        self.overspending = overspending or kept["overspending"]
+        self.usual_months = usual_months or kept["average_months"]
         self._computed = None  # (end, budget.compute's months through end)
         self._balances = {}
 

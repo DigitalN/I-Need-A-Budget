@@ -29,7 +29,7 @@ from errors import UserError
 from figures import Figures
 from inbox import Inbox
 from payees import ADJUSTMENT, TRANSFER_OR_BANK_ENTRY_HINTS
-from settings import DASHBOARD_MONTHS
+from settings import BUDGET_DEFAULTS, DASHBOARD_MONTHS, budget_settings, move_into_budget, save_budget_settings
 from util import add_months, first_day, last_day, money, month_name, month_of, months_between, parse_date, today
 
 log = logging.getLogger("inab")
@@ -132,6 +132,7 @@ class BudgetService:
         self.hooks = hooks or {}          # window features: choose_files, reveal, updates, app_info
         self._seen_files = {}             # Downloads watcher: path → (mtime, size) already looked at
         self._file_status = {}            # path → ((mtime, size), what it needs or None): see _needs()
+        move_into_budget(db, settings)    # a budget from before 1.4.1: Overspending and Usual's months (issue #153)
 
     # ── plumbing ──
 
@@ -180,7 +181,7 @@ class BudgetService:
         return {
             "onboarded": onboarded, "has_categories": bool(has_categories),
             "today": self.today(), "current_month": self.current_month(), "budget_start": self.budget_start(),
-            "settings": self.settings.get(), "app": self._app_info(), "counts": self.counts(),
+            "settings": self.get_settings(), "app": self._app_info(), "counts": self.counts(),
             "undo": self.db.undo_label(),
         }
 
@@ -1043,10 +1044,10 @@ class BudgetService:
     # ── the budget ──
 
     def _figures(self, c):
-        """Every money figure, from one reading of the database (figures.Figures). Use it
-        inside the same db.read() or db.write()."""
-        s = self.settings.get()
-        return Figures(c, self.today(), s["overspending"], s["average_months"])
+        """Every money figure, from one reading of the database (figures.Figures), the
+        budget's own Overspending and Usual's months included. Use it inside the same
+        db.read() or db.write()."""
+        return Figures(c, self.today())
 
     @exposed
     def month(self, month=None):
@@ -1900,11 +1901,23 @@ class BudgetService:
 
     @exposed
     def get_settings(self):
-        return self.settings.get()
+        """This Mac's settings (settings.json) and the budget's own: Overspending and Usual's
+        months, kept in the budget so a backup carries them (issue #153)."""
+        with self.db.read() as c:
+            return {**self.settings.get(), **budget_settings(c)}
 
     @exposed
     def save_settings(self, changes):
-        return self.settings.update(changes)
+        """Changes some settings (a value that isn't valid changes nothing) and returns them
+        all. Not an undo step, and ⌘Z keeps working; a change to the budget's own counts as a
+        change for backups (backups.changed)."""
+        changes = changes if isinstance(changes, dict) else {}
+        budget = {k: v for k, v in changes.items() if k in BUDGET_DEFAULTS}
+        if budget:
+            with self.db.write(keep_undo=True) as c:
+                save_budget_settings(c, budget)
+        self.settings.update({k: v for k, v in changes.items() if k not in BUDGET_DEFAULTS})
+        return self.get_settings()
 
     @exposed
     def app_info(self):

@@ -138,7 +138,7 @@ def test_an_inbox_item_counts_in_no_category(tmp_path):
         add(c, chequing, "2026-09-03", -5000, food)
         add(c, chequing, "2026-09-04", -2000, split=[(food, -1500), (bills, -500)], status="review")
     with db.read() as c:
-        f = Figures(c, TODAY)
+        f = Figures(c, TODAY, "this_month")
         assert f.month("2026-09")["categories"][food]["activity"] == -5000
         assert f.month("2026-09")["categories"][bills]["activity"] == 0
         assert f.spent([food, bills], "2026-09")["total"] == -5000

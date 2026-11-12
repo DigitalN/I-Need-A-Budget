@@ -32,6 +32,7 @@ from datetime import datetime
 from pathlib import Path
 
 import backups
+import settings
 from errors import UserError
 
 log = logging.getLogger("inab")
@@ -297,6 +298,8 @@ class Database:
             if version is not None and version < SCHEMA_VERSION:
                 self._backup_before_upgrade(version)
             self.conn.executescript(SCHEMA)
+            if version is None:  # a new budget: Overspending and Usual's months are kept in it (issue #153)
+                settings.new_budget(self.conn)
             if version is not None and version < 2:
                 columns = [r["name"] for r in self.conn.execute("PRAGMA table_info(categories)")]
                 if "note" not in columns:
