@@ -41,11 +41,12 @@ friend paying you back for dinner is matched to the dinner. Press 1–4 to pick,
   <img alt="Two Inbox items: an e-transfer that looks like a share of a dinner, and a refund headed back to Household" src="docs/screenshots/inbox-light.png">
 </picture>
 
-## Ready to assign is real money
+## Ready to assign adds up
 
-Overspend a category and it comes out of Ready to assign that month, so it's never more
-than what's in the bank. The line under it shows the math. (Prefer YNAB's way? It's in
-Settings.)
+The line under Ready to assign ties it to what's in the bank. Overspend a category and it
+comes out of next month's Ready to assign, as in YNAB and Actual Budget. Settings has two
+other ways: out of this month's straight away, so it's never more than what's in the bank,
+or the category carries it over.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/ready-to-assign-dark.png">
