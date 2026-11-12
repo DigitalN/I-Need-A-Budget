@@ -1754,10 +1754,12 @@ class BudgetService:
         with self.db.write("Merge accounts") as c:
             copy = _existing(c, "accounts", from_id, "name")
             name = _existing(c, "accounts", into_id, "name")
+            ended = ledger.adjustments_a_merge_ends(c, int(from_id), int(into_id))
             moved, dropped, unpaired, asked = ledger.merge_accounts(c, int(from_id), int(into_id))
             inbox = self._inbox(c)
             inbox.ask_again(unpaired, f"No longer a transfer: both halves are in {name['name']}")
             inbox.ask_again(asked, "Its other half is a duplicate of one you decided about")
+            inbox.drop_adjustments(int(into_id), ended)  # a balance that isn't checked won (issue #147)
             inbox.check_balance(int(into_id))  # the copy's transactions may be what the balance was missing
             self.db.big_step(f"{copy['name']} comes back as an account of its own, with its transactions.")
         log.info("Merged account %s into %s: %d moved, %d duplicates dropped", from_id, into_id, moved, dropped)

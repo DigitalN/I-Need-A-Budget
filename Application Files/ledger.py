@@ -127,6 +127,11 @@ def newest_balance_import(conn, account_id):
 # the newest file's balance, so the check leaves it alone until a file whose balance is as new as it comes in
 # after it. That file takes it over: while it's the app's it becomes the check's own (it goes, or stays as what
 # that file doesn't explain); one you've categorized counts as one you kept.
+#
+# After Merge into… the check works as if the copy's files had gone into the account in the first place (issue
+# #147, merge_accounts): it carries on from whichever account's check started first, a transaction both had counts
+# from the file that brought it first, and the other account's Check balance… adjustments that the winning balance
+# is as new as are taken over.
 
 ADJUSTMENT_PAYEE = "Balance adjustment"
 
@@ -153,10 +158,10 @@ _TAKEN_OVER = ("(import_id IS NULL AND COALESCE(after_import, 0) < :current AND 
                "AND (COALESCE(after_import, 0) >= :check_from OR date > :start_date))")
 # A balance adjustment inside the balance the check starts from, from before that file came in: one from Check
 # balance… it's as new as, or one an earlier check made. That's an account whose balance wasn't checked yet (a typed
-# one, or a file's from before 1.4), or a check that started again (Set balance, Merge into…, Remove import of the
-# file it started from). That balance has it, so the check takes it over too: one of the app's is worked out again
-# (one from Check balance… goes), and one you kept counts as kept, so a Keep both pair still cancels out and the Inbox
-# asks before removing one whose money has arrived.
+# one, or a file's from before 1.4), a check that started again (Set balance, Remove import of the file it started
+# from), or the other account's at Merge into…. That balance has it, so the check takes it over too: one of the app's
+# is worked out again (one from Check balance… goes), and one you kept counts as kept, so a Keep both pair still
+# cancels out and the Inbox asks before removing one whose money has arrived.
 _IN_START = ("(((import_id IS NULL AND COALESCE(after_import, 0) < :check_from) OR import_id < :check_from) "
              "AND date <= :start_date)")
 # The check's own balance adjustments, and those it has taken over.
@@ -446,18 +451,68 @@ def duplicate_accounts(conn):
     return out
 
 
+def _checked(acct):
+    """Whether an account's balance is checked: a file's, with a check started (not typed, nor a file's
+    from before 1.4)."""
+    return acct["anchor_source"] == "file" and acct["check_from"] is not None
+
+
+def _copys_balance_wins(conn, copy, into):
+    """Whether, at Merge into…, the copy's balance wins over the one of the account it goes into: the
+    newer one, and on the same day the one an import would keep (issue #147): a file's over a typed one,
+    and the later download over the earlier. Two typed ones the same day: the account's own. Asked
+    before the copy's imports move."""
+    if copy["anchor_date"] is None or into["anchor_date"] is None or copy["anchor_date"] != into["anchor_date"]:
+        return copy["anchor_date"] is not None and (into["anchor_date"] is None or copy["anchor_date"] > into["anchor_date"])
+    if (copy["anchor_source"] == "file") != (into["anchor_source"] == "file"):
+        return copy["anchor_source"] == "file"
+    return copy["anchor_source"] == "file" and \
+        (anchor_import(conn, copy["id"]) or 0) > (anchor_import(conn, into["id"]) or 0)
+
+
+def adjustments_a_merge_ends(conn, from_id, into_id):
+    """The app's balance adjustments waiting for the account whose balance loses at Merge into… (see
+    _copys_balance_wins), dated on or before the one that wins, when that one isn't checked (typed, or
+    a file's from before 1.4): it stands for everything up to its day, and the check stops until the next
+    file, so they go, as for Set balance (issue #147). Yours stay, and so do later ones. None when the
+    winning balance is checked: the check works them out again. Asked before the merge."""
+    a = conn.execute("SELECT * FROM accounts WHERE id = ?", (from_id,)).fetchone()
+    b = conn.execute("SELECT * FROM accounts WHERE id = ?", (into_id,)).fetchone()
+    if a is None or b is None or from_id == into_id:
+        return []
+    winner, loser = (a, b) if _copys_balance_wins(conn, a, b) else (b, a)
+    if winner["anchor_date"] is None or _checked(winner):
+        return []
+    return [r["id"] for r in conn.execute(
+        "SELECT id FROM transactions WHERE account_id = ? AND hint = ? AND by_you = 0 AND status = 'review' AND date <= ?",
+        (loser["id"], ADJUSTMENT, winner["anchor_date"]))]
+
+
 def merge_accounts(conn, from_id, into_id):
     """`from_id` turned out to be the same account as `into_id`. Its transactions that
     `into_id` already has are dropped (see _drop_copy: what you decided stays), the rest
     move over, and `from_id` goes. Returns (moved, dropped, unlinked, asked): `unlinked` were
     a transfer between the two copies, both halves now in one account, and `asked` are the
-    other halves of dropped copies that no longer have one: the inbox asks about both again."""
+    other halves of dropped copies that no longer have one: the inbox asks about both again.
+
+    The balance check then works as if the copy's files had gone into this account in the first
+    place, whichever balance wins (issue #147). It carries on from whichever account's check started
+    first, so the waiting balance adjustments of both are worked out again as one (Inbox.check_balance,
+    after this) and a gap neither account has stays. A transaction both had counts from the file that
+    brought it first, as when two downloads overlap in one account: the one kept takes that file's import
+    when it's the copy's (an exact twin: one seen in a different kind of file keeps its own, or the next
+    file of its kind would bring it in again). The other account's Check balance… adjustments that the
+    winning balance is as new as are taken over by the check, as if that file had come in after them."""
     a = conn.execute("SELECT * FROM accounts WHERE id = ?", (from_id,)).fetchone()
     b = conn.execute("SELECT * FROM accounts WHERE id = ?", (into_id,)).fetchone()
     if a is None or b is None or from_id == into_id:
         raise UserError("Pick another account to merge into.")
     if is_debt(a["kind"]) != is_debt(b["kind"]):
         raise UserError("A card or line of credit can only be merged with another one.")
+    winner, loser = (a, b) if _copys_balance_wins(conn, a, b) else (b, a)
+    covered = [r["id"] for r in conn.execute(
+        "SELECT id FROM transactions WHERE account_id = ? AND hint = ? AND import_id IS NULL AND date <= ?",
+        (loser["id"], ADJUSTMENT, winner["anchor_date"]))] if winner["anchor_date"] is not None else []
     moved = dropped = 0
     asked = []
     copies = conn.execute("SELECT * FROM transactions WHERE account_id = ? ORDER BY date, id", (from_id,)).fetchall()
@@ -475,6 +530,7 @@ def merge_accounts(conn, from_id, into_id):
                                 (into_id, t["fitid"])).fetchone()
         if twin is not None:
             twins[t["id"]] = twin
+    exact = set(twins)
     paired = cross_kind_pairs(conn, from_id, into_id, skip_a=set(twins), skip_b={t["id"] for t in twins.values()})
     for copy_id, twin_id in paired:
         twins[copy_id] = conn.execute("SELECT * FROM transactions WHERE id = ?", (twin_id,)).fetchone()
@@ -489,6 +545,9 @@ def merge_accounts(conn, from_id, into_id):
         else:
             asked += _drop_copy(conn, t, twin)
             dropped += 1
+            if t["id"] in exact and t["import_id"] is not None and twin["import_id"] is not None \
+                    and t["import_id"] < twin["import_id"]:  # the copy's file brought it first
+                conn.execute("UPDATE transactions SET import_id = ? WHERE id = ?", (t["import_id"], twin["id"]))
     conn.execute("UPDATE transactions SET transfer_account_id = ? WHERE transfer_account_id = ?", (into_id, from_id))
     unlinked = [t["id"] for t in conn.execute("SELECT id FROM transactions WHERE account_id = ? AND "
                                               "transfer_account_id = ?", (into_id, into_id)).fetchall()]
@@ -496,11 +555,13 @@ def merge_accounts(conn, from_id, into_id):
         conn.execute("UPDATE accounts SET bank = ? WHERE id = ?", (a["bank"], into_id))
     for table in ("account_sources", "imports", "subscriptions"):
         conn.execute(f"UPDATE {table} SET account_id = ? WHERE account_id = ?", (into_id, from_id))
-    if a["anchor_date"] is not None and (b["anchor_date"] is None or a["anchor_date"] > b["anchor_date"]):
-        # The newer balance wins (the copy's usually came from the bank's file), and the copy's balance
-        # check with it: its imports are this account's now.
-        conn.execute("UPDATE accounts SET anchor_date = ?, anchor_balance = ?, anchor_source = ?, check_from = ? "
-                     "WHERE id = ?", (a["anchor_date"], a["anchor_balance"], a["anchor_source"], a["check_from"], into_id))
+    # The winning balance stays (the copy's usually came from the bank's file), and the check carries on from
+    # whichever account's check started first: both accounts' imports are this account's now.
+    check_from = min(x["check_from"] for x in (a, b) if _checked(x)) if _checked(winner) else winner["check_from"]
+    conn.execute("UPDATE accounts SET anchor_date = ?, anchor_balance = ?, anchor_source = ?, check_from = ? WHERE id = ?",
+                 (winner["anchor_date"], winner["anchor_balance"], winner["anchor_source"], check_from, into_id))
+    if covered:  # taken over by the check (_TAKEN_OVER, or _IN_START), or gone when the winning balance isn't checked
+        conn.execute(f"UPDATE transactions SET after_import = NULL WHERE id IN ({','.join('?' * len(covered))})", covered)
     if is_debt(a["kind"]):
         old, new = payment_categories(conn).get(from_id), ensure_payment_envelope(conn, into_id)
         for r in conn.execute("SELECT month, assigned FROM budget WHERE category_id = ?", (old,)).fetchall():

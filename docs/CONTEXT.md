@@ -65,7 +65,8 @@ its transactions.
 
 **Duplicate account**:
 One real account that ended up as two accounts in the app. It's fixed by merging one
-into the other.
+into the other: afterwards it's as if every file had gone into one account in the first
+place, its balance check included.
 
 **Closed account**:
 An account you no longer use, kept with all its history. It isn't offered for imports or
