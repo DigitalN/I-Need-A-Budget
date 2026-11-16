@@ -248,3 +248,46 @@ def test_the_banks_row_takes_the_added_halfs_place(app):
     assert (half["date"], half["transfer_id"], half["fingerprint"] is not None) == ("2026-10-06", b.atm, True)
     b.mark(b.atm, None)
     assert len(b.rows(other)) == 1  # a real transaction now: Not a transfer sends it back instead
+
+
+
+def _savings_file_takes_the_half(app, b):
+    """Savings kept by hand gets the withdrawal's other half from the app, then its first file, whose row
+    takes the half's place. Returns the account and that import."""
+    other = call(app, "add_account", "Sample Savings", "savings", 0, "2026-09-30", "Sample Credit Union")
+    b.mark(b.atm, other)
+    path = write(app.test_downloads, "Savings.CSV", bank_csv([
+        ("10/06/2026", "INTERNET TRANSFER FROM CHEQUING", "INTERNET TRANSFER FROM CHEQUING", "100.00")]))
+    call(app, "import_files", [str(path)])
+    call(app, "set_file_accounts", str(path), [{"index": 0, "account_id": other}])
+    return other, next(i["id"] for i in call(app, "imports") if i["account_id"] == other)
+
+
+def test_removing_the_file_puts_back_the_added_half_while_it_is_the_transfers(app):
+    """Remove import of that file puts the half back as it was before the file came in (issue #149): the
+    app's added half, so Not a transfer still takes it away."""
+    b = Budget(app)
+    other, imp = _savings_file_takes_the_half(app, b)
+    call(app, "undo_import", imp)
+    [half] = b.rows(other)
+    assert (half["date"], half["hint"], half["transfer_id"], half["fingerprint"]) == ("2026-10-05", "added_half",
+                                                                                      b.atm, None)
+    out = b.mark(b.atm, None)
+    assert b.rows(other) == [] and out["removed_from"] == "Sample Savings"
+
+
+def test_removing_the_file_keeps_the_half_you_decided_about_since(app):
+    """You categorized the bank's row, which ended the transfer: after Remove import of its file it's back
+    as it was before, but yours, like any transaction you added, so it stays when a transfer ends."""
+    b = Budget(app)
+    ids = categories(app, {"Everyday": ["Food"]})
+    other, imp = _savings_file_takes_the_half(app, b)
+    [half] = b.rows(other)
+    call(app, "update_transaction", half["id"], {"category_id": ids["Food"]})
+    call(app, "undo_import", imp)
+    [half] = b.rows(other)
+    assert (half["date"], half["hint"], half["category_id"], half["transfer_id"]) == ("2026-10-05", "", ids["Food"],
+                                                                                      None)
+    b.mark(half["id"], b.chequing)  # a transfer you marked again: it stays when that ends
+    out = b.mark(half["id"], None)
+    assert len(b.rows(other)) == 1 and out["removed_from"] is None

@@ -440,7 +440,7 @@ class Database:
             self.conn.execute("INSERT INTO meta (key, value) VALUES ('schema_version', ?) "
                               "ON CONFLICT(key) DO UPDATE SET value = excluded.value", (str(SCHEMA_VERSION),))
             # Which accounts onboarding made: the newest of them (service.finish_onboarding). A budget set up
-            # before 1.4.0 didn't remember: every account it has counts as one, as before (issue #83). Only
+            # before 1.4.2 didn't remember: every account it has counts as one, as before (issue #83). Only
             # ever written once, so accounts added after this are told apart.
             self.conn.execute("INSERT OR IGNORE INTO meta (key, value) SELECT 'last_onboarding_account', "
                               "(SELECT COALESCE(MAX(id), 0) FROM accounts) "

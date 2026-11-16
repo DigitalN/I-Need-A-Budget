@@ -236,12 +236,16 @@ class Inbox:
         back to what it was before that file came in (before_file), keeping what you decided. Its payee goes back
         only if it's still the one the file's row gave it. A balance adjustment from Check balance… that's still the
         app's waits in the inbox again as Check balance… made it: what the app did with the bank's row (a category, a
-        transfer, a recurring charge) goes, and a transfer's other half is the app's to decide again."""
+        transfer, a recurring charge) goes, and a transfer's other half is the app's to decide again. A transfer's
+        other half the app added (issue #75) is that again while it's still the transfer's; once the transfer has
+        ended (you decided about the bank's row: a category, a split, Not a transfer) it's yours like any you added."""
         c = self.conn
         others = []
         for txn_id in txn_ids:
-            before = c.execute("SELECT * FROM before_file WHERE transaction_id = ?", (txn_id,)).fetchone()
+            before = dict(c.execute("SELECT * FROM before_file WHERE transaction_id = ?", (txn_id,)).fetchone())
             txn = self._txn(txn_id)
+            if before["hint"] == ADDED_HALF and txn["transfer_id"] is None:
+                before["hint"] = ""
             payee = txn["payee_id"] == before["file_payee_id"]
             c.execute("UPDATE transactions SET date = ?, raw_name = ?, raw_memo = ?, bank_type = ?, bank_category = ?, "
                       "hint = ?, after_import = ?, fingerprint = NULL, fitid = NULL, import_id = NULL, "

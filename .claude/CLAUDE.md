@@ -352,7 +352,8 @@ All in `Application Files/`:
   on the other half, marking that one with another account, deleting it or removing its import, a
   merge putting both in one account. Deciding about the half itself (a category, a split, another
   other half) makes it an ordinary one of yours (`_adopt`); the bank's row taking its place (the
-  account's first file, `importer.MANUAL_DAYS`) makes it the bank's. Accounts that get files wait
+  account's first file, `importer.MANUAL_DAYS`) makes it the bank's; Remove import of that file
+  puts it back as the app's half while it's still the transfer's, else as yours (`Inbox.put_back`). Accounts that get files wait
   for theirs, and a closed account gets nothing new. The app's own guesses (an import's "its
   other half isn't imported yet") still wait.
 - **`reason` is only text to show; no code reads it back.** "Charged you again",
@@ -454,7 +455,7 @@ or one kept by hand whenever it was added (decided 2026-11-09: no download can b
 the Wallet, so the half #75 adds to an empty one doesn't hide every Usual). Onboarding's
 accounts that get files always count (a card with a month downloaded really is missing
 history): `finish_onboarding` keeps the newest account as meta `last_onboarding_account`, and
-a budget set up before 1.4.0 has every account it had then counted as onboarding's
+a budget set up before 1.4.2 has every account it had then counted as onboarding's
 (`db._migrate`, written once). While setting up, every account counts. An old account added
 late with only recent transactions counts as new (the accepted cost).
 
@@ -465,8 +466,8 @@ late with only recent transactions counts as new (the accepted cost).
   set by the PRs themselves, so merging is all the maintainer does. The first PR after a
   release raises it (1.0.1 → 1.0.2 by default, 1.0.x → 1.1.0 only for a change big enough
   to deserve it); the PRs after it leave it alone until that version is released, so PRs
-  made side by side don't clash on it. It's 1.4.1 until 1.4.1 is released: 1.4.0 came out on
-  2026-11-10, and #147's PR, the first after it, raised it. Never leave the bump for a separate
+  made side by side don't clash on it. It's 1.4.2 until 1.4.2 is released: 1.4.1 came out on
+  2026-11-16, and #155's PR, the first after it, raised it. Never leave the bump for a separate
   PR after the merge.
 - **A release happens only when the maintainer says it's ready** (their rule since
   2026-11-09, as bugs kept turning up). A merge, a finished list or every session being

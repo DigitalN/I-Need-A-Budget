@@ -39,4 +39,4 @@ and yours, because you marked the transfer.
   Wallet made while setting up would hide every category's Usual until a month had passed.
 - Only transfers you mark: an import's own guess that a row is a transfer to an account
   kept by hand still waits for its other half.
-- Decided 2026-11-08, built for 1.4.0.
+- Decided 2026-11-08, built for 1.4.2.
