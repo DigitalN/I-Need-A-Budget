@@ -20,7 +20,10 @@ Formats (detected from the content, not the file name):
 - Any other bank's CSV, once the person has shown the app its columns (csvlayout.py).
   The layout is saved and found again by the file's header; which account a file is for
   is saved by its file name (dates taken out), and asked when the name is new, or when the
-  file doesn't look like that account (some banks name every download the same: csv_fit).
+  file doesn't look like that account (some banks name every download the same: csv_fit; a
+  row is already there when the account has one of the same amount up to OTHER_KIND_DAYS
+  away, as for the import). The account you pick when asked is where that file goes, whatever
+  its rows (`parse(picked=…)`, issue #159); the next file with its name is checked again.
 - Actual Budget's transaction export: not imported as transactions, only learnt from
   (its categories and which payees went where). See `learn_from_actual()`.
 
@@ -232,17 +235,18 @@ def detect(text):
     return None
 
 
-def parse(path, conn=None):
+def parse(path, conn=None, picked=None):
     """Reads one file. Raises ImportError_ if it isn't a format we know or can read,
     NeedsSetup for a CSV whose layout hasn't been set up, or no longer fits (looked up
-    through `conn`)."""
+    through `conn`). `picked`: the account you picked for a set-up CSV in its pop-up, where
+    it goes whatever its rows (issue #159: csv_account isn't asked)."""
     try:
-        return _parse(Path(path), conn)
+        return _parse(Path(path), conn, picked)
     except csv.Error as e:  # a cell over the size limit, a stray quote...
         raise ImportError_(f"This file can't be read as a table of transactions ({e}).") from None
 
 
-def _parse(path, conn):
+def _parse(path, conn, picked=None):
     text = read_text(path)
     fmt = detect(text)
     if fmt == "tangerine_card":
@@ -254,7 +258,7 @@ def _parse(path, conn):
     if fmt == "rbc":
         return _parse_rbc(text)
     if fmt == "csv":
-        return _parse_csv(text, path.name, conn)
+        return _parse_csv(text, path.name, conn, picked)
     if fmt == "actual":
         return _parse_actual(text)
     raise ImportError_("This doesn't look like a bank file: no column of dates and amounts.")
@@ -658,7 +662,7 @@ def save_layout(conn, sniffed, layout):
     return conn.execute("SELECT id FROM csv_layouts WHERE signature = ?", (signature,)).fetchone()["id"]
 
 
-def _parse_csv(text, filename, conn):
+def _parse_csv(text, filename, conn, picked=None):
     sniffed = csvlayout.sniff(text)
     layout = saved_layout(conn, sniffed) if conn is not None else None
     if layout is None:
@@ -669,7 +673,7 @@ def _parse_csv(text, filename, conn):
     except csvlayout.LayoutError as e:  # the bank changed its file: show the app its columns again
         raise NeedsSetup("layout", f"{e}. Set the file up again from the Inbox.") from None
     key = csv_account_key(layout["id"], filename)
-    account_id = csv_account(conn, layout["id"], key, rows, balance)
+    account_id = picked or csv_account(conn, layout["id"], key, rows, balance)
     hint = AccountHint([key], "chequing", base_name(filename), create=False, account_id=account_id)
     opening = (day_before(balance["date"]), balance["sign"] * balance["opening"]) if balance else None
     return Parsed("csv", [Part(hint, rows, opening=opening)], kind=layout_kind(layout))
@@ -705,14 +709,15 @@ def csv_fit(conn, account_id, rows, balance, trusted=False):
                         (account_id,)).fetchone()
     inside = [r for r in rows if span["first"] and span["first"] <= r.date <= span["last"]]
     if len(inside) >= OVERLAP_ROWS:
-        have = Counter((t["date"], t["amount"]) for t in conn.execute(
-            "SELECT date, amount FROM transactions WHERE account_id = ? AND date BETWEEN ? AND ?",
-            (account_id, min(r.date for r in inside), max(r.date for r in inside))))
-        matched = 0
-        for r in inside:
-            if have[(r.date, r.amount)] > 0:
-                have[(r.date, r.amount)] -= 1
-                matched += 1
+        # Already there as the import sees it (issue #159): the same amount up to OTHER_KIND_DAYS away, each once,
+        # nearest first (a bank's CSV dates things the day they were made, its Quicken file the day they posted).
+        days = f"{ledger.OTHER_KIND_DAYS} days"
+        have = [dict(t) for t in conn.execute(
+            "SELECT id, date, amount FROM transactions WHERE account_id = ? AND hint != ? "
+            "AND date BETWEEN date(?, '-' || ?) AND date(?, '+' || ?)",
+            (account_id, ADJUSTMENT, min(r.date for r in inside), days, max(r.date for r in inside), days))]
+        wanted = [{"id": i, "date": r.date, "amount": r.amount} for i, r in enumerate(inside)]
+        matched = len(ledger.pair_nearest(wanted, have))
         scores.append(FITS if matched >= 0.5 * len(inside) else CONTRADICTS)
     if CONTRADICTS in scores:
         return CONTRADICTS

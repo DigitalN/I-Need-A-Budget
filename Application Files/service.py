@@ -342,8 +342,9 @@ class BudgetService:
         return self._import_files(paths, archive)
 
     def _import_files(self, paths, archive=True, chosen=None, answers=None):
-        """`chosen`: {path: {part index: account id}} for accounts the person picked. `answers`:
-        {path: {part index: 'owed' or 'favour'}} for card balances they said the sign of."""
+        """`chosen`: {path: {part index: account id}} for accounts the person picked (a set-up CSV's
+        goes into it whatever its rows: importer.parse). `answers`: {path: {part index: 'owed' or
+        'favour'}} for card balances they said the sign of."""
         chosen = {str(Path(k)): v for k, v in (chosen or {}).items()}
         answers = {str(Path(k)): v for k, v in (answers or {}).items()}
         downloads = self.settings.downloads_dir().resolve()
@@ -353,7 +354,7 @@ class BudgetService:
             path = Path(p)
             try:
                 with self.db.read() as c:
-                    parsed_files.append((path, importer.parse(path, c)))
+                    parsed_files.append((path, importer.parse(path, c, chosen.get(str(path), {}).get(0))))
             except importer.NeedsSetup as e:
                 needs_setup.append({"path": str(path), "filename": path.name, "needs": e.what})
             except (importer.ImportError_, OSError) as e:
@@ -713,9 +714,13 @@ class BudgetService:
         width = sniffed["width"]
         header = sniffed["header"] or [f"Column {i + 1}" for i in range(width)]
         layout = {k: v for k, v in (saved or sniffed["guess"]).items() if k != "id"}
+        try:  # 1 when its balance goes down as money goes out, -1 when it goes up (a card's), else None
+            balance = csvlayout.running_balance(importer.read_text(path), csvlayout.clean_layout(layout, width))
+        except ValueError:
+            balance = None
         return {"path": str(path), "filename": path.name, "header": header, "has_header": bool(sniffed["header"]),
                 "sample": sniffed["rows"][:6], "rows": len(sniffed["rows"]), "layout": layout,
-                "mostly_positive": sniffed["mostly_positive"],
+                "mostly_positive": sniffed["mostly_positive"], "balance_sign": balance and balance["sign"],
                 "saved": saved is not None, "account_id": suggested_account,
                 "suggested_name": importer.base_name(path.name)}
 
@@ -733,30 +738,42 @@ class BudgetService:
     @exposed
     def setup_csv(self, path, layout, account):
         """Saves how to read files like this one and which account this one is for, then
-        imports it. `account`: {'id'} for an existing account, or {'name', 'kind', 'bank'}."""
+        imports it into that account, whatever its rows (issue #159: the next file with its
+        name is checked as before). `account`: {'id'} for an existing account, or {'name',
+        'kind', 'bank'}. A card's file (its balance goes up as money goes out) can't go into a
+        cash account: refused before anything is written."""
         path = Path(path)
         text = importer.read_text(path)
         sniffed = csvlayout.sniff(text)
         if sniffed is None:
             raise UserError("This doesn't look like a bank file.")
-        csvlayout.read(text, csvlayout.clean_layout(layout, sniffed["width"]))  # every row must fit
+        clean = csvlayout.clean_layout(layout, sniffed["width"])
+        csvlayout.read(text, clean)  # every row must fit
+        balance = csvlayout.running_balance(text, clean)
         with self.db.write() as c:
-            layout_id = importer.save_layout(c, sniffed, layout)
             if account.get("id"):
                 account_id = int(account["id"])
-                if not c.execute("SELECT 1 FROM accounts WHERE id = ?", (account_id,)).fetchone():
+                acct = c.execute("SELECT kind FROM accounts WHERE id = ?", (account_id,)).fetchone()
+                if acct is None:
                     raise UserError("That account no longer exists.")
+                kind = acct["kind"]
             else:
                 name, bank = _name_with_bank(account.get("name"), account.get("bank"))
                 if c.execute("SELECT 1 FROM accounts WHERE name = ? COLLATE NOCASE", (name,)).fetchone():
                     raise UserError("There's already an account with that name.")
-                if account.get("kind") not in ledger.ACCOUNT_KINDS:
+                kind = account.get("kind")
+                if kind not in ledger.ACCOUNT_KINDS:
                     raise UserError("Pick the type of account.")
-                account_id = ledger.create_account(c, name, account["kind"], bank=bank)
+            if balance is not None and balance["sign"] == -1 and not ledger.is_debt(kind):
+                raise UserError("This file's balance goes up when money goes out, like a card's. Pick a card account.")
+            layout_id = importer.save_layout(c, sniffed, layout)
+            if not account.get("id"):
+                account_id = ledger.create_account(c, name, kind, bank=bank)
             importer.remember_csv_account(c, layout_id, path.name, account_id)
         self._forget_file_status()
         downloads = self.settings.downloads_dir().resolve()
-        return self.import_files([str(path)], archive=path.resolve().parent == downloads)
+        return self._import_files([str(path)], archive=path.resolve().parent == downloads,
+                                  chosen={str(path): {0: account_id}})
 
     @exposed
     def ignore_file(self, path):

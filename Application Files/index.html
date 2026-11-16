@@ -2468,10 +2468,12 @@ async function setupFile(path) {
     cols.map((h, i) => `<option value="${i}" ${selected === i ? 'selected' : ''}>${esc(h)}</option>`).join('');
   const lower = info.filename.toLowerCase();
   const brand = /visa/.test(lower) ? 'Visa' : /master ?card|\bmc\b/.test(lower) ? 'Mastercard' : /amex/.test(lower) ? 'Amex' : '';
-  const kindGuess = brand || /card|credit/.test(lower) ? 'credit_card' : /saving/.test(lower) ? 'savings' : 'chequing';
+  const nameGuess = brand || /card|credit/.test(lower) ? 'credit_card' : /saving/.test(lower) ? 'savings' : 'chequing';
+  // A balance that goes up as money goes out is a card's, whatever the file is called (issue #159).
+  const kindGuess = info.balance_sign === -1 ? 'credit_card' : nameGuess;
   const isCard = kind => kind === 'credit_card' || kind === 'line_of_credit';
   // A card file of mostly positive amounts shows its purchases that way: money out is "Positive".
-  const startsPositive = L.negate || (!info.saved && info.mostly_positive && isCard(kindGuess));
+  const startsPositive = L.negate || (!info.saved && info.mostly_positive && isCard(nameGuess));
   const two = L.amount_col === null || L.amount_col === undefined;
   let outcome = null, nameTouched = false, readLayout = () => ({}), readAccount = () => ({});
   const v = await dialog({
