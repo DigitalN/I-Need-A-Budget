@@ -105,6 +105,7 @@ def test_the_banks_id_already_on_another_row_doesnt_break_the_match(app):
 # keeping what you decided. Not deleted, and not left with the bank's date, which can fall inside an older balance.
 
 import db  # noqa: E402
+import pytest  # noqa: E402
 import test_balance_check as check  # noqa: E402
 
 
@@ -231,6 +232,32 @@ def test_a_check_balance_adjustment_you_categorized_comes_back(app, monkeypatch)
     assert call(app, "accounts")[0]["balance"] == 257000 and check._start(app) == 105000
 
 
+@pytest.mark.parametrize("order", [("chequing-3.ofx", "chequing-1.ofx"), ("chequing-1.ofx", "chequing-3.ofx")])
+def test_removing_the_file_the_check_starts_from_as_well(app, monkeypatch, tmp_path, order):
+    """With the put-back Check balance… adjustment there, in either order: as if neither file had come in (the check
+    starts again from the Oct 12 file, and the adjustment, made after it, is still yours, in Parking)."""
+    mine, parking = _parking_on_the_file_day(app, monkeypatch)
+    for name in order:
+        _remove(app, name)
+    replay = check._service(tmp_path / "replay")
+    check._import(replay, "chequing-2.ofx", check.ofx(check.MISSING + check.OCTOBER, "2600.00", "20261012"))
+    call(replay, "finish_onboarding", "2026-09")
+    monkeypatch.setenv("INAB_TODAY", "2026-10-12")
+    call(replay, "reconcile", call(replay, "accounts")[0]["id"], 259000)
+    [theirs] = check._adjustments(replay)
+    call(replay, "categorize", txn_ids=[theirs["id"]],
+         category_id=categories(replay, {"Everyday": ["Parking"]})["Parking"])
+    monkeypatch.setenv("INAB_TODAY", "2026-10-21")
+
+    def seen(service, txn_id):
+        row = _txn(service, txn_id)
+        return (call(service, "accounts")[0]["balance"], check._start(service),
+                [(a["amount"], a["date"]) for a in check._adjustments(service)],
+                (row["payee_name"], row["date"], row["amount"]))
+    assert seen(app, mine) == seen(replay, theirs["id"])
+    assert _txn(app, mine)["category_id"] == parking
+
+
 def test_the_apps_own_check_balance_adjustment_comes_back_waiting(app, monkeypatch):
     """Not categorized: it comes back to the Inbox as it was, even after the app categorized the bank's row."""
     mine, parking = _parking_on_the_file_day(app, monkeypatch, categorize=False)
@@ -313,8 +340,6 @@ def test_an_existing_database_gets_a_place_to_remember_what_a_files_row_replaced
 # ⌘Z puts back exactly what was there.
 
 import random  # noqa: E402
-
-import pytest  # noqa: E402
 import re  # noqa: E402
 from datetime import date, timedelta  # noqa: E402
 

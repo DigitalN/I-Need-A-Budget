@@ -78,10 +78,10 @@ All in `Application Files/`:
   when it changes none; a write without a label that changes anything clears undo, unless
   `keep_undo`; `big_step()` marks a step ⌘Z asks about first;
   `steps_made()` is the step a request made, for its toast's Undo; see Key rules). Schema is at
-  version 13. To change it: raise `SCHEMA_VERSION`,
+  version 14. To change it: raise `SCHEMA_VERSION`,
   add the column to `SCHEMA` *and* an `ALTER TABLE` step in `_migrate` for existing
   databases. Upgrades copy the database to the backups folder
-  (`budget-before-upgrade-v13-to-v14-<date and time>.db`) first. The
+  (`budget-before-upgrade-v14-to-v15-<date and time>.db`) first. The
   user's real database has real data in it: test every upgrade on a copy of it first.
 - `backups.py`: backups ([ADR 0004](../docs/adr/0004-live-budget-stays-out-of-synced-folders.md)).
   `at_quit` and `at_launch` (a backup only if `changed`: the budget's `digest` differs from
@@ -243,7 +243,13 @@ All in `Application Files/`:
   the importer's and `cross_kind_pairs`' matching skip it; the one exception is below, for Check
   balance…'s). It's worked out from scratch after
   every import into the account, Remove import and a merge (`Inbox.check_balance`): it shrinks,
-  or goes, as the missing transactions arrive, and Remove import puts it back. **After Merge into…
+  or goes, as the missing transactions arrive, and Remove import puts it back. Every import keeps its file's
+  balance (`imports.file_balance_*`), whether or not it became the account's, so Remove import settles the
+  balance and the check's start again from the files still imported, as if the removed file had never come in
+  (issues #151 and #169). A balance you typed that the removed file had replaced (or one from before version 8)
+  comes back unless a file imported after you typed it has a balance as new: only such a file takes its place, for
+  the balance and the check's start, even a file imported earlier with a balance for the same day doesn't (decided
+  on #169). **After Merge into…
   the check works as if the copy's files had gone into the account in the first place**, whichever
   balance wins (issue #147): it carries on from whichever account's check started first, so both
   accounts' waiting balance adjustments are worked out again as one and a gap neither has stays; a

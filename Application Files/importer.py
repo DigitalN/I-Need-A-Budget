@@ -1074,7 +1074,8 @@ def _note(conn, import_id, txn_id, row, fp, fitid):
 def note_kept_file(conn, imp, path):
     """An import from before version 12 noted only the transactions it added. This reads its file again (kept in
     Imported Files) and notes every transaction in its account that the file has, found as an import finds them
-    (issue #148). It changes no transaction. Returns how many notes it added. Call inside db.write()."""
+    (issue #148). From version 13 it also notes the balance the file states, whether or not it became the
+    account's (issue #169). It changes no transaction. Returns how many notes it added. Call inside db.write()."""
     acct = conn.execute("SELECT kind FROM accounts WHERE id = ?", (imp["account_id"],)).fetchone()
     parsed = parse(path, conn)
     if acct is None or parsed.format == "actual":
@@ -1082,8 +1083,17 @@ def note_kept_file(conn, imp, path):
     part = _part_of(conn, parsed, imp["account_id"])
     if part is None:
         return 0
-    if part.card_file and ledger.is_debt(acct["kind"]) and _flip(conn, part, imp["account_id"])[0]:
-        part = replace(part, rows=[replace(r, amount=-r.amount) for r in part.rows])
+    flipped = part.card_file and ledger.is_debt(acct["kind"]) and _flip(conn, part, imp["account_id"])[0]
+    if flipped:
+        part = replace(part, rows=[replace(r, amount=-r.amount) for r in part.rows],
+                       balance=(part.balance[0], -part.balance[1]) if part.balance else None)
+    if part.balance and imp["file_balance_date"] is None:  # one that set the balance has it already, as its import read it
+        as_of, balance = part.balance
+        if part.card_file and ledger.is_debt(acct["kind"]) and not flipped and balance > 0:
+            balance = _positive_balance(conn, imp["account_id"], balance,
+                                        ledger.account_balance(conn, imp["account_id"], as_of), None)
+        conn.execute("UPDATE imports SET file_balance_date = ?, file_balance = ? WHERE id = ?",
+                     (as_of, balance, imp["id"]))
     fps, fitids = fingerprints(part.rows), _usable_fitids(part.rows)
     return sum(_note(conn, imp["id"], t["id"], part.rows[i], fps[i], fitids[i])
                for i, t in _twins(conn, imp["account_id"], imp["format"], part, fps, fitids).items())
@@ -1197,6 +1207,8 @@ def _import_part(conn, fmt, part, filename, sha, archived_path, account_id=None,
             balance = _positive_balance(conn, account_id, balance, ours, answer)
             if balance < 0:
                 notes.append("The file's balance read as what you owe")
+        conn.execute("UPDATE imports SET file_balance_date = ?, file_balance = ? WHERE id = ?",
+                     (as_of, balance, import_id))
         if acct["anchor_date"] is None or as_of >= acct["anchor_date"]:
             checked = acct["anchor_source"] == "file" and acct["check_from"] is not None
             conn.execute("UPDATE accounts SET anchor_date = ?, anchor_balance = ?, anchor_source = 'file', check_from = ? "
