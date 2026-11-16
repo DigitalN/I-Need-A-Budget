@@ -78,10 +78,10 @@ All in `Application Files/`:
   when it changes none; a write without a label that changes anything clears undo, unless
   `keep_undo`; `big_step()` marks a step ⌘Z asks about first;
   `steps_made()` is the step a request made, for its toast's Undo; see Key rules). Schema is at
-  version 11. To change it: raise `SCHEMA_VERSION`,
+  version 12. To change it: raise `SCHEMA_VERSION`,
   add the column to `SCHEMA` *and* an `ALTER TABLE` step in `_migrate` for existing
   databases. Upgrades copy the database to the backups folder
-  (`budget-before-upgrade-v11-to-v12-<date and time>.db`) first. The
+  (`budget-before-upgrade-v12-to-v13-<date and time>.db`) first. The
   user's real database has real data in it: test every upgrade on a copy of it first.
 - `backups.py`: backups ([ADR 0004](../docs/adr/0004-live-budget-stays-out-of-synced-folders.md)).
   `at_quit` and `at_launch` (a backup only if `changed`: the budget's `digest` differs from
@@ -94,7 +94,8 @@ All in `Application Files/`:
   CSVs, RBC's CSV (every account in one file, so a file has `parts`), CSVs set up once
   (`csvlayout.py`), and Actual Budget's export (learnt from, never imported as
   transactions). Account matching and fingerprint dedup; it only adds rows, whose ids then
-  arrive in the inbox (`Inbox.arrive`). Its docstring has the rules.
+  arrive in the inbox (`Inbox.arrive`), and notes every transaction each file has
+  (`import_rows`, for Remove import). Its docstring has the rules.
 - `csvlayout.py`: pure. Any bank's CSV: spots a table of dates and amounts (skipping a
   preamble), guesses which column is which, names the layout by its header, reads rows.
 - `banks.py`: bank names. Free text on accounts; `canonical()` turns what files call a
@@ -165,7 +166,30 @@ All in `Application Files/`:
   when at least one of the two falls within the other's file dates: the rows at the edges
   of two downloads (one ending Oct 15, the next starting Oct 16, or overlapping by a day)
   are two transactions (issue #124). A bank's CSV and Quicken file word and date things
-  differently.
+  differently. Two rows of one file never take one transaction (`importer._one_row_each`, the
+  review of #148): when one finds it by its fingerprint and the other by its bank ID (the bank
+  re-dated one of two identical coffees, keeping its ID), the row whose bank ID it carries keeps
+  it; the other is the transaction its own bank ID finds, or, with a bank ID the account doesn't
+  have, a new one, stored under the same row's next occurrence when its fingerprint is taken
+  (`_free_fingerprint`). Without a bank ID, both stay the one transaction, as before. A row
+  alone in its file whose fingerprint finds a transaction carrying another bank ID (a past range
+  listing only the second coffee) takes the one its own bank ID finds, when no row of the file
+  has that and it's the same as the row (date, amount, wording): only transactions that can't be
+  told apart change places, so a bank that numbers rows afresh can't swap two different ones.
+- **Remove import deletes only what no other imported file has** (issue #148). Each import
+  notes every transaction its file has, matched as well as added, and how the file has it
+  (`import_rows`: date, wording, fingerprint, bank ID). A transaction another imported file
+  has stays, under the earliest such file, the way that file has it (its date and the bank's
+  wording; its fingerprint and bank ID where no other transaction has them, so the next file of
+  its kind finds it), keeping what was decided (category, split, note, payee, transfer,
+  recurring charge): where it would be if the removed file had never come in, so the balance
+  check counts it from that file. A balance a later file set too stays (the same file imported
+  again, two downloads the same day): Remove import took it back. Merge into… moves the copy's
+  notes to the transaction kept.
+  An import's "new" figure in Accounts → Imported files is what it holds now. A budget from
+  before 1.4.1 only knew the file each transaction is under: the first launch after the
+  upgrade reads the files kept in Imported Files again (`read_imported_files`, the same file
+  by its sha256) to note the rest. A file that isn't kept there counts only for what it holds.
 - **Never change what `payees.describe()` returns for text it already handles**: a
   changed key splits a payee in two. Add other banks' wording after Tangerine's rules,
   and check it on a copy of real data (every existing transaction must describe the same).
@@ -491,8 +515,8 @@ Don't undo these without asking:
   never a fixed list: there are too many credit unions. New accounts are named "Bank +
   type" (editable, and Edit… changes name and bank any time); existing ones keep theirs.
 - **An account imported twice** is flagged (Inbox and Accounts) and fixed with Merge
-  into…: copies dropped (keeping your categories, notes, splits, transfers, bank IDs), the
-  rest moved, undoable. The newer balance stays (on the same day, the one an import would
+  into…: copies dropped (keeping your categories, notes, splits, transfers, bank IDs, and
+  the files that had them), the rest moved, undoable. The newer balance stays (on the same day, the one an import would
   keep: a file's over a typed one, the later download), and the balance check carries on as
   if the copy's files had gone into the account in the first place (issue #147).
 - **A used category or account can only be hidden or closed**, never deleted (deleting

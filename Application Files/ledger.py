@@ -599,6 +599,9 @@ def _drop_copy(conn, copy, twin):
     if copy["subscription_id"] and not twin["subscription_id"]:
         conn.execute("UPDATE transactions SET subscription_id = ? WHERE id = ?", (copy["subscription_id"], twin["id"]))
     conn.execute("UPDATE transactions SET refund_of = ? WHERE refund_of = ?", (twin["id"], copy["id"]))
+    # The copy's files have the transaction kept (issue #148): removing either file's import keeps it.
+    conn.execute("UPDATE import_rows SET transaction_id = ? WHERE transaction_id = ? AND import_id NOT IN "
+                 "(SELECT import_id FROM import_rows WHERE transaction_id = ?)", (twin["id"], copy["id"], twin["id"]))
     conn.execute("DELETE FROM transactions WHERE id = ?", (copy["id"],))
     if copy["fitid"] and not twin["fitid"] and not conn.execute(
             "SELECT 1 FROM transactions WHERE account_id = ? AND fitid = ?", (twin["account_id"], copy["fitid"])).fetchone():

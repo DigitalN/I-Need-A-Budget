@@ -28,7 +28,7 @@ import transfers
 from errors import UserError
 from figures import Figures
 from inbox import Inbox
-from payees import ADJUSTMENT, TRANSFER_OR_BANK_ENTRY_HINTS
+from payees import ADJUSTMENT, TRANSFER_OR_BANK_ENTRY_HINTS, describe, transaction_hint
 from settings import BUDGET_DEFAULTS, DASHBOARD_MONTHS, budget_settings, move_into_budget, save_budget_settings
 from util import add_months, first_day, last_day, money, month_name, month_of, months_between, parse_date, today
 
@@ -439,6 +439,47 @@ class BudgetService:
         """The inbox (inbox.Inbox) on this db.read() or db.write()."""
         return Inbox(c, self.today())
 
+    def read_imported_files(self):
+        """Once, at the first launch after the upgrade to version 12 (issue #148): until then an import noted only
+        the transactions it added, so this reads the files kept in Imported Files again to note every
+        transaction each one has (importer.note_kept_file). A file that isn't kept there any more (or no longer
+        is the file that was imported) counts only for the transactions it holds, as before. It changes no
+        transaction, and runs before the window opens, so nothing you do can meet it. Returns how many notes
+        it added."""
+        if self.db.get_meta("read_imported_files") is None:
+            return 0
+        with self.db.read() as c:
+            imports = c.execute("SELECT * FROM imports WHERE account_id IS NOT NULL ORDER BY id").fetchall()
+        added = read = 0
+        for imp in imports:
+            path = self._kept_file(imp)
+            if path is None:
+                continue
+            try:
+                with self.db.write(keep_undo=True) as c:  # notes only: no step's undo trips over them
+                    added += importer.note_kept_file(c, imp, path)
+                read += 1
+            except Exception as e:  # one odd file must not stop the others: it counts as before
+                log.warning("Couldn't read %s again: %s", imp["filename"], e)
+        with self.db.write(keep_undo=True) as c:
+            c.execute("DELETE FROM meta WHERE key = 'read_imported_files'")
+        log.info("Read %d of %d imported files again: %d transactions they share noted", read, len(imports), added)
+        return added
+
+    def _kept_file(self, imp):
+        """The file an import read, kept in Imported Files (where it was moved, or the same place in this data
+        folder), or None: one dropped from another folder was never kept, and one changed since isn't it."""
+        if not imp["archived_path"]:
+            return None
+        kept = Path(imp["archived_path"])
+        for path in (kept, self.data_dir / "Imported Files" / kept.parent.name / kept.name):
+            try:
+                if path.is_file() and importer.sha256_of(path) == imp["sha256"]:
+                    return path
+            except OSError:
+                continue
+        return None
+
     @exposed
     def recheck(self, payee_ids=None):
         """The re-check: looks again at what's waiting in the inbox (all of it, or just these
@@ -730,22 +771,45 @@ class BudgetService:
 
     @exposed
     def imports(self):
+        """The newest imports. `rows_new` is how many of the file's transactions are under it now: what Remove
+        import takes, or moves to another file that has them. A file takes in its "new" figure the ones it
+        has when the file they were under is removed (issue #148), or when Merge into… finds the copy's file
+        brought them first."""
         with self.db.read() as c:
-            return _rows(c.execute(
+            out = _rows(c.execute(
                 "SELECT i.*, a.name AS account_name FROM imports i LEFT JOIN accounts a ON a.id = i.account_id "
                 "ORDER BY i.id DESC LIMIT 50"))
+            held = dict(c.execute("SELECT import_id, COUNT(*) FROM transactions WHERE import_id IS NOT NULL "
+                                  "AND hint != ? GROUP BY import_id", (ADJUSTMENT,)).fetchall())
+        for i in out:
+            i["rows_new"] = held.get(i["id"], 0)
+        return out
 
     @exposed
     def undo_import(self, import_id):
-        """Deletes the transactions an import added (and a balance adjustment it made). The
-        other halves of their transfers are the app's to decide about again (Inbox.ask_again),
-        and the account's balance adjustment is worked out again without it."""
+        """Deletes the transactions only this import's file has (and a balance adjustment it made). One
+        that another imported file has too stays (issue #148), under the earliest of them, the way that
+        file has it (_move_under): where it would be if this file had never come in, so the balance check
+        counts it from that file. The other halves of the deleted ones' transfers are the app's to decide
+        about again (Inbox.ask_again), and the account's balance adjustment is worked out again without
+        it. `removed` and `stayed` count them."""
         with self.db.write("Remove import") as c:
             imp = _existing(c, "imports", import_id, "*")
-            rows = c.execute("SELECT id, transfer_id FROM transactions WHERE import_id = ?", (import_id,)).fetchall()
-            ids = {r["id"] for r in rows}
-            others = [r["transfer_id"] for r in rows if r["transfer_id"] and r["transfer_id"] not in ids]
-            c.execute("DELETE FROM transactions WHERE import_id = ?", (import_id,))
+            rows = c.execute("SELECT * FROM transactions WHERE import_id = ?", (import_id,)).fetchall()
+            nexts = {r["id"]: c.execute("SELECT * FROM import_rows WHERE transaction_id = ? AND import_id != ? "
+                                        "ORDER BY import_id LIMIT 1", (r["id"], import_id)).fetchone() for r in rows}
+            staying = [r for r in rows if nexts[r["id"]] is not None]
+            ids = {r["id"] for r in rows if nexts[r["id"]] is None}
+            others = [r["transfer_id"] for r in rows if r["id"] in ids and r["transfer_id"] and r["transfer_id"] not in ids]
+            c.execute("DELETE FROM transactions WHERE import_id = ? AND id NOT IN "
+                      "(SELECT transaction_id FROM import_rows WHERE import_id != ?)", (import_id, import_id))
+            # After the deletions, what they had is free to take. One that stays can want the fingerprint or bank ID
+            # another gives up as it moves (two identical rows the files list in another order): again until none can.
+            for _ in range(len(staying) + 1):
+                moved = [self._move_under(c, c.execute("SELECT * FROM transactions WHERE id = ?", (r["id"],)).fetchone(),
+                                          nexts[r["id"]]) for r in staying]
+                if not any(moved):
+                    break
             if imp["anchor_after_date"] is not None:
                 self._take_back_balance(c, imp)
             self._take_back_check(c, imp)
@@ -763,17 +827,46 @@ class BudgetService:
             self.db.big_step(f"The import of {name} comes back." if not ids else
                              f"The transaction from {name} comes back." if len(ids) == 1 else
                              f"The {len(ids)} transactions from {name} come back.")
-        return {"removed": len(ids), "counts": self.counts()}
+        return {"removed": len(ids), "stayed": len(staying), "counts": self.counts()}
+
+    def _move_under(self, c, txn, row):
+        """A transaction another import's file has too goes under that import, the way its file has it: its
+        date and the bank's wording (as one you added by hand does when a file brings it), and its
+        fingerprint and bank ID where no other transaction in the account has them, so the next file of
+        its kind finds it. What was decided about it stays: category, split, note, payee, transfer,
+        recurring charge. Returns whether it changed anything."""
+        def free(column):
+            value = row[column]
+            taken = value is not None and c.execute(
+                f"SELECT 1 FROM transactions WHERE account_id = ? AND {column} = ? AND id != ?",
+                (txn["account_id"], value, txn["id"])).fetchone()
+            return value if value is not None and not taken else txn[column]
+        hint = txn["hint"]
+        if (row["raw_name"], row["raw_memo"]) != (txn["raw_name"], txn["raw_memo"]):
+            kind = c.execute("SELECT kind FROM accounts WHERE id = ?", (txn["account_id"],)).fetchone()["kind"]
+            hint = transaction_hint(describe(row["raw_name"], row["raw_memo"], kind))
+        new = (row["import_id"], row["date"], row["raw_name"], row["raw_memo"], row["bank_type"], row["bank_category"],
+               hint, free("fingerprint"), free("fitid"))
+        columns = ("import_id", "date", "raw_name", "raw_memo", "bank_type", "bank_category", "hint", "fingerprint",
+                   "fitid")
+        if new == tuple(txn[k] for k in columns):
+            return False
+        c.execute(f"UPDATE transactions SET {', '.join(k + ' = ?' for k in columns)} WHERE id = ?", (*new, txn["id"]))
+        return True
 
     def _take_back_balance(self, c, imp):
         """The balance a removed import set goes, and the one it replaced comes back, if it's
         still the account's: one a later file or you set since is left alone (and a later
-        import that replaced this one's balance now remembers what this one had before)."""
+        import that replaced this one's balance now remembers what this one had before). So is
+        one a later file set too (the same file imported again, or two downloads the same day):
+        that file still says so (issue #148)."""
         before = (imp["anchor_before_date"], imp["anchor_before_balance"])
         after = (imp["anchor_after_date"], imp["anchor_after_balance"])
         current = c.execute("SELECT anchor_date, anchor_balance FROM accounts WHERE id = ?",
                             (imp["account_id"],)).fetchone()
-        if current is not None and (current["anchor_date"], current["anchor_balance"]) == after:
+        later = c.execute("SELECT 1 FROM imports WHERE account_id = ? AND id > ? AND anchor_after_date IS ? "
+                          "AND anchor_after_balance IS ?", (imp["account_id"], imp["id"], *after)).fetchone()
+        if current is not None and (current["anchor_date"], current["anchor_balance"]) == after and not later:
             # An import from before version 8 didn't record where the balance it replaced came from.
             source = (imp["anchor_before_source"] or "file") if before[0] is not None else None
             c.execute("UPDATE accounts SET anchor_date = ?, anchor_balance = ?, anchor_source = ? WHERE id = ?",
