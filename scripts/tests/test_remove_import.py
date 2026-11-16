@@ -354,6 +354,64 @@ def test_two_identical_rows_as_many_stay_as_the_remaining_file_has(app):
     assert _under(app) == Counter({("2026-09-12", -400, "SAMPLE COFFEE CALGARY AB", "b.ofx"): 1})
 
 
+def test_two_identical_rows_one_the_bank_redated_both_stay(app):
+    """Two identical $4.00 coffees on Sep 12 in the first file. The bank's later download has one of them re-dated to
+    Sep 14 and re-worded (its own ID kept) and the other as it was, which is the first coffee's fingerprint (the first of
+    its kind that day). Each row is noted with its own coffee (the review of #148: both were noted with the first, so
+    Remove import of the first file deleted the second, though the later file has it)."""
+    coffee = ("-4.00", "SAMPLE COFFEE CALGARY AB")
+    check._import(app, "a.ofx", check.ofx([("20260912", *coffee, "C1"), ("20260912", *coffee, "C2")], "992.00",
+                                          "20260912", start="20260901"))
+    call(app, "finish_onboarding", "2026-09")
+    check._import(app, "b.ofx", check.ofx([("20260914", "-4.00", "SAMPLE COFFEE CALGARY", "C1"),
+                                           ("20260912", *coffee, "C2")], "992.00", "20260920", start="20260912"))
+    out = _remove(app, "a.ofx")
+    assert (out["removed"], out["stayed"]) == (0, 2)
+    assert _under(app) == Counter({("2026-09-14", -400, "SAMPLE COFFEE CALGARY", "b.ofx"): 1,
+                                   ("2026-09-12", -400, "SAMPLE COFFEE CALGARY AB", "b.ofx"): 1})
+
+
+def test_what_stays_goes_under_the_earliest_file_that_has_it(app):
+    """The same, with a third file that has both coffees as the first did: both go under the second file, the earliest
+    that has them, so nothing waits (the second went under the third, and +$4.00 waited for good)."""
+    coffee = ("-4.00", "SAMPLE COFFEE CALGARY AB")
+    both = [("20260912", *coffee, "C1"), ("20260912", *coffee, "C2")]
+    check._import(app, "a.ofx", check.ofx(both, "992.00", "20260912", start="20260901"))
+    call(app, "finish_onboarding", "2026-09")
+    check._import(app, "b.ofx", check.ofx([("20260914", "-4.00", "SAMPLE COFFEE CALGARY", "C1"),
+                                           ("20260912", *coffee, "C2")], "992.00", "20260920", start="20260912"))
+    check._import(app, "c.ofx", check.ofx(both + [("20260925", "-10.00", "SAMPLE BAKERY", "C3")], "982.00", "20260925",
+                                          start="20260912"))
+    _remove(app, "a.ofx")
+    assert [t for t in _under(app) if t[1] == -400 and t[3] != "b.ofx"] == []
+    assert check._adjustments(app) == []
+
+
+def test_a_second_purchase_that_looks_like_a_row_the_bank_redated_is_its_own(app):
+    """At import (older than #148): the bank re-dated the first coffee to Sep 14 (its ID kept), and a second coffee,
+    bought on Sep 12 too, has an ID of its own the account doesn't have. It's a transaction of its own (it was taken for
+    the first coffee, lost, and waited as a -$4.00 balance adjustment instead)."""
+    check._import(app, "a.ofx", check.ofx([("20260912", "-4.00", "SAMPLE COFFEE CALGARY AB", "C1")], "996.00", "20260912",
+                                          start="20260901"))
+    call(app, "finish_onboarding", "2026-09")
+    out = check._import(app, "b.ofx", check.ofx([("20260914", "-4.00", "SAMPLE COFFEE CALGARY", "C1"),
+                                                 ("20260912", "-4.00", "SAMPLE COFFEE CALGARY AB", "C2")],
+                                                "992.00", "20260920", start="20260912"))
+    assert out["results"][0]["added"] == 1
+    assert check._adjustments(app) == []
+
+
+def test_two_rows_with_no_bank_id_to_tell_them_apart_stay_as_before(app):
+    """Without a bank ID, a row the account already has stays the one transaction: nothing new is added."""
+    check._import(app, "a.ofx", check.ofx([("20260912", "-4.00", "SAMPLE COFFEE CALGARY AB", "C1")], "996.00", "20260912",
+                                          start="20260901"))
+    call(app, "finish_onboarding", "2026-09")
+    text = check.ofx([("20260914", "-4.00", "SAMPLE COFFEE CALGARY", "C1"),
+                      ("20260912", "-4.00", "SAMPLE COFFEE CALGARY AB", "X")], "996.00", "20260920", start="20260912")
+    out = check._import(app, "b.ofx", text.replace("<FITID>X", ""))
+    assert out["results"][0]["added"] == 0 and len(_of(app, -400)) == 1
+
+
 def test_a_file_before_the_one_the_check_starts_from(app, tmp_path):
     """A CSV (no balance) first, then the Quicken file the check starts from, then one that also has the CSV's café
     charge: removing the CSV, the charge stays under that last file, older history to the check, so nothing waits, as
@@ -534,9 +592,10 @@ def test_remove_imports_question_and_message_say_what_stays():
 # ── random made-up histories ─────────────────────────────────────────────────────────────────
 #
 # One account's downloads, each covering the days before it was made (overlapping, sometimes with a gap, sometimes two
-# the same day), imported as they're made, with some transactions categorized by hand. Removing any one file leaves the budget as it would be had
-# that file never come in (every transaction's date, amount, wording and file, the balance, the start and what waits in
-# the Inbox), keeping what was decided about what stays; ⌘Z then puts back exactly what was there.
+# the same day; identical rows, and rows the bank re-dates when they post), imported as they're made, with some
+# transactions categorized by hand. Removing any one file leaves the budget as it would be had that file never come in
+# (every transaction's date, amount, wording and file, the balance, the start and what waits in the Inbox), keeping what
+# was decided about what stays; ⌘Z then puts back exactly what was there.
 
 import random
 from datetime import date, timedelta
@@ -546,25 +605,32 @@ NAMES = ["SAMPLE CAFE CALGARY AB", "SAMPLE GROCER CALGARY AB", "SAMPLE PHONE CO"
 
 
 def _history(rng):
+    """Downloads of one made-up account. Some transactions the bank re-dates and re-words two days later, keeping their
+    ID (a pending charge that posted): a download made before that has it as it was, one made after as it posted. Some
+    days have two identical rows, sometimes one of them re-dated."""
     day0 = date(2026, 9, 1)
     truth = []
     for n in range(rng.randint(12, 28)):
         when = day0 + timedelta(days=rng.randint(0, 40))
         name = rng.choice(NAMES)
         amount = rng.randint(100, 9000) * (1 if name.startswith("PAYROLL") else -1)
-        truth.append((when, amount, name))
-        if rng.random() < 0.15:
-            truth.append((when, amount, name))  # two identical rows on one day
-    truth.sort()
+        truth.append((when, amount, name, rng.random() < 0.15))
+        if rng.random() < 0.2:
+            truth.append((when, amount, name, rng.random() < 0.5))  # two identical rows on one day
     rows = []
-    for i, (when, amount, name) in enumerate(truth):
-        rows.append((when, f"{amount / 100:.2f}", name, f"T{i}"))
+    for i, (when, amount, name, redated) in enumerate(truth):
+        rows.append((when, f"{amount / 100:.2f}", name, f"T{i}", when + timedelta(days=2) if redated else None))
     files, made = [], day0
     while made < date(2026, 10, 12) and len(files) < 6:
         made = min(made + timedelta(days=rng.choice([0, 3, 5, 8, 12])), date(2026, 10, 12))  # 0: the same day again
         start = max(day0, made - timedelta(days=rng.randint(2, 25)))
-        mine = [(d.strftime("%Y%m%d"), a, n, f) for d, a, n, f in rows if start <= d <= made]
-        balance = 100000 + sum(round(float(a) * 100) for d, a, n, f in rows if d <= made)
+        mine = []
+        for d, a, n, f, posted in rows:
+            if posted is not None and posted <= made:
+                d, n = posted, n.replace(" CALGARY AB", "") + " POSTED"
+            if start <= d <= made:
+                mine.append((d.strftime("%Y%m%d"), a, n, f))
+        balance = 100000 + sum(round(float(a) * 100) for d, a, n, f, posted in rows if d <= made)
         files.append((f"file-{len(files) + 1}.ofx", check.ofx(mine, f"{balance / 100:.2f}", made.strftime("%Y%m%d"),
                                                              start=start.strftime("%Y%m%d"))))
     return files
