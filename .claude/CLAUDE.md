@@ -558,6 +558,13 @@ Don't undo these without asking:
   the next file imports on its own and a new name only asks which account. Until then
   the file waits at the top of the Inbox ("Not a bank file" ignores it for good). A CSV
   you chose or dropped opens the pop-up straight away; one the watcher found shows a toast.
+  A file that doesn't look like its name's account (`importer.csv_fit`, #50: a row is already
+  there with the same amount up to 2 days away, as for the import) asks "Which account is X
+  for?". **The account you pick in the pop-up is where that file goes** (issue #159), whatever
+  its rows, even if it fits another account better; the next file with its name is checked
+  again. The one exception: a card's file (its balance goes up as money goes out) can't go
+  into a chequing, savings or Wallet account ("…like a card's. Pick a card account.", before
+  anything is made), and "New account…" starts on Credit card for one.
 - **The bank on an account is free text** with suggestions as you type (`banks.py`),
   never a fixed list: there are too many credit unions. New accounts are named "Bank +
   type" (editable, and Edit… changes name and bank any time); existing ones keep theirs.

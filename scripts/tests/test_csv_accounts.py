@@ -209,3 +209,189 @@ def test_a_card_csv_whose_first_purchase_is_dated_before_the_last_files_last_say
     path = write(app.test_downloads, "accountactivity.csv", NEXT_AFTER_OCT_8)
     [result] = call(app, "import_files", [str(path)])["results"]
     assert (result["added"], result["balance_note"]) == (3, "")  # it said "the app has -$385.00" (before #138, -$400.00)
+
+
+# Issue #159: the account you pick in the set-up pop-up is where the file goes. Picking it asked again, forever.
+
+
+def _pick(app, path, account):
+    return call(app, "setup_csv", str(path), call(app, "csv_setup", str(path))["layout"], account)
+
+
+def _refused(app, path, account):
+    out = app.dispatch("setup_csv", [str(path), call(app, "csv_setup", str(path))["layout"], account])
+    assert not out["ok"]
+    return out["error"]
+
+
+def test_a_card_download_with_charges_that_posted_late_comes_in_once_you_pick_its_account(app):
+    app.db.set_meta("onboarded", "1")
+    _set_up(app, "10/01/2026,SAMPLE AIRLINE,500.00,,500.00\n10/05/2026,PAYMENT - THANK YOU,,100.00,400.00\n"
+                 "10/10/2026,SAMPLE HOTEL,200.00,,600.00\n", "TD Visa", "credit_card")
+    # Three charges from Oct 7–9 that posted after the first download, then Oct 11–12.
+    path = write(app.test_downloads, "accountactivity.csv",
+                 "10/07/2026,SAMPLE LUNCH,15.00,,615.00\n10/08/2026,SAMPLE TAXI,25.00,,640.00\n"
+                 "10/09/2026,SAMPLE BOOKS,10.00,,650.00\n10/11/2026,SAMPLE CAFE,5.00,,655.00\n"
+                 "10/12/2026,SAMPLE GROCER,20.00,,675.00\n")
+    assert call(app, "import_files", [str(path)])["needs_setup"]  # "Which account is accountactivity.csv for?"
+    out = _pick(app, path, {"id": _accounts(app)["TD Visa"]["id"]})
+    assert not out["needs_setup"]  # it asked again
+    assert [(r["account_name"], r["added"]) for r in out["results"]] == [("TD Visa", 5)]
+
+
+GAP_HEAD = "Date,Description,Amount\n"
+GAP = GAP_HEAD + "".join(f"2026-08-{d},SAMPLE SHOP {d},-{d}.00\n" for d in (10, 12, 15, 20))
+
+
+def _gap_account(app):
+    app.db.set_meta("onboarded", "1")
+    _set_up(app, GAP_HEAD + "2026-08-01,SAMPLE CAFE,-4.50\n2026-08-02,SAMPLE GROCER,-61.20\n"
+                            "2026-08-03,SAMPLE EMPLOYER PAY,1500.00\n",
+            "Sample Chequing", "chequing", bank="Sample CU", filename="activity.csv")
+    sep = write(app.test_downloads, "activity.csv", GAP_HEAD + "2026-09-01,SAMPLE CAFE,-4.75\n"
+                "2026-09-02,SAMPLE GROCER,-58.10\n2026-09-03,SAMPLE EMPLOYER PAY,1500.00\n")
+    [result] = call(app, "import_files", [str(sep)])["results"]
+    assert result["added"] == 3
+    return _accounts(app)["Sample Chequing"]["id"]
+
+
+def test_a_missed_download_filled_in_later_comes_in_once_you_pick_its_account(app):
+    acct = _gap_account(app)
+    path = write(app.test_downloads, "activity.csv", GAP)  # Aug 10–20, all inside Aug 1 – Sep 3, none of it there
+    assert call(app, "import_files", [str(path)])["needs_setup"]
+    out = _pick(app, path, {"id": acct})
+    assert [(r["account_name"], r["added"]) for r in out["results"]] == [("Sample Chequing", 4)]
+    # The same file dropped again after Remove import is checked as before: asked again.
+    call(app, "undo_import", out["results"][0]["import_id"])
+    again = write(app.test_downloads, "activity.csv", GAP)
+    assert call(app, "import_files", [str(again)])["needs_setup"]
+
+
+def test_the_next_file_with_that_name_is_still_checked(app):
+    acct = _gap_account(app)
+    _pick(app, write(app.test_downloads, "activity.csv", GAP), {"id": acct})
+    # Inside the account's dates, and none of it is there: asked about, as before.
+    odd = write(app.test_downloads, "activity.csv", GAP_HEAD + "2026-08-25,SAMPLE OTHER ONE,-12.00\n"
+                "2026-08-26,SAMPLE OTHER TWO,-13.00\n2026-08-27,SAMPLE OTHER THREE,-14.00\n")
+    out = call(app, "import_files", [str(odd)])
+    assert out["needs_setup"] and not out["results"]
+
+
+def test_a_new_file_name_set_up_for_a_card_whose_late_charges_arent_there_comes_in_at_once(app):
+    app.db.set_meta("onboarded", "1")
+    _set_up(app, "10/01/2026,SAMPLE AIRLINE,500.00,,500.00\n10/05/2026,PAYMENT - THANK YOU,,100.00,400.00\n"
+                 "10/10/2026,SAMPLE HOTEL,200.00,,600.00\n", "TD Visa", "credit_card")
+    path = write(app.test_downloads, "visa 2026-10-13.csv",
+                 "10/07/2026,SAMPLE LUNCH,15.00,,615.00\n10/08/2026,SAMPLE TAXI,25.00,,640.00\n"
+                 "10/09/2026,SAMPLE BOOKS,10.00,,650.00\n10/11/2026,SAMPLE CAFE,5.00,,655.00\n"
+                 "10/12/2026,SAMPLE GROCER,20.00,,675.00\n")
+    assert call(app, "import_files", [str(path)])["needs_setup"]  # a name the app hasn't seen
+    out = _pick(app, path, {"id": _accounts(app)["TD Visa"]["id"]})
+    assert not out["needs_setup"]
+    assert [(r["account_name"], r["added"]) for r in out["results"]] == [("TD Visa", 5)]
+
+
+def test_your_pick_wins_over_another_account_the_file_fits(app):
+    app.db.set_meta("onboarded", "1")
+    _set_up(app, CHEQUING, "TD Chequing", "chequing")
+    _set_up(app, "10/01/2026,SAMPLE INTEREST,,1.00,101.00\n10/05/2026,SAMPLE TRANSFER IN,,50.00,151.00\n"
+                 "10/10/2026,SAMPLE TRANSFER OUT,20.00,,131.00\n", "TD Savings", "savings")
+    # NEXT_CHEQUING continues TD Chequing's balance, and its rows fall inside TD Savings' dates without being there:
+    # on its own it goes to TD Chequing, though the name points at TD Savings.
+    path = write(app.test_downloads, "accountactivity.csv", NEXT_CHEQUING)
+    [result] = call(app, "import_files", [str(path)])["results"]
+    assert result["account_name"] == "TD Chequing"
+    call(app, "undo_import", result["import_id"])
+    path = write(app.test_downloads, "accountactivity.csv", NEXT_CHEQUING)
+    out = _pick(app, path, {"id": _accounts(app)["TD Savings"]["id"]})
+    assert [(r["account_name"], r["added"]) for r in out["results"]] == [("TD Savings", 3)]
+
+
+def _ofx(rows, balance="2000.00", as_of="20261008"):
+    trn = "".join(f"<STMTTRN><TRNTYPE>OTHER<DTPOSTED>{d}<TRNAMT>{a}<FITID>{f}<NAME>{n}</STMTTRN>\n" for d, a, n, f in rows)
+    return ("OFXHEADER:100\nDATA:OFXSGML\nVERSION:102\n\n<OFX><SIGNONMSGSRSV1><SONRS><FI><ORG>Sample CU"
+            "<FID>00000</FI></SONRS></SIGNONMSGSRSV1><BANKMSGSRSV1><STMTTRNRS><STMTRS><CURDEF>CAD\n"
+            "<BANKACCTFROM><BANKID>0000<ACCTID>000999888777<ACCTTYPE>CHECKING</BANKACCTFROM>\n<BANKTRANLIST>\n"
+            f"{trn}</BANKTRANLIST><LEDGERBAL><BALAMT>{balance}<DTASOF>{as_of}</LEDGERBAL></STMTRS></STMTTRNRS>"
+            "</BANKMSGSRSV1></OFX>\n")
+
+
+def test_a_csv_dated_a_day_before_the_quicken_files_isnt_asked_about(app):
+    """Decided on #159: a row is already there when the account has one of the same amount up to two days away
+    (ledger.OTHER_KIND_DAYS), as for the import, not only on the same day."""
+    app.db.set_meta("onboarded", "1")
+    # Quicken files date things the day they posted: Oct 2, 3, 6, 7.
+    call(app, "import_files", [str(write(app.test_downloads, "Statement.qfx", _ofx([
+        ("20261002", "-61.20", "GROCER 0042", "Q1"), ("20261003", "1500.00", "PAYROLL DEPOSIT", "Q2"),
+        ("20261006", "-4.50", "CAFE PURCHASE", "Q3"), ("20261007", "-22.00", "BOOKSTORE", "Q4")])))])
+    [acct] = call(app, "accounts")
+    # The bank's CSV, under a name now known to be this account (September's rows, before the Quicken file).
+    _pick(app, write(app.test_downloads, "activity.csv", GAP_HEAD + "2026-09-01,SAMPLE CAFE,-4.75\n"
+                     "2026-09-02,SAMPLE GROCER,-58.10\n2026-09-03,SAMPLE GYM,-30.00\n"), {"id": acct["id"]})
+    # Its next download dates the same four the day they were made: Oct 1, 2, 5, 6.
+    path = write(app.test_downloads, "activity.csv", GAP_HEAD + "2026-10-01,SAMPLE GROCER,-61.20\n"
+                 "2026-10-02,SAMPLE EMPLOYER PAY,1500.00\n2026-10-05,SAMPLE CAFE,-4.50\n2026-10-06,SAMPLE BOOKS,-22.00\n")
+    out = call(app, "import_files", [str(path)])
+    assert not out["needs_setup"]
+    assert [(r["added"], r["duplicates"]) for r in out["results"]] == [(0, 4)]
+
+
+def test_a_card_file_starts_its_new_account_on_credit_card(app):
+    """Decided on #159: the file's balance goes up as money goes out, so "New account…" starts on Credit card, whatever
+    the file name says ("accountactivity.csv" said Chequing)."""
+    app.db.set_meta("onboarded", "1")
+    _set_up(app, CHEQUING, "TD Chequing", "chequing")
+    visa = write(app.test_downloads, "accountactivity.csv", VISA)
+    assert call(app, "import_files", [str(visa)])["needs_setup"]
+    assert call(app, "csv_setup", str(visa))["balance_sign"] == -1
+    assert call(app, "csv_setup", str(write(app.test_downloads, "other.csv", NEXT_CHEQUING)))["balance_sign"] == 1
+    assert call(app, "csv_setup", str(write(app.test_downloads, "plain.csv", GAP)))["balance_sign"] is None
+
+
+CARD_REFUSED = "This file's balance goes up when money goes out, like a card's. Pick a card account."
+
+
+def _everything(app):
+    with app.db.read() as c:
+        return [c.execute(f"SELECT * FROM {t} ORDER BY rowid").fetchall()
+                for t in ("accounts", "account_sources", "transactions", "imports", "csv_layouts")]
+
+
+def test_a_card_file_cant_go_into_a_chequing_account(app):
+    """Decided on #159: refused before anything is written, so no account is left behind."""
+    app.db.set_meta("onboarded", "1")
+    _set_up(app, CHEQUING, "TD Chequing", "chequing")
+    visa = write(app.test_downloads, "accountactivity.csv", VISA)
+    call(app, "import_files", [str(visa)])
+    before = [[tuple(r) for r in rows] for rows in _everything(app)]
+    assert _refused(app, visa, {"id": _accounts(app)["TD Chequing"]["id"]}) == CARD_REFUSED
+    assert _refused(app, visa, {"name": "TD Chequing 2", "kind": "chequing", "bank": "TD"}) == CARD_REFUSED
+    assert _refused(app, visa, {"name": "TD Wallet", "kind": "cash", "bank": "TD"}) == CARD_REFUSED
+    assert [[tuple(r) for r in rows] for rows in _everything(app)] == before
+    # A card account takes it.
+    out = _pick(app, visa, {"name": "TD Credit card", "kind": "credit_card", "bank": "TD"})
+    assert [(r["account_name"], r["added"]) for r in out["results"]] == [("TD Credit card", 3)]
+
+
+def test_a_file_whose_balance_goes_down_with_charges_can_go_into_a_card(app):
+    """Either sort: some banks' card balances go down as you spend. The pick wins."""
+    app.db.set_meta("onboarded", "1")
+    path = write(app.test_downloads, "activity.csv", NEXT_CHEQUING)
+    out = _pick(app, path, {"name": "Sample Card", "kind": "credit_card", "bank": "Sample CU"})
+    assert [(r["account_name"], r["added"]) for r in out["results"]] == [("Sample Card", 3)]
+
+
+def test_a_check_balance_adjustment_doesnt_make_the_next_download_look_like_another_accounts(app, monkeypatch):
+    """The review of #159: a Check balance… adjustment, dated today, stretched the account's dates, so every row of the
+    next download fell inside them without being there, and the app asked which account it was for."""
+    app.db.set_meta("onboarded", "1")
+    _set_up(app, VISA_TO_OCT_8, "TD Visa", "credit_card")
+    acct = _accounts(app)["TD Visa"]["id"]
+    call(app, "set_balance", acct, 60000, "2026-10-08")
+    monkeypatch.setenv("INAB_TODAY", "2026-10-12")
+    call(app, "reconcile", acct, 64000)  # the bank shows $640.00 owed: a balance adjustment dated Oct 12
+    path = write(app.test_downloads, "accountactivity.csv", "10/09/2026,SAMPLE TAXI,25.00,,625.00\n"
+                 "10/10/2026,SAMPLE BOOKS,10.00,,635.00\n10/11/2026,SAMPLE CAFE,5.00,,640.00\n")
+    out = call(app, "import_files", [str(path)])
+    assert not out["needs_setup"]
+    assert [(r["account_name"], r["added"]) for r in out["results"]] == [("TD Visa", 3)]
