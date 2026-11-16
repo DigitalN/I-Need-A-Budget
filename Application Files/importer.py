@@ -59,7 +59,8 @@ dates, though: the rows at the edges of two downloads (one ends Oct 15, the next
 they overlap by a day) are different transactions. Accounts holding the same transactions that way are
 flagged and merged like those with shared fingerprints (ledger.cross_kind_pairs). So is one
 you added by hand (no fingerprint, ID or import) with the same amount within MANUAL_DAYS days:
-it takes the bank's date, text and IDs and keeps what you decided.
+it takes the bank's date, text and IDs and keeps what you decided. What it was is remembered
+(`before_file`), so Remove import of the last file that has it puts it back (issue #149).
 
 New rows are only added here: each Result's `new_ids` then arrive in the inbox
 (inbox.Inbox.arrive), which categorizes what it can.
@@ -1154,6 +1155,12 @@ def _import_part(conn, fmt, part, filename, sha, archived_path, account_id=None,
             # It takes what the bank says and keeps what you decided (category, split, note, payee, by_you). A balance
             # adjustment from Check balance… takes the bank's payee too: "Balance adjustment" was the app's (issue #137).
             payee_id, similar = ledger.resolve_payee(conn, desc)
+            # Remembered as it is, so Remove import of the last file that has it puts it back (issue #149).
+            conn.execute("INSERT OR REPLACE INTO before_file (transaction_id, date, raw_name, raw_memo, bank_type, "
+                         "bank_category, hint, payee_id, similar_payee_id, after_import, file_payee_id) "
+                         "SELECT id, date, raw_name, raw_memo, bank_type, bank_category, hint, payee_id, similar_payee_id, "
+                         "after_import, CASE WHEN hint = ? THEN ? ELSE COALESCE(payee_id, ?) END "
+                         "FROM transactions WHERE id = ?", (ADJUSTMENT, payee_id, payee_id, mine["id"]))
             conn.execute("UPDATE transactions SET date = ?, raw_name = ?, raw_memo = ?, bank_type = ?, bank_category = ?, "
                          "hint = ?, fingerprint = ?, fitid = ?, import_id = ?, after_import = NULL, "
                          "payee_id = CASE WHEN hint = ? THEN ? ELSE COALESCE(payee_id, ?) END, "

@@ -42,7 +42,8 @@ _Avoid_: statement, export, download
 
 **Import**:
 Bringing one file's transactions into the budget. An import can be removed again,
-taking with it the transactions no other imported file has.
+taking with it the transactions no other imported file has. One you added by hand that a
+file's row took the place of isn't taken: it goes back to what you entered.
 
 **Balance**:
 What's in an account at the end of a day. A Quicken file brings the bank's own; one typed

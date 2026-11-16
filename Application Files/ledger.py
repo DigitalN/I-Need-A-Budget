@@ -134,6 +134,7 @@ def newest_balance_import(conn, account_id):
 # is as new as are taken over.
 
 ADJUSTMENT_PAYEE = "Balance adjustment"
+CHECK_BALANCE_REASON = "To match the balance the bank shows"  # a Check balance… adjustment's
 
 
 @dataclass
@@ -513,6 +514,9 @@ def merge_accounts(conn, from_id, into_id):
     covered = [r["id"] for r in conn.execute(
         "SELECT id FROM transactions WHERE account_id = ? AND hint = ? AND import_id IS NULL AND date <= ?",
         (loser["id"], ADJUSTMENT, winner["anchor_date"]))] if winner["anchor_date"] is not None else []
+    if winner["anchor_date"] is not None:  # the same for one a file's row took the place of, for when it's put back
+        conn.execute("UPDATE before_file SET after_import = NULL WHERE hint = ? AND date <= ? AND transaction_id IN "
+                     "(SELECT id FROM transactions WHERE account_id = ?)", (ADJUSTMENT, winner["anchor_date"], loser["id"]))
     moved = dropped = 0
     asked = []
     copies = conn.execute("SELECT * FROM transactions WHERE account_id = ? ORDER BY date, id", (from_id,)).fetchall()
@@ -602,6 +606,9 @@ def _drop_copy(conn, copy, twin):
     # The copy's files have the transaction kept (issue #148): removing either file's import keeps it.
     conn.execute("UPDATE import_rows SET transaction_id = ? WHERE transaction_id = ? AND import_id NOT IN "
                  "(SELECT import_id FROM import_rows WHERE transaction_id = ?)", (twin["id"], copy["id"], twin["id"]))
+    # What the copy was before a file's row took its place (you added it by hand there) goes with it: removing the
+    # files that have it puts it back (issue #149). The kept one's own comes first.
+    conn.execute("UPDATE OR IGNORE before_file SET transaction_id = ? WHERE transaction_id = ?", (twin["id"], copy["id"]))
     conn.execute("DELETE FROM transactions WHERE id = ?", (copy["id"],))
     if copy["fitid"] and not twin["fitid"] and not conn.execute(
             "SELECT 1 FROM transactions WHERE account_id = ? AND fitid = ?", (twin["account_id"], copy["fitid"])).fetchone():
@@ -861,5 +868,7 @@ def merge_payees(conn, from_id, into_id):
         return
     for table in ("transactions", "examples", "subscriptions"):
         conn.execute(f"UPDATE {table} SET payee_id = ? WHERE payee_id = ?", (into_id, from_id))
+    for column in ("payee_id", "file_payee_id"):  # what a transaction is put back to (issue #149)
+        conn.execute(f"UPDATE before_file SET {column} = ? WHERE {column} = ?", (into_id, from_id))
     conn.execute("UPDATE payee_keys SET payee_id = ?, how = 'user' WHERE payee_id = ?", (into_id, from_id))
     conn.execute("DELETE FROM payees WHERE id = ?", (from_id,))
