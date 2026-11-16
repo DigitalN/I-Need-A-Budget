@@ -98,10 +98,10 @@ def test_an_existing_database_upgrades_with_imports_that_remember_nothing(tmp_pa
     again = db.Database(path)
     columns = [r["name"] for r in again.conn.execute("PRAGMA table_info(imports)")]
     assert {"anchor_before_date", "anchor_before_balance", "anchor_after_date", "anchor_after_balance"} <= set(columns)
-    assert again.get_meta("schema_version") == str(db.SCHEMA_VERSION) == "12"
+    assert again.get_meta("schema_version") == str(db.SCHEMA_VERSION) == "13"
     old = again.conn.execute("SELECT * FROM imports").fetchone()
     assert (old["filename"], old["anchor_after_date"]) == ("old.ofx", None)  # removing it leaves the balance as it is
-    assert list((tmp_path / "I Need A Budget Backups").glob("budget-before-upgrade-v6-to-v12-*.db"))
+    assert list((tmp_path / "I Need A Budget Backups").glob("budget-before-upgrade-v6-to-v13-*.db"))
 
 
 # ── Transactions another imported file still has (issue #148) ────────────────────────────────
@@ -569,11 +569,12 @@ def test_the_upgrade_notes_each_transactions_own_file(tmp_path):
         for suffix in ("ins", "upd", "del"):
             c.execute(f"DROP TRIGGER IF EXISTS undo_import_rows_{suffix}")
         c.execute("DROP TABLE import_rows")  # a version 11 database (and the same tables as 7 for this)
+        c.execute("UPDATE imports SET file_balance_date = NULL, file_balance = NULL")
         c.execute("UPDATE meta SET value = ? WHERE key = 'schema_version'", (version,))
         service.db.close()
         again = db.Database(folder / "budget.db")
-        assert again.get_meta("schema_version") == str(db.SCHEMA_VERSION) == "12"
-        assert list((folder / "I Need A Budget Backups").glob(f"budget-before-upgrade-v{version}-to-v12-*.db"))
+        assert again.get_meta("schema_version") == str(db.SCHEMA_VERSION) == "13"
+        assert list((folder / "I Need A Budget Backups").glob(f"budget-before-upgrade-v{version}-to-v13-*.db"))
         assert again.get_meta("read_imported_files") == "1"
         with again.read() as c:
             own = c.execute("SELECT COUNT(*) FROM import_rows r JOIN transactions t ON t.id = r.transaction_id "
@@ -585,6 +586,9 @@ def test_the_upgrade_notes_each_transactions_own_file(tmp_path):
         upgraded = BudgetService(again, Settings(folder / "settings.json"), folder / "data")
         upgraded.read_imported_files()
         assert _links(upgraded) == links
+        with again.read() as c:
+            assert c.execute("SELECT file_balance_date, file_balance FROM imports WHERE filename = 'a.ofx'").fetchone()[:] == \
+                ("2026-09-20", 291000)
         again.close()
 
 
@@ -707,9 +711,9 @@ def test_removing_any_file_is_as_if_it_had_never_come_in(app, tmp_path, seed):
 @pytest.mark.parametrize("seed", range(20))
 def test_after_merge_into_removing_any_file_is_as_from_one_account(tmp_path, monkeypatch, seed):
     """#147's random downloads, some under the copy's number, merged: then removing any one file leaves every transaction
-    as removing it does where every file went into one account (its date, amount and the file it's under), and ⌘Z puts
-    both back. Not the balance: after a merge, the balance a removed file replaced, and the file the check starts from
-    next, are still each account's own (older than #148: the same on main)."""
+    as removing it does where every file went into one account (its date, amount and the file it's under), with the
+    same balance, balance adjustment and check start, and ⌘Z puts both back (issues #147 and #169). Both are what a
+    fresh budget that got every other file has (#169's "Done when")."""
     from helpers import card_number
     rng = random.Random(seed)
     card = seed % 2 == 1
@@ -730,8 +734,115 @@ def test_after_merge_into_removing_any_file_is_as_from_one_account(tmp_path, mon
     for k in range(len(files)):
         before = check._outcome(one)
         outs = [_remove(budget, f"file-{k}.ofx") for budget in (one, two)]
-        assert check._outcome(two)[3] == check._outcome(one)[3], (seed, k)
+        assert check._outcome(two) == check._outcome(one), (seed, k)
         assert outs[0]["stayed"] == outs[1]["stayed"], (seed, k)  # (`removed` counts its balance adjustment too)
+        assert _money(two) == _money(_fresh(tmp_path / f"fresh-{k}", files, k, own, card)), (seed, k)
         for budget in (one, two):
             call(budget, "undo")
         assert check._outcome(one) == check._outcome(two) == before, (seed, k)
+
+
+def _fresh(folder, files, skip, number, card):
+    """A fresh budget that got every file but `skip`, in order, under one number, each by its own name."""
+    app = check._service(folder)
+    for j, f in enumerate(files):
+        if j == skip:
+            continue
+        text = check._download(card, number, *f)
+        if call(app, "accounts"):
+            check._import(app, f"file-{j}.ofx", text)
+        else:
+            check._new_account(app, f"file-{j}.ofx", text, f"Account {number[-4:]}")
+            call(app, "finish_onboarding", "2026-09")
+    return app
+
+
+def _books(app):
+    """The account's balance (date, amount, where it came from) and the file its check starts from, by name."""
+    [a] = app.db.conn.execute("SELECT * FROM accounts").fetchall()
+    start = app.db.conn.execute("SELECT filename FROM imports WHERE id = ?", (a["check_from"],)).fetchone()
+    return a["anchor_date"], a["anchor_balance"], a["anchor_source"], start[0] if start else None
+
+
+def _money(app):
+    """What a removal has to leave as a budget that never had the file would: the balance, the balance adjustment
+    waiting, the start, every transaction (date and amount) and the account's balance and check start."""
+    balance, waiting, start, rows = check._outcome(app)
+    return balance, waiting, start, sorted((d, a) for d, a, _ in rows), _books(app)
+
+
+def _play(folder, actions, card, number, skip=()):
+    """A budget that got `actions` in order, leaving out the files in `skip`: ("file", k, download) or ["typed", cents,
+    day], a balance you typed (3. Balances for the day of the account's balance, Set balance… for today). Returns None
+    when a balance was typed before any file still there (no account to type it into)."""
+    app = check._service(folder)
+    made = False
+    for act in actions:
+        if act[0] == "file":
+            if act[1] in skip:
+                continue
+            text = check._download(card, number, *act[2])
+            if made:
+                assert not check._import(app, f"file-{act[1]}.ofx", text).get("needs")
+            else:
+                check._new_account(app, f"file-{act[1]}.ofx", text, "Account")
+                call(app, "finish_onboarding", "2026-09")
+                made = True
+        elif not made:
+            return None
+        else:
+            cents, day = act[1], act[2]
+            call(app, "set_balance", account_id=call(app, "accounts")[0]["id"], cents=abs(cents), date=day,
+                 in_favour=bool(card and cents > 0))
+    return app
+
+
+@pytest.mark.parametrize("seed", [0, 1, 2, 3, 21, 28, 58, 59, 72, 78])  # #171 before its review: 21 to 78 differed
+def test_removing_two_files_with_balances_you_typed_between_them_is_as_if_they_had_never_come_in(tmp_path, monkeypatch,
+                                                                                               seed):
+    """The review of #171's histories: #147's random downloads in a random order, with balances you typed between
+    them. Remove one file, then another: after each, the same as a fresh budget that got the same downloads and typed
+    the same balances, without the removed files; the money check is never off, and ⌘Z twice puts it all back."""
+    from helpers import card_number
+    import ledger
+    monkeypatch.setenv("INAB_TODAY", "2026-11-01")
+    rng = random.Random(seed)
+    card = seed % 2 == 1
+    number = card_number("4444") if card else "000111222333"
+    files = check._random_downloads(rng, card)
+    order = list(range(len(files)))
+    rng.shuffle(order)
+    plan = []
+    for k in order:
+        plan.append(("file", k, files[k]))
+        if rng.random() < 0.35:
+            plan.append(("typed", rng.choice([-1, 1]) * rng.randint(1_00, 300_00), rng.random() < 0.4))
+    # What you type is worked out once, from what the app shows on the day, then typed the same in every budget.
+    actions, app = [], check._service(tmp_path / "app")
+    for act in plan:
+        if act[0] == "typed":
+            accounts = call(app, "accounts")
+            if not accounts:
+                continue
+            a = accounts[0]
+            day = "2026-11-01" if act[2] or a["anchor_date"] is None else a["anchor_date"]
+            act = ["typed", (ledger.account_balance(app.db.conn, a["id"], day) or 0) + act[1], day]
+            call(app, "set_balance", account_id=a["id"], cents=abs(act[1]), date=day, in_favour=bool(card and act[1] > 0))
+        elif not call(app, "accounts"):
+            check._new_account(app, f"file-{act[1]}.ofx", check._download(card, number, *act[2]), "Account")
+            call(app, "finish_onboarding", "2026-09")
+        else:
+            check._import(app, f"file-{act[1]}.ofx", check._download(card, number, *act[2]))
+        actions.append(act)
+    for k in range(len(files)):
+        m = rng.choice([x for x in range(len(files)) if x != k])
+        before = _dump(app)
+        for step, gone in enumerate((k, m)):
+            _remove(app, f"file-{gone}.ofx")
+            fresh = _play(tmp_path / f"fresh-{k}-{m}-{step}", actions, card, number, skip={k, m} if step else {k})
+            if fresh is not None:
+                assert _money(app) == _money(fresh), (seed, k, m, step)
+            assert not any(call(app, "month", month)["summary"].get("off") for month in ("2026-09", "2026-10", "2026-11"))
+        call(app, "undo")
+        call(app, "undo")
+        assert _dump(app) == before, (seed, k, m)
