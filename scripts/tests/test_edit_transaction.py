@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-only
 """Changing the amount of a transaction added by hand. Made-up data only."""
 
-from helpers import call
+from helpers import CARD_FILE, call, card_csv, write
 
 
 def _add(app, *args):
@@ -61,8 +61,12 @@ def test_the_amount_can_change_again_once_it_isnt_a_split_or_a_transfer(app):
     call(app, "split_transaction", t, [{"category_id": food, "amount": -5000}, {"category_id": house, "amount": -3000}])
     call(app, "update_transaction", t, {"date": "2026-10-08"})
     assert call(app, "month", "2026-10")["summary"]["off"] == 0
-    # A transfer that was only marked (its other half isn't imported) has nothing to match.
+    # A transfer that was only marked (its other half isn't imported yet: the card gets files, so it
+    # comes with the next one) has nothing to match. A card kept by hand would get its half (issue #75).
     card = call(app, "add_account", "Sample Visa", "credit_card", 0, "2026-09-30")
+    path = write(app.test_downloads, CARD_FILE, card_csv([("10/02/2026", "SAMPLE STORE", "-5.00", "")]))
+    call(app, "import_files", [str(path)])
+    call(app, "set_file_accounts", str(path), [{"index": 0, "account_id": card}])
     lone = _add(app, cheq, "2026-10-09", "Card payment", -10000)
     call(app, "update_transaction", lone, {"transfer_account_id": card})
     call(app, "update_transaction", lone, {"amount": -12000})

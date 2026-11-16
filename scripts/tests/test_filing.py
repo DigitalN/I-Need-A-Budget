@@ -260,6 +260,26 @@ def test_one_at_a_time_never_files_the_others(app):
     assert result["also_categorized"] == 0 and result["inbox"] == 1
 
 
+def test_one_at_a_time_never_files_a_recurring_charges_other_charges(app):
+    """Issue #63, as the page asks: One at a time in the inbox, then a category picked on the
+    Transactions page. The recurring charge learns its category; its other charges keep waiting."""
+    ids = categories(app, CATS)
+    imp(app, "Chequing.CSV", bank_csv([
+        (f"{m:02d}/24/2026", "EFT Withdrawal to SAMPLE PAYPLAN", "EFT Withdrawal to SAMPLE PAYPLAN", "-38.50")
+        for m in (7, 8, 9)]))
+    first, second, third = sorted(call(app, "inbox")["items"], key=lambda i: i["date"])
+    call(app, "subscription_from_transaction", txn_id=first["id"], name="Couch", kind="bill")  # no category yet
+    assert {t["subscription_name"] for t in txns(app)} == {"Couch"} and call(app, "counts")["inbox"] == 3
+    result = call(app, "categorize", txn_ids=[first["id"]], category_id=ids["Household"], recheck_payee=False)
+    assert result["also_categorized"] == 0 and result["inbox"] == 2
+    call(app, "update_transaction", second["id"], {"category_id": ids["Household"]})
+    [left] = call(app, "inbox")["items"]
+    assert left["id"] == third["id"] and left["suggestions"][0]["name"] == "Household"
+    assert left["guess"] == ids["Household"]  # one click, or Accept all
+    [couch] = call(app, "subscriptions")["bills"]
+    assert couch["category_id"] == ids["Household"]
+
+
 def test_filing_into_subscriptions_asks_what_it_is(app):
     ids = categories(app, CATS)
     imp(app, "Chequing.CSV", bank_csv([

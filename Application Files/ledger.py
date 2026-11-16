@@ -14,8 +14,8 @@ from functools import lru_cache
 
 import transfers
 from errors import UserError
-from payees import ADJUSTMENT, describe, find_similar, merchant_key, transaction_hint
-from util import add_days, day_before
+from payees import ADDED_HALF, ADJUSTMENT, describe, find_similar, merchant_key, transaction_hint
+from util import add_days, day_before, stamp
 
 CASH_KINDS = ("chequing", "savings", "cash")
 DEBT_KINDS = ("credit_card", "line_of_credit")
@@ -34,13 +34,19 @@ def is_debt(kind):
 # ── accounts ──────────────────────────────────────────────────
 
 def create_account(conn, name, kind, keys=(), last4=None, anchor_date=None, anchor_balance=None, bank=None):
+    """A new account, added now (created_at, on the app's today: util.stamp). Never with the id of one of
+    onboarding's that's gone (deleted, or merged into another): up to meta `last_onboarding_account` an id
+    says the account is onboarding's (figures.Figures.coverage, issue #83), and SQLite would reuse the top one."""
     if kind not in ACCOUNT_KINDS:
         raise ValueError(f"Unknown account type: {kind}")
     sort = conn.execute("SELECT COALESCE(MAX(sort), 0) + 1 FROM accounts").fetchone()[0]
-    cur = conn.execute(
-        "INSERT INTO accounts (name, kind, bank, last4, anchor_date, anchor_balance, sort) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (name, kind, bank or None, last4, anchor_date, anchor_balance, sort))
-    account_id = cur.lastrowid
+    account_id = conn.execute(
+        "SELECT MAX(COALESCE((SELECT MAX(id) FROM accounts), 0), "
+        "COALESCE((SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'last_onboarding_account'), 0)) + 1").fetchone()[0]
+    conn.execute(
+        "INSERT INTO accounts (id, name, kind, bank, last4, anchor_date, anchor_balance, sort, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (account_id, name, kind, bank or None, last4, anchor_date, anchor_balance, sort, stamp()))
     for key in keys:
         conn.execute("INSERT OR IGNORE INTO account_sources (key, account_id) VALUES (?, ?)", (key, account_id))
     if is_debt(kind):
@@ -59,6 +65,23 @@ def used_account_ids(conn):
         "UNION SELECT transfer_account_id FROM transactions WHERE transfer_account_id IS NOT NULL "
         "UNION SELECT c.debt_account_id FROM categories c JOIN budget b ON b.category_id = c.id "
         "WHERE c.debt_account_id IS NOT NULL AND b.assigned != 0")}
+
+
+# An account kept by hand, as SQL about the account `a` (see kept_by_hand).
+KEPT_BY_HAND_SQL = ("(NOT EXISTS (SELECT 1 FROM imports WHERE account_id = a.id) "
+                    "AND NOT EXISTS (SELECT 1 FROM account_sources WHERE account_id = a.id) "
+                    "AND NOT EXISTS (SELECT 1 FROM transactions WHERE account_id = a.id "
+                    "AND (import_id IS NOT NULL OR fingerprint IS NOT NULL OR fitid IS NOT NULL)))")
+
+
+def kept_by_hand(conn, account_id):
+    """Whether no file has ever brought this account's transactions: the Wallet, or any account you
+    keep by hand. Not one a file went into (an import, or a transaction that came from a file) or
+    that a file would find (account_sources): that one gets files, and a transfer's other half
+    comes with them (issue #75). No download can be missing from one kept by hand either
+    (figures.Figures.coverage, issue #83)."""
+    row = conn.execute(f"SELECT {KEPT_BY_HAND_SQL} FROM accounts a WHERE a.id = ?", (account_id,)).fetchone()
+    return bool(row and row[0])
 
 
 def account_by_key(conn, keys):
@@ -603,6 +626,10 @@ def _drop_copy(conn, copy, twin):
     if copy["subscription_id"] and not twin["subscription_id"]:
         conn.execute("UPDATE transactions SET subscription_id = ? WHERE id = ?", (copy["subscription_id"], twin["id"]))
     conn.execute("UPDATE transactions SET refund_of = ? WHERE refund_of = ?", (twin["id"], copy["id"]))
+    if twin["hint"] == ADDED_HALF and (copy["import_id"] or copy["fingerprint"] or copy["fitid"]):
+        # A transfer's other half the app added, which the bank's row is a copy of: it's the bank's now, as when
+        # the bank's row takes its place at import (issue #75), so ending the transfer no longer takes it away.
+        conn.execute("UPDATE transactions SET hint = ? WHERE id = ?", (copy["hint"], twin["id"]))
     # The copy's files have the transaction kept (issue #148): removing either file's import keeps it.
     conn.execute("UPDATE import_rows SET transaction_id = ? WHERE transaction_id = ? AND import_id NOT IN "
                  "(SELECT import_id FROM import_rows WHERE transaction_id = ?)", (twin["id"], copy["id"], twin["id"]))

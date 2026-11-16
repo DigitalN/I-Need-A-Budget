@@ -58,7 +58,9 @@ one's twin (ledger.pair_nearest). Only where one of the two rows falls within th
 dates, though: the rows at the edges of two downloads (one ends Oct 15, the next starts Oct 16, or
 they overlap by a day) are different transactions. Accounts holding the same transactions that way are
 flagged and merged like those with shared fingerprints (ledger.cross_kind_pairs). So is one
-you added by hand (no fingerprint, ID or import) with the same amount within MANUAL_DAYS days:
+you added by hand (no fingerprint, ID or import) with the same amount within MANUAL_DAYS days
+(a transfer's other half the app added: within transfers.MARK_WINDOW_DAYS, the days its other half
+could have been, as a transfer to another bank can post days later; issue #75):
 it takes the bank's date, text and IDs and keeps what you decided. What it was is remembered
 (`before_file`), so Remove import of the last file that has it puts it back (issue #149).
 
@@ -80,7 +82,8 @@ from pathlib import Path
 import banks
 import csvlayout
 import ledger
-from payees import ADJUSTMENT, describe, transaction_hint
+import transfers
+from payees import ADDED_HALF, ADJUSTMENT, describe, transaction_hint
 from util import day_before, money, parse_date, short_day, to_cents
 
 log = logging.getLogger("inab")
@@ -1155,12 +1158,14 @@ def _import_part(conn, fmt, part, filename, sha, archived_path, account_id=None,
             continue
         desc = describe(row.name, row.memo, acct["kind"])
         # One you added by hand (no fingerprint, bank ID or import) is the same transaction when
-        # the bank's file brings it: same amount, a few days either side, each matched once.
+        # the bank's file brings it: same amount, a few days either side (a transfer's other half
+        # the app added: as many as a transfer pairs over), each matched once.
         mine = conn.execute(
             "SELECT id FROM transactions WHERE account_id = ? AND fingerprint IS NULL AND fitid IS NULL "
-            "AND import_id IS NULL AND amount = ? AND date BETWEEN date(?, ?) AND date(?, ?) "
+            "AND import_id IS NULL AND amount = ? "
+            "AND abs(julianday(date) - julianday(?)) <= CASE WHEN hint = ? THEN ? ELSE ? END "
             "ORDER BY abs(julianday(date) - julianday(?)), id LIMIT 1",
-            (account_id, row.amount, row.date, f"-{MANUAL_DAYS} days", row.date, f"+{MANUAL_DAYS} days", row.date)).fetchone()
+            (account_id, row.amount, row.date, ADDED_HALF, transfers.MARK_WINDOW_DAYS, MANUAL_DAYS, row.date)).fetchone()
         if mine is not None:
             # It takes what the bank says and keeps what you decided (category, split, note, payee, by_you). A balance
             # adjustment from Check balance… takes the bank's payee too: "Balance adjustment" was the app's (issue #137).

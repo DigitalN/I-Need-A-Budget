@@ -5,8 +5,9 @@ Money is always an int number of cents. Negative means money left the account.
 Dates are ISO strings ('2026-10-08'); months are 'YYYY-MM'.
 """
 
+import os
 import re
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 
@@ -154,6 +155,15 @@ def today():
 
 def now():
     return datetime.now().isoformat(timespec="seconds")
+
+
+def stamp():
+    """When something is made (an account's created_at), as SQLite's datetime('now') writes it
+    (UTC). On the day INAB_TODAY pins, when it's set (the dev preview, the tests), so it can be
+    compared with the dates the app works in (issue #83)."""
+    written = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    pinned = os.environ.get("INAB_TODAY")
+    return pinned + written[10:] if pinned else written
 
 
 def same_day_next_month(day, anchor_day=None):
