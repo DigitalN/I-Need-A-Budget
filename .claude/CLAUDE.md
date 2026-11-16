@@ -166,7 +166,16 @@ All in `Application Files/`:
   when at least one of the two falls within the other's file dates: the rows at the edges
   of two downloads (one ending Oct 15, the next starting Oct 16, or overlapping by a day)
   are two transactions (issue #124). A bank's CSV and Quicken file word and date things
-  differently.
+  differently. Two rows of one file never take one transaction (`importer._one_row_each`, the
+  review of #148): when one finds it by its fingerprint and the other by its bank ID (the bank
+  re-dated one of two identical coffees, keeping its ID), the row whose bank ID it carries keeps
+  it; the other is the transaction its own bank ID finds, or, with a bank ID the account doesn't
+  have, a new one, stored under the same row's next occurrence when its fingerprint is taken
+  (`_free_fingerprint`). Without a bank ID, both stay the one transaction, as before. A row
+  alone in its file whose fingerprint finds a transaction carrying another bank ID (a past range
+  listing only the second coffee) takes the one its own bank ID finds, when no row of the file
+  has that and it's the same as the row (date, amount, wording): only transactions that can't be
+  told apart change places, so a bank that numbers rows afresh can't swap two different ones.
 - **Remove import deletes only what no other imported file has** (issue #148). Each import
   notes every transaction its file has, matched as well as added, and how the file has it
   (`import_rows`: date, wording, fingerprint, bank ID). A transaction another imported file

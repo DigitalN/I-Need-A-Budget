@@ -802,8 +802,13 @@ class BudgetService:
             others = [r["transfer_id"] for r in rows if r["id"] in ids and r["transfer_id"] and r["transfer_id"] not in ids]
             c.execute("DELETE FROM transactions WHERE import_id = ? AND id NOT IN "
                       "(SELECT transaction_id FROM import_rows WHERE import_id != ?)", (import_id, import_id))
-            for r in staying:  # after the deletions: what they had is free to take
-                self._move_under(c, r, nexts[r["id"]])
+            # After the deletions, what they had is free to take. One that stays can want the fingerprint or bank ID
+            # another gives up as it moves (two identical rows the files list in another order): again until none can.
+            for _ in range(len(staying) + 1):
+                moved = [self._move_under(c, c.execute("SELECT * FROM transactions WHERE id = ?", (r["id"],)).fetchone(),
+                                          nexts[r["id"]]) for r in staying]
+                if not any(moved):
+                    break
             if imp["anchor_after_date"] is not None:
                 self._take_back_balance(c, imp)
             # A balance adjustment from Check balance… made after this import now comes after the one before it:
@@ -827,7 +832,7 @@ class BudgetService:
         date and the bank's wording (as one you added by hand does when a file brings it), and its
         fingerprint and bank ID where no other transaction in the account has them, so the next file of
         its kind finds it. What was decided about it stays: category, split, note, payee, transfer,
-        recurring charge."""
+        recurring charge. Returns whether it changed anything."""
         def free(column):
             value = row[column]
             taken = value is not None and c.execute(
@@ -838,10 +843,14 @@ class BudgetService:
         if (row["raw_name"], row["raw_memo"]) != (txn["raw_name"], txn["raw_memo"]):
             kind = c.execute("SELECT kind FROM accounts WHERE id = ?", (txn["account_id"],)).fetchone()["kind"]
             hint = transaction_hint(describe(row["raw_name"], row["raw_memo"], kind))
-        c.execute("UPDATE transactions SET import_id = ?, date = ?, raw_name = ?, raw_memo = ?, bank_type = ?, "
-                  "bank_category = ?, hint = ?, fingerprint = ?, fitid = ? WHERE id = ?",
-                  (row["import_id"], row["date"], row["raw_name"], row["raw_memo"], row["bank_type"],
-                   row["bank_category"], hint, free("fingerprint"), free("fitid"), txn["id"]))
+        new = (row["import_id"], row["date"], row["raw_name"], row["raw_memo"], row["bank_type"], row["bank_category"],
+               hint, free("fingerprint"), free("fitid"))
+        columns = ("import_id", "date", "raw_name", "raw_memo", "bank_type", "bank_category", "hint", "fingerprint",
+                   "fitid")
+        if new == tuple(txn[k] for k in columns):
+            return False
+        c.execute(f"UPDATE transactions SET {', '.join(k + ' = ?' for k in columns)} WHERE id = ?", (*new, txn["id"]))
+        return True
 
     def _take_back_balance(self, c, imp):
         """Settle the balance and its check again from the files still imported, as if the removed file had never
