@@ -45,8 +45,10 @@ within a file counts for nothing, and one already on another row of the account 
 again. Two rows of one file never take one transaction (_one_row_each): when one finds it by its
 fingerprint and the other by its bank ID (the bank re-dated one of two identical coffees), the
 row whose bank ID it carries keeps it, and the other is the transaction its own bank ID finds, or,
-with a bank ID the account doesn't have, a new one (_free_fingerprint). A bank's CSV and its
-Quicken file can describe the same transaction differently, so a row is also the same as one from a *different kind*
+with a bank ID the account doesn't have, a new one (_free_fingerprint); a row alone in its file
+whose fingerprint finds a transaction carrying another bank ID takes the one its own ID finds when
+that's the same as the row. A bank's CSV and its Quicken file can describe the same transaction
+differently, so a row is also the same as one from a *different kind*
 of file in that account (a CSV set up again counts as another kind: imports.format is
 `csv:<layout id>:<its shape>`; plain `csv`, from before that, is the same kind as any of
 them) with the same amount and a date up to OTHER_KIND_DAYS either side, each matched once.
@@ -986,7 +988,7 @@ def _by_fitid(conn, account_id, row, fitid):
     """The transaction in the account with this bank ID. The same ID counts only for the same amount, about when it
     was (posting moves a date)."""
     return conn.execute(
-        "SELECT id, fitid FROM transactions WHERE account_id = ? AND fitid = ? AND amount = ? "
+        "SELECT id, fitid, date, amount, raw_name FROM transactions WHERE account_id = ? AND fitid = ? AND amount = ? "
         "AND date BETWEEN date(?, ?) AND date(?, ?)",
         (account_id, fitid, row.amount, row.date, f"-{FITID_DAYS} days", row.date, f"+{FITID_DAYS} days")).fetchone()
 
@@ -997,13 +999,29 @@ def _one_row_each(conn, account_id, part, fitids, twins):
     it was, which is the first coffee's fingerprint (the first of its kind that day). The row whose bank ID the
     transaction carries keeps it. The other takes the transaction its own bank ID finds, when no row of the file has it,
     and with a bank ID the account doesn't have it's a transaction of its own: a second coffee bought that day. Without
-    a bank ID to tell them apart, both stay on the one transaction, as before. Changes `twins` in place (review of #148:
-    Remove import deleted the transaction the second row was, and a real second purchase was lost)."""
+    a bank ID to tell them apart, both stay on the one transaction, as before.
+
+    A row alone in its file can be the second coffee too: a download of a past range ending before the first posted
+    lists only the second, and its fingerprint finds the first. A row whose fingerprint finds a transaction carrying
+    another bank ID takes the transaction its own bank ID finds, when no row of the file has that one and it's the same
+    as the row (date, amount and wording): only coffees that can't be told apart change places, so a bank that numbers
+    its rows afresh in every download can't swap two different transactions. Changes `twins` in place (review of #148:
+    Remove import deleted or misdated the transaction the second row was, and a real second purchase was lost)."""
     while True:
+        changed = False
+        taken = {t["id"] for t in twins.values()}
+        for i, t in list(twins.items()):
+            if fitids[i] and t["fitid"] and t["fitid"] != fitids[i]:
+                own = _by_fitid(conn, account_id, part.rows[i], fitids[i])
+                row = part.rows[i]
+                if own is not None and own["id"] not in taken and \
+                        (own["date"], own["amount"], own["raw_name"]) == (row.date, row.amount, row.name):
+                    twins[i] = own
+                    taken.add(own["id"])
+                    changed = True
         rows_of = {}
         for i, t in twins.items():
             rows_of.setdefault(t["id"], []).append(i)
-        changed = False
         for rows in (r for r in rows_of.values() if len(r) > 1):
             keeper = next((i for i in rows if fitids[i] and fitids[i] == twins[i]["fitid"]), None)
             if keeper is None:

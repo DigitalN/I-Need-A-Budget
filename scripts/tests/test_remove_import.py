@@ -401,6 +401,39 @@ def test_a_second_purchase_that_looks_like_a_row_the_bank_redated_is_its_own(app
     assert check._adjustments(app) == []
 
 
+def test_a_file_with_only_the_second_of_two_identical_rows_has_that_one(app):
+    """Two identical $4.00 coffees on Sep 12; the bank re-dates the first to Sep 14 when it posts, so a past range ending
+    Sep 12 lists only the second. Its row's fingerprint finds the first coffee (the first of its kind that day), but its
+    bank ID is the second's, which is the same as the row: it's noted with the second. Remove import of the first file
+    then leaves the second under that download on Sep 12 and the first under the next one on Sep 14, as if the first
+    file had never come in (both were dated Sep 12)."""
+    coffee = ("-4.00", "SAMPLE COFFEE CALGARY AB")
+    check._import(app, "a.ofx", check.ofx([("20260912", *coffee, "C1"), ("20260912", *coffee, "C2")], "992.00",
+                                          "20260912", start="20260901"))
+    call(app, "finish_onboarding", "2026-09")
+    check._import(app, "b.ofx", check.ofx([("20260912", *coffee, "C2")], "992.00", "20260912", start="20260905"))
+    check._import(app, "c.ofx", check.ofx([("20260914", "-4.00", "SAMPLE COFFEE CALGARY", "C1"),
+                                           ("20260912", *coffee, "C2")], "992.00", "20260916", start="20260910"))
+    _remove(app, "a.ofx")
+    assert sorted(t for t in _under(app) if t[1] == -400) == [("2026-09-12", -400, "SAMPLE COFFEE CALGARY AB", "b.ofx"),
+                                                              ("2026-09-14", -400, "SAMPLE COFFEE CALGARY", "c.ofx")]
+
+
+def test_a_bank_that_numbers_rows_afresh_never_swaps_two_different_transactions(app):
+    """The row alone in its file takes the transaction its bank ID finds only when that one is the same as the row: a
+    different $4.00 coffee the bank gave that number in an earlier download stays where it is."""
+    check._import(app, "a.ofx", check.ofx([("20260910", "-4.00", "SAMPLE COFFEE CALGARY AB", "1"),
+                                           ("20260912", "-4.00", "SAMPLE COFFEE CALGARY AB", "2")], "992.00", "20260912",
+                                          start="20260901"))
+    call(app, "finish_onboarding", "2026-09")
+    check._import(app, "b.ofx", check.ofx([("20260912", "-4.00", "SAMPLE COFFEE CALGARY AB", "1")], "992.00", "20260912",
+                                          start="20260911"))
+    with app.db.read() as c:
+        noted = c.execute("SELECT t.date FROM import_rows r JOIN imports i ON i.id = r.import_id "
+                          "JOIN transactions t ON t.id = r.transaction_id WHERE i.filename = 'b.ofx'").fetchall()
+    assert [r[0] for r in noted] == ["2026-09-12"]
+
+
 def test_two_rows_with_no_bank_id_to_tell_them_apart_stay_as_before(app):
     """Without a bank ID, a row the account already has stays the one transaction: nothing new is added."""
     check._import(app, "a.ofx", check.ofx([("20260912", "-4.00", "SAMPLE COFFEE CALGARY AB", "C1")], "996.00", "20260912",
@@ -607,7 +640,8 @@ NAMES = ["SAMPLE CAFE CALGARY AB", "SAMPLE GROCER CALGARY AB", "SAMPLE PHONE CO"
 def _history(rng):
     """Downloads of one made-up account. Some transactions the bank re-dates and re-words two days later, keeping their
     ID (a pending charge that posted): a download made before that has it as it was, one made after as it posted. Some
-    days have two identical rows, sometimes one of them re-dated."""
+    days have two identical rows, sometimes one of them re-dated. Some downloads are of a past range, ending a few days
+    before the day they're made (with that day's balance)."""
     day0 = date(2026, 9, 1)
     truth = []
     for n in range(rng.randint(12, 28)):
@@ -624,15 +658,16 @@ def _history(rng):
     while made < date(2026, 10, 12) and len(files) < 6:
         made = min(made + timedelta(days=rng.choice([0, 3, 5, 8, 12])), date(2026, 10, 12))  # 0: the same day again
         start = max(day0, made - timedelta(days=rng.randint(2, 25)))
+        last = max(start, made - timedelta(days=rng.randint(1, 4))) if rng.random() < 0.2 else made  # a past range
         mine = []
         for d, a, n, f, posted in rows:
             if posted is not None and posted <= made:
                 d, n = posted, n.replace(" CALGARY AB", "") + " POSTED"
-            if start <= d <= made:
+            if start <= d <= last:
                 mine.append((d.strftime("%Y%m%d"), a, n, f))
         balance = 100000 + sum(round(float(a) * 100) for d, a, n, f, posted in rows if d <= made)
-        files.append((f"file-{len(files) + 1}.ofx", check.ofx(mine, f"{balance / 100:.2f}", made.strftime("%Y%m%d"),
-                                                             start=start.strftime("%Y%m%d"))))
+        text = check.ofx(mine, f"{balance / 100:.2f}", made.strftime("%Y%m%d"), start=start.strftime("%Y%m%d"))
+        files.append((f"file-{len(files) + 1}.ofx", check._past(text, last.strftime("%Y%m%d")) if last < made else text))
     return files
 
 
