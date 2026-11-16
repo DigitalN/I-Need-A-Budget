@@ -32,11 +32,12 @@ from datetime import datetime
 from pathlib import Path
 
 import backups
+import settings
 from errors import UserError
 
 log = logging.getLogger("inab")
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 14
 
 CANT_UNDO = "That can't be undone any more."
 
@@ -144,12 +145,15 @@ CREATE TABLE IF NOT EXISTS imports (
     last_date TEXT,
     covers_from TEXT,                    -- the first day the file says it covers (a Quicken file's DTSTART;
                                          -- none: it doesn't say): see ledger.balance_difference
+    covers_to TEXT,                      -- ... and the last (its DTEND; midnight is the end of the day before)
     archived_path TEXT,
     anchor_before_date TEXT,             -- the balance this import replaced (none: the account had none) ...
     anchor_before_balance INTEGER,
     anchor_before_source TEXT,
     anchor_after_date TEXT,              -- ... and the one it set (none: it didn't move the balance)
     anchor_after_balance INTEGER,
+    file_balance_date TEXT,              -- the balance this file states, whether or not it became the account's
+    file_balance INTEGER,
     balance_note TEXT NOT NULL DEFAULT ''  -- what the import said about the balance, shown with it
 );
 
@@ -219,6 +223,42 @@ CREATE TABLE IF NOT EXISTS splits (
 );
 CREATE INDEX IF NOT EXISTS splits_transaction ON splits(transaction_id);
 
+-- Which files each transaction was in, and how each has it (issue #148). An import stores only the rows its account
+-- doesn't have yet, so a row two downloads share is one transaction, under the file that brought it first. Remove
+-- import deletes a transaction only when no other import has it: otherwise it moves under the earliest one left,
+-- taking that file's date, wording, fingerprint and bank ID (service.BudgetService.undo_import).
+CREATE TABLE IF NOT EXISTS import_rows (
+    import_id INTEGER NOT NULL REFERENCES imports(id) ON DELETE CASCADE,
+    transaction_id INTEGER NOT NULL REFERENCES transactions(id) ON DELETE CASCADE,
+    date TEXT NOT NULL,                  -- the row as this file has it ...
+    raw_name TEXT NOT NULL DEFAULT '',
+    raw_memo TEXT NOT NULL DEFAULT '',
+    bank_type TEXT NOT NULL DEFAULT '',
+    bank_category TEXT NOT NULL DEFAULT '',
+    fingerprint TEXT,                    -- ... its importer.fingerprint() in this file
+    fitid TEXT,                          -- ... and its bank ID there (none: the file has none, or repeats it)
+    PRIMARY KEY (import_id, transaction_id)
+);
+CREATE INDEX IF NOT EXISTS import_rows_transaction ON import_rows(transaction_id);
+
+-- A transaction you added by hand, or a balance adjustment from Check balance…, as it was before a file's row took its
+-- place (importer: the same amount within a few days): what the file's row changed. Remove import of the last file that
+-- has it puts it back (issue #149). Its fingerprint, bank ID and import were none.
+CREATE TABLE IF NOT EXISTS before_file (
+    transaction_id INTEGER PRIMARY KEY REFERENCES transactions(id) ON DELETE CASCADE,
+    date TEXT NOT NULL,
+    raw_name TEXT NOT NULL DEFAULT '',
+    raw_memo TEXT NOT NULL DEFAULT '',
+    bank_type TEXT NOT NULL DEFAULT '',
+    bank_category TEXT NOT NULL DEFAULT '',
+    hint TEXT NOT NULL DEFAULT '',
+    payee_id INTEGER REFERENCES payees(id) ON DELETE SET NULL,
+    similar_payee_id INTEGER REFERENCES payees(id) ON DELETE SET NULL,
+    after_import INTEGER,                -- as transactions.after_import: not a reference
+    file_payee_id INTEGER REFERENCES payees(id) ON DELETE SET NULL  -- the payee the file's row gave it: the payee
+                                         -- goes back only if it's still that one (not one you chose since)
+);
+
 CREATE TABLE IF NOT EXISTS budget (
     month TEXT NOT NULL,
     category_id INTEGER NOT NULL REFERENCES categories(id) ON DELETE CASCADE,
@@ -258,7 +298,7 @@ INSERT OR IGNORE INTO undo_state (id, active) VALUES (1, 0);
 # Tables whose changes can be undone.
 UNDO_TABLES = ("meta", "accounts", "account_sources", "category_groups", "categories", "payees", "payee_keys",
                "imports", "subscriptions", "transactions", "splits", "budget", "examples", "csv_layouts",
-               "ignored_files")
+               "ignored_files", "import_rows", "before_file")
 
 
 class Database:
@@ -270,6 +310,7 @@ class Database:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.lock = threading.RLock()
         self._depth = 0
+        self._made = threading.local()  # the undo steps this thread's request made: see begin_request()
         self.conn = sqlite3.connect(str(self.path), check_same_thread=False, isolation_level=None)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
@@ -296,6 +337,8 @@ class Database:
             if version is not None and version < SCHEMA_VERSION:
                 self._backup_before_upgrade(version)
             self.conn.executescript(SCHEMA)
+            if version is None:  # a new budget: Overspending and Usual's months are kept in it (issue #153)
+                settings.new_budget(self.conn)
             if version is not None and version < 2:
                 columns = [r["name"] for r in self.conn.execute("PRAGMA table_info(categories)")]
                 if "note" not in columns:
@@ -359,7 +402,41 @@ class Database:
                 columns = [r["name"] for r in self.conn.execute("PRAGMA table_info(transactions)")]
                 if "after_import" not in columns:
                     self.conn.execute("ALTER TABLE transactions ADD COLUMN after_import INTEGER")
-            # Next upgrade: `if version is not None and version < 11: ...`, then raise SCHEMA_VERSION.
+            if version is not None and version < 11:
+                # The last day each file says it covers, so what a file that stops before its balance's day had in that
+                # balance already isn't counted again (issue #146). Imports made before this don't know it: their last
+                # row's date stands in, and a check starting from one ends on its balance's day, as it did.
+                columns = [r["name"] for r in self.conn.execute("PRAGMA table_info(imports)")]
+                if "covers_to" not in columns:
+                    self.conn.execute("ALTER TABLE imports ADD COLUMN covers_to TEXT")
+            if version is not None and version < 12:
+                # Which files each transaction was in (issue #148). Until now only the file it's under was known: each
+                # transaction from a file is noted as that file's, as it has it. The other files that have it are found
+                # by reading the files kept in Imported Files again, once, at the next launch
+                # (service.BudgetService.read_imported_files).
+                self.conn.execute(
+                    "INSERT OR IGNORE INTO import_rows (import_id, transaction_id, date, raw_name, raw_memo, bank_type, "
+                    "bank_category, fingerprint, fitid) SELECT import_id, id, date, raw_name, raw_memo, bank_type, "
+                    "bank_category, fingerprint, fitid FROM transactions WHERE fingerprint IS NOT NULL "
+                    "AND import_id IN (SELECT id FROM imports)")
+                self.conn.execute("INSERT INTO meta (key, value) VALUES ('read_imported_files', '1') "
+                                  "ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+            if version is not None and version < 13:
+                # Every file's balance, including an older download's, so Remove import can settle the balance and
+                # its check from the files still imported (issues #151 and #169). Kept files are read again at the
+                # next launch. One no longer kept counts only for a balance it set, as its anchor_after says.
+                columns = [r["name"] for r in self.conn.execute("PRAGMA table_info(imports)")]
+                if "file_balance_date" not in columns:
+                    self.conn.execute("ALTER TABLE imports ADD COLUMN file_balance_date TEXT")
+                if "file_balance" not in columns:
+                    self.conn.execute("ALTER TABLE imports ADD COLUMN file_balance INTEGER")
+                self.conn.execute("UPDATE imports SET file_balance_date = anchor_after_date, "
+                                  "file_balance = anchor_after_balance WHERE anchor_after_date IS NOT NULL")
+                self.conn.execute("INSERT INTO meta (key, value) VALUES ('read_imported_files', '1') "
+                                  "ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+            # Version 14: before_file (issue #149), created empty by SCHEMA above. A transaction a file's row took the
+            # place of before this wasn't remembered: it still goes with its file.
+            # Next upgrade: `if version is not None and version < 15: ...`, then raise SCHEMA_VERSION.
             self.conn.execute("INSERT INTO meta (key, value) VALUES ('schema_version', ?) "
                               "ON CONFLICT(key) DO UPDATE SET value = excluded.value", (str(SCHEMA_VERSION),))
             # Which accounts onboarding made: the newest of them (service.finish_onboarding). A budget set up
@@ -402,7 +479,9 @@ class Database:
     def _install_undo_triggers(self):
         """Recording a step: each change's reverse SQL goes into undo_log. Watching a change made
         without a label: the first change that really changes something marks it (_CHANGED), and
-        write() then clears the log."""
+        write() then clears the log. An update that changes no column is neither: a step of only
+        those is no step, so its toast has no Undo (issue #139). Columns are compared exactly
+        (COLLATE BINARY): a payee's name is NOCASE, and its new case was missed."""
         with self.lock:
             active = "(SELECT active FROM undo_state WHERE id = 1)"
             for table in UNDO_TABLES:
@@ -420,9 +499,10 @@ class Database:
                 either = f"{active} IN ({_RECORDING}, {_WATCHING})"
                 trigger("ins", either, "AFTER INSERT", f"'DELETE FROM {table} WHERE rowid = ' || NEW.rowid")
                 changed = " || ".join(
-                    f"CASE WHEN OLD.{c} IS NOT NEW.{c} THEN ', {c} = ' || quote(OLD.{c}) ELSE '' END" for c in columns)
-                differs = " OR ".join(f"OLD.{c} IS NOT NEW.{c}" for c in columns)
-                trigger("upd", f"({active} = {_RECORDING} OR ({active} = {_WATCHING} AND ({differs})))", "AFTER UPDATE",
+                    f"CASE WHEN OLD.{c} IS NOT NEW.{c} COLLATE BINARY THEN ', {c} = ' || quote(OLD.{c}) ELSE '' END"
+                    for c in columns)
+                differs = " OR ".join(f"OLD.{c} IS NOT NEW.{c} COLLATE BINARY" for c in columns)
+                trigger("upd", f"({either} AND ({differs}))", "AFTER UPDATE",
                         f"'UPDATE {table} SET rowid = rowid' || {changed} || ' WHERE rowid = ' || OLD.rowid")
                 values = " || ', ' || ".join(f"quote(OLD.{c})" for c in columns)
                 trigger("del", either, "BEFORE DELETE",
@@ -454,6 +534,7 @@ class Database:
                         self.conn.execute("UPDATE undo_state SET active = ?, grp = NULL", (_WATCHING,))
                 yield self.conn
                 if outer:
+                    made = changed = None
                     if label:
                         self.conn.execute("UPDATE undo_state SET active = ?", (_OFF,))
                         self.conn.execute(
@@ -465,12 +546,18 @@ class Database:
                         self.conn.execute(
                             "DELETE FROM undo_groups WHERE grp NOT IN "
                             "(SELECT grp FROM undo_groups ORDER BY grp DESC LIMIT 100)")
+                        made = self.conn.execute(
+                            "SELECT grp FROM undo_groups WHERE grp = (SELECT grp FROM undo_state)").fetchone()
                     elif not keep_undo:
                         changed = self.conn.execute("SELECT active FROM undo_state WHERE id = 1").fetchone()[0] == _CHANGED
                         self.conn.execute("UPDATE undo_state SET active = ?", (_OFF,))
                         if changed:
                             self._clear_undo()
                     self.conn.execute("COMMIT")
+                    if label:
+                        self._note_step(made[0] if made else None)
+                    elif changed:
+                        self._made.steps = []  # whatever this request made can't be undone any more
             except BaseException:
                 if outer:
                     self.conn.execute("ROLLBACK")
@@ -482,6 +569,21 @@ class Database:
     def _clear_undo(self):
         self.conn.execute("DELETE FROM undo_log")
         self.conn.execute("DELETE FROM undo_groups")
+
+    def begin_request(self):
+        """A request from the page starts (service.dispatch): what earlier ones on this thread made
+        is forgotten. See steps_made()."""
+        self._made.steps = None
+
+    def steps_made(self):
+        """The undo steps this thread's request has made, newest last: None when it neither wrote
+        with a label nor undid (a read, a note saved as it's typed), [] when it did but nothing is
+        left to undo (it changed nothing, undid a step, or an import cleared undo). The Undo in a
+        change's toast undoes the step it made, or isn't offered (issue #139)."""
+        return getattr(self._made, "steps", None)
+
+    def _note_step(self, grp):
+        self._made.steps = (getattr(self._made, "steps", None) or []) + ([grp] if grp else [])
 
     def big_step(self, undoes):
         """Inside a labelled write(): this step is a big one, and `undoes` says what undoing it
@@ -531,6 +633,7 @@ class Database:
             except BaseException:
                 self.conn.execute("ROLLBACK")
                 raise
+            self._note_step(None)  # it made no step of its own
             return row["label"]
 
     # ── meta ──

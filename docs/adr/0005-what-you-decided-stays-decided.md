@@ -32,6 +32,9 @@ this is enforced in one place.
   over, and it goes, or stays as what that file doesn't explain. Once you've categorized it,
   it's yours: when its money arrives, the Inbox asks before removing it (issue #137, decided
   2026-11-09).
+- Remove import never deletes one you added by hand, nor a Check balance… adjustment, whose place
+  the file's row took: once no imported file has it, it goes back to what it was before that file
+  came in, keeping what you decided (issue #149, decided 2026-11-09).
 - Not a transfer sends both halves back, and the app never pairs them again. A half the app
   added for a transfer with an account kept by hand goes instead (docs/adr/0006).
 - A transaction you sent back is its own inbox item, outside its payee's group and

@@ -7,12 +7,14 @@ import json
 import re
 import shutil
 import subprocess
+from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
 
 import db
-from helpers import bank_csv, call, card_number, write
+import ledger
+from helpers import bank_csv, call, card_number, categories, write
 from test_card_signs import card_ofx, covers
 
 PAGE = (Path(__file__).resolve().parents[2] / "Application Files" / "index.html").read_text(encoding="utf-8")
@@ -103,19 +105,19 @@ def test_a_waiting_adjustment_shrinks_and_goes_as_the_missing_transactions_arriv
     _first_file(app)
     _second_file(app)
     # The missing downloads turn up: September's second half, in two older files.
-    out = _import(app, "chequing-sep-a.ofx", ofx(MISSING[:1], "2850.00", "20260922"))
+    out = _import(app, "chequing-sep-a.ofx", ofx(MISSING[:1], "2900.00", "20260922"))
     assert [a["amount"] for a in _adjustments(app)] == [-20000]
-    assert "now -$200.00" in out["results"][0]["balance_note"]
-    out = _import(app, "chequing-sep-b.ofx", ofx(MISSING[1:], "2650.00", "20260930"))
+    assert out["results"][0]["balance_note"] == "The balance adjustment waiting in the Inbox is now -$200.00"
+    out = _import(app, "chequing-sep-b.ofx", ofx(MISSING[1:], "2700.00", "20260930"))
     assert _adjustments(app) == []
-    assert "the balance adjustment is gone" in out["results"][0]["balance_note"]
+    assert out["results"][0]["balance_note"] == "The missing transactions arrived: the balance adjustment is gone"
     assert call(app, "accounts")[0]["balance"] == 260000
 
 
 def test_removing_the_file_that_filled_the_gap_puts_the_adjustment_back(app):
     _first_file(app)
     _second_file(app)
-    _import(app, "chequing-sep.ofx", ofx(MISSING, "2650.00", "20260930"))
+    _import(app, "chequing-sep.ofx", ofx(MISSING, "2700.00", "20260930"))
     assert _adjustments(app) == []
     call(app, "undo_import", call(app, "imports")[0]["id"])
     assert [a["amount"] for a in _adjustments(app)] == [-30000]
@@ -131,7 +133,7 @@ def test_one_you_categorized_asks_when_its_money_arrives_and_remove_it_takes_bot
     categories = {c["name"]: c["id"] for g in call(app, "categories") for c in g["categories"]}
     [adjustment] = _adjustments(app)
     call(app, "categorize", txn_ids=[adjustment["id"]], category_id=categories["Income"])  # yours now
-    _import(app, "chequing-sep.ofx", ofx(MISSING, "2650.00", "20260930"))
+    _import(app, "chequing-sep.ofx", ofx(MISSING, "2700.00", "20260930"))
     [question] = _adjustments(app)  # the app's new one, cancelling yours out
     assert question["amount"] == 30000 and question["guess"] is None
     assert question["reason"] == "The $300.00 your balance adjustment stood for has arrived: remove the adjustment?"
@@ -150,7 +152,7 @@ def test_keep_both_makes_the_new_adjustment_yours(app):
     categories = {c["name"]: c["id"] for g in call(app, "categories") for c in g["categories"]}
     [adjustment] = _adjustments(app)
     call(app, "categorize", txn_ids=[adjustment["id"]], category_id=categories["Income"])
-    _import(app, "chequing-sep.ofx", ofx(MISSING, "2650.00", "20260930"))
+    _import(app, "chequing-sep.ofx", ofx(MISSING, "2700.00", "20260930"))
     [question] = _adjustments(app)
     call(app, "keep_both", question["id"])
     [kept] = _adjustments(app)
@@ -158,6 +160,89 @@ def test_keep_both_makes_the_new_adjustment_yours(app):
     # A later download changes nothing: both are yours, and they cancel out.
     _import(app, "chequing-3.ofx", ofx([("20261012", "-20.00", "SAMPLE BAKERY", "A7")], "2580.00", "20261012"))
     assert [a["id"] for a in _adjustments(app)] == [kept["id"]]
+
+
+# ── what an import's balance note says (issue #138) ──
+#
+# It's worked out once the import is done: its rows in, and the balance adjustment worked out again. It's shown in the
+# import's toast and in Accounts → Imported files.
+
+
+def _income(app):
+    return next(c["id"] for g in call(app, "categories") for c in g["categories"] if c["name"] == "Income")
+
+
+def test_an_older_files_balance_is_compared_once_the_adjustment_is_worked_out_again(app):
+    _first_file(app)
+    _second_file(app)
+    out = _import(app, "chequing-sep-a.ofx", ofx(MISSING[:1], "2900.00", "20260922"))  # the bank's balance that day
+    assert out["results"][0]["balance_note"] == "The balance adjustment waiting in the Inbox is now -$200.00"
+
+
+def test_the_note_says_when_the_money_a_kept_adjustment_stood_for_arrives(app):
+    _first_file(app)
+    _second_file(app)
+    income = next(c["id"] for g in call(app, "categories") for c in g["categories"] if c["name"] == "Income")
+    call(app, "categorize", txn_ids=[_adjustments(app)[0]["id"]], category_id=income)
+    out = _import(app, "chequing-sep.ofx", ofx(MISSING, "2700.00", "20260930"))
+    assert out["results"][0]["balance_note"] == ("The $300.00 your balance adjustment stood for has arrived: "
+                                                 "the Inbox asks whether to remove it")
+
+
+def test_an_older_files_balance_that_still_disagrees_is_said(app):
+    """Of the $300.00 October's balance is missing, $50.00 is a charge on Sep 17 that's in no file (so the Sep 25
+    payment is $150.00). The file that fills the gap covers Sep 18–22: the bank had $2,850.00 on Sep 22, and once
+    that file is in, the app has $2,900.00 that day. Both are said."""
+    _first_file(app)
+    _second_file(app)
+    out = _import(app, "chequing-sep-a.ofx", ofx(MISSING[:1], "2850.00", "20260922", start="20260918"))
+    assert out["results"][0]["balance_note"] == (
+        "The file says the balance was $2,850.00 on Sep 22; the app has $2,900.00. "
+        "The balance adjustment waiting in the Inbox is now -$200.00")
+    assert call(app, "imports")[0]["balance_note"] == out["results"][0]["balance_note"]  # Accounts → Imported files
+
+
+def test_the_note_says_so_when_a_kept_adjustments_money_arrives_in_two_files(app):
+    _first_file(app)
+    _second_file(app)
+    call(app, "categorize", txn_ids=[_adjustments(app)[0]["id"]], category_id=_income(app))  # yours now
+    # $100.00 of it: the app's +$100.00 waits on its own, and nothing asks yet.
+    out = _import(app, "chequing-sep-a.ofx", ofx(MISSING[:1], "2900.00", "20260922"))
+    assert out["results"][0]["balance_note"] == ("By the bank's balance, $100.00 more came in than the transactions "
+                                                 "show: a balance adjustment is waiting in the Inbox")
+    # The rest: the Inbox asks, and the note says so (it said "…is now $300.00").
+    out = _import(app, "chequing-sep-b.ofx", ofx(MISSING[1:], "2700.00", "20260930"))
+    [question] = [a for a in _adjustments(app) if not a["yours"]]
+    assert question["reason"] == "The $300.00 your balance adjustment stood for has arrived: remove the adjustment?"
+    assert out["results"][0]["balance_note"] == ("The $300.00 your balance adjustment stood for has arrived: "
+                                                 "the Inbox asks whether to remove it")
+    # A later download that changes nothing doesn't say it again.
+    out = _import(app, "chequing-3.ofx", ofx([("20261012", "-20.00", "SAMPLE BAKERY", "A7")], "2580.00", "20261012"))
+    assert out["results"][0]["balance_note"] == ""
+    assert [a["id"] for a in _adjustments(app) if not a["yours"]] == [question["id"]]
+
+
+def test_the_note_says_them_when_the_money_of_two_kept_adjustments_arrives(app, monkeypatch):
+    _first_file(app)
+    _second_file(app)  # −$300.00
+    call(app, "categorize", txn_ids=[_adjustments(app)[0]["id"]], category_id=_income(app))
+    monkeypatch.setenv("INAB_TODAY", "2026-10-21")
+    # Oct 20: an Oct 15 bakery charge comes in, and a $50.00 gym payment on Oct 17 doesn't.
+    bakery = ("20261015", "-20.00", "SAMPLE BAKERY CALGARY AB", "A8")
+    out = _import(app, "chequing-3.ofx", ofx([bakery], "2530.00", "20261020"))
+    assert out["results"][0]["balance_note"] == ("By the bank's balance, $50.00 more went out than the transactions "
+                                                 "show: a balance adjustment is waiting in the Inbox")
+    [gym] = [a for a in _adjustments(app) if not a["yours"]]
+    call(app, "categorize", txn_ids=[gym["id"]], category_id=_income(app))
+    # One long download brings all of it.
+    rows = MISSING + OCTOBER + [bakery, ("20261017", "-50.00", "SAMPLE GYM CALGARY AB", "A9")]
+    out = _import(app, "chequing-4.ofx", ofx(rows, "2530.00", "20261020"))
+    [question] = [a for a in _adjustments(app) if not a["yours"]]
+    assert question["reason"] == "The $350.00 your balance adjustments stood for has arrived: remove them?"
+    assert out["results"][0]["balance_note"] == ("The $350.00 your balance adjustments stood for has arrived: "
+                                                 "the Inbox asks whether to remove them")
+    call(app, "remove_adjustment", question["id"])
+    assert _adjustments(app) == [] and _start(app) == 105000
 
 
 def test_an_adjustment_is_never_a_transfers_other_half_nor_a_copy_of_a_bank_row(app):
@@ -201,7 +286,7 @@ def test_merging_in_a_copy_with_the_missing_transactions_explains_the_gap(app):
     _second_file(app)
     assert len(_adjustments(app)) == 1
     # The missing download went into an account of its own (a new account number, say).
-    path = write(app.test_downloads, "copy.ofx", ofx(SEPTEMBER + MISSING, "2650.00", "20260930", acct_id="000999888777"))
+    path = write(app.test_downloads, "copy.ofx", ofx(SEPTEMBER + MISSING, "2700.00", "20260930", acct_id="000999888777"))
     call(app, "set_file_accounts", str(path), [{"index": 0, "name": "Copy"}])
     accounts = {a["name"]: a["id"] for a in call(app, "accounts")}
     out = call(app, "merge_accounts", accounts["Copy"], accounts["SAMPLE CU Chequing"])
@@ -226,8 +311,8 @@ def test_an_existing_database_learns_where_its_balances_came_from(tmp_path):
     again = db.Database(path)
     rows = {r["id"]: (r["anchor_source"], r["check_from"]) for r in again.conn.execute("SELECT * FROM accounts")}
     assert rows == {1: ("file", 1), 2: ("file", None), 3: ("typed", None), 4: (None, None)}
-    assert again.get_meta("schema_version") == "10"
-    assert list((tmp_path / "I Need A Budget Backups").glob("budget-before-upgrade-v7-to-v10-*.db"))
+    assert again.get_meta("schema_version") == "14"
+    assert list((tmp_path / "I Need A Budget Backups").glob("budget-before-upgrade-v7-to-v14-*.db"))
 
 
 def test_an_existing_database_keeps_where_each_file_says_it_starts(tmp_path):
@@ -252,8 +337,8 @@ def test_an_existing_database_keeps_where_each_file_says_it_starts(tmp_path):
     assert (old["filename"], old["first_date"], old["anchor_after_date"], old["covers_from"]) == \
         ("a.ofx", "2026-09-01", "2026-10-10", None)
     assert again.conn.execute("SELECT anchor_source, check_from FROM accounts").fetchone()[:] == ("file", 1)
-    assert again.get_meta("schema_version") == "10"
-    assert list((tmp_path / "I Need A Budget Backups").glob("budget-before-upgrade-v8-to-v10-*.db"))
+    assert again.get_meta("schema_version") == "14"
+    assert list((tmp_path / "I Need A Budget Backups").glob("budget-before-upgrade-v8-to-v14-*.db"))
 
 
 # ── onboarding's 3. Balances (issue #135) ────────────────────────────────────
@@ -432,6 +517,127 @@ def test_3_balances_asks_what_the_bank_shows_now_for_an_account_without_one(app)
     assert [c["account_id"] for c in got["calls"]] == [a["id"] for a in accounts if a["balance"] is not None]
 
 
+# ── 3. Balances: what a card's box says, and a row you typed (issue #143) ────
+#
+# On a file's row, *In your favour* changed says how the card's files write a balance above zero, like the two answers
+# to "Is $120.50 what you owe…?"; changing only the amount says nothing. Any other row is what the bank shows now, a
+# balance you typed on an earlier visit too (onboarding starts again at step 1 on every launch until it's finished).
+
+def _csv(app, name, rows):
+    return call(app, "import_files", [str(write(app.test_downloads, name, bank_csv(rows)))])
+
+
+def _continue(app, accounts, edit=""):
+    """3. Balances drawn from `accounts`, `edit` done there, Continue: its set_balance calls go to the service."""
+    got = _balances_step(accounts, edit)
+    for args in got["calls"]:
+        call(app, "set_balance", **args)
+    return got
+
+
+def test_changing_only_the_amount_of_a_cards_box_that_shows_owing_remembers_nothing(app):
+    """The issue's first case. The card's file balance ($120.50 on Sep 30) is read as in your favour, but the file has
+    a charge after that day, so 3. Balances shows owing $9.50 on Oct 2, In your favour unticked. Changing only the
+    amount unticks nothing: how its files write a balance above zero stays unsettled."""
+    _import(app, "card-1.ofx", card_ofx(CARD_SEPTEMBER + [("20261002", "-130.00", "SAMPLE GROCER", "S3")], "120.50", "20260930"))
+    [card] = call(app, "accounts")
+    assert (card["balance"], card["balance_date"]) == (-950, "2026-10-02")
+    got = _continue(app, [card], f"box({card['id']}).value = '10.00';")
+    assert "Amount owing on Oct 2, 2026, from your file" in got["html"]
+    call(app, "finish_onboarding", "2026-09")
+    # A $20.00 payment; the bank's next file says $5.00 while the app has $10.00 in your favour (a $5.00 gap): neither
+    # sign agrees, so it's read as the file writes it, as the first file was.
+    _import(app, "card-2.ofx", card_ofx([("20261005", "20.00", "PAYMENT - THANK YOU", "P1")], "5.00", "20261010"))
+    assert call(app, "accounts")[0]["balance"] == 500  # not owing $5.00
+
+
+def test_unticking_in_your_favour_with_another_amount_is_remembered_too(app):
+    """Unticking is what's remembered, whatever the amount: the box showed $120.50 in your favour, given as $125.00
+    owing."""
+    card = _card_read_as_in_your_favour(app)
+    _continue(app, [card], f"box({card['id']}).value = '125.00'; favour({card['id']}).checked = false;")
+    call(app, "finish_onboarding", "2026-09")
+    # The bank says $160.50 while the app has you owing $155.00: $5.50 is in no file.
+    _import(app, "card-2.ofx", card_ofx(CARD_OCTOBER, "160.50", "20261010"))
+    assert call(app, "accounts")[0]["balance"] == -16050  # what you owe, not $160.50 in your favour
+
+
+def test_unticking_a_box_a_payment_put_in_your_favour_remembers_nothing(app):
+    """The file wrote what you owe below zero (owing $50.00 on Sep 30), and a $70.00 payment after it put the box at
+    $20.00 in your favour. Unticking it there says nothing about a balance above zero in the card's files."""
+    _import(app, "card-1.ofx", card_ofx(CARD_SEPTEMBER + [("20261002", "70.00", "PAYMENT - THANK YOU", "S3")], "-50.00", "20260930"))
+    [card] = call(app, "accounts")
+    assert (card["balance"], card["balance_date"]) == (2000, "2026-10-02")
+    _continue(app, [card], f"favour({card['id']}).checked = false;")
+    call(app, "finish_onboarding", "2026-09")
+    # A $100.00 payment: the bank says $75.00 while the app has $80.00 in your favour ($5.00 is in no file).
+    _import(app, "card-2.ofx", card_ofx([("20261005", "100.00", "PAYMENT - THANK YOU", "P1")], "75.00", "20261010"))
+    assert call(app, "accounts")[0]["balance"] == 7500  # as the file writes it, not owing $75.00
+
+
+def test_ticking_in_your_favour_back_on_a_files_row_is_remembered(app):
+    """The other way round. On the first visit you untick the card's $120.50, so "owed" is remembered. On a later visit
+    its next file says $100.00, read as owing because of that, and you tick In your favour: it's remembered, so a file
+    whose balance disagrees with the app's is read as the file writes it again."""
+    card = _card_read_as_in_your_favour(app)
+    call(app, "set_balance", account_id=card["id"], cents=12050, in_favour=False, date=card["balance_date"])  # visit 1
+    _import(app, "card-2.ofx", card_ofx([("20261005", "-20.50", "SAMPLE BAKERY", "O2")], "100.00", "20261010"))
+    [card] = call(app, "accounts")
+    assert (card["balance"], card["anchor_source"]) == (-10000, "file")
+    got = _continue(app, [card], f"favour({card['id']}).checked = true;")  # visit 2
+    assert "Amount owing on Oct 10, 2026, from your file" in got["html"]
+    call(app, "finish_onboarding", "2026-09")
+    # A $30.00 charge and a $10.00 one that's in no file: the bank says $60.00 while the app has $70.00 in your favour.
+    _import(app, "card-3.ofx", card_ofx([("20261015", "-30.00", "SAMPLE CAFE", "O3")], "60.00", "20261020"))
+    assert call(app, "accounts")[0]["balance"] == 6000  # not owing $60.00
+
+
+def test_a_balance_typed_on_an_earlier_visit_is_todays_when_its_changed(app):
+    """The issue's second case. Savings (only CSVs) was typed as $250.00 on Oct 1, onboarding left unfinished, and a
+    later visit's CSV brings a $10.00 deposit on Oct 5. Today (Oct 12) the bank shows $255.00 (a $5.00 fee on Oct 8 is
+    in no file yet): typed over the box, it's the balance today, as the step says, so the fee's file leaves it."""
+    _csv(app, "Savings.CSV", [("09/20/2026", "SAMPLE INTEREST", "SAMPLE INTEREST", "1.25")])
+    [savings] = call(app, "accounts")
+    call(app, "set_balance", account_id=savings["id"], cents=25000, date="2026-10-01")  # the first visit
+    _csv(app, "Savings 2.CSV", [("10/05/2026", "SAMPLE DEPOSIT", "SAMPLE DEPOSIT", "10.00")])
+    got = _continue(app, call(app, "accounts"), f"box({savings['id']}).value = '255.00';")
+    assert "Enter what your bank shows now for each account." in got["html"]
+    assert "Balance · transactions up to Oct 5, 2026" in got["html"] and 'value="260.00"' in got["html"]
+    assert got["calls"] == [{"account_id": savings["id"], "cents": 25500, "in_favour": False}]  # no day: today's
+    _csv(app, "Savings 3.CSV", [("10/08/2026", "SAMPLE FEE", "SAMPLE FEE", "-5.00")])
+    assert call(app, "accounts")[0]["balance"] == 25500  # not $250.00, as the balance on Oct 5 would leave it
+
+
+def test_a_files_balance_you_changed_is_todays_when_you_come_back_to_it(app):
+    """Changed on the step, a file's balance is a typed one: after Back (or on a later visit) its row is like a row
+    without one, what the bank shows now. Left as it is, nothing changes; changed again, it's today's balance."""
+    _import(app, "chequing-1.ofx", ofx(SEPTEMBER, "3000.00", "20260915"))
+    [chequing] = call(app, "accounts")
+    _continue(app, [chequing], f"box({chequing['id']}).value = '2,950.00';")
+    accounts = call(app, "accounts")
+    got = _continue(app, accounts)  # Back to 3. Balances, and Continue with the box as it is
+    assert "Balance · transactions up to Sep 10, 2026" in got["html"] and "from your file" not in got["html"]
+    assert call(app, "accounts") == accounts  # still $2,950.00 on Sep 15
+    _continue(app, accounts, f"box({chequing['id']}).value = '2,940.00';")
+    [chequing] = call(app, "accounts")
+    assert (chequing["anchor_source"], chequing["anchor_date"], chequing["balance"]) == ("typed", "2026-10-12", 294000)
+
+
+def test_in_your_favour_changed_on_a_row_you_typed_remembers_nothing(app):
+    """A row you typed is what the bank shows now, and a card can really go from owing to in your favour (a payment):
+    ticking it there says nothing about how the card's files are written, so the "owed" you unticked for stays."""
+    card = _card_read_as_in_your_favour(app)
+    call(app, "set_balance", account_id=card["id"], cents=12050, in_favour=False, date=card["balance_date"])  # visit 1
+    [card] = call(app, "accounts")
+    got = _continue(app, [card], f"box({card['id']}).value = '20.00'; favour({card['id']}).checked = true;")  # visit 2
+    assert "Amount owing (the balance on the card) · transactions up to Sep 12, 2026" in got["html"]
+    assert got["calls"] == [{"account_id": card["id"], "cents": 2000, "in_favour": True}]
+    call(app, "finish_onboarding", "2026-09")
+    # A $100.00 charge and a $5.00 one that's in no file: the bank says $85.00 while the app has you owing $80.00.
+    _import(app, "card-2.ofx", card_ofx([("20261014", "-100.00", "SAMPLE HARDWARE", "O4")], "85.00", "20261020"))
+    assert call(app, "accounts")[0]["balance"] == -8500  # still read as what you owe
+
+
 # ── older history (issue #136) ──────────────────────────────────────────────
 #
 # A file reaching back before the first day of the file the check starts from brings older history: its rows dated
@@ -549,6 +755,239 @@ def test_removing_the_starting_file_checks_from_the_next_files_first_day(app):
     assert _adjustments(app) == []
 
 
+# ── a starting file that stops before its balance's day (issue #146) ─────────
+#
+# A download of a past date range lists its transactions up to the range's last day (a Quicken file's DTEND), with the
+# bank's balance on the day it was made: that balance has what went through in between already.
+
+
+def _past(text, last_day):
+    """A made-up download of a past date range: it says it covers up to `last_day` (YYYYMMDD), written as Tangerine
+    writes it (the midnight after that day), and its balance is the bank's on the day it was made."""
+    after = date(int(last_day[:4]), int(last_day[4:6]), int(last_day[6:])) + timedelta(days=1)
+    return re.sub(r"<DTEND>\d{8}235959", f"<DTEND>{after:%Y%m%d}000000", text, count=1)
+
+
+def test_a_starting_file_whose_rows_stop_before_its_balance_doesnt_count_them_twice(app):
+    """The issue's case: two downloads on Oct 12, each with that day's balance ($2,600.00), for Sep 1–15 and Sep 16 –
+    Oct 12. "$400.00 more came in" waited for good, and September's starting Ready to assign was $650.00."""
+    first = ofx(SEPTEMBER, "2600.00", "20261012", start="20260901").replace("<DTEND>20261012", "<DTEND>20260915")
+    _import(app, "chequing-a.ofx", first)
+    _import(app, "chequing-b.ofx", ofx(MISSING + OCTOBER, "2600.00", "20261012", start="20260916"))
+    call(app, "finish_onboarding", "2026-09")
+    assert _adjustments(app) == [] and _start(app) == 105000
+
+
+# A card's statement (the days things went through, Sep 3 – Oct 2) and its current period (Oct 3–12), both downloaded
+# Oct 12 with that day's balance (owing $140.00). Each has a charge made before its first day that went through in it.
+CARD_STATEMENT = [("20260901", "-20.00", "SAMPLE TAXI", "C1"), ("20260910", "-40.00", "SAMPLE GROCER", "C2"),
+                  ("20260930", "-25.00", "SAMPLE CAFE", "C3")]
+CARD_CURRENT = [("20261001", "-15.00", "SAMPLE PARKING", "C4"), ("20261005", "-30.00", "SAMPLE BAKERY", "C5"),
+                ("20261010", "-10.00", "SAMPLE BOOKS", "C6")]
+
+
+def _card_statement(app):
+    _import(app, "card-sep.qfx", _past(card_ofx(CARD_STATEMENT, "-140.00", "20261012", start="20260903"), "20261002"))
+    call(app, "finish_onboarding", "2026-09")
+
+
+def test_a_cards_statement_and_current_period_downloaded_the_same_day_add_nothing(app):
+    """"$55.00 more came in" (the current period's charges) waited for good."""
+    _card_statement(app)
+    _import(app, "card-oct.qfx", card_ofx(CARD_CURRENT, "-140.00", "20261012", start="20261003"))
+    assert _adjustments(app) == [] and call(app, "accounts")[0]["balance"] == -14000
+
+
+def test_a_cards_download_the_same_day_that_overlaps_the_statement_goes_by_date(app):
+    """Sep 20 – Oct 12, downloaded Oct 12 too (owing $125.00, as the statement's balance): it starts before the
+    statement's last day, so what it brings dated after that day (Oct 5's and Oct 10's charges) was in that balance."""
+    _import(app, "card-sep.qfx", _past(card_ofx(CARD_STATEMENT, "-125.00", "20261012", start="20260903"), "20261002"))
+    call(app, "finish_onboarding", "2026-09")
+    overlap = CARD_STATEMENT[2:] + CARD_CURRENT[1:]
+    _import(app, "card-oct.qfx", card_ofx(overlap, "-125.00", "20261012", start="20260920"))
+    assert _adjustments(app) == [] and call(app, "accounts")[0]["balance"] == -12500
+
+
+def test_a_cards_current_period_downloaded_later_counts_by_its_days(app):
+    """Accepted: a card goes by the days its downloads cover, never by a charge's date. With the current period
+    downloaded only on Oct 20 (Oct 3–20, owing $160.00: a charge from Oct 12 that went through after the statement's
+    download on top), its charges count, and the $55.00 the statement's balance had waits."""
+    _card_statement(app)
+    later = CARD_CURRENT + [("20261012", "-20.00", "SAMPLE GAS", "C7")]
+    _import(app, "card-oct.qfx", card_ofx(later, "-160.00", "20261020", start="20261003"))
+    assert [a["amount"] for a in _adjustments(app)] == [5500]
+
+
+def _two_downloads_on_oct_12(app):
+    """The issue's case, the way Tangerine writes a past range."""
+    _import(app, "chequing-a.ofx", _past(ofx(SEPTEMBER, "2600.00", "20261012", start="20260901"), "20260915"))
+    _import(app, "chequing-b.ofx", ofx(MISSING + OCTOBER, "2600.00", "20261012", start="20260916"))
+    call(app, "finish_onboarding", "2026-09")
+
+
+ETRANSFER = [("20261012", "-45.00", "SAMPLE E-TRANSFER", "N1")]  # dated Oct 12, the day of the past range's balance
+NEXT_WEEK = [("20261015", "-20.00", "SAMPLE CAFE CALGARY AB", "N2")]
+
+
+def test_a_later_days_download_brings_what_went_through_after_the_balances_day_download(app):
+    """With a download from Oct 12 in, what went through that day before it is in it. So the $45.00 e-transfer dated
+    Oct 12 that Oct 20's download (Oct 1–20, $2,535.00) brings went through after it, and counts."""
+    _two_downloads_on_oct_12(app)
+    _import(app, "chequing-c.ofx", ofx(OCTOBER + ETRANSFER + NEXT_WEEK, "2535.00", "20261020", start="20261001"))
+    assert _adjustments(app) == [] and _start(app) == 105000
+
+
+def test_chequing_goes_by_date_with_a_download_that_ends_after_the_balances_day(app):
+    """Sep 1–15 downloaded Oct 12 ($2,600.00), then only Sep 16 – Oct 20, on Oct 20 ($2,580.00): what it brings from
+    before Oct 12 was in that balance, and Oct 15's charge counts."""
+    _import(app, "chequing-a.ofx", _past(ofx(SEPTEMBER, "2600.00", "20261012", start="20260901"), "20260915"))
+    call(app, "finish_onboarding", "2026-09")
+    _import(app, "chequing-b.ofx", ofx(MISSING + OCTOBER + NEXT_WEEK, "2580.00", "20261020", start="20260916"))
+    assert _adjustments(app) == [] and _start(app) == 105000
+
+
+def _oct_12_only_in_that_balance(app, balance):
+    """Sep 1–15 downloaded Oct 12, then only Sep 16 – Oct 20 on Oct 20 ($2,535.00), with the e-transfer dated Oct 12:
+    no download covers Oct 12 but that balance."""
+    _import(app, "chequing-a.ofx", _past(ofx(SEPTEMBER, balance, "20261012", start="20260901"), "20260915"))
+    call(app, "finish_onboarding", "2026-09")
+    _import(app, "chequing-b.ofx", ofx(MISSING + OCTOBER + ETRANSFER + NEXT_WEEK, "2535.00", "20261020", start="20260916"))
+
+
+def test_on_the_balances_day_with_no_download_from_it_what_went_through_was_in_that_balance(app):
+    """A balance covers its whole day: the e-transfer went through on Oct 12 before the download ($2,555.00 has it)."""
+    _oct_12_only_in_that_balance(app, "2555.00")
+    assert _adjustments(app) == [] and _start(app) == 105000
+
+
+def test_on_the_balances_day_with_no_download_from_it_what_went_through_after_waits(app):
+    """Accepted: dates can't say whether it went through before or after the download. After it (the bank's $2,600.00
+    on Oct 12 doesn't have it), "$45.00 more went out" waits, and September starts at $1,095.00."""
+    _oct_12_only_in_that_balance(app, "2600.00")
+    [adjustment] = _adjustments(app)
+    assert adjustment["amount"] == -4500 and "$45.00 more went out" in adjustment["reason"]
+    assert _start(app) == 109500
+
+
+def test_a_second_download_the_same_day_of_files_that_end_on_their_balances_day_counts(app):
+    """Downloads that end on their balance's day change nothing: Sep 1 – Oct 12 at 9 a.m. ($2,600.00), then again at
+    5 p.m. with a $20.00 charge in between ($2,580.00). By the first one's last transaction (Oct 3) instead of the last
+    day it says it covers, the charge wouldn't count, and −$20.00 would wait."""
+    _import(app, "chequing-1.ofx", ofx(SEPTEMBER + MISSING + OCTOBER, "2600.00", "20261012", start="20260901"))
+    call(app, "finish_onboarding", "2026-09")
+    later = SEPTEMBER + MISSING + OCTOBER + [("20261012", "-20.00", "SAMPLE CAFE CALGARY AB", "N3")]
+    _import(app, "chequing-2.ofx", ofx(later, "2580.00", "20261012", start="20260901"))
+    assert _adjustments(app) == [] and call(app, "accounts")[0]["balance"] == 258000
+
+
+def test_a_later_downloads_row_from_the_balances_day_counts_when_the_starting_file_ends_on_it(app):
+    """Only a file that stops early makes its balance's day count as in that balance: Sep 1–15, downloaded the morning
+    of Sep 15 ($3,000.00), then Sep 15 – Oct 10 with a $30.00 lunch from that afternoon ($2,570.00 on Oct 10)."""
+    _import(app, "chequing-1.ofx", ofx(SEPTEMBER, "3000.00", "20260915", start="20260901"))
+    call(app, "finish_onboarding", "2026-09")
+    lunch = [("20260915", "-30.00", "SAMPLE CAFE CALGARY AB", "L1")]
+    _import(app, "chequing-2.ofx", ofx(lunch + MISSING + OCTOBER, "2570.00", "20261010", start="20260915"))
+    assert _adjustments(app) == [] and _start(app) == 105000
+
+
+OCT_8 = [("20261008", "-50.00", "SAMPLE GROCER CALGARY AB", "G1")]  # in the bank's $2,550.00 on Oct 12
+
+
+def _past_range_after_the_first_file(app):
+    """The check starts from Sep 1–15 ($3,000.00 on Sep 15). Then Sep 16 – Oct 5, downloaded Oct 12 ($2,550.00): it
+    stops before Oct 8's charge."""
+    _first_file(app)
+    _import(app, "chequing-2.ofx", _past(ofx(MISSING + OCTOBER, "2550.00", "20261012", start="20260916"), "20261005"))
+
+
+def test_the_reason_says_a_download_may_be_missing_after_the_last_day_a_file_covers(app):
+    """It said "between Sep 15 and Sep 20": that file's first transaction, though it says it covers from Sep 16, and
+    nothing about the days after Oct 5."""
+    _past_range_after_the_first_file(app)
+    [adjustment] = _adjustments(app)
+    assert adjustment["amount"] == -5000
+    assert "a download may be missing between Oct 5 and Oct 12" in adjustment["reason"]
+
+
+def test_the_starting_file_covers_up_to_its_balances_day_in_the_reason(app):
+    """Sep 1–15 downloaded Oct 12, then Oct 1–10 downloaded Oct 20 ($2,580.00, with a $20.00 charge from Oct 15 in no
+    file). Sep 16 – Oct 12 is in the first balance: no "between Sep 15 and Oct 1"."""
+    _import(app, "chequing-a.ofx", _past(ofx(SEPTEMBER, "2600.00", "20261012", start="20260901"), "20260915"))
+    call(app, "finish_onboarding", "2026-09")
+    _import(app, "chequing-b.ofx", _past(ofx(OCTOBER, "2580.00", "20261020", start="20261001"), "20261010"))
+    [adjustment] = _adjustments(app)
+    assert adjustment["amount"] == -2000
+    assert "a download may be missing between Oct 12 and Oct 20" in adjustment["reason"]
+
+
+def test_a_starting_file_without_rows_says_where_a_download_may_be_missing_too(app):
+    """The card's Oct 1–2 file has no charges (a balance only), then Oct 10–20: by the days the first one says it
+    covers, nothing covers Oct 3–9. It said "a transaction may be missing, or counted twice"."""
+    _import(app, "card-1.ofx", card_ofx([], "-200.00", "20261002", start="20261001"))
+    call(app, "finish_onboarding", "2026-10")
+    _import(app, "card-2.ofx", card_ofx([("20261012", "-15.00", "SAMPLE PARKING", "K3")], "-255.00", "20261020",
+                                        start="20261010"))
+    [adjustment] = _adjustments(app)
+    assert adjustment["amount"] == -4000 and "a download may be missing between Oct 2 and Oct 10" in adjustment["reason"]
+
+
+def test_removing_the_starting_file_checks_from_the_next_files_last_day(app):
+    """Oct 1–12, downloaded Oct 12 too, brings Oct 8's charge. With Sep 1–15 removed, the check starts from Sep 16 –
+    Oct 5, whose balance has that charge already."""
+    _past_range_after_the_first_file(app)
+    _import(app, "chequing-3.ofx", ofx(OCTOBER + OCT_8, "2550.00", "20261012", start="20261001"))
+    assert _adjustments(app) == []
+    first = next(i["id"] for i in call(app, "imports") if i["filename"] == "chequing-1.ofx")
+    call(app, "undo_import", first)
+    assert _adjustments(app) == [] and call(app, "accounts")[0]["balance"] == 255000
+
+
+@pytest.mark.parametrize("dtend, last_day", [
+    ("20261013000000.000[-5:EST]", "2026-10-12"),  # midnight is the end of the day before (Tangerine's)
+    ("20261012143005.000[-5:EST]", "2026-10-12"),  # the moment it was downloaded
+    ("20260916000000.000[-5:EST]", "2026-09-15"),  # a past range
+    ("20261012", "2026-10-12"),                    # a day, no time
+    ("20261016000000.000[-5:EST]", "2026-10-15"),  # after its own balance's day: kept, and the check ends on Oct 12
+    ("20260815000000.000[-5:EST]", None),          # before its own first day: says nothing
+    (None, None),                                  # it doesn't say
+])
+def test_how_a_files_last_day_is_read(app, dtend, last_day):
+    text = ofx(SEPTEMBER, "2600.00", "20261012", start="20260901")
+    _import(app, "chequing-1.ofx", re.sub(r"<DTEND>[^<\n]*", f"<DTEND>{dtend}" if dtend else "", text))
+    assert app.db.conn.execute("SELECT covers_to FROM imports").fetchone()[0] == last_day
+    # The check starting from it ends on the last day it covers, its balance's day at the latest (and when it doesn't say).
+    span = ledger.check_span(app.db.conn, call(app, "accounts")[0]["id"])
+    assert span.last_day == (min(last_day, "2026-10-12") if last_day else "2026-10-12")
+
+
+def test_an_existing_database_gets_a_place_to_keep_the_last_day_each_file_covers(tmp_path):
+    """Version 11 keeps the last day each file says it covers (issue #146). Imports from before don't know it: a check
+    starting from one ends on its balance's day, as it did, and everything else stays as it was."""
+    path = tmp_path / "budget.db"
+    database = db.Database(path)
+    c = database.conn
+    c.execute("INSERT INTO accounts (id, name, kind, anchor_date, anchor_balance, anchor_source) "
+              "VALUES (1, 'Chequing', 'chequing', '2026-10-12', 260000, 'file')")
+    c.execute("INSERT INTO imports (id, filename, sha256, account_id, format, first_date, last_date, covers_from, "
+              "anchor_after_date, anchor_after_balance) "
+              "VALUES (1, 'a.ofx', 'x', 1, 'ofx', '2026-09-01', '2026-09-10', '2026-09-01', '2026-10-12', 260000)")
+    c.execute("UPDATE accounts SET check_from = 1")
+    for suffix in ("ins", "upd", "del"):  # the undo triggers name every column
+        c.execute(f"DROP TRIGGER IF EXISTS undo_imports_{suffix}")
+    c.execute("ALTER TABLE imports DROP COLUMN covers_to")  # a version 10 database
+    c.execute("UPDATE meta SET value = '10' WHERE key = 'schema_version'")
+    c.commit()
+    database.close()
+    again = db.Database(path)
+    old = again.conn.execute("SELECT * FROM imports").fetchone()
+    assert (old["filename"], old["first_date"], old["last_date"], old["covers_from"], old["anchor_after_date"],
+            old["covers_to"]) == ("a.ofx", "2026-09-01", "2026-09-10", "2026-09-01", "2026-10-12", None)
+    assert again.conn.execute("SELECT anchor_source, check_from FROM accounts").fetchone()[:] == ("file", 1)
+    assert ledger.check_span(again.conn, 1).last_day == "2026-10-12"
+    assert again.get_meta("schema_version") == "14"
+    assert list((tmp_path / "I Need A Budget Backups").glob("budget-before-upgrade-v10-to-v14-*.db"))
+
+
 # ── Check balance… (issue #137) ──────────────────────────────────────────────
 #
 # Check balance… doesn't end the check. Its balance adjustment stands for what's happened since the newest file's
@@ -610,8 +1049,8 @@ def test_an_existing_database_gets_a_place_to_remember_what_a_check_balance_came
     again = db.Database(path)
     old = again.conn.execute("SELECT * FROM transactions").fetchone()
     assert (old["date"], old["amount"], old["hint"], old["after_import"]) == ("2026-10-12", -1000, "adjustment", None)
-    assert again.get_meta("schema_version") == "10"
-    assert list((tmp_path / "I Need A Budget Backups").glob("budget-before-upgrade-v9-to-v10-*.db"))
+    assert again.get_meta("schema_version") == "14"
+    assert list((tmp_path / "I Need A Budget Backups").glob("budget-before-upgrade-v9-to-v14-*.db"))
 
 
 def test_a_later_file_that_doesnt_explain_it_leaves_the_rest_as_the_accounts_balance_adjustment(app, monkeypatch):
@@ -632,10 +1071,12 @@ def test_a_categorized_check_balance_adjustment_asks_when_its_money_arrives(app,
     [mine] = _adjustments(app)
     call(app, "categorize", txn_ids=[mine["id"]], category_id=income)  # yours now
     monkeypatch.setenv("INAB_TODAY", "2026-10-21")
-    _import(app, "chequing-3.ofx", ofx(LATE + LATER, "2570.00", "20261020"))
+    out = _import(app, "chequing-3.ofx", ofx(LATE + LATER, "2570.00", "20261020"))
     [question] = _adjustments(app)  # the app's, cancelling yours out
     assert question["amount"] == 1000 and question["adjustment_question"]["ids"] == [mine["id"]]
     assert question["reason"] == "The $10.00 your balance adjustment stood for has arrived: remove the adjustment?"
+    assert out["results"][0]["balance_note"] == ("The $10.00 your balance adjustment stood for has arrived: "
+                                                 "the Inbox asks whether to remove it")
     assert _start(app) == 105000
     call(app, "remove_adjustment", question["id"])
     assert _adjustments(app) == [] and mine["id"] not in [t["id"] for t in call(app, "transactions", {})["items"]]
@@ -791,3 +1232,678 @@ def test_a_cards_check_balance_adjustment_goes_when_the_next_file_brings_the_cha
     _import(app, "card-2.ofx", card_ofx(later, "-550.00", "20261020", start="20261001"))
     assert _adjustments(app) == []
     assert call(app, "accounts")[0]["balance"] == -55000
+
+
+def test_a_categorized_adjustment_asks_when_the_file_that_starts_the_check_brings_its_money(app, monkeypatch):
+    """An account whose balance isn't checked yet (a typed balance here; at the first launch of 1.4 every account whose
+    balance came from a file, too): Check balance… on Oct 12 finds −$110.00 (the Oct 3 charge and the two from Oct 11),
+    and you categorize it. The next file's balance starts the check, and that file brings the charges. It asks, as on an
+    account already checked: it counted twice instead, and September started at $1,160.00."""
+    _first_file(app)
+    food = categories(app, {"Everyday": ["Food"]})["Food"]
+    account = call(app, "accounts")[0]["id"]
+    call(app, "set_balance", account, 270000, "2026-09-30")  # typed: the check ends
+    assert call(app, "reconcile", account, 259000)["adjusted"] == -11000
+    [mine] = _adjustments(app)
+    call(app, "categorize", txn_ids=[mine["id"]], category_id=food)  # yours now
+    monkeypatch.setenv("INAB_TODAY", "2026-10-21")
+    out = _import(app, "chequing-2.ofx", ofx(MISSING + OCTOBER + LATE + LATER, "2570.00", "20261020"))
+    [question] = _adjustments(app)  # the app's, cancelling yours out
+    assert question["amount"] == 11000 and question["adjustment_question"]["ids"] == [mine["id"]]
+    assert question["reason"] == "The $110.00 your balance adjustment stood for has arrived: remove the adjustment?"
+    assert out["results"][0]["balance_note"] == ("The $110.00 your balance adjustment stood for has arrived: "
+                                                 "the Inbox asks whether to remove it")
+    assert _start(app) == 105000
+    call(app, "remove_adjustment", question["id"])
+    assert _adjustments(app) == [] and mine["id"] not in [t["id"] for t in call(app, "transactions", {})["items"]]
+    assert call(app, "accounts")[0]["balance"] == 257000 and _start(app) == 105000
+
+
+def test_removing_the_file_the_check_starts_from_still_asks_about_yours(app, monkeypatch):
+    """Yours (−$410.00 from Oct 12) is asked about once the Oct 20 file brings its money. Remove import of the Sep
+    file, the one the check started from: the check now starts from the Oct 20 file, whose balance has yours in it, so
+    it still asks (the question went, and yours counted twice)."""
+    _first_file(app)
+    food = categories(app, {"Everyday": ["Food"]})["Food"]
+    account = call(app, "accounts")[0]["id"]
+    assert call(app, "reconcile", account, 259000)["adjusted"] == -41000
+    [mine] = _adjustments(app)
+    call(app, "categorize", txn_ids=[mine["id"]], category_id=food)
+    monkeypatch.setenv("INAB_TODAY", "2026-10-21")
+    _import(app, "chequing-2.ofx", ofx(MISSING + OCTOBER + LATE + LATER, "2570.00", "20261020"))
+    call(app, "undo_import", next(i["id"] for i in call(app, "imports") if i["filename"] == "chequing-1.ofx"))
+    [question] = _adjustments(app)
+    assert question["amount"] == 41000 and question["adjustment_question"]["ids"] == [mine["id"]]
+
+# ── a check that starts again (#145's review) ─────────────────────────────────
+#
+# Merge into… a copy whose newer balance wins, or Set balance and then the next file, start the check again from a
+# newer balance. Every balance adjustment inside it from before is taken over alike: yours and the one you kept
+# with Keep both still cancel out, and a question waiting about yours stays one question.
+
+
+N1 = [("20261025", "-5.00", "SAMPLE CAFE CALGARY AB", "N1")]
+
+
+def _yours_whose_money_arrived(app, monkeypatch):
+    """Checked from the Sep file: Check balance… on Oct 12 finds −$410.00 (the late-September payments and October's,
+    in no file yet), categorized; the Oct 20 file brings them, so the app asks whether to remove yours."""
+    _first_file(app)
+    food = categories(app, {"Everyday": ["Food"]})["Food"]
+    account = call(app, "accounts")[0]["id"]
+    assert call(app, "reconcile", account, 259000)["adjusted"] == -41000
+    [mine] = _adjustments(app)
+    call(app, "categorize", txn_ids=[mine["id"]], category_id=food)
+    monkeypatch.setenv("INAB_TODAY", "2026-10-21")
+    _import(app, "chequing-2.ofx", ofx(MISSING + OCTOBER + LATE + LATER, "2570.00", "20261020", start="20260916"))
+    [question] = _adjustments(app)
+    assert question["adjustment_question"]["ids"] == [mine["id"]] and _start(app) == 105000
+    return question
+
+
+def _merge_in_a_newer_copy(app, monkeypatch):
+    """The account's Oct 13–31 download went into an account of its own (another number); Merge into…: its newer
+    balance wins, and its check with it."""
+    monkeypatch.setenv("INAB_TODAY", "2026-11-01")
+    path = write(app.test_downloads, "copy.ofx", ofx(N1, "2565.00", "20261031", acct_id="000999888777", start="20261013"))
+    call(app, "set_file_accounts", str(path), [{"index": 0, "name": "Copy"}])
+    accounts = {a["name"]: a["id"] for a in call(app, "accounts")}
+    call(app, "merge_accounts", accounts["Copy"], accounts["SAMPLE CU Chequing"])
+
+
+def test_keep_both_still_holds_after_a_newer_copy_is_merged_in(app, monkeypatch):
+    """You answered Keep both: yours and the one you kept cancel out. After the merge nothing asks again (#145: the app
+    asks about yours a second time, and September starts at $640.00 whatever you answer)."""
+    question = _yours_whose_money_arrived(app, monkeypatch)
+    call(app, "keep_both", question["id"])
+    _merge_in_a_newer_copy(app, monkeypatch)
+    assert [(a["amount"], a["yours"], bool(a.get("adjustment_question"))) for a in _adjustments(app)] == [(41000, True, False)]
+    assert _start(app) == 105000 and call(app, "accounts")[0]["balance"] == 256500
+
+
+def test_keep_both_still_holds_after_set_balance_and_the_next_file(app, monkeypatch):
+    """The same with Set balance (a changed balance ends the check; the next file starts it again). In the page only
+    onboarding's 3. Balances can change a balance an account already has, so this one is reachable through the API only."""
+    question = _yours_whose_money_arrived(app, monkeypatch)
+    call(app, "keep_both", question["id"])
+    account = call(app, "accounts")[0]["id"]
+    call(app, "set_balance", account, 257500, "2026-10-20")  # typed, $5.00 out: the check ends
+    monkeypatch.setenv("INAB_TODAY", "2026-11-01")
+    _import(app, "chequing-3.ofx", ofx(N1, "2565.00", "20261031", start="20261021"))
+    assert [(a["amount"], a["yours"], bool(a.get("adjustment_question"))) for a in _adjustments(app)] == [(41000, True, False)]
+    assert _start(app) == 105000
+
+
+def test_a_question_waiting_when_a_newer_copy_is_merged_in_counts_once(app, monkeypatch):
+    """The question about yours is still waiting at the merge (#145's first commit: a second +$410.00 joined it, and
+    September started at $640.00): its money counts once, and it still asks about yours."""
+    question = _yours_whose_money_arrived(app, monkeypatch)
+    _merge_in_a_newer_copy(app, monkeypatch)
+    [waiting] = [a for a in _adjustments(app) if not a["yours"]]
+    assert waiting["amount"] == 41000 and _start(app) == 105000
+    assert (waiting.get("adjustment_question") or {}).get("ids") == question["adjustment_question"]["ids"]
+
+
+# ── Merge into… (issue #147) ──────────────────────────────────────────────────
+#
+# After Merge into…, the balance check works as if the copy's files had gone into the account in the first place,
+# whichever balance wins: it carries on from whichever account's check started first, a transaction both had counts
+# from the file that brought it first, and the waiting balance adjustments of both are worked out again as one. The
+# other account's Check balance… adjustments that the winning balance is as new as are taken over at the merge. When
+# the balance that wins isn't checked (typed, or a file's from before 1.4), the app's waiting balance adjustments the
+# other account had, dated on or before it, go. On the same day a file's balance wins over a typed one, and a later
+# download over an earlier one, as at an import.
+
+COPY = "000999888777"  # the copy's account number: another one, which the app didn't match
+
+
+def _new_account(app, name, text, account="Copy"):
+    """A file into an account of its own (a number the app didn't match, or a file you said was a new account)."""
+    return call(app, "set_file_accounts", str(write(app.test_downloads, name, text)), [{"index": 0, "name": account}])
+
+
+def _merge(app, copy, into):
+    accounts = {a["name"]: a["id"] for a in call(app, "accounts")}
+    return call(app, "merge_accounts", accounts[copy], accounts[into])
+
+
+def _balance(app):
+    [account] = call(app, "accounts")
+    return account["balance"]
+
+
+def _remove_import(app, name):
+    call(app, "undo_import", next(i["id"] for i in call(app, "imports") if i["filename"] == name))
+
+
+def _waiting(app):
+    return [(a["amount"], a["date"]) for a in _adjustments(app)]
+
+
+def test_after_merge_into_removing_the_copys_file_whose_balance_won_puts_back_the_accounts(app):
+    _import(app, "chequing-1.ofx", ofx(SEPTEMBER, "3000.00", "20260915"))
+    _new_account(app, "copy.ofx", ofx(SEPTEMBER + MISSING + OCTOBER + LATE, "2590.00", "20261012", acct_id=COPY,
+                                      start="20260901"))
+    call(app, "finish_onboarding", "2026-09")
+    _merge(app, "Copy", "SAMPLE CU Chequing")
+    _remove_import(app, "copy.ofx")
+    assert _balance(app) == 300000 and _waiting(app) == [] and _start(app) == 105000
+
+
+def test_after_merge_into_removing_the_accounts_newest_file_puts_back_the_copys_newer_balance(app):
+    _import(app, "chequing-1.ofx", ofx(SEPTEMBER, "3000.00", "20260915"))
+    _new_account(app, "copy.ofx", ofx(OCTOBER, "2600.00", "20261010", acct_id=COPY, start="20261001"))
+    call(app, "finish_onboarding", "2026-09")
+    _import(app, "chequing-2.ofx", ofx(LATE, "2590.00", "20261012", start="20261011"))
+    _merge(app, "Copy", "SAMPLE CU Chequing")
+    _remove_import(app, "chequing-2.ofx")
+    assert _balance(app) == 260000 and _waiting(app) == [(-30000, "2026-10-10")]
+
+
+def test_removing_the_file_the_check_starts_from_starts_it_from_the_next_file_with_a_balance(app):
+    _import(app, "chequing-oct.ofx", ofx(MISSING + OCTOBER + LATE, "2590.00", "20261012", start="20260916"))
+    _import(app, "chequing-sep.ofx", ofx(SEPTEMBER, "3000.00", "20260915", start="20260901"))
+    call(app, "finish_onboarding", "2026-09")
+    _import(app, "chequing-3.ofx", ofx(NEXT_WEEK, "2570.00", "20261020", start="20261013"))
+    _remove_import(app, "chequing-oct.ofx")
+    assert _waiting(app) == [(-41000, "2026-10-20")] and _start(app) == 105000
+
+
+def test_removing_the_file_whose_balance_is_used_keeps_another_files_balance(app):
+    _import(app, "sep.ofx", ofx(SEPTEMBER, "2950.00", "20260915", start="20260901"))
+    _import(app, "aug.ofx", ofx(AUGUST, "1000.00", "20260831", start="20260801"))
+    call(app, "finish_onboarding", "2026-08")
+    _remove_import(app, "sep.ofx")
+    assert call(app, "accounts")[0]["balance"] is not None
+    account = call(app, "accounts")[0]["id"]
+    call(app, "update_account", account, {"closed": True})
+    assert call(app, "month", "2026-08")["summary"]["off"] == 0
+
+
+# ── Remove import puts back a balance you typed (the review of #171) ─────────
+# A balance you typed was typed after every file before it came in: when Remove import takes away the file that
+# replaced it, only a file imported after that one with a balance as new takes its place, as it would have when it
+# came in, for the balance and for where the check starts. With none, the balance you typed comes back.
+
+def _books(app):
+    """(balance date, balance, where it came from, the file the check starts from) of the only account."""
+    c = app.db.conn
+    a = c.execute("SELECT anchor_date, anchor_balance, anchor_source, check_from FROM accounts").fetchone()
+    start = c.execute("SELECT filename FROM imports WHERE id = ?", (a["check_from"],)).fetchone()
+    return a["anchor_date"], a["anchor_balance"], a["anchor_source"], start[0] if start else None
+
+
+def _only_account(app):
+    return call(app, "accounts")[0]["id"]
+
+
+def _into(app, name, text):
+    call(app, "set_file_accounts", str(write(app.test_downloads, name, text)),
+         [{"index": 0, "account_id": _only_account(app)}])
+
+
+def test_removing_the_next_file_keeps_the_balance_you_corrected_on_3_balances(app):
+    """3. Balances: the file says $3,000.00 on Sep 15, you change it to $3,100.00 (typed for that day). October's file
+    replaces it. Remove import of October's file: $3,100.00 as you typed it, with no check, not the file's $3,000.00."""
+    _import(app, "sep.ofx", ofx(SEPTEMBER, "3000.00", "20260915", start="20260901"))
+    call(app, "set_balance", _only_account(app), 310000, "2026-09-15")
+    call(app, "finish_onboarding", "2026-09")
+    _import(app, "oct.ofx", ofx(OCTOBER, "2600.00", "20261010", start="20261001"))
+    _remove_import(app, "oct.ofx")
+    assert _books(app) == ("2026-09-15", 310000, "typed", None)
+
+
+def test_removing_the_next_file_keeps_a_balance_set_the_day_of_a_download(app, monkeypatch):
+    """Set balance… the day of a download (the bank shows another balance later that day), then the next download,
+    removed: the balance you set, not the morning file's."""
+    monkeypatch.setenv("INAB_TODAY", "2026-09-15")
+    _import(app, "morning.ofx", ofx(SEPTEMBER, "3000.00", "20260915", start="20260901"))
+    call(app, "finish_onboarding", "2026-09")
+    call(app, "set_balance", _only_account(app), 295000)  # today, Sep 15
+    monkeypatch.setenv("INAB_TODAY", "2026-10-12")
+    _import(app, "next.ofx", ofx(OCTOBER, "2600.00", "20261010", start="20260916"))
+    _remove_import(app, "next.ofx")
+    assert _books(app) == ("2026-09-15", 295000, "typed", None)
+
+
+def _typed_then_october_then_september(app):
+    call(app, "add_account", "Sample Chequing", "chequing", 150000, "2026-09-01")  # typed: $1,500.00 on Sep 1
+    call(app, "finish_onboarding", "2026-09")
+    _into(app, "oct.ofx", ofx(OCTOBER, "2600.00", "20261010", start="20261001"))
+    _import(app, "sep.ofx", ofx(SEPTEMBER, "3000.00", "20260915", start="20260901"))  # older: found later
+
+
+def test_the_file_that_takes_the_balance_over_remembers_the_typed_balance(app):
+    """$1,500.00 typed on Sep 1; October's file replaces it; September's, older, found later. Remove import of
+    October's: September's balance, checked from it. Then of September's: the $1,500.00 you typed, not no balance."""
+    _typed_then_october_then_september(app)
+    _remove_import(app, "oct.ofx")
+    assert _books(app) == ("2026-09-15", 300000, "file", "sep.ofx")
+    _remove_import(app, "sep.ofx")
+    assert _books(app) == ("2026-09-01", 150000, "typed", None)
+
+
+def test_older_files_found_later_take_the_balance_over_in_turn(app):
+    """As above with two older files found later, Sep 10's then Sep 20's: removing October's leaves Sep 20's balance,
+    checked from Sep 10's (the first to replace the typed one); removing Sep 20's then leaves Sep 10's."""
+    call(app, "add_account", "Sample Chequing", "chequing", 150000, "2026-09-01")
+    call(app, "finish_onboarding", "2026-09")
+    _into(app, "oct.ofx", ofx(OCTOBER, "2600.00", "20261010", start="20261001"))
+    _import(app, "sep10.ofx", ofx(SEPTEMBER, "3000.00", "20260910", start="20260901"))
+    _import(app, "sep20.ofx", ofx(SEPTEMBER, "3050.00", "20260920", start="20260901"))
+    _remove_import(app, "oct.ofx")
+    assert _books(app) == ("2026-09-20", 305000, "file", "sep10.ofx")
+    _remove_import(app, "sep20.ofx")
+    assert _books(app) == ("2026-09-10", 300000, "file", "sep10.ofx")
+    _remove_import(app, "sep10.ofx")
+    assert _books(app) == ("2026-09-01", 150000, "typed", None)
+
+
+def test_an_import_from_before_version_8_puts_back_the_balance_it_replaced(app):
+    """An import from before version 8 didn't say where the balance it replaced came from (anchor_before_source NULL):
+    that balance comes back, as before #169, not an older file's."""
+    call(app, "add_account", "Sample Chequing", "chequing", 290000, "2026-09-30")
+    call(app, "finish_onboarding", "2026-09")
+    _into(app, "aug.ofx", ofx(AUGUST, "1000.00", "20260831", start="20260801"))  # older than the typed balance
+    _import(app, "oct.ofx", ofx(OCTOBER, "2600.00", "20261010", start="20261001"))
+    app.db.conn.execute("UPDATE imports SET anchor_before_source = NULL")  # as a version 7 import
+    _remove_import(app, "oct.ofx")
+    assert _books(app)[:2] == ("2026-09-30", 290000)
+
+
+def test_reading_kept_files_again_keeps_the_card_balance_sign_the_import_settled(app):
+    """A card whose files write what you owe as positive, whose first balance you typed: the import reads its file's
+    $130.00 as owed, as the app's own balance says. The first launch's reading of the kept files leaves that as it is,
+    so removing the later file brings back $130.00 owed, not in your favour."""
+    n = card_number("4444")
+    card = call(app, "add_account", "Sample Visa", "credit_card", 10000, "2026-09-30")  # owe $100.00 on Sep 30
+    call(app, "finish_onboarding", "2026-09")
+    call(app, "set_file_accounts", str(write(app.test_downloads, "c1.ofx", card_ofx(
+        [("20261005", "-30.00", "SAMPLE BAKERY", "O1")], "130.00", "20261010", acct_id=n, start="20261001"))),
+        [{"index": 0, "account_id": card}])
+    assert call(app, "accounts")[0]["balance"] == -13000
+    _import(app, "c2.ofx", card_ofx([("20261011", "-20.00", "SAMPLE TAXI", "O2")], "150.00", "20261012", acct_id=n,
+                                    start="20261011"))
+    assert call(app, "accounts")[0]["balance"] == -15000
+    app.db.set_meta("read_imported_files", "1")  # as after the upgrade to 13
+    app.read_imported_files()
+    _remove_import(app, "c2.ofx")
+    assert call(app, "accounts")[0]["balance"] == -13000
+
+
+def test_reading_kept_files_again_settles_an_older_card_files_balance_by_the_apps(app):
+    """An older card file whose balance never became the account's has none noted until the reading: its $100.00 above
+    zero is read the way the app's balance for that day says (owed), as its import read it, not as written."""
+    n = card_number("4444")
+    card = call(app, "add_account", "Sample Visa", "credit_card", 10000, "2026-09-30")
+    call(app, "finish_onboarding", "2026-09")
+    pick = [{"index": 0, "account_id": card}]
+    call(app, "set_file_accounts", str(write(app.test_downloads, "c1.ofx", card_ofx(
+        [("20261005", "-30.00", "SAMPLE BAKERY", "O1")], "130.00", "20261010", acct_id=n, start="20261001"))), pick)
+    _import(app, "c0.ofx", card_ofx([("20260920", "-40.00", "SAMPLE GROCER", "S1")], "100.00", "20260920", acct_id=n,
+                                    start="20260915"))
+    c = app.db.conn
+    noted = c.execute("SELECT file_balance FROM imports WHERE filename = 'c0.ofx'").fetchone()[0]
+    assert noted == -10000  # owed $100.00 on Sep 20, as the app's balance says
+    c.execute("UPDATE imports SET file_balance_date = NULL, file_balance = NULL WHERE filename = 'c0.ofx'")
+    app.db.set_meta("read_imported_files", "1")
+    app.read_imported_files()
+    assert c.execute("SELECT file_balance FROM imports WHERE filename = 'c0.ofx'").fetchone()[0] == noted
+
+
+def test_merging_a_copy_with_a_newer_balance_after_a_later_file_leaves_nothing_waiting(app):
+    """The issue's case: the copy's newer balance won, and its check with it, so Chequing's October file, imported after
+    the copy's, counted as money that moved since the copy's balance: +$400.00 waited for good, and September started at
+    $650.00."""
+    _import(app, "chequing-1.ofx", ofx(SEPTEMBER, "3000.00", "20260915"))
+    _import(app, "copy.ofx", ofx(SEPTEMBER + MISSING + OCTOBER + LATE, "2590.00", "20261012", acct_id="999111222333"))
+    call(app, "finish_onboarding", "2026-09")
+    _import(app, "chequing-2.ofx", ofx(MISSING + OCTOBER, "2600.00", "20261010"))
+    chequing, copy = sorted(call(app, "accounts"), key=lambda a: a["id"])
+    call(app, "merge_accounts", copy["id"], chequing["id"])
+    assert _adjustments(app) == [] and _start(app) == 105000  # today: +40000 waits, and 65000
+    assert _balance(app) == 259000
+
+
+@pytest.mark.parametrize("into", ["Chequing", "Copy"])
+def test_a_copy_imported_first_with_the_missing_payments_explains_the_accounts_gap(app, into):
+    """The copy (Sep 1–30, $2,700.00 on Sep 30) came in before Chequing's Sep 1–15 file, and Chequing's October file
+    then shows the late-September payments missing. The copy has them: merged either way, Chequing's newer balance wins
+    and nothing waits (the −$300.00 stayed beside the payments, and September started at $1,350.00)."""
+    _new_account(app, "copy.ofx", ofx(SEPTEMBER + MISSING, "2700.00", "20260930", acct_id=COPY))
+    _new_account(app, "chequing-1.ofx", ofx(SEPTEMBER, "3000.00", "20260915"), "Chequing")
+    call(app, "finish_onboarding", "2026-09")
+    _import(app, "chequing-2.ofx", ofx(OCTOBER, "2600.00", "20261010"))
+    assert [a["amount"] for a in _adjustments(app)] == [-30000]
+    _merge(app, "Copy" if into == "Chequing" else "Chequing", into)
+    assert _adjustments(app) == [] and _start(app) == 105000 and _balance(app) == 260000
+
+
+def test_a_copys_newer_file_with_rows_the_account_has_already(app, monkeypatch):
+    """Chequing has one file, Sep 1 – Oct 12 ($2,590.00). The copy has Sep 1–15, then Sep 16 – Oct 20 ($2,570.00 on
+    Oct 20), whose rows up to Oct 12 Chequing has too. The copy's newer balance wins: nothing waits (−$410.00 waited,
+    and September started at $1,460.00)."""
+    _import(app, "chequing.ofx", ofx(SEPTEMBER + MISSING + OCTOBER + LATE, "2590.00", "20261012"))
+    _new_account(app, "copy-1.ofx", ofx(SEPTEMBER, "3000.00", "20260915", acct_id=COPY))
+    call(app, "finish_onboarding", "2026-09")
+    monkeypatch.setenv("INAB_TODAY", "2026-10-21")
+    _import(app, "copy-2.ofx", ofx(MISSING + OCTOBER + LATE + LATER, "2570.00", "20261020", acct_id=COPY))
+    _merge(app, "Copy", "SAMPLE CU Chequing")
+    assert _adjustments(app) == [] and _start(app) == 105000 and _balance(app) == 257000
+
+
+def test_a_copy_imported_first_whose_newer_balance_wins(app):
+    """The copy (Sep 1 – Oct 12, $2,590.00 on Oct 12) came in first, then Chequing's Sep 1–15 and Sep 16 – Oct 10 files:
+    every transaction Chequing has counted as money that moved since the copy's balance (−$1,550.00 waited, and
+    September started at $2,600.00)."""
+    _new_account(app, "copy.ofx", ofx(SEPTEMBER + MISSING + OCTOBER + LATE, "2590.00", "20261012", acct_id=COPY))
+    _new_account(app, "chequing-1.ofx", ofx(SEPTEMBER, "3000.00", "20260915"), "Chequing")
+    call(app, "finish_onboarding", "2026-09")
+    _import(app, "chequing-2.ofx", ofx(MISSING + OCTOBER, "2600.00", "20261010"))
+    _merge(app, "Copy", "Chequing")
+    assert _adjustments(app) == [] and _start(app) == 105000 and _balance(app) == 259000
+
+
+def test_the_copys_gap_goes_when_the_account_has_its_payments(app):
+    """The copy has Sep 1–15 and October, so its −$300.00 waits. Chequing has one file, Sep 1 – Oct 12 ($2,590.00), with
+    every payment, imported last. Merge the copy into Chequing: Chequing's balance wins and the −$300.00 goes."""
+    _new_account(app, "copy-1.ofx", ofx(SEPTEMBER, "3000.00", "20260915", acct_id=COPY))
+    call(app, "finish_onboarding", "2026-09")
+    _import(app, "copy-2.ofx", ofx(OCTOBER, "2600.00", "20261010", acct_id=COPY))
+    assert [a["amount"] for a in _adjustments(app)] == [-30000]
+    _new_account(app, "chequing.ofx", ofx(SEPTEMBER + MISSING + OCTOBER + LATE, "2590.00", "20261012"), "Chequing")
+    _merge(app, "Copy", "Chequing")
+    assert _adjustments(app) == [] and _start(app) == 105000 and _balance(app) == 259000
+
+
+@pytest.mark.parametrize("into", ["SAMPLE CU Chequing", "Copy"])
+def test_a_gap_neither_account_has_stays_until_the_missing_download_comes_in(app, into):
+    """Chequing has Sep 1–15 and Oct 1–10: the late-September payments are missing (−$300.00 waits), and September
+    starts at $1,050.00. A copy has Oct 1–12 ($2,590.00). Merged either way, the −$300.00 still waits, dated Oct 12, and
+    the missing download clears it (it went at the merge, and September started at $750.00 until that download)."""
+    _first_file(app)
+    _import(app, "chequing-2.ofx", ofx(OCTOBER, "2600.00", "20261010", start="20261001"))
+    _new_account(app, "copy.ofx", ofx(OCTOBER + LATE, "2590.00", "20261012", acct_id=COPY, start="20261001"))
+    _merge(app, "Copy" if into != "Copy" else "SAMPLE CU Chequing", into)
+    [adjustment] = _adjustments(app)
+    assert (adjustment["amount"], adjustment["date"]) == (-30000, "2026-10-12") and _start(app) == 105000
+    assert "between Sep 15 and Oct 1" in adjustment["reason"]
+    _import(app, "chequing-sep.ofx", ofx(MISSING, "2700.00", "20260930", start="20260916"))
+    assert _adjustments(app) == [] and _start(app) == 105000 and _balance(app) == 259000
+
+
+def test_yours_asks_when_the_copys_transactions_bring_its_money(app):
+    """You categorized Chequing's −$300.00 (the late-September payments missing). The copy, imported before Chequing's
+    files, has them: once merged, the Inbox asks whether to remove yours (it counted twice: $1,350.00)."""
+    _new_account(app, "copy.ofx", ofx(SEPTEMBER + MISSING, "2700.00", "20260930", acct_id=COPY))
+    _new_account(app, "chequing-1.ofx", ofx(SEPTEMBER, "3000.00", "20260915"), "Chequing")
+    call(app, "finish_onboarding", "2026-09")
+    _import(app, "chequing-2.ofx", ofx(OCTOBER, "2600.00", "20261010"))
+    [mine] = _adjustments(app)
+    call(app, "categorize", txn_ids=[mine["id"]], category_id=_income(app))
+    _merge(app, "Copy", "Chequing")
+    [question] = [a for a in _adjustments(app) if not a["yours"]]
+    assert question["amount"] == 30000 and question["adjustment_question"]["ids"] == [mine["id"]]
+    assert question["reason"] == "The $300.00 your balance adjustment stood for has arrived: remove the adjustment?"
+    assert _start(app) == 105000
+    call(app, "remove_adjustment", question["id"])
+    assert _adjustments(app) == [] and _start(app) == 105000 and _balance(app) == 260000
+
+
+def _checked_before_the_copy(app):
+    """The issue's files, and Check balance… on Chequing on Oct 12 with $2,590.00: −$10.00, the two Oct 11 charges, which
+    are in the copy's file."""
+    _import(app, "chequing-1.ofx", ofx(SEPTEMBER, "3000.00", "20260915"))
+    _new_account(app, "copy.ofx", ofx(SEPTEMBER + MISSING + OCTOBER + LATE, "2590.00", "20261012", acct_id=COPY))
+    call(app, "finish_onboarding", "2026-09")
+    _import(app, "chequing-2.ofx", ofx(MISSING + OCTOBER, "2600.00", "20261010"))
+    chequing = next(a["id"] for a in call(app, "accounts") if a["name"] != "Copy")
+    assert call(app, "reconcile", chequing, 259000)["adjusted"] == -1000
+
+
+def test_a_check_balance_adjustment_the_copys_balance_is_as_new_as_goes_at_the_merge(app, monkeypatch):
+    """It stayed beside the +$400.00, and the balance showed $2,580.00 until the next file."""
+    _checked_before_the_copy(app)
+    _merge(app, "Copy", "SAMPLE CU Chequing")
+    assert _adjustments(app) == [] and _start(app) == 105000 and _balance(app) == 259000
+    monkeypatch.setenv("INAB_TODAY", "2026-10-21")
+    _import(app, "chequing-3.ofx", ofx(LATE + LATER, "2570.00", "20261020"))
+    assert _adjustments(app) == [] and _start(app) == 105000 and _balance(app) == 257000
+
+
+def test_a_check_balance_adjustment_you_categorized_asks_at_the_merge(app):
+    _checked_before_the_copy(app)
+    [mine] = _adjustments(app)
+    call(app, "categorize", txn_ids=[mine["id"]], category_id=_income(app))
+    _merge(app, "Copy", "SAMPLE CU Chequing")
+    [question] = [a for a in _adjustments(app) if not a["yours"]]
+    assert question["amount"] == 1000 and question["adjustment_question"]["ids"] == [mine["id"]]
+    assert question["reason"] == "The $10.00 your balance adjustment stood for has arrived: remove the adjustment?"
+    call(app, "remove_adjustment", question["id"])
+    assert _adjustments(app) == [] and _start(app) == 105000 and _balance(app) == 259000
+
+
+def test_a_check_balance_adjustment_newer_than_the_winning_balance_waits_for_the_next_file(app, monkeypatch):
+    """Check balance… on Oct 14 is newer than the copy's Oct 12 balance: it waits, as in one account, and the next file,
+    whose balance is as new, takes it over."""
+    _import(app, "chequing-1.ofx", ofx(SEPTEMBER, "3000.00", "20260915"))
+    _new_account(app, "copy.ofx", ofx(SEPTEMBER + MISSING + OCTOBER + LATE, "2590.00", "20261012", acct_id=COPY))
+    call(app, "finish_onboarding", "2026-09")
+    _import(app, "chequing-2.ofx", ofx(MISSING + OCTOBER, "2600.00", "20261010"))
+    monkeypatch.setenv("INAB_TODAY", "2026-10-14")
+    chequing = next(a["id"] for a in call(app, "accounts") if a["name"] != "Copy")
+    assert call(app, "reconcile", chequing, 257000)["adjusted"] == -3000  # the Oct 11 charges and Oct 13's −$20.00
+    _merge(app, "Copy", "SAMPLE CU Chequing")
+    assert [(a["amount"], a["date"]) for a in _adjustments(app)] == [(-3000, "2026-10-14")] and _start(app) == 105000
+    monkeypatch.setenv("INAB_TODAY", "2026-10-21")
+    _import(app, "chequing-3.ofx", ofx([("20261013", "-20.00", "SAMPLE BAKERY CALGARY AB", "P3")], "2570.00", "20261020"))
+    assert _adjustments(app) == [] and _start(app) == 105000 and _balance(app) == 257000
+
+
+def _gap_and_a_typed_copy(app, monkeypatch, typed_on="2026-10-12"):
+    """Chequing has Sep 1–15 and Oct 1–10 (the late-September payments missing: −$300.00 waits). A copy added by hand
+    has $2,590.00 typed for Oct 12, newer than Chequing's Oct 10 file."""
+    _first_file(app)
+    _import(app, "chequing-2.ofx", ofx(OCTOBER, "2600.00", "20261010", start="20261001"))
+    return call(app, "add_account", "Copy", "chequing", 259000, typed_on)
+
+
+def test_when_a_typed_balance_wins_the_other_accounts_waiting_adjustment_goes(app, monkeypatch):
+    """The check stops until the next file, so the −$300.00 would never be worked out again until then: it goes, as for a
+    changed box on 3. Balances. September starts at $740.00 until the missing transactions come in."""
+    _gap_and_a_typed_copy(app, monkeypatch)
+    _merge(app, "Copy", "SAMPLE CU Chequing")
+    [account] = call(app, "accounts")
+    assert _adjustments(app) == [] and (account["anchor_source"], account["balance"]) == ("typed", 259000)
+    assert _start(app) == 74000
+    monkeypatch.setenv("INAB_TODAY", "2026-10-21")
+    _import(app, "chequing-3.ofx", ofx(LATE + LATER, "2570.00", "20261020", start="20261011"))
+    _import(app, "chequing-sep.ofx", ofx(MISSING, "2700.00", "20260930", start="20260916"))
+    assert _adjustments(app) == [] and _start(app) == 105000 and _balance(app) == 257000
+
+
+def test_when_a_typed_balance_wins_yours_stays_and_so_does_a_newer_check_balance(app, monkeypatch):
+    copy = _gap_and_a_typed_copy(app, monkeypatch, typed_on="2026-10-11")
+    [mine] = _adjustments(app)
+    call(app, "categorize", txn_ids=[mine["id"]], category_id=_income(app))
+    chequing = next(a["id"] for a in call(app, "accounts") if a["id"] != copy)
+    assert call(app, "reconcile", chequing, 258000)["adjusted"] == -2000  # Oct 12, after the typed balance's Oct 11
+    _merge(app, "Copy", "SAMPLE CU Chequing")
+    assert [(a["amount"], a["date"]) for a in _adjustments(app)] == [(-2000, "2026-10-12")]
+    assert mine["id"] in [t["id"] for t in call(app, "transactions", {})["items"]]
+
+
+def test_a_files_balance_wins_over_a_typed_one_for_the_same_day(app):
+    """A CSV-only account with $2,590.00 typed for Oct 12 at 3. Balances, and the file's account with its Oct 12 balance
+    of $2,590.00. Merged into the typed one, the file's balance stays and the next file is checked against it (the typed
+    one stayed, so the next file's balance was taken as it is: September started at $1,030.00)."""
+    call(app, "add_account", "Chequing", "chequing", 259000, "2026-10-12")
+    _new_account(app, "copy.ofx", ofx(SEPTEMBER + MISSING + OCTOBER + LATE, "2590.00", "20261012"))
+    call(app, "finish_onboarding", "2026-09")
+    _merge(app, "Copy", "Chequing")
+    [account] = call(app, "accounts")
+    assert (account["anchor_source"], account["balance"]) == ("file", 259000)
+    _import(app, "chequing-2.ofx", ofx([], "2570.00", "20261020"))  # the bank's −$20.00 on Oct 15 isn't in it
+    assert [a["amount"] for a in _adjustments(app)] == [-2000] and _start(app) == 105000
+
+
+@pytest.mark.parametrize("into", ["SAMPLE CU Chequing", "Copy"])
+def test_the_later_download_of_the_same_day_wins(app, into):
+    """Downloads on the morning of Oct 12 ($2,600.00) into the copy, and in the evening ($2,590.00: two Oct 11 charges
+    went through in between) into Chequing. Merged either way, the evening's balance stays and nothing waits (merged
+    into the copy, the morning's stayed, and +$10.00 waited until the next file)."""
+    _first_file(app)
+    _new_account(app, "copy.ofx", ofx(SEPTEMBER + MISSING + OCTOBER, "2600.00", "20261012", acct_id=COPY))
+    _import(app, "chequing-2.ofx", ofx(MISSING + OCTOBER + LATE, "2590.00", "20261012"))
+    _merge(app, "Copy" if into != "Copy" else "SAMPLE CU Chequing", into)
+    assert _adjustments(app) == [] and _start(app) == 105000 and _balance(app) == 259000
+
+
+CARD_SEP = [("20260905", "-60.00", "SAMPLE GROCER", "V1"), ("20260912", "-40.00", "SAMPLE CAFE", "V2")]
+CARD_LATE_SEP = [("20260920", "-25.00", "SAMPLE TAXI", "V3"), ("20260928", "-35.00", "SAMPLE BAKERY", "V4")]
+CARD_OCT = [("20261005", "-30.00", "SAMPLE PHARMACY", "V5")]
+CARD_POSTED_LATE = [("20261009", "-12.00", "SAMPLE PARKING", "V6")]  # dated Oct 9, went through on Oct 11
+
+
+def test_a_cards_copy_with_a_newer_balance(app):
+    """The issue's case on a card: the copy (another card number) has Sep 1 – Oct 12, owing $202.00, with a charge from
+    Oct 9 that went through on Oct 11; the card's own Sep 16 – Oct 10 file comes in after it."""
+    _import(app, "card-1.ofx", card_ofx(CARD_SEP, "-100.00", "20260915", start="20260901"))
+    _new_account(app, "copy.ofx", card_ofx(CARD_SEP + CARD_LATE_SEP + CARD_OCT + CARD_POSTED_LATE, "-202.00", "20261012",
+                                           acct_id=card_number("5555"), start="20260901"))
+    call(app, "finish_onboarding", "2026-09")
+    _import(app, "card-2.ofx", card_ofx(CARD_LATE_SEP + CARD_OCT, "-190.00", "20261010", start="20260916"))
+    card, copy = sorted(call(app, "accounts"), key=lambda a: a["id"])
+    call(app, "merge_accounts", copy["id"], card["id"])
+    assert _adjustments(app) == [] and _balance(app) == -20200
+
+
+def _state(app):
+    c = app.db.conn
+    return ([tuple(r) for r in c.execute("SELECT id, account_id, import_id, after_import, amount, date, category_id, "
+                                         "status, by_you FROM transactions ORDER BY id")],
+            [tuple(r) for r in c.execute("SELECT id, name, anchor_date, anchor_balance, anchor_source, check_from "
+                                         "FROM accounts ORDER BY id")],
+            [tuple(r) for r in c.execute("SELECT id, account_id FROM imports ORDER BY id")],
+            [tuple(r) for r in c.execute("SELECT key, account_id FROM account_sources ORDER BY key")])
+
+
+def test_undoing_the_merge_puts_everything_back(app):
+    _checked_before_the_copy(app)
+    before = _state(app)
+    _merge(app, "Copy", "SAMPLE CU Chequing")
+    assert _state(app) != before
+    assert "Copy comes back as an account of its own" in call(app, "undo_step")["undoes"]
+    call(app, "undo")
+    assert _state(app) == before
+    assert [a["amount"] for a in _adjustments(app)] == [-1000]
+
+
+def test_removing_a_file_after_the_merge_takes_the_transactions_it_brought_first(app):
+    """A transaction both accounts had counts from the file that brought it first, as when two downloads overlap in one
+    account: Remove import of that file moves it under the other file that has it (issue #148), and the check works it
+    out again, as if the removed file had never come in."""
+    _import(app, "chequing-1.ofx", ofx(SEPTEMBER, "3000.00", "20260915"))
+    _new_account(app, "copy.ofx", ofx(SEPTEMBER + MISSING + OCTOBER, "2600.00", "20261010", acct_id=COPY,
+                                      start="20260901"))
+    call(app, "finish_onboarding", "2026-09")
+    _import(app, "chequing-2.ofx", ofx(MISSING + OCTOBER + LATE, "2590.00", "20261012", start="20260916"))
+    _merge(app, "Copy", "SAMPLE CU Chequing")
+    assert _adjustments(app) == [] and _balance(app) == 259000
+    copy_file = next(i["id"] for i in call(app, "imports") if i["filename"] == "copy.ofx")
+    out = call(app, "undo_import", copy_file)
+    # The two late-September payments and October's stay: chequing-2.ofx has them too.
+    assert (out["removed"], out["stayed"]) == (0, 3)
+    assert _adjustments(app) == [] and _start(app) == 105000 and _balance(app) == 259000
+
+
+# Random made-up downloads of one account, some under the copy's number, imported in a random order and merged either
+# way: the account ends up as if every file had gone into it (the same downloads, in the same order, under one
+# number): the same balance, the same balance adjustment waiting, the same start, and every transaction counted from
+# the same file.
+
+def _service(folder):
+    from service import BudgetService
+    from settings import Settings
+    downloads = folder / "Downloads"
+    downloads.mkdir(parents=True)
+    settings = Settings(folder / "settings.json")
+    settings.update({"downloads_dir": str(downloads)})
+    service = BudgetService(db.Database(folder / "budget.db"), settings, folder / "data")
+    service.test_downloads = downloads
+    return service
+
+
+def _random_downloads(rng, card):
+    """[(rows, balance, as_of, start, last_day)]: downloads of random, overlapping date ranges of one made-up account. A
+    card's charges go through up to two days after their date; a file has what went through in its days, and its
+    balance is the bank's on the day it was downloaded (its last day, or a few days later for a past range)."""
+    first = date(2026, 9, 1)
+    events = []
+    for n in range(55):
+        day = first + timedelta(days=n)
+        for k in range(rng.choice([0, 1, 1, 2])):
+            cents = -rng.randint(1_00, 90_00) if card or rng.random() < 0.8 else rng.randint(50_00, 2000_00)
+            events.append((day, day + timedelta(days=rng.choice([0, 1, 2]) if card else 0), cents,
+                           f"SAMPLE PAYEE {n} {k} CALGARY AB", f"R{n}-{k}"))
+    opening = 0 if card else 1500_00
+    files = []
+    for _ in range(rng.randint(3, 7)):
+        start = first + timedelta(days=rng.randint(0, 45))
+        last = min(start + timedelta(days=rng.randint(2, 25)), first + timedelta(days=54))
+        as_of = last + timedelta(days=rng.choice([0, 0, 0, 1, 3]))
+        rows = [(f"{d:%Y%m%d}", f"{c / 100:.2f}", name, fitid) for d, went, c, name, fitid in events
+                if start <= went <= last]
+        balance = opening + sum(c for _, went, c, _, _ in events if went <= as_of)
+        files.append((rows, f"{balance / 100:.2f}", f"{as_of:%Y%m%d}", f"{start:%Y%m%d}", f"{last:%Y%m%d}"))
+    return files
+
+
+def _download(card, number, rows, balance, as_of, start, last_day):
+    text = card_ofx(rows, balance, as_of, acct_id=number, start=start) if card else ofx(rows, balance, as_of,
+                                                                                        acct_id=number, start=start)
+    return _past(text, last_day) if last_day != as_of else text
+
+
+def _bring_in(app, files, numbers, card):
+    """Imports the files in order, file i under numbers[i]: the first under each number into an account of its own."""
+    made = set()
+    for i, (file, number) in enumerate(zip(files, numbers)):
+        text = _download(card, number, *file)
+        if number in made:
+            out = _import(app, f"file-{i}.ofx", text)
+            assert not out.get("needs") and len(out["results"]) == 1, out
+        else:
+            _new_account(app, f"file-{i}.ofx", text, f"Account {number[-4:]}")
+            made.add(number)
+        if i == 0:
+            call(app, "finish_onboarding", "2026-09")
+
+
+def _outcome(app):
+    c = app.db.conn
+    [account] = call(app, "accounts")
+    rows = sorted(tuple(r) for r in c.execute("SELECT date, amount, import_id FROM transactions "
+                                              "WHERE fingerprint IS NOT NULL"))
+    return (account["balance"], sorted((a["amount"], a["date"]) for a in _adjustments(app)), _start(app), rows)
+
+
+@pytest.mark.parametrize("seed", range(16))
+def test_merging_gives_what_importing_every_file_into_one_account_gives(tmp_path, monkeypatch, seed):
+    import random
+    rng = random.Random(seed)
+    card = seed % 2 == 1
+    own, copy = (card_number("4444"), card_number("5555")) if card else ("000111222333", COPY)
+    files = _random_downloads(rng, card)
+    numbers = [own] + [rng.choice([own, copy]) for _ in files[1:]]
+    if copy not in numbers:
+        numbers[rng.randrange(1, len(files))] = copy
+    monkeypatch.setenv("INAB_TODAY", "2026-11-01")
+    one = _service(tmp_path / "one")
+    _bring_in(one, files, [own] * len(files), card)
+    two = _service(tmp_path / "two")
+    _bring_in(two, files, numbers, card)
+    names = {a["name"]: a["id"] for a in call(two, "accounts")}
+    into, other = (f"Account {own[-4:]}", f"Account {copy[-4:]}")[::1 if rng.random() < 0.5 else -1]
+    call(two, "merge_accounts", names[other], names[into])
+    assert _outcome(two) == _outcome(one)

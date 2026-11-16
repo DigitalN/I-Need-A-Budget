@@ -47,7 +47,8 @@ _Avoid_: statement, export, download
 
 **Import**:
 Bringing one file's transactions into the budget. An import can be removed again,
-taking its transactions with it.
+taking with it the transactions no other imported file has. One you added by hand that a
+file's row took the place of isn't taken: it goes back to what you entered.
 
 **Balance**:
 What's in an account at the end of a day. A Quicken file brings the bank's own; one typed
@@ -70,7 +71,8 @@ its transactions.
 
 **Duplicate account**:
 One real account that ended up as two accounts in the app. It's fixed by merging one
-into the other.
+into the other: afterwards it's as if every file had gone into one account in the first
+place, its balance check included.
 
 **Closed account**:
 An account you no longer use, kept with all its history. It isn't offered for imports or
@@ -187,7 +189,8 @@ towards Usual.
 
 **Backup**:
 A copy of the whole budget, made when the app quits after something changed and kept for
-four months. Restoring one puts the budget back as it was then.
+four months. Restoring one puts the budget back as it was then, its Overspending and
+Usual's months included.
 _Avoid_: export, snapshot
 
 **Cash**:
@@ -216,7 +219,8 @@ _Avoid_: archived, deleted
 
 **Payment category**:
 The category each debt account gets, holding money set aside to pay it. Card spending
-from a funded category moves that money here.
+from a funded category moves that money here. On the Budget page its Available is what's
+set aside less what you owe: below zero is what isn't set aside yet.
 _Avoid_: payment envelope
 
 **Income**:
@@ -265,8 +269,9 @@ _Avoid_: overspent, over budget
 
 **Overspending**:
 A category below zero because cash spending went past what was in it. Card spending past
-it is new debt instead. The Overspending setting says how it's paid for: This month, Next
-month or Carry over.
+it is new debt instead. The Overspending setting, the budget's own, says how it's paid for:
+Next month (a new budget's), This month or Carry over. A card's payment category short of
+what you owe isn't overspent: that's money not set aside yet.
 
 **Cover**:
 To move money into an overspent category until it's back to zero.

@@ -196,13 +196,15 @@ class Inbox:
         import into it (`import_id`), Remove import or a merge. The app's own one waiting in the
         inbox becomes what no transaction explains, dated the newest file balance's date: made when
         there's none, deleted when it comes to nothing. So does one from Check balance… that a file's
-        balance as new as it has taken over (issue #137). One you kept is never changed (docs/adr/0005).
-        Returns (before, after): what was waiting and what is now, in cents (0: none), or
-        (None, None) when the account's balance isn't checked."""
+        balance as new as it has taken over (issue #137), and one an earlier check made inside the
+        balance a check that started again starts from. One you kept is never changed (docs/adr/0005).
+        Returns (before, after, asks): what was waiting and what is now, in cents (0: none), and how
+        many balance adjustments you kept the one waiting now asks whether to remove, their money having
+        arrived (_arrived_for: the Inbox's question); (None, None, 0) when the account's balance isn't checked."""
         c = self.conn
         diff = ledger.balance_difference(c, account_id)
         if diff is None:
-            return None, None
+            return None, None, 0
         waiting = [self._txn(i) for i in ledger.waiting_adjustments(c, account_id, diff.span)]
         before = sum(t["amount"] for t in waiting)
         for extra in waiting[1:]:
@@ -210,28 +212,65 @@ class Inbox:
         if diff.waiting == 0:
             if waiting:
                 c.execute("DELETE FROM transactions WHERE id = ?", (waiting[0]["id"],))
-            return before, 0
+            return before, 0, 0
         reason = self._adjustment_reason(account_id, diff)
-        if waiting:  # one from Check balance… becomes the check's own
+        if waiting:
+            # One from Check balance…, or from an earlier check, becomes this check's own: it takes this check's
+            # import, so the question about yours shows (_arrived_for).
+            made_by = waiting[0]["import_id"]
+            made_by = made_by if made_by is not None and made_by >= diff.check_from else None
             c.execute("UPDATE transactions SET amount = ?, date = ?, reason = ?, import_id = ?, after_import = NULL "
-                      "WHERE id = ?", (diff.waiting, diff.date, reason,
-                                       import_id or waiting[0]["import_id"] or diff.current, waiting[0]["id"]))
+                      "WHERE id = ?", (diff.waiting, diff.date, reason, import_id or made_by or diff.current,
+                                       waiting[0]["id"]))
+            txn_id = waiting[0]["id"]
         else:
             payee = ledger.get_or_create_payee(c, ledger.ADJUSTMENT_PAYEE, "bank")
-            c.execute("INSERT INTO transactions (account_id, date, amount, payee_id, hint, status, reason, import_id) "
-                      "VALUES (?, ?, ?, ?, ?, 'review', ?, ?)",
-                      (account_id, diff.date, diff.waiting, payee, ADJUSTMENT, reason, import_id or diff.current))
-        return before, diff.waiting
+            txn_id = c.execute("INSERT INTO transactions (account_id, date, amount, payee_id, hint, status, reason, "
+                               "import_id) VALUES (?, ?, ?, ?, ?, 'review', ?, ?)",
+                               (account_id, diff.date, diff.waiting, payee, ADJUSTMENT, reason,
+                                import_id or diff.current)).lastrowid
+        return before, diff.waiting, len(self._arrived_for(self._txn(txn_id)))
 
-    def drop_adjustments(self, account_id):
+    def put_back(self, txn_ids):
+        """Transactions whose place a removed file's row took, that no other imported file has (issue #149): each goes
+        back to what it was before that file came in (before_file), keeping what you decided. Its payee goes back
+        only if it's still the one the file's row gave it. A balance adjustment from Check balance… that's still the
+        app's waits in the inbox again as Check balance… made it: what the app did with the bank's row (a category, a
+        transfer, a recurring charge) goes, and a transfer's other half is the app's to decide again."""
+        c = self.conn
+        others = []
+        for txn_id in txn_ids:
+            before = c.execute("SELECT * FROM before_file WHERE transaction_id = ?", (txn_id,)).fetchone()
+            txn = self._txn(txn_id)
+            payee = txn["payee_id"] == before["file_payee_id"]
+            c.execute("UPDATE transactions SET date = ?, raw_name = ?, raw_memo = ?, bank_type = ?, bank_category = ?, "
+                      "hint = ?, after_import = ?, fingerprint = NULL, fitid = NULL, import_id = NULL, "
+                      "payee_id = CASE WHEN ? THEN ? ELSE payee_id END, "
+                      "similar_payee_id = CASE WHEN ? THEN ? ELSE similar_payee_id END WHERE id = ?",
+                      (before["date"], before["raw_name"], before["raw_memo"], before["bank_type"],
+                       before["bank_category"], before["hint"], before["after_import"], payee, before["payee_id"],
+                       payee, before["similar_payee_id"], txn_id))
+            c.execute("DELETE FROM before_file WHERE transaction_id = ?", (txn_id,))
+            if before["hint"] == ADJUSTMENT and not txn["by_you"]:
+                others += transfers.unlink(c, txn_id)[1:]
+                c.execute("DELETE FROM splits WHERE transaction_id = ?", (txn_id,))
+                c.execute("UPDATE transactions SET category_id = NULL, is_split = 0, status = 'review', refund_of = NULL, "
+                          "subscription_id = NULL, reason = ? WHERE id = ?", (ledger.CHECK_BALANCE_REASON, txn_id))
+        self.ask_again(others, "Its other half is a balance adjustment again")
+
+    def drop_adjustments(self, account_id, ids=None):
         """A balance you typed stands for everything (service.set_balance): the app's balance
-        adjustments waiting for the account go (issue #137). One you kept stays (docs/adr/0005)."""
+        adjustments waiting for the account go (issue #137). One you kept stays (docs/adr/0005).
+        `ids`: only those (Merge into…: ledger.adjustments_a_merge_ends, issue #147)."""
+        if ids is not None and not ids:
+            return
+        only = f" AND id IN ({','.join('?' * len(ids))})" if ids else ""
         self.conn.execute("DELETE FROM transactions WHERE account_id = ? AND hint = ? AND by_you = 0 "
-                          "AND status = 'review'", (account_id, ADJUSTMENT))
+                          f"AND status = 'review'{only}", (account_id, ADJUSTMENT, *(ids or ())))
 
     def _adjustment_reason(self, account_id, diff):
         """Why a balance adjustment waits: what the bank's balance says, and where a download may be missing."""
-        gap = ledger.likely_gap(self.conn, account_id, diff.check_from)
+        gap = ledger.likely_gap(self.conn, account_id, diff.span)
         where = (f"a download may be missing between {short_day(gap[0])} and {short_day(gap[1])}" if gap
                  else "a transaction may be missing, or counted twice")
         return (f"By the bank's balance on {short_day(diff.date)}, {money(abs(diff.waiting))} more "

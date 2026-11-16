@@ -67,18 +67,21 @@ All in `Application Files/`:
   window, the Downloads watcher thread, the updater, and `Api`, which exposes one method,
   `call(name, args)`, to the page. `VERSION` here is the app's only version number.
 - `service.py`: everything the page can ask for. `BudgetService.dispatch()` runs only
-  methods marked `@exposed`; results are `{"ok": true, "result": …, "step": …}` (`step`: the
-  undo step ⌘Z would reverse after it, so a toast's Undo reverses exactly its own) or
+  methods marked `@exposed`; results are `{"ok": true, "result": …, "step": …}` (`step`, on a
+  change or an undo: the undo step it made, so a toast's Undo reverses exactly its own; None
+  when it made none, and its toast then has no Undo; a read has no `step`) or
   `{"ok": false, "error": "…"}`. Raise `UserError` (`errors.py`) for messages the user should see, in service.py, ledger.py and inbox.py alike; any other exception is logged with its traceback and shown as "Something went wrong (…). Details are in the log." Months and dates from the page are checked on the way in.
   The preview and most tests drive this same class.
 - `db.py`: schema, upgrades, the shared connection behind a lock, **undo** (triggers record
-  inverse SQL; `db.write("Label")` makes one undoable step; updates only record changed
-  columns; a write without a label that changes anything clears undo, unless
-  `keep_undo`; `big_step()` marks a step ⌘Z asks about first; see Key rules). Schema is at
-  version 10. To change it: raise `SCHEMA_VERSION`,
+  inverse SQL; `db.write("Label")` makes one undoable step; an update records only the
+  columns it changes (compared exactly: a payee renamed by case only counts), and nothing
+  when it changes none; a write without a label that changes anything clears undo, unless
+  `keep_undo`; `big_step()` marks a step ⌘Z asks about first;
+  `steps_made()` is the step a request made, for its toast's Undo; see Key rules). Schema is at
+  version 14. To change it: raise `SCHEMA_VERSION`,
   add the column to `SCHEMA` *and* an `ALTER TABLE` step in `_migrate` for existing
   databases. Upgrades copy the database to the backups folder
-  (`budget-before-upgrade-v10-to-v11-<date and time>.db`) first. The
+  (`budget-before-upgrade-v14-to-v15-<date and time>.db`) first. The
   user's real database has real data in it: test every upgrade on a copy of it first.
 - `backups.py`: backups ([ADR 0004](../docs/adr/0004-live-budget-stays-out-of-synced-folders.md)).
   `at_quit` and `at_launch` (a backup only if `changed`: the budget's `digest` differs from
@@ -91,7 +94,8 @@ All in `Application Files/`:
   CSVs, RBC's CSV (every account in one file, so a file has `parts`), CSVs set up once
   (`csvlayout.py`), and Actual Budget's export (learnt from, never imported as
   transactions). Account matching and fingerprint dedup; it only adds rows, whose ids then
-  arrive in the inbox (`Inbox.arrive`). Its docstring has the rules.
+  arrive in the inbox (`Inbox.arrive`), and notes every transaction each file has
+  (`import_rows`, for Remove import). Its docstring has the rules.
 - `csvlayout.py`: pure. Any bank's CSV: spots a table of dates and amounts (skipping a
   preamble), guesses which column is which, names the layout by its header, reads rows.
 - `banks.py`: bank names. Free text on accounts; `canonical()` turns what files call a
@@ -115,7 +119,7 @@ All in `Application Files/`:
   `Inbox(conn, today)`: `arrive` (an import's new rows), `recheck`, `view` (what the Inbox
   page shows: suggestions, today's reason, the item's question, its final group key and
   guess), and every decision: `categorize(txn_ids, category_id, recheck_payee)`,
-  `accept_all`, `split`, `mark_transfer`, `not_a_transfer`, `send_back`, `ask_again`,
+  `accept_all`, `split`, `mark_transfer`, `not_a_transfer`, `send_back`, `ask_again`, `put_back`,
   `same_payee`, `new_price`, `set_always_ask`, and the balance adjustment: `check_balance`
   (after every import into an account), `remove_adjustment`, `keep_both`, `drop_adjustments`
   (Set balance). **Only it puts a transaction in the inbox or
@@ -140,7 +144,12 @@ All in `Application Files/`:
 - `updater.py`, `launch.py`: updates from the repo's GitHub releases (anonymously, or
   with a token if there is one); moving into Applications;
   relaunching.
-- `settings.py`: JSON settings, validated on every load and save.
+- `settings.py`: settings, validated on every load and save: this Mac's in `settings.json`
+  (Appearance, Import from Downloads and its folder, updates, the Dashboard's months), and the
+  budget's own, Overspending and Usual's months (`average_months`), in its `meta` (issue #153:
+  a backup carries them, and changing one is a change for `backups.changed`). Figures reads
+  them from there (`budget_settings`). Changing Overspending in Settings is no undo step and
+  leaves ⌘Z as it is (`keep_undo`). An update never changes a setting a copy uses (Key rules).
 - `util.py`: money in cents, months and dates.
 - `index.html`: the whole interface, vanilla JS, no external resources. Pages: Dashboard
   (where it opens), Budget, Inbox, Transactions, Accounts, Subscriptions, Settings, plus
@@ -158,7 +167,39 @@ All in `Application Files/`:
   when at least one of the two falls within the other's file dates: the rows at the edges
   of two downloads (one ending Oct 15, the next starting Oct 16, or overlapping by a day)
   are two transactions (issue #124). A bank's CSV and Quicken file word and date things
-  differently.
+  differently. Two rows of one file never take one transaction (`importer._one_row_each`, the
+  review of #148): when one finds it by its fingerprint and the other by its bank ID (the bank
+  re-dated one of two identical coffees, keeping its ID), the row whose bank ID it carries keeps
+  it; the other is the transaction its own bank ID finds, or, with a bank ID the account doesn't
+  have, a new one, stored under the same row's next occurrence when its fingerprint is taken
+  (`_free_fingerprint`). Without a bank ID, both stay the one transaction, as before. A row
+  alone in its file whose fingerprint finds a transaction carrying another bank ID (a past range
+  listing only the second coffee) takes the one its own bank ID finds, when no row of the file
+  has that and it's the same as the row (date, amount, wording): only transactions that can't be
+  told apart change places, so a bank that numbers rows afresh can't swap two different ones.
+- **Remove import deletes only what no other imported file has** (issue #148). Each import
+  notes every transaction its file has, matched as well as added, and how the file has it
+  (`import_rows`: date, wording, fingerprint, bank ID). A transaction another imported file
+  has stays, under the earliest such file, the way that file has it (its date and the bank's
+  wording; its fingerprint and bank ID where no other transaction has them, so the next file of
+  its kind finds it), keeping what was decided (category, split, note, payee, transfer,
+  recurring charge): where it would be if the removed file had never come in, so the balance
+  check counts it from that file. A balance a later file set too stays (the same file imported
+  again, two downloads the same day): Remove import took it back. Merge into… moves the copy's
+  notes to the transaction kept. **A transaction whose place a file's row took** (one you added by
+  hand, or a Check balance… adjustment: see the balance check) goes back, once no imported file has
+  it, to what it was before that file came in (issue #149): the importer remembers what the file's
+  row changed (`before_file`: its date, the bank's wording it didn't have, its hint and
+  `after_import`, its payee) and `Inbox.put_back` restores it, keeping what you decided (a payee you
+  chose since stays). The bank's date could fall inside an older balance that never had it. A Check
+  balance… adjustment is a balance adjustment again; one that's still the app's waits in the Inbox as
+  Check balance… made it, whatever the app did with the bank's row. Merge into… gives a dropped copy's
+  to the transaction kept. The message after says so: "Removed 3 transactions · 1 you added stays".
+  One a file's row took the place of before 1.4.1 wasn't remembered: it goes with its file.
+  An import's "new" figure in Accounts → Imported files is what it holds now. A budget from
+  before 1.4.1 only knew the file each transaction is under: the first launch after the
+  upgrade reads the files kept in Imported Files again (`read_imported_files`, the same file
+  by its sha256) to note the rest. A file that isn't kept there counts only for what it holds.
 - **Never change what `payees.describe()` returns for text it already handles**: a
   changed key splits a payee in two. Add other banks' wording after Tangerine's rules,
   and check it on a copy of real data (every existing transaction must describe the same).
@@ -183,7 +224,19 @@ All in `Application Files/`:
   `DTSTART`; one after its own balance's date says nothing), else its first row's date, else
   its balance's date. Not the first row's date when it says: a card file covers the days things
   posted, so it has charges dated before its first day, and a charge dated before it that posted
-  after its balance comes in a later file that starts on that day too, and counts. An older
+  after its balance comes in a later file that starts on that day too, and counts. **Nor does
+  what a starting file that stops early had** (issue #146): a download of a past date range lists
+  rows up to the range's last day, with the bank's balance on the day it was made. A file's last
+  day is the one it says it covers to (`imports.covers_to`, a Quicken file's `DTEND`, midnight
+  being the end of the day before), else its last row's date; the starting file's is its
+  balance's date at the latest, and that date when it doesn't say (not its last row's: a second
+  download the same day would miss what went through in between). When that's before the
+  balance's date, a later download ending by that date counts nothing dated after that last day
+  (nothing at all when it starts after it); for chequing and savings, a row dated in between
+  counts from no download, and one dated the balance's day only once a download covering that
+  day and ending on it has come in. A card goes by its downloads' days only (#158: one with only
+  closed statements). Where a download may be missing goes by the days files say they cover too,
+  and after the newest one up to the newest balance's day. An older
   file's own balance is only compared by date, in its note (chequing and savings). What's left waits in
   the Inbox as a **balance adjustment** (hint `adjustment`, payee "Balance adjustment") dated the
   newest balance's date, so the budget's starting balance stays put: no guess, never in Accept
@@ -191,7 +244,22 @@ All in `Application Files/`:
   `make_transfer`, the importer's and `cross_kind_pairs`' matching skip it; the one exception is
   below, for Check balance…'s). It's worked out from scratch after
   every import into the account, Remove import and a merge (`Inbox.check_balance`): it shrinks,
-  or goes, as the missing transactions arrive, and Remove import puts it back. Once you've
+  or goes, as the missing transactions arrive, and Remove import puts it back. Every import keeps its file's
+  balance (`imports.file_balance_*`), whether or not it became the account's, so Remove import settles the
+  balance and the check's start again from the files still imported, as if the removed file had never come in
+  (issues #151 and #169). A balance you typed that the removed file had replaced (or one from before version 8)
+  comes back unless a file imported after you typed it has a balance as new: only such a file takes its place, for
+  the balance and the check's start, even a file imported earlier with a balance for the same day doesn't (decided
+  on #169). **After Merge into…
+  the check works as if the copy's files had gone into the account in the first place**, whichever
+  balance wins (issue #147): it carries on from whichever account's check started first, so both
+  accounts' waiting balance adjustments are worked out again as one and a gap neither has stays; a
+  transaction both had counts from the file that brought it first (the one kept takes the copy's
+  import when that came first; one seen in a different kind of file keeps its own, or the next file
+  of its kind would bring it in again); the other account's Check balance… adjustments that the
+  winning balance is as new as are taken over. When the winning balance isn't checked (typed, or a
+  file's from before 1.4), the app's balance adjustments the other account had waiting, dated on or
+  before it, go, as for Set balance (`ledger.adjustments_a_merge_ends`). Once you've
   categorized it, it's yours: when its money arrives, the app's new one cancelling it out asks
   "The $300.00 your balance adjustment stood for has arrived: remove the adjustment?" (Remove it /
   Keep both, `Inbox.remove_adjustment` / `keep_both`). A different balance typed with Set balance
@@ -203,8 +271,12 @@ All in `Application Files/`:
   (`transactions.after_import`, schema 10). The check leaves it alone until a file whose balance is
   as new as it comes in after it, which takes it over (`ledger._TAKEN_OVER`): the app's becomes the
   check's own (it goes, or stays as what that file doesn't explain); one you categorized counts as
-  kept, so its money arriving asks. The file a check starts from takes over the app's ones it's as
-  new as (a typed balance, or a file's from before 1.4, replaced). The bank's row of the same amount
+  kept, so its money arriving asks. The file a check starts from takes over every balance adjustment
+  inside its balance from before it came in (a typed balance, or a file's from before 1.4, replaced; a
+  check started again by Set balance or Remove import of its file; or the other account's at Merge
+  into…): the app's are worked
+  out again, and one you categorized counts as kept, so it asks the same way (`ledger._IN_START`). The
+  bank's row of the same amount
   within 3 days still takes its place as for a transaction you added by hand, keeping your category,
   with the bank's name. Whatever the day, Check balance… changes the balance after everything
   imported and never the days before: dated the day of a file's balance (a Quicken file's is
@@ -212,22 +284,47 @@ All in `Application Files/`:
   typed balance, the bank's balance becomes that day's. Remove import of the file that took one
   over doesn't bring it back (accepted on #137). The balance the app already has for
   that day changes nothing (`set_balance`, issue #135): onboarding's 3. Balances saves every box,
-  and a file's balance left as it is keeps its date and its check, with no undo step. Each row there
-  says which day its balance is for and whether a file gave it ("Balance on Sep 15, 2026, from your
-  file", `accounts`' `balance_date`); an amount changed there is a typed balance for that day. An
+  and a file's balance left as it is keeps its date and its check, with no undo step. A file's row
+  there says which day its balance is for ("Balance on Sep 15, 2026, from your file", `accounts`'
+  `balance_date`), and an amount changed there is a typed balance for that day. Any other row is
+  today's, like one without a balance ("Balance · transactions up to Oct 5, 2026"), a balance you
+  typed on an earlier visit too (issue #143): onboarding starts again at step 1 on every launch until
+  it's finished. An
   import's balance note (`imports.balance_note`) shows in its toast and in Accounts → Imported files.
+  It's worked out once the import is done, its balance adjustment worked out again (issue #138): only
+  then is a balance the file states for a day (an older file's own, a set-up CSV's before its first
+  row, `importer.stated_balance_note`; chequing and savings only, as a card's files date purchases,
+  which post later) compared with the app's for that day, and when the money of a balance
+  adjustment you kept arrives it says what the Inbox asks ("The $300.00 your balance adjustment
+  stood for has arrived: the Inbox asks whether to remove it").
 - **A card file's signs are settled at import, when the account is known** (`importer._flip`,
   `_positive_balance`, `balance_questions`). Charges negative and a balance above zero is a card in
   your favour for most banks and what you owe for some. With a balance in the account, the sign that
   agrees with the app's own balance for that date (this file's rows counted) wins; neither agreeing is
   a real difference, kept as the file wrote it. An account with no balance yet asks once ("Is $120.50
   what you owe…", `needs: 'balance_sign'`; not during onboarding, where the balance is read as
-  written) and remembers the answer (`account_sources` keys `signs:<id>:…`). Unticking *In your
-  favour* on 3. Balances, for a card whose file balance was read that way, is remembered the same
-  way (`importer.remember_owed`): its later files are read as what you owe even when their balance
-  disagrees with the app's (a gap), not as written. Whether a file writes
+  written) and remembers the answer (`account_sources` keys `signs:<id>:…`). *In your favour* changed
+  on a file's row on 3. Balances is remembered the same way (`importer.remember_positive`, issue
+  #143): unticked where the box showed in your favour, for a file balance read that way, its later
+  files are read as what you owe even when their balance disagrees with the app's (a gap), not as
+  written; ticked where it showed owing, as written again. Changing only the amount remembers
+  nothing, and neither does a row you typed (what the bank shows now: a payment can really change
+  its sign). Whether a file writes
   purchases as positive is decided once per account: by rows the account already holds, then the
   earlier decision, then how the file looks.
+- **An update never changes a setting a copy uses** ([ADR 0007](../docs/adr/0007-an-update-never-changes-a-setting-a-copy-uses.md),
+  issue #166; 1.0.5 switched copies with no Overspending saved from Next month to This month
+  without a word). A default is only for a new copy (`settings.DEFAULTS`) or a new budget
+  (`BUDGET_DEFAULTS`, written as `db.py` makes the database). The first launch of 1.4.1 writes
+  `settings.json` out whole with what the copy was using: a value it had stays, a missing one
+  takes what it ran on (`RAN_ON`, `BUDGET_RAN_ON`: This month for Overspending, Carry over when
+  1.0.3's switch was on), and Overspending and Usual's months move into the budget
+  (`settings.move_into_budget`, at every launch for a budget without them). `settings.json`
+  keeps the two at its top level as they were at the move, never changed after: 1.4.0 reads them
+  there if someone goes back a version, and a backup from before 1.4.1 restored on that Mac gets
+  them; on a Mac that never ran an older version, This month and 3. Settings it doesn't know (a
+  later version's) are kept as they are. Never change `RAN_ON` or `BUDGET_RAN_ON`; a new setting
+  goes into `RAN_ON` with the value that keeps what copies did before it existed.
 - **Learning only uses `status = 'done'` transactions** (plus Actual examples). Rows waiting
   in the inbox never teach the app anything, and count in no category: no tentative
   category, Spent/Usual/the budget only count `status = 'done'`
@@ -305,8 +402,18 @@ All in `Application Files/`:
   ←, Move money, renames, Hide/Show, categorizing, editing or splitting a transaction, payee
   and recurring charge changes) undo straight away. The Undo in a step's toast never asks: it
   undoes the step the toast is about, or says "That can't be undone any more" (so does an undo
-  that fails; its step is dropped, and ⌘Z never gets stuck). ⌘Z does nothing while a pop-up
-  is open (its question would replace the pop-up).
+  that fails; its step is dropped, and ⌘Z never gets stuck). A toast after a change that
+  changed nothing has no Undo: the step ⌘Z would undo next is something else you did. ⌘Z does
+  nothing while a pop-up is open (its question would replace the pop-up), nor while the
+  category picker list is open or during a drag. **With the category pop-over or a Spent list
+  open, ⌘Z and a toast's Undo work** (issue #139; a big step's question opens on top of it, and
+  Cancel changes nothing): the pop-over is then drawn again with what's true, where you were
+  scrolled and back in your box, what you'd typed saved first, or it closes when its category
+  or group is gone (`redrawAfterUndo`). During onboarding its category list is drawn again.
+  **A change aimed at something that's gone** (a category, group, account, transaction,
+  recurring charge, payee or import) says "That category no longer exists." and so on, changes
+  nothing and has no Undo (`service._existing`): it said "Saved", or its toast's Undo took back
+  the step before it.
 - `~/Documents` is iCloud-synced on this machine; `scripts/build.sh` builds in
   `~/Library/Caches` and runs `xattr -cr` before signing. One build at a time from any
   checkout or worktree (`scripts/build-lock.sh`, taken by build, package, install and
@@ -316,12 +423,16 @@ All in `Application Files/`:
 ## Budget rules (summary; budget.py has the detail)
 
 Ready to assign starts as the cash in chequing/savings when the budget starts; income
-adds, assigning takes. Overspending is paid for the way the **Overspending** setting says:
-**This month** (the default) takes it out of Ready to assign in the month it happens, so
-Ready to assign is always money really there (the maintainer saw Ready to assign at about
-twice what was in the bank under YNAB's rule and asked for this); **Next month** is
-YNAB's and Actual's rule; **Carry over** leaves it in the category below zero next month.
-The first two reset the category next month. Ready to assign + Σ positive Available −
+adds, assigning takes. Overspending is paid for the way the budget's **Overspending** setting
+says: **Next month** (a new budget's default since 1.4.1, issue #166; YNAB's and Actual's rule,
+and the app's before 1.0.5) takes it out of next month's Ready to assign; **This month** takes
+it out in the month it happens, so Ready to assign is always money really there (the
+maintainer saw Ready to assign at about twice what was in the bank under YNAB's rule and asked
+for it in 1.0.5; it was the default from 1.0.5 to 1.4.0, and budgets from then keep it); **Carry
+over** leaves it in the category below zero next month. The first two reset the category next
+month. In 1.4.1 the maintainer made Next month the default again: with This month, assigning to
+a category already overspent in cash left Ready to assign as it was (it had come out already),
+which read as broken. Don't switch the default back without asking them. Ready to assign + Σ positive Available −
 overspending not taken yet + money in waiting in the inbox == cash, and the Budget page
 shows that line under it ("= $X in Chequing − $Y in categories − $Z waiting in the
 Inbox", flagged if it's ever off). Money out waiting in the inbox has already come off
@@ -354,8 +465,9 @@ late with only recent transactions counts as new (the accepted cost).
   set by the PRs themselves, so merging is all the maintainer does. The first PR after a
   release raises it (1.0.1 → 1.0.2 by default, 1.0.x → 1.1.0 only for a change big enough
   to deserve it); the PRs after it leave it alone until that version is released, so PRs
-  made side by side don't clash on it. It's 1.4.0 until 1.4 is released (the maintainer's
-  choice, 2026-11-09). Never leave the bump for a separate PR after the merge.
+  made side by side don't clash on it. It's 1.4.1 until 1.4.1 is released: 1.4.0 came out on
+  2026-11-10, and #147's PR, the first after it, raised it. Never leave the bump for a separate
+  PR after the merge.
 - **A release happens only when the maintainer says it's ready** (their rule since
   2026-11-09, as bugs kept turning up). A merge, a finished list or every session being
   done is never the go-ahead. Then Claude runs `scripts/release.sh NOTES.md` (notes
@@ -444,8 +556,10 @@ Don't undo these without asking:
   never a fixed list: there are too many credit unions. New accounts are named "Bank +
   type" (editable, and Edit… changes name and bank any time); existing ones keep theirs.
 - **An account imported twice** is flagged (Inbox and Accounts) and fixed with Merge
-  into…: copies dropped (keeping your categories, notes, splits, transfers, bank IDs), the
-  rest moved, undoable.
+  into…: copies dropped (keeping your categories, notes, splits, transfers, bank IDs, and
+  the files that had them), the rest moved, undoable. The newer balance stays (on the same day, the one an import would
+  keep: a file's over a typed one, the later download), and the balance check carries on as
+  if the copy's files had gone into the account in the first place (issue #147).
 - **A used category or account can only be hidden or closed**, never deleted (deleting
   one sent its transactions back to the inbox and took its assigned money with it). No
   Merge into… for categories either (the maintainer's call, issue #29). Deleting a
@@ -515,7 +629,10 @@ Don't undo these without asking:
   once read "Still needs" as being asked to assign twice; the window shows Budgeted /
   Already in / Assign. Beside each Assigned box, **→** assigns exactly the budgeted
   amount and **←** exactly what it spent this month, undoably; each shows only when it
-  would change something (→ not for a $0 budget).
+  would change something (→ not for a $0 budget). A card's payment category has no ←, ever
+  (its Spent is card spending set aside less payments: assigning it set aside too much), and
+  its → adds what isn't set aside yet ("Set aside what you owe, $900.00"; `owed_left` and
+  `owed_assigned` from figures.py), so its Available reaches $0.00 (issue #166).
 - **Assigned boxes:** empty when nothing's assigned (0.00 is only the placeholder: the
   maintainer kept typing into the middle of "0.00"); clicking into any amount box selects
   it so typing replaces it, also the box Return or Tab moved you to; another click in a box
@@ -532,7 +649,15 @@ Don't undo these without asking:
   $170, `-20` → $100 (so `-50` in an empty box is still −$50). Anywhere else a leading
   minus is a negative amount. Escape in an Assigned box puts it back and saves nothing.
 - **A card's payment category is money set aside, not paid**: it stays in the bank until
-  a payment, so what you owe doesn't change. Its pop-over shows You owe / Set aside / Not
+  a payment, so what you owe doesn't change. On the Budget page (issue #166) its **Available**
+  is what's set aside less what you owe (`shown`, worked out in figures.py; past months by the
+  balance at the month's end): below zero in **amber** (`pill owed`: still to set aside, not
+  overspending), $0.00 when all of it is, green only for more than you owe (a card in your
+  favour: what's set aside plus the credit); while the category itself is below zero it's
+  overspent, red, like any category. Its **Budgeted** reads "owe $1,200.00 · $300.00 set
+  aside"; Spent stays. Showing set-aside money in green read as spare money. The Debt Payments
+  group's Available adds up what its rows show; the check under Ready to assign still counts
+  what's set aside as in categories, since it's in the bank. Its pop-over shows You owe / Set aside / Not
   set aside yet, its lines say "Set aside for card spending in Food" and "Paid to the card
   from Chequing", and its total says "This month", never "Spent" (the maintainer read
   "Spent" as money already paid to the card).
@@ -635,10 +760,12 @@ Don't undo these without asking:
   fits one. The log says `Window <w>×<h>` at launch.
 - Budget can start months back; past months are caught up with one click ("Catch up").
 - **Overspending** is a setting with three choices (the maintainer wanted to choose how
-  the rollover works): This month (default), Next month (YNAB), Carry over (a friend
-  coming from YNAB asked for it; it was an on/off switch in 1.0.3–1.0.4, and `settings.py`
-  turns that switch into Carry over). Only cash overspending; card overspending is debt
-  on the card whichever is chosen.
+  the rollover works): Next month (YNAB; a new budget's default since 1.4.1, issue #166),
+  This month (the default from 1.0.5 to 1.4.0: budgets from then keep it), Carry over (a
+  friend coming from YNAB asked for it; it was an on/off switch in 1.0.3–1.0.4, and
+  `settings.py` turns that switch into Carry over). It's the budget's own, kept in it (issue
+  #153). Only cash overspending; card overspending is debt on the card whichever is chosen.
+  Showing what This month covered as Assigned was offered and declined (2026-11-12).
 - **Settings is kept short** (the maintainer's mock-up): Appearance, Import from
   Downloads, Overspending, Learn from Actual; updates, Release notes,
   Check now (GitHub access only when needed); Open buttons for the data, imported

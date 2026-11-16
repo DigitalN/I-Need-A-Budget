@@ -28,8 +28,8 @@ import transfers
 from errors import UserError
 from figures import Figures
 from inbox import Inbox
-from payees import ADJUSTMENT, TRANSFER_OR_BANK_ENTRY_HINTS
-from settings import DASHBOARD_MONTHS
+from payees import ADJUSTMENT, TRANSFER_OR_BANK_ENTRY_HINTS, describe, transaction_hint
+from settings import BUDGET_DEFAULTS, DASHBOARD_MONTHS, budget_settings, move_into_budget, save_budget_settings
 from util import add_months, first_day, last_day, money, month_name, month_of, months_between, parse_date, today
 
 log = logging.getLogger("inab")
@@ -110,6 +110,20 @@ def _rows(cursor):
     return [dict(r) for r in cursor]
 
 
+# What a table's rows are called in "That … no longer exists.".
+_WHAT = {"categories": "category", "category_groups": "group", "accounts": "account", "transactions": "transaction",
+         "subscriptions": "recurring charge", "payees": "payee", "imports": "import"}
+
+
+def _existing(c, table, row_id, columns="id"):
+    """The row a change is aimed at, or a UserError when it's gone (an undo took it away while a
+    pop-over still showed it, say): the change then changes nothing and has no Undo (issue #139)."""
+    row = c.execute(f"SELECT {columns} FROM {table} WHERE id = ?", (row_id,)).fetchone()
+    if row is None:
+        raise UserError(f"That {_WHAT[table]} no longer exists.")
+    return row
+
+
 class BudgetService:
     def __init__(self, db, settings, data_dir, hooks=None):
         self.db = db
@@ -118,22 +132,30 @@ class BudgetService:
         self.hooks = hooks or {}          # window features: choose_files, reveal, updates, app_info
         self._seen_files = {}             # Downloads watcher: path → (mtime, size) already looked at
         self._file_status = {}            # path → ((mtime, size), what it needs or None): see _needs()
+        move_into_budget(db, settings)    # a budget from before 1.4.1: Overspending and Usual's months (issue #153)
 
     # ── plumbing ──
 
     def dispatch(self, name, args=None):
-        """`step` in the answer: the undo step ⌘Z would reverse after this (None: nothing to undo),
-        so the Undo in a step's toast reverses exactly that step."""
+        """`step` in the answer to a change (a write with an undo label) or an undo: the undo step
+        it made, so the Undo in its toast reverses exactly that step; None when it made none (it
+        changed nothing, it was an undo, or an import cleared undo), so its toast has no Undo (issue
+        #139: the step ⌘Z would undo next was then something else you did). A read, or a change
+        that isn't an undo step (a note saved as it's typed), has no `step`."""
         fn = EXPOSED.get(name)
         if fn is None:
             return {"ok": False, "error": f"Unknown request: {name}"}
         try:
+            self.db.begin_request()
             if isinstance(args, dict):
                 result = fn(self, **args)
             else:
                 result = fn(self, *(args or []))
-            step = self.db.undo_step()
-            return {"ok": True, "result": result, "step": step["step"] if step else None}
+            out = {"ok": True, "result": result}
+            made = self.db.steps_made()
+            if made is not None:
+                out["step"] = made[-1] if made else None
+            return out
         except (UserError, importer.ImportError_, csvlayout.LayoutError) as e:  # messages for the person
             return {"ok": False, "error": str(e)}
         except Exception as e:  # anything else is a bug: logged, and no raw Python on the page
@@ -159,7 +181,7 @@ class BudgetService:
         return {
             "onboarded": onboarded, "has_categories": bool(has_categories),
             "today": self.today(), "current_month": self.current_month(), "budget_start": self.budget_start(),
-            "settings": self.settings.get(), "app": self._app_info(), "counts": self.counts(),
+            "settings": self.get_settings(), "app": self._app_info(), "counts": self.counts(),
             "undo": self.db.undo_label(),
         }
 
@@ -393,12 +415,14 @@ class BudgetService:
             for result in file_results:
                 arrived = inbox.arrive(result.new_ids)
                 result.categorized, result.to_review = arrived.categorized, arrived.waiting
-            for result in file_results:
-                # Every import into an account works its balance adjustment out again (ledger.balance_difference).
-                before, after = inbox.check_balance(result.account_id, result.import_id)
-                note = _adjustment_note(before, after)
-                if note:
-                    result.balance_note = ". ".join(n for n in (result.balance_note, note) if n)
+            # Every import into an account works its balance adjustment out again (ledger.balance_difference), and only
+            # then are its notes worked out (issue #138): what a balance the file states for a day says against the
+            # app's for that day, with this import in it, and what's waiting now.
+            checked = [(result, inbox.check_balance(result.account_id, result.import_id)) for result in file_results]
+            for result, (before, after, asks) in checked:
+                notes = (result.balance_note, importer.stated_balance_note(c, result),
+                         _adjustment_note(before, after, asks))
+                result.balance_note = ". ".join(n for n in notes if n)
                 c.execute("UPDATE imports SET balance_note = ? WHERE id = ?", (result.balance_note, result.import_id))
             if archive:
                 archived = self._archive(path)
@@ -407,11 +431,53 @@ class BudgetService:
         for result in file_results:
             log.info("Imported %s into %s: %d new, %d already there, %d categorized, %d to review", path.name,
                      result.account_name, result.added, result.duplicates, result.categorized, result.to_review)
+            if result.balance_note:
+                log.info("%s: %s", path.name, result.balance_note)
         return [r.as_dict() for r in file_results]
 
     def _inbox(self, c):
         """The inbox (inbox.Inbox) on this db.read() or db.write()."""
         return Inbox(c, self.today())
+
+    def read_imported_files(self):
+        """Once, at the first launch after the upgrades to versions 12 and 13 (issues #148 and #169): this reads
+        the files kept in Imported Files again to note every transaction each one has and the balance each states.
+        A file that isn't kept there any more (or no longer is the file that was imported) counts only for what it
+        recorded before. It changes no transaction, and runs before the window opens, so nothing you do can meet it.
+        Returns how many transaction notes it added."""
+        if self.db.get_meta("read_imported_files") is None:
+            return 0
+        with self.db.read() as c:
+            imports = c.execute("SELECT * FROM imports WHERE account_id IS NOT NULL ORDER BY id").fetchall()
+        added = read = 0
+        for imp in imports:
+            path = self._kept_file(imp)
+            if path is None:
+                continue
+            try:
+                with self.db.write(keep_undo=True) as c:  # notes only: no step's undo trips over them
+                    added += importer.note_kept_file(c, imp, path)
+                read += 1
+            except Exception as e:  # one odd file must not stop the others: it counts as before
+                log.warning("Couldn't read %s again: %s", imp["filename"], e)
+        with self.db.write(keep_undo=True) as c:
+            c.execute("DELETE FROM meta WHERE key = 'read_imported_files'")
+        log.info("Read %d of %d imported files again: %d transactions they share noted", read, len(imports), added)
+        return added
+
+    def _kept_file(self, imp):
+        """The file an import read, kept in Imported Files (where it was moved, or the same place in this data
+        folder), or None: one dropped from another folder was never kept, and one changed since isn't it."""
+        if not imp["archived_path"]:
+            return None
+        kept = Path(imp["archived_path"])
+        for path in (kept, self.data_dir / "Imported Files" / kept.parent.name / kept.name):
+            try:
+                if path.is_file() and importer.sha256_of(path) == imp["sha256"]:
+                    return path
+            except OSError:
+                continue
+        return None
 
     @exposed
     def recheck(self, payee_ids=None):
@@ -704,71 +770,162 @@ class BudgetService:
 
     @exposed
     def imports(self):
+        """The newest imports. `rows_new` is how many of the file's transactions are under it now: what Remove
+        import takes, or moves to another file that has them. A file takes in its "new" figure the ones it
+        has when the file they were under is removed (issue #148), or when Merge into… finds the copy's file
+        brought them first."""
         with self.db.read() as c:
-            return _rows(c.execute(
+            out = _rows(c.execute(
                 "SELECT i.*, a.name AS account_name FROM imports i LEFT JOIN accounts a ON a.id = i.account_id "
                 "ORDER BY i.id DESC LIMIT 50"))
+            held = dict(c.execute("SELECT import_id, COUNT(*) FROM transactions WHERE import_id IS NOT NULL "
+                                  "AND hint != ? GROUP BY import_id", (ADJUSTMENT,)).fetchall())
+        for i in out:
+            i["rows_new"] = held.get(i["id"], 0)
+        return out
 
     @exposed
     def undo_import(self, import_id):
-        """Deletes the transactions an import added (and a balance adjustment it made). The
-        other halves of their transfers are the app's to decide about again (Inbox.ask_again),
-        and the account's balance adjustment is worked out again without it."""
+        """Deletes the transactions only this import's file has (and a balance adjustment it made). One
+        that another imported file has too stays (issue #148), under the earliest of them, the way that
+        file has it (_move_under): where it would be if this file had never come in, so the balance check
+        counts it from that file. One whose place the file's row took (you added it by hand, or Check
+        balance… did) goes back to what it was before that file came in (Inbox.put_back, issue #149). The
+        other halves of the deleted ones' transfers are the app's to decide about again (Inbox.ask_again),
+        and the account's balance adjustment is worked out again without it. `removed`, `stayed` and
+        `restored` count them."""
         with self.db.write("Remove import") as c:
-            imp = c.execute("SELECT * FROM imports WHERE id = ?", (import_id,)).fetchone()
-            rows = c.execute("SELECT id, transfer_id FROM transactions WHERE import_id = ?", (import_id,)).fetchall()
-            ids = {r["id"] for r in rows}
-            others = [r["transfer_id"] for r in rows if r["transfer_id"] and r["transfer_id"] not in ids]
-            c.execute("DELETE FROM transactions WHERE import_id = ?", (import_id,))
-            if imp is not None:
-                if imp["anchor_after_date"] is not None:
-                    self._take_back_balance(c, imp)
-                self._take_back_check(c, imp)
-                # A balance adjustment from Check balance… made after this import now comes after the one before it:
-                # the next import can be given this one's number, and a file's balance as new as it still takes it over.
-                c.execute("UPDATE transactions SET after_import = (SELECT MAX(id) FROM imports WHERE account_id = ? "
+            imp = _existing(c, "imports", import_id, "*")
+            rows = c.execute("SELECT * FROM transactions WHERE import_id = ?", (import_id,)).fetchall()
+            nexts = {r["id"]: c.execute("SELECT * FROM import_rows WHERE transaction_id = ? AND import_id != ? "
+                                        "ORDER BY import_id LIMIT 1", (r["id"], import_id)).fetchone() for r in rows}
+            staying = [r for r in rows if nexts[r["id"]] is not None]
+            remembered = {r[0] for r in c.execute("SELECT transaction_id FROM before_file f JOIN transactions t "
+                                                  "ON t.id = f.transaction_id WHERE t.import_id = ?", (import_id,))}
+            restored = [r["id"] for r in rows if nexts[r["id"]] is None and r["id"] in remembered]
+            ids = {r["id"] for r in rows if nexts[r["id"]] is None and r["id"] not in remembered}
+            others = [r["transfer_id"] for r in rows if r["id"] in ids and r["transfer_id"] and r["transfer_id"] not in ids]
+            c.execute("DELETE FROM transactions WHERE import_id = ? AND id NOT IN "
+                      "(SELECT transaction_id FROM import_rows WHERE import_id != ?) "
+                      "AND id NOT IN (SELECT transaction_id FROM before_file)", (import_id, import_id))
+            inbox = self._inbox(c)
+            inbox.put_back(restored)
+            # After the deletions, what they had is free to take. One that stays can want the fingerprint or bank ID
+            # another gives up as it moves (two identical rows the files list in another order): again until none can.
+            for _ in range(len(staying) + 1):
+                moved = [self._move_under(c, c.execute("SELECT * FROM transactions WHERE id = ?", (r["id"],)).fetchone(),
+                                          nexts[r["id"]]) for r in staying]
+                if not any(moved):
+                    break
+            if imp["anchor_after_date"] is not None:
+                self._take_back_balance(c, imp)
+            # A balance adjustment from Check balance… made after this import now comes after the one before it:
+            # the next import can be given this one's number, and a file's balance as new as it still takes it over.
+            # So does one remembered from before a file's row took its place.
+            for table in ("transactions", "before_file"):
+                c.execute(f"UPDATE {table} SET after_import = (SELECT MAX(id) FROM imports WHERE account_id = ? "
                           "AND id < ? AND anchor_after_date IS NOT NULL) WHERE after_import = ?",
                           (imp["account_id"], import_id, import_id))
             c.execute("DELETE FROM imports WHERE id = ?", (import_id,))
-            inbox = self._inbox(c)
             inbox.ask_again(others, "Its other half was removed with its import")
-            if imp is not None and imp["account_id"] is not None:
+            if imp["account_id"] is not None:
                 inbox.check_balance(imp["account_id"])
-            name = imp["filename"] if imp is not None else "the file"
+            name = imp["filename"]
             self.db.big_step(f"The import of {name} comes back." if not ids else
                              f"The transaction from {name} comes back." if len(ids) == 1 else
                              f"The {len(ids)} transactions from {name} come back.")
-        return {"removed": len(ids), "counts": self.counts()}
+        return {"removed": len(ids), "stayed": len(staying), "restored": len(restored), "counts": self.counts()}
+
+    def _move_under(self, c, txn, row):
+        """A transaction another import's file has too goes under that import, the way its file has it: its
+        date and the bank's wording (as one you added by hand does when a file brings it), and its
+        fingerprint and bank ID where no other transaction in the account has them, so the next file of
+        its kind finds it. What was decided about it stays: category, split, note, payee, transfer,
+        recurring charge. Returns whether it changed anything."""
+        def free(column):
+            value = row[column]
+            taken = value is not None and c.execute(
+                f"SELECT 1 FROM transactions WHERE account_id = ? AND {column} = ? AND id != ?",
+                (txn["account_id"], value, txn["id"])).fetchone()
+            return value if value is not None and not taken else txn[column]
+        hint = txn["hint"]
+        if (row["raw_name"], row["raw_memo"]) != (txn["raw_name"], txn["raw_memo"]):
+            kind = c.execute("SELECT kind FROM accounts WHERE id = ?", (txn["account_id"],)).fetchone()["kind"]
+            hint = transaction_hint(describe(row["raw_name"], row["raw_memo"], kind))
+        new = (row["import_id"], row["date"], row["raw_name"], row["raw_memo"], row["bank_type"], row["bank_category"],
+               hint, free("fingerprint"), free("fitid"))
+        columns = ("import_id", "date", "raw_name", "raw_memo", "bank_type", "bank_category", "hint", "fingerprint",
+                   "fitid")
+        if new == tuple(txn[k] for k in columns):
+            return False
+        c.execute(f"UPDATE transactions SET {', '.join(k + ' = ?' for k in columns)} WHERE id = ?", (*new, txn["id"]))
+        return True
 
     def _take_back_balance(self, c, imp):
-        """The balance a removed import set goes, and the one it replaced comes back, if it's
-        still the account's: one a later file or you set since is left alone (and a later
-        import that replaced this one's balance now remembers what this one had before)."""
+        """Settle the balance and its check again from the files still imported, as if the removed file had never
+        come in (issues #151 and #169). A balance a later file or you set since is left alone. The newest file
+        balance wins, on the same day the later download. A balance you typed that the removed file replaced was
+        typed after every earlier file came in: only a file imported after the removed one with a balance as new
+        replaces it (and a newer one that file's), as when they came in; with none, it comes back (decided on #169)."""
+        account = imp["account_id"]
         before = (imp["anchor_before_date"], imp["anchor_before_balance"])
         after = (imp["anchor_after_date"], imp["anchor_after_balance"])
-        current = c.execute("SELECT anchor_date, anchor_balance FROM accounts WHERE id = ?",
-                            (imp["account_id"],)).fetchone()
-        if current is not None and (current["anchor_date"], current["anchor_balance"]) == after:
-            # An import from before version 8 didn't record where the balance it replaced came from.
-            source = (imp["anchor_before_source"] or "file") if before[0] is not None else None
-            c.execute("UPDATE accounts SET anchor_date = ?, anchor_balance = ?, anchor_source = ? WHERE id = ?",
-                      (*before, source, imp["account_id"]))
+        current = c.execute("SELECT anchor_date, anchor_balance FROM accounts WHERE id = ?", (account,)).fetchone()
+        later = c.execute("SELECT 1 FROM imports WHERE account_id = ? AND id > ? AND anchor_after_date IS ? "
+                          "AND anchor_after_balance IS ?", (account, imp["id"], *after)).fetchone()
+        replace = current is not None and (current["anchor_date"], current["anchor_balance"]) == after and not later
+        acct = c.execute("SELECT check_from FROM accounts WHERE id = ?", (account,)).fetchone()
+        starts = acct is not None and acct["check_from"] == imp["id"]
+        # One from before version 8 didn't say where the balance it replaced came from: kept like a typed one.
+        if before[0] is not None and imp["anchor_before_source"] in ("typed", None):
+            if replace or starts:  # no balance typed since (Set balance… would have ended the check)
+                running, source, chain = before, imp["anchor_before_source"], []
+                for row in c.execute("SELECT id, file_balance_date, file_balance FROM imports WHERE account_id = ? "
+                                     "AND id > ? AND file_balance_date >= ? ORDER BY id",
+                                     (account, imp["id"], before[0])).fetchall():
+                    if row["file_balance_date"] >= running[0]:
+                        c.execute("UPDATE imports SET anchor_before_date = ?, anchor_before_balance = ?, "
+                                  "anchor_before_source = ?, anchor_after_date = file_balance_date, "
+                                  "anchor_after_balance = file_balance WHERE id = ?", (*running, source, row["id"]))
+                        running, source = (row["file_balance_date"], row["file_balance"]), "file"
+                        chain.append(row["id"])
+                if replace:
+                    c.execute("UPDATE accounts SET anchor_date = ?, anchor_balance = ?, anchor_source = ? WHERE id = ?",
+                              (*running, source or "file", account))
+                if starts:
+                    c.execute("UPDATE accounts SET check_from = ? WHERE id = ?", (chain[0] if chain else None, account))
+                return
+        else:
+            def takes_over(row):
+                """This file's balance is the one the account's balance or check now goes through: it replaced what
+                the removed file had replaced, when it never set the balance itself."""
+                if row["anchor_after_date"] is None:
+                    c.execute("UPDATE imports SET anchor_before_date = ?, anchor_before_balance = ?, "
+                              "anchor_before_source = ? WHERE id = ?", (*before, imp["anchor_before_source"], row["id"]))
+                c.execute("UPDATE imports SET anchor_after_date = file_balance_date, anchor_after_balance = file_balance "
+                          "WHERE id = ?", (row["id"],))
+
+            if replace:
+                winner = c.execute("SELECT * FROM imports WHERE account_id = ? AND id != ? AND file_balance_date "
+                                   "IS NOT NULL ORDER BY file_balance_date DESC, id DESC LIMIT 1",
+                                   (account, imp["id"])).fetchone()
+                c.execute("UPDATE accounts SET anchor_date = ?, anchor_balance = ?, anchor_source = ? WHERE id = ?",
+                          (winner["file_balance_date"], winner["file_balance"], "file", account) if winner else
+                          (None, None, None, account))
+                if winner is not None:
+                    takes_over(winner)
+            if starts:
+                source = c.execute("SELECT anchor_source FROM accounts WHERE id = ?", (account,)).fetchone()[0]
+                row = source == "file" and c.execute(
+                    "SELECT * FROM imports WHERE account_id = ? AND id != ? AND file_balance_date IS NOT NULL "
+                    "ORDER BY id LIMIT 1", (account, imp["id"])).fetchone()
+                if row:
+                    takes_over(row)
+                c.execute("UPDATE accounts SET check_from = ? WHERE id = ?", (row["id"] if row else None, account))
+        # A later import that replaced this one's balance now remembers what this one had replaced.
         c.execute("UPDATE imports SET anchor_before_date = ?, anchor_before_balance = ?, anchor_before_source = ? "
                   "WHERE account_id = ? AND id != ? AND anchor_after_date IS NOT NULL AND anchor_before_date IS ? "
-                  "AND anchor_before_balance IS ?",
-                  (*before, imp["anchor_before_source"], imp["account_id"], imp["id"], *after))
-
-    def _take_back_check(self, c, imp):
-        """When the removed import is the one the account's balance check starts from, the check
-        starts from the next file balance after it instead, or from none: the next file's balance is
-        then taken as it is (ledger.balance_difference)."""
-        acct = c.execute("SELECT anchor_source, check_from FROM accounts WHERE id = ?", (imp["account_id"],)).fetchone()
-        if acct is None or acct["check_from"] != imp["id"]:
-            return
-        later = c.execute("SELECT MIN(id) FROM imports WHERE account_id = ? AND id > ? AND anchor_after_date IS NOT NULL",
-                          (imp["account_id"], imp["id"])).fetchone()[0]
-        c.execute("UPDATE accounts SET check_from = ? WHERE id = ?",
-                  (later if acct["anchor_source"] == "file" else None, imp["account_id"]))
+                  "AND anchor_before_balance IS ?", (*before, imp["anchor_before_source"], account, imp["id"], *after))
 
     # ── onboarding ──
 
@@ -884,6 +1041,7 @@ class BudgetService:
     def rename_group(self, group_id, name):
         name = _clean_name(name)
         with self.db.write(f"Rename group to {name}") as c:
+            _existing(c, "category_groups", group_id)
             _group_name_free(c, name, group_id)
             c.execute("UPDATE category_groups SET name = ? WHERE id = ?", (name, group_id))
         return True
@@ -891,9 +1049,7 @@ class BudgetService:
     @exposed
     def delete_group(self, group_id):
         with self.db.write("Delete group") as c:
-            g = c.execute("SELECT name, role FROM category_groups WHERE id = ?", (group_id,)).fetchone()
-            if g is None:
-                return False
+            g = _existing(c, "category_groups", group_id, "name, role")
             if g["role"] != "normal":
                 raise UserError("This group is needed by the app and can't be deleted.")
             if c.execute("SELECT 1 FROM categories WHERE group_id = ?", (group_id,)).fetchone():
@@ -924,6 +1080,7 @@ class BudgetService:
     def set_group_collapsed(self, group_id, collapsed):
         """Folding a group isn't an undo step, and leaves undo as it is."""
         with self.db.write(keep_undo=True) as c:
+            _existing(c, "category_groups", group_id)
             c.execute("UPDATE category_groups SET collapsed = ? WHERE id = ?", (1 if collapsed else 0, group_id))
         return True
 
@@ -968,9 +1125,7 @@ class BudgetService:
         """Only a category never used (a typo just made): a used one can only be hidden
         (ledger.used_category_ids)."""
         with self.db.write("Delete category") as c:
-            row = c.execute("SELECT name, debt_account_id FROM categories WHERE id = ?", (category_id,)).fetchone()
-            if row is None:
-                return False
+            row = _existing(c, "categories", category_id, "name, debt_account_id")
             if row["debt_account_id"]:
                 raise UserError("A card's payment category can't be deleted.")
             if int(category_id) in ledger.own_category_ids(c):
@@ -1008,6 +1163,7 @@ class BudgetService:
     @exposed
     def set_category_hidden(self, category_id, hidden):
         with self.db.write("Hide category" if hidden else "Show category") as c:
+            _existing(c, "categories", category_id)
             c.execute("UPDATE categories SET hidden = ? WHERE id = ?", (1 if hidden else 0, category_id))
         return True
 
@@ -1017,16 +1173,17 @@ class BudgetService:
         if value is not None and value < 0:
             raise UserError("A budgeted amount can't be negative.")
         with self.db.write("Change budgeted amount") as c:
+            _existing(c, "categories", category_id)
             c.execute("UPDATE categories SET monthly_budget = ? WHERE id = ?", (value, category_id))
         return True
 
     # ── the budget ──
 
     def _figures(self, c):
-        """Every money figure, from one reading of the database (figures.Figures). Use it
-        inside the same db.read() or db.write()."""
-        s = self.settings.get()
-        return Figures(c, self.today(), s["overspending"], s["average_months"])
+        """Every money figure, from one reading of the database (figures.Figures), the
+        budget's own Overspending and Usual's months included. Use it inside the same
+        db.read() or db.write()."""
+        return Figures(c, self.today())
 
     @exposed
     def month(self, month=None):
@@ -1072,6 +1229,7 @@ class BudgetService:
         month = _month(month)
         cents = _amount(cents)
         with self.db.write("Assign money") as c:
+            _existing(c, "categories", category_id)
             self._set_assigned(c, month, category_id, cents)
         return self.month(month)
 
@@ -1082,6 +1240,9 @@ class BudgetService:
         if cents <= 0:
             raise UserError("Enter an amount to move.")
         with self.db.write("Move money") as c:
+            for category_id in (from_id, to_id):
+                if category_id:
+                    _existing(c, "categories", category_id)
             if from_id:
                 self._set_assigned(c, month, from_id, self._assigned(c, month, from_id) - cents)
             if to_id:
@@ -1119,6 +1280,7 @@ class BudgetService:
                 cents = int(a["amount"])
                 if cents:
                     cid = int(a["category_id"])
+                    _existing(c, "categories", cid)
                     self._set_assigned(c, month, cid, self._assigned(c, month, cid) + cents)
         return self.month(month)
 
@@ -1228,6 +1390,7 @@ class BudgetService:
         if len(note) > 5000:
             raise UserError("That note is too long.")
         with self.db.write(keep_undo=True) as c:
+            _existing(c, "categories", category_id)
             c.execute("UPDATE categories SET note = ? WHERE id = ?", (note, category_id))
         return True
 
@@ -1340,6 +1503,7 @@ class BudgetService:
     @exposed
     def same_payee(self, txn_id, same):
         with self.db.write("Payee match") as c:
+            _existing(c, "transactions", int(txn_id))
             self._inbox(c).same_payee(int(txn_id), same)
         return self.counts()
 
@@ -1347,6 +1511,8 @@ class BudgetService:
     def link_subscription(self, txn_id, sub_id):
         """This charge is a subscription you track, at a new price."""
         with self.db.write("New subscription price") as c:
+            _existing(c, "transactions", int(txn_id))
+            _existing(c, "subscriptions", int(sub_id))
             self._inbox(c).new_price(int(txn_id), int(sub_id))
         return self.counts()
 
@@ -1357,8 +1523,8 @@ class BudgetService:
         `amount` says otherwise)."""
         name = _clean_name(name)
         with self.db.write(f"Track {name}") as c:
-            txn = c.execute("SELECT * FROM transactions WHERE id = ?", (txn_id,)).fetchone()
-            if txn is None or txn["amount"] >= 0 or txn["payee_id"] is None:
+            txn = _existing(c, "transactions", txn_id, "*")
+            if txn["amount"] >= 0 or txn["payee_id"] is None:
                 raise UserError("Only a charge can start a subscription.")
             category_id = int(category_id) if category_id else txn["category_id"]
             if category_id:
@@ -1377,6 +1543,7 @@ class BudgetService:
         """The person says this charge isn't recurring: don't ask about this payee at this
         price again, and don't suggest it on the Subscriptions page."""
         with self.db.write("Not a subscription") as c:
+            _existing(c, "transactions", txn_id)
             txn = c.execute("SELECT t.*, p.name AS payee_name FROM transactions t JOIN payees p ON p.id = t.payee_id "
                             "WHERE t.id = ?", (txn_id,)).fetchone()
             if txn is None or txn["amount"] >= 0:
@@ -1394,6 +1561,7 @@ class BudgetService:
         """Switches a payee's Always ask on or off. Switched off, its waiting transactions
         the app is now sure about are categorized. Returns how many."""
         with self.db.write("Change payee setting") as c:
+            _existing(c, "payees", payee_id)
             return self._inbox(c).set_always_ask(payee_id, always_ask)
 
     # ── transactions ──
@@ -1478,6 +1646,7 @@ class BudgetService:
     @exposed
     def rename_payee(self, payee_id, name):
         with self.db.write("Rename payee") as c:
+            _existing(c, "payees", payee_id)
             return ledger.rename_payee(c, payee_id, name)
 
     @exposed
@@ -1527,6 +1696,7 @@ class BudgetService:
                     c.execute("UPDATE transactions SET amount = ? WHERE id = ?", (new_amount, txn_id))
             if "transfer_account_id" in changes:
                 if changes["transfer_account_id"]:
+                    _existing(c, "accounts", int(changes["transfer_account_id"]))
                     added_to = inbox.mark_transfer(txn_id, int(changes["transfer_account_id"]))
                 else:
                     removed_from = inbox.not_a_transfer(txn_id)
@@ -1570,6 +1740,7 @@ class BudgetService:
         """Deletes a transaction. Its other half, if it was a transfer, is the app's to
         decide about again."""
         with self.db.write("Delete transaction") as c:
+            _existing(c, "transactions", txn_id)
             others = transfers.unlink(c, txn_id)[1:]
             c.execute("DELETE FROM transactions WHERE id = ?", (txn_id,))
             self._inbox(c).ask_again(others, "Its other half was deleted")
@@ -1628,6 +1799,7 @@ class BudgetService:
         if set(changes) == {"closed"}:
             label = "Close account" if changes["closed"] else "Reopen account"
         with self.db.write(label) as c:
+            _existing(c, "accounts", account_id)
             if "name" in changes:
                 name = _clean_name(changes["name"])
                 if c.execute("SELECT 1 FROM accounts WHERE name = ? COLLATE NOCASE AND id != ?",
@@ -1657,9 +1829,12 @@ class BudgetService:
         a file's balance left as it is keeps its date and its check. Any other is a typed balance:
         the next file's balance replaces it as it is (no balance adjustment), and checks start again
         from that file's. It stands for everything, so the app's balance adjustments waiting for the
-        account go (issue #137); yours stay. A card's file balance read as in your favour and given as
-        owing (*In your favour* unticked) also settles how its files write what you owe, like the
-        answer to "Is $120.50 what you owe…?"."""
+        account go (issue #137); yours stay. On a card's file balance, *In your favour* changed also
+        settles how its files write a balance above zero, like the answer to "Is $120.50 what you
+        owe…?" (issue #143): unticked (the balance for that day above zero, given as owing), for a
+        file balance read as in your favour, what you owe; ticked (owing, given as in your favour), as
+        the files write it. Only the amount changed says nothing, and so does a balance no file gave
+        (typed: what the bank shows now, which can really have changed sign since)."""
         date = _date(date) if date else date
         with self.db.write("Set balance") as c:
             acct = c.execute("SELECT kind, anchor_source, anchor_balance FROM accounts WHERE id = ?",
@@ -1668,9 +1843,13 @@ class BudgetService:
                 raise UserError("That account no longer exists.")
             value = _balance_sign(acct["kind"], _amount(cents), in_favour)
             day = date or self.today()
-            if ledger.account_balance(c, account_id, day) != value:
-                if ledger.is_debt(acct["kind"]) and acct["anchor_source"] == "file" and acct["anchor_balance"] > 0 > value:
-                    importer.remember_owed(c, account_id)
+            shown = ledger.account_balance(c, account_id, day)  # what 3. Balances showed for that day
+            if shown != value:
+                if ledger.is_debt(acct["kind"]) and acct["anchor_source"] == "file":
+                    if acct["anchor_balance"] > 0 and shown > 0 > value:
+                        importer.remember_positive(c, account_id, "owed")
+                    elif shown < 0 < value:
+                        importer.remember_positive(c, account_id, "favour")
                 self._inbox(c).drop_adjustments(account_id)
                 c.execute("UPDATE accounts SET anchor_date = ?, anchor_balance = ?, anchor_source = 'typed', "
                           "check_from = NULL WHERE id = ?", (day, value, account_id))
@@ -1702,9 +1881,8 @@ class BudgetService:
                           (diff, account_id))
             payee = ledger.get_or_create_payee(c, ledger.ADJUSTMENT_PAYEE, "bank")
             txn_id = c.execute("INSERT INTO transactions (account_id, date, amount, payee_id, hint, category_id, status, "
-                               "reason, after_import) VALUES (?, ?, ?, ?, ?, NULL, 'review', "
-                               "'To match the balance the bank shows', ?)",
-                               (account_id, day, diff, payee, ADJUSTMENT,
+                               "reason, after_import) VALUES (?, ?, ?, ?, ?, NULL, 'review', ?, ?)",
+                               (account_id, day, diff, payee, ADJUSTMENT, ledger.CHECK_BALANCE_REASON,
                                 ledger.newest_balance_import(c, account_id))).lastrowid
             self._inbox(c).arrive([txn_id])  # it waits for you: no guess, never in Accept all
         return {"adjusted": diff}
@@ -1713,25 +1891,24 @@ class BudgetService:
     def merge_accounts(self, from_id, into_id):
         """`from_id` is the same account as `into_id`: see ledger.merge_accounts()."""
         with self.db.write("Merge accounts") as c:
-            name = c.execute("SELECT name FROM accounts WHERE id = ?", (into_id,)).fetchone()
-            copy = c.execute("SELECT name FROM accounts WHERE id = ?", (from_id,)).fetchone()
+            copy = _existing(c, "accounts", from_id, "name")
+            name = _existing(c, "accounts", into_id, "name")
+            ended = ledger.adjustments_a_merge_ends(c, int(from_id), int(into_id))
             moved, dropped, unpaired, asked = ledger.merge_accounts(c, int(from_id), int(into_id))
             inbox = self._inbox(c)
-            inbox.ask_again(unpaired, f"No longer a transfer: both halves are in {name['name'] if name else 'one account'}")
+            inbox.ask_again(unpaired, f"No longer a transfer: both halves are in {name['name']}")
             inbox.ask_again(asked, "Its other half is a duplicate of one you decided about")
+            inbox.drop_adjustments(int(into_id), ended)  # a balance that isn't checked won (issue #147)
             inbox.check_balance(int(into_id))  # the copy's transactions may be what the balance was missing
-            self.db.big_step(f"{copy['name'] if copy else 'The other account'} comes back as an account of its own, "
-                             f"with its transactions.")
+            self.db.big_step(f"{copy['name']} comes back as an account of its own, with its transactions.")
         log.info("Merged account %s into %s: %d moved, %d duplicates dropped", from_id, into_id, moved, dropped)
-        return {"into": name["name"] if name else "", "moved": moved, "dropped": dropped, "counts": self.counts()}
+        return {"into": name["name"], "moved": moved, "dropped": dropped, "counts": self.counts()}
 
     @exposed
     def delete_account(self, account_id):
         """Only an account never used: a used one can only be closed (ledger.used_account_ids)."""
         with self.db.write("Delete account") as c:
-            row = c.execute("SELECT name FROM accounts WHERE id = ?", (account_id,)).fetchone()
-            if row is None:
-                return False
+            row = _existing(c, "accounts", account_id, "name")
             if int(account_id) in ledger.used_account_ids(c):
                 raise UserError(f"{row['name']} has been used, so it can only be closed.")
             c.execute("DELETE FROM accounts WHERE id = ?", (account_id,))
@@ -1764,6 +1941,9 @@ class BudgetService:
                            ends_on=None):
         name = _clean_name(name) if name else None
         with self.db.write("Track subscription") as c:
+            _existing(c, "payees", candidate["payee_id"])
+            if category_id:
+                ledger.check_category(c, int(category_id))
             sub_id = subscriptions.track(c, candidate, kind, name, int(category_id) if category_id else None, pricing,
                                          _end_date(ends_on))
             self._inbox(c).recheck([candidate["payee_id"]])  # its waiting charges go to its category
@@ -1782,7 +1962,8 @@ class BudgetService:
         with self.db.write(f"Add subscription {name}") as c:
             if category_id:
                 ledger.check_category(c, int(category_id))
-            payee_id = payee if isinstance(payee, int) else ledger.get_or_create_payee(c, _clean_name(payee))
+            payee_id = _existing(c, "payees", payee)["id"] if isinstance(payee, int) else \
+                ledger.get_or_create_payee(c, _clean_name(payee))
             sub_id = subscriptions.create(c, payee_id, name, amount, cadence, kind,
                                           int(category_id) if category_id else None, pricing, _end_date(ends_on))
             self._inbox(c).recheck([payee_id])
@@ -1791,12 +1972,14 @@ class BudgetService:
     @exposed
     def dismiss_subscription(self, candidate):
         with self.db.write("Not a subscription") as c:
+            _existing(c, "payees", candidate["payee_id"])
             return subscriptions.dismiss(c, candidate)
 
     @exposed
     def update_subscription(self, sub_id, changes):
         changes = dict(changes or {})
         with self.db.write("Edit subscription") as c:
+            _existing(c, "subscriptions", sub_id)
             for field in ("name", "note", "kind", "cadence"):
                 if field in changes:
                     value = str(changes[field] or "").strip()
@@ -1832,6 +2015,7 @@ class BudgetService:
     @exposed
     def cancel_subscription(self, sub_id, cancelled_on=None):
         with self.db.write("Mark subscription cancelled") as c:
+            _existing(c, "subscriptions", sub_id)
             c.execute("UPDATE subscriptions SET status = 'cancelled', cancelled_on = ? WHERE id = ?",
                       (cancelled_on or self.today(), sub_id))
         return True
@@ -1839,6 +2023,7 @@ class BudgetService:
     @exposed
     def reactivate_subscription(self, sub_id):
         with self.db.write("Mark subscription active") as c:
+            _existing(c, "subscriptions", sub_id)
             c.execute("UPDATE subscriptions SET status = 'active', cancelled_on = NULL WHERE id = ?", (sub_id,))
             self._recheck_subscription(c, sub_id)
         return True
@@ -1846,6 +2031,7 @@ class BudgetService:
     @exposed
     def delete_subscription(self, sub_id):
         with self.db.write("Stop tracking subscription") as c:
+            _existing(c, "subscriptions", sub_id)
             c.execute("DELETE FROM subscriptions WHERE id = ?", (sub_id,))
         return True
 
@@ -1853,11 +2039,23 @@ class BudgetService:
 
     @exposed
     def get_settings(self):
-        return self.settings.get()
+        """This Mac's settings (settings.json) and the budget's own: Overspending and Usual's
+        months, kept in the budget so a backup carries them (issue #153)."""
+        with self.db.read() as c:
+            return {**self.settings.get(), **budget_settings(c)}
 
     @exposed
     def save_settings(self, changes):
-        return self.settings.update(changes)
+        """Changes some settings (a value that isn't valid changes nothing) and returns them
+        all. Not an undo step, and ⌘Z keeps working; a change to the budget's own counts as a
+        change for backups (backups.changed)."""
+        changes = changes if isinstance(changes, dict) else {}
+        budget = {k: v for k, v in changes.items() if k in BUDGET_DEFAULTS}
+        if budget:
+            with self.db.write(keep_undo=True) as c:
+                save_budget_settings(c, budget)
+        self.settings.update({k: v for k, v in changes.items() if k not in BUDGET_DEFAULTS})
+        return self.get_settings()
 
     @exposed
     def app_info(self):
@@ -1886,11 +2084,16 @@ def _count(n, one, many=None):
     return f"{n} {one if n == 1 else many or one + 's'}"
 
 
-def _adjustment_note(before, after):
+def _adjustment_note(before, after, asks=0):
     """What an import says about the account's balance adjustment (Inbox.check_balance): `before`
-    and `after` are what's waiting, in cents (0: none); '' when it didn't change."""
+    and `after` are what's waiting, in cents (0: none); '' when it didn't change. `asks`: how many
+    balance adjustments you kept the one waiting now asks whether to remove, their money having
+    arrived: the note says what the Inbox asks (issue #138)."""
     if before is None or before == after:
         return ""
+    if asks:
+        return (f"The {money(abs(after))} your balance adjustment{'' if asks == 1 else 's'} stood for has arrived: "
+                f"the Inbox asks whether to remove {'it' if asks == 1 else 'them'}")
     if after == 0:
         return "The missing transactions arrived: the balance adjustment is gone"
     if before == 0:

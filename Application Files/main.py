@@ -26,7 +26,7 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 APP_NAME = "I Need A Budget"
-VERSION = "1.4.0"  # the build reads it from here; see the release checklist in docs/DEVELOPMENT.md
+VERSION = "1.4.1"  # the build reads it from here; see the release checklist in docs/DEVELOPMENT.md
 if os.environ.get("INAB_DATA_DIR"):  # for development/testing against a throwaway folder
     DATA_DIR = Path(os.environ["INAB_DATA_DIR"]).expanduser()
     LOG_DIR = DATA_DIR / "Logs"
@@ -150,6 +150,12 @@ class BudgetApp:
             "install_update": self._restart_into_update,
             "set_github_token": self._set_github_token,
         })
+        # Once, after the upgrade to version 12: which of the kept files have each transaction (issue #148). Before the
+        # window opens, so nothing you do can meet it. It never stops the app opening: it's tried again next launch.
+        try:
+            self._service.read_imported_files()
+        except Exception:
+            log.warning("Couldn't read the imported files again", exc_info=True)
         self._window = None
         self._quitting = False
         self._quit_asked = None  # when the page was last asked to quit and hasn't answered yet
