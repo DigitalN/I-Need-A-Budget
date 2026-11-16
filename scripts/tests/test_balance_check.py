@@ -1420,6 +1420,137 @@ def test_removing_the_file_whose_balance_is_used_keeps_another_files_balance(app
     assert call(app, "month", "2026-08")["summary"]["off"] == 0
 
 
+# ── Remove import puts back a balance you typed (the review of #171) ─────────
+# A balance you typed was typed after every file before it came in: when Remove import takes away the file that
+# replaced it, only a file imported after that one with a balance as new takes its place, as it would have when it
+# came in, for the balance and for where the check starts. With none, the balance you typed comes back.
+
+def _books(app):
+    """(balance date, balance, where it came from, the file the check starts from) of the only account."""
+    c = app.db.conn
+    a = c.execute("SELECT anchor_date, anchor_balance, anchor_source, check_from FROM accounts").fetchone()
+    start = c.execute("SELECT filename FROM imports WHERE id = ?", (a["check_from"],)).fetchone()
+    return a["anchor_date"], a["anchor_balance"], a["anchor_source"], start[0] if start else None
+
+
+def _only_account(app):
+    return call(app, "accounts")[0]["id"]
+
+
+def _into(app, name, text):
+    call(app, "set_file_accounts", str(write(app.test_downloads, name, text)),
+         [{"index": 0, "account_id": _only_account(app)}])
+
+
+def test_removing_the_next_file_keeps_the_balance_you_corrected_on_3_balances(app):
+    """3. Balances: the file says $3,000.00 on Sep 15, you change it to $3,100.00 (typed for that day). October's file
+    replaces it. Remove import of October's file: $3,100.00 as you typed it, with no check, not the file's $3,000.00."""
+    _import(app, "sep.ofx", ofx(SEPTEMBER, "3000.00", "20260915", start="20260901"))
+    call(app, "set_balance", _only_account(app), 310000, "2026-09-15")
+    call(app, "finish_onboarding", "2026-09")
+    _import(app, "oct.ofx", ofx(OCTOBER, "2600.00", "20261010", start="20261001"))
+    _remove_import(app, "oct.ofx")
+    assert _books(app) == ("2026-09-15", 310000, "typed", None)
+
+
+def test_removing_the_next_file_keeps_a_balance_set_the_day_of_a_download(app, monkeypatch):
+    """Set balance… the day of a download (the bank shows another balance later that day), then the next download,
+    removed: the balance you set, not the morning file's."""
+    monkeypatch.setenv("INAB_TODAY", "2026-09-15")
+    _import(app, "morning.ofx", ofx(SEPTEMBER, "3000.00", "20260915", start="20260901"))
+    call(app, "finish_onboarding", "2026-09")
+    call(app, "set_balance", _only_account(app), 295000)  # today, Sep 15
+    monkeypatch.setenv("INAB_TODAY", "2026-10-12")
+    _import(app, "next.ofx", ofx(OCTOBER, "2600.00", "20261010", start="20260916"))
+    _remove_import(app, "next.ofx")
+    assert _books(app) == ("2026-09-15", 295000, "typed", None)
+
+
+def _typed_then_october_then_september(app):
+    call(app, "add_account", "Sample Chequing", "chequing", 150000, "2026-09-01")  # typed: $1,500.00 on Sep 1
+    call(app, "finish_onboarding", "2026-09")
+    _into(app, "oct.ofx", ofx(OCTOBER, "2600.00", "20261010", start="20261001"))
+    _import(app, "sep.ofx", ofx(SEPTEMBER, "3000.00", "20260915", start="20260901"))  # older: found later
+
+
+def test_the_file_that_takes_the_balance_over_remembers_the_typed_balance(app):
+    """$1,500.00 typed on Sep 1; October's file replaces it; September's, older, found later. Remove import of
+    October's: September's balance, checked from it. Then of September's: the $1,500.00 you typed, not no balance."""
+    _typed_then_october_then_september(app)
+    _remove_import(app, "oct.ofx")
+    assert _books(app) == ("2026-09-15", 300000, "file", "sep.ofx")
+    _remove_import(app, "sep.ofx")
+    assert _books(app) == ("2026-09-01", 150000, "typed", None)
+
+
+def test_older_files_found_later_take_the_balance_over_in_turn(app):
+    """As above with two older files found later, Sep 10's then Sep 20's: removing October's leaves Sep 20's balance,
+    checked from Sep 10's (the first to replace the typed one); removing Sep 20's then leaves Sep 10's."""
+    call(app, "add_account", "Sample Chequing", "chequing", 150000, "2026-09-01")
+    call(app, "finish_onboarding", "2026-09")
+    _into(app, "oct.ofx", ofx(OCTOBER, "2600.00", "20261010", start="20261001"))
+    _import(app, "sep10.ofx", ofx(SEPTEMBER, "3000.00", "20260910", start="20260901"))
+    _import(app, "sep20.ofx", ofx(SEPTEMBER, "3050.00", "20260920", start="20260901"))
+    _remove_import(app, "oct.ofx")
+    assert _books(app) == ("2026-09-20", 305000, "file", "sep10.ofx")
+    _remove_import(app, "sep20.ofx")
+    assert _books(app) == ("2026-09-10", 300000, "file", "sep10.ofx")
+    _remove_import(app, "sep10.ofx")
+    assert _books(app) == ("2026-09-01", 150000, "typed", None)
+
+
+def test_an_import_from_before_version_8_puts_back_the_balance_it_replaced(app):
+    """An import from before version 8 didn't say where the balance it replaced came from (anchor_before_source NULL):
+    that balance comes back, as before #169, not an older file's."""
+    call(app, "add_account", "Sample Chequing", "chequing", 290000, "2026-09-30")
+    call(app, "finish_onboarding", "2026-09")
+    _into(app, "aug.ofx", ofx(AUGUST, "1000.00", "20260831", start="20260801"))  # older than the typed balance
+    _import(app, "oct.ofx", ofx(OCTOBER, "2600.00", "20261010", start="20261001"))
+    app.db.conn.execute("UPDATE imports SET anchor_before_source = NULL")  # as a version 7 import
+    _remove_import(app, "oct.ofx")
+    assert _books(app)[:2] == ("2026-09-30", 290000)
+
+
+def test_reading_kept_files_again_keeps_the_card_balance_sign_the_import_settled(app):
+    """A card whose files write what you owe as positive, whose first balance you typed: the import reads its file's
+    $130.00 as owed, as the app's own balance says. The first launch's reading of the kept files leaves that as it is,
+    so removing the later file brings back $130.00 owed, not in your favour."""
+    n = card_number("4444")
+    card = call(app, "add_account", "Sample Visa", "credit_card", 10000, "2026-09-30")  # owe $100.00 on Sep 30
+    call(app, "finish_onboarding", "2026-09")
+    call(app, "set_file_accounts", str(write(app.test_downloads, "c1.ofx", card_ofx(
+        [("20261005", "-30.00", "SAMPLE BAKERY", "O1")], "130.00", "20261010", acct_id=n, start="20261001"))),
+        [{"index": 0, "account_id": card}])
+    assert call(app, "accounts")[0]["balance"] == -13000
+    _import(app, "c2.ofx", card_ofx([("20261011", "-20.00", "SAMPLE TAXI", "O2")], "150.00", "20261012", acct_id=n,
+                                    start="20261011"))
+    assert call(app, "accounts")[0]["balance"] == -15000
+    app.db.set_meta("read_imported_files", "1")  # as after the upgrade to 13
+    app.read_imported_files()
+    _remove_import(app, "c2.ofx")
+    assert call(app, "accounts")[0]["balance"] == -13000
+
+
+def test_reading_kept_files_again_settles_an_older_card_files_balance_by_the_apps(app):
+    """An older card file whose balance never became the account's has none noted until the reading: its $100.00 above
+    zero is read the way the app's balance for that day says (owed), as its import read it, not as written."""
+    n = card_number("4444")
+    card = call(app, "add_account", "Sample Visa", "credit_card", 10000, "2026-09-30")
+    call(app, "finish_onboarding", "2026-09")
+    pick = [{"index": 0, "account_id": card}]
+    call(app, "set_file_accounts", str(write(app.test_downloads, "c1.ofx", card_ofx(
+        [("20261005", "-30.00", "SAMPLE BAKERY", "O1")], "130.00", "20261010", acct_id=n, start="20261001"))), pick)
+    _import(app, "c0.ofx", card_ofx([("20260920", "-40.00", "SAMPLE GROCER", "S1")], "100.00", "20260920", acct_id=n,
+                                    start="20260915"))
+    c = app.db.conn
+    noted = c.execute("SELECT file_balance FROM imports WHERE filename = 'c0.ofx'").fetchone()[0]
+    assert noted == -10000  # owed $100.00 on Sep 20, as the app's balance says
+    c.execute("UPDATE imports SET file_balance_date = NULL, file_balance = NULL WHERE filename = 'c0.ofx'")
+    app.db.set_meta("read_imported_files", "1")
+    app.read_imported_files()
+    assert c.execute("SELECT file_balance FROM imports WHERE filename = 'c0.ofx'").fetchone()[0] == noted
+
+
 def test_merging_a_copy_with_a_newer_balance_after_a_later_file_leaves_nothing_waiting(app):
     """The issue's case: the copy's newer balance won, and its check with it, so Chequing's October file, imported after
     the copy's, counted as money that moved since the copy's balance: +$400.00 waited for good, and September started at

@@ -854,44 +854,69 @@ class BudgetService:
 
     def _take_back_balance(self, c, imp):
         """Settle the balance and its check again from the files still imported, as if the removed file had never
-        come in (issues #151 and #169). A balance a later file or you set is left alone. The newest file balance
-        wins; on the same day a file beats the typed one the removed file replaced, then the later download."""
+        come in (issues #151 and #169). A balance a later file or you set since is left alone. The newest file
+        balance wins, on the same day the later download. A balance you typed that the removed file replaced was
+        typed after every earlier file came in: only a file imported after the removed one with a balance as new
+        replaces it (and a newer one that file's), as when they came in; with none, it comes back (decided on #169)."""
+        account = imp["account_id"]
         before = (imp["anchor_before_date"], imp["anchor_before_balance"])
         after = (imp["anchor_after_date"], imp["anchor_after_balance"])
-        current = c.execute("SELECT anchor_date, anchor_balance FROM accounts WHERE id = ?",
-                            (imp["account_id"],)).fetchone()
+        current = c.execute("SELECT anchor_date, anchor_balance FROM accounts WHERE id = ?", (account,)).fetchone()
         later = c.execute("SELECT 1 FROM imports WHERE account_id = ? AND id > ? AND anchor_after_date IS ? "
-                          "AND anchor_after_balance IS ?", (imp["account_id"], imp["id"], *after)).fetchone()
+                          "AND anchor_after_balance IS ?", (account, imp["id"], *after)).fetchone()
         replace = current is not None and (current["anchor_date"], current["anchor_balance"]) == after and not later
-        typed_date = before[0] if imp["anchor_before_source"] == "typed" else None
-        if replace:
-            winner = c.execute("SELECT id, file_balance_date, file_balance FROM imports WHERE account_id = ? AND id != ? "
-                               "AND file_balance_date IS NOT NULL ORDER BY file_balance_date DESC, id DESC LIMIT 1",
-                               (imp["account_id"], imp["id"])).fetchone()
-            if winner is not None and (typed_date is None or winner["file_balance_date"] >= typed_date):
-                c.execute("UPDATE accounts SET anchor_date = ?, anchor_balance = ?, anchor_source = 'file' WHERE id = ?",
-                          (winner["file_balance_date"], winner["file_balance"], imp["account_id"]))
-                c.execute("UPDATE imports SET anchor_after_date = ?, anchor_after_balance = ? WHERE id = ?",
-                          (winner["file_balance_date"], winner["file_balance"], winner["id"]))
-            else:
+        acct = c.execute("SELECT check_from FROM accounts WHERE id = ?", (account,)).fetchone()
+        starts = acct is not None and acct["check_from"] == imp["id"]
+        # One from before version 8 didn't say where the balance it replaced came from: kept like a typed one.
+        if before[0] is not None and imp["anchor_before_source"] in ("typed", None):
+            if replace or starts:  # no balance typed since (Set balance… would have ended the check)
+                running, source, chain = before, imp["anchor_before_source"], []
+                for row in c.execute("SELECT id, file_balance_date, file_balance FROM imports WHERE account_id = ? "
+                                     "AND id > ? AND file_balance_date >= ? ORDER BY id",
+                                     (account, imp["id"], before[0])).fetchall():
+                    if row["file_balance_date"] >= running[0]:
+                        c.execute("UPDATE imports SET anchor_before_date = ?, anchor_before_balance = ?, "
+                                  "anchor_before_source = ?, anchor_after_date = file_balance_date, "
+                                  "anchor_after_balance = file_balance WHERE id = ?", (*running, source, row["id"]))
+                        running, source = (row["file_balance_date"], row["file_balance"]), "file"
+                        chain.append(row["id"])
+                if replace:
+                    c.execute("UPDATE accounts SET anchor_date = ?, anchor_balance = ?, anchor_source = ? WHERE id = ?",
+                              (*running, source or "file", account))
+                if starts:
+                    c.execute("UPDATE accounts SET check_from = ? WHERE id = ?", (chain[0] if chain else None, account))
+                return
+        else:
+            def takes_over(row):
+                """This file's balance is the one the account's balance or check now goes through: it replaced what
+                the removed file had replaced, when it never set the balance itself."""
+                if row["anchor_after_date"] is None:
+                    c.execute("UPDATE imports SET anchor_before_date = ?, anchor_before_balance = ?, "
+                              "anchor_before_source = ? WHERE id = ?", (*before, imp["anchor_before_source"], row["id"]))
+                c.execute("UPDATE imports SET anchor_after_date = file_balance_date, anchor_after_balance = file_balance "
+                          "WHERE id = ?", (row["id"],))
+
+            if replace:
+                winner = c.execute("SELECT * FROM imports WHERE account_id = ? AND id != ? AND file_balance_date "
+                                   "IS NOT NULL ORDER BY file_balance_date DESC, id DESC LIMIT 1",
+                                   (account, imp["id"])).fetchone()
                 c.execute("UPDATE accounts SET anchor_date = ?, anchor_balance = ?, anchor_source = ? WHERE id = ?",
-                          (typed_date, imp["anchor_before_balance"] if typed_date else None,
-                           "typed" if typed_date else None, imp["account_id"]))
+                          (winner["file_balance_date"], winner["file_balance"], "file", account) if winner else
+                          (None, None, None, account))
+                if winner is not None:
+                    takes_over(winner)
+            if starts:
+                source = c.execute("SELECT anchor_source FROM accounts WHERE id = ?", (account,)).fetchone()[0]
+                row = source == "file" and c.execute(
+                    "SELECT * FROM imports WHERE account_id = ? AND id != ? AND file_balance_date IS NOT NULL "
+                    "ORDER BY id LIMIT 1", (account, imp["id"])).fetchone()
+                if row:
+                    takes_over(row)
+                c.execute("UPDATE accounts SET check_from = ? WHERE id = ?", (row["id"] if row else None, account))
+        # A later import that replaced this one's balance now remembers what this one had replaced.
         c.execute("UPDATE imports SET anchor_before_date = ?, anchor_before_balance = ?, anchor_before_source = ? "
                   "WHERE account_id = ? AND id != ? AND anchor_after_date IS NOT NULL AND anchor_before_date IS ? "
-                  "AND anchor_before_balance IS ?",
-                  (*before, imp["anchor_before_source"], imp["account_id"], imp["id"], *after))
-        acct = c.execute("SELECT anchor_source, check_from FROM accounts WHERE id = ?", (imp["account_id"],)).fetchone()
-        if acct is not None and acct["check_from"] == imp["id"]:
-            start = None
-            if acct["anchor_source"] == "file":
-                start = c.execute("SELECT MIN(id) FROM imports WHERE account_id = ? AND id != ? "
-                                  "AND file_balance_date IS NOT NULL AND file_balance_date >= ?",
-                                  (imp["account_id"], imp["id"], typed_date or "")).fetchone()[0]
-            if start is not None:
-                c.execute("UPDATE imports SET anchor_after_date = file_balance_date, anchor_after_balance = file_balance "
-                          "WHERE id = ?", (start,))
-            c.execute("UPDATE accounts SET check_from = ? WHERE id = ?", (start, imp["account_id"]))
+                  "AND anchor_before_balance IS ?", (*before, imp["anchor_before_source"], account, imp["id"], *after))
 
     # ── onboarding ──
 

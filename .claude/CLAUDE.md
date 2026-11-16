@@ -237,7 +237,10 @@ All in `Application Files/`:
   or goes, as the missing transactions arrive, and Remove import puts it back. Every import keeps its file's
   balance (`imports.file_balance_*`), whether or not it became the account's, so Remove import settles the
   balance and the check's start again from the files still imported, as if the removed file had never come in
-  (issues #151 and #169). **After Merge into…
+  (issues #151 and #169). A balance you typed that the removed file had replaced (or one from before version 8)
+  comes back unless a file imported after you typed it has a balance as new: only such a file takes its place, for
+  the balance and the check's start, even a file imported earlier with a balance for the same day doesn't (decided
+  on #169). **After Merge into…
   the check works as if the copy's files had gone into the account in the first place**, whichever
   balance wins (issue #147): it carries on from whichever account's check started first, so both
   accounts' waiting balance adjustments are worked out again as one and a gap neither has stays; a

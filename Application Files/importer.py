@@ -1082,13 +1082,15 @@ def note_kept_file(conn, imp, path):
     part = _part_of(conn, parsed, imp["account_id"])
     if part is None:
         return 0
-    if part.card_file and ledger.is_debt(acct["kind"]) and _flip(conn, part, imp["account_id"])[0]:
+    flipped = part.card_file and ledger.is_debt(acct["kind"]) and _flip(conn, part, imp["account_id"])[0]
+    if flipped:
         part = replace(part, rows=[replace(r, amount=-r.amount) for r in part.rows],
                        balance=(part.balance[0], -part.balance[1]) if part.balance else None)
-    if part.balance:
+    if part.balance and imp["file_balance_date"] is None:  # one that set the balance has it already, as its import read it
         as_of, balance = part.balance
-        if part.card_file and ledger.is_debt(acct["kind"]) and balance > 0:
-            balance = _positive_balance(conn, imp["account_id"], balance, None, None)
+        if part.card_file and ledger.is_debt(acct["kind"]) and not flipped and balance > 0:
+            balance = _positive_balance(conn, imp["account_id"], balance,
+                                        ledger.account_balance(conn, imp["account_id"], as_of), None)
         conn.execute("UPDATE imports SET file_balance_date = ?, file_balance = ? WHERE id = ?",
                      (as_of, balance, imp["id"]))
     fps, fitids = fingerprints(part.rows), _usable_fitids(part.rows)
