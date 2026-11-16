@@ -28,10 +28,14 @@ and yours, because you marked the transfer.
   both halves in one account. It's marked by its hint (`added_half`), as a balance
   adjustment is by its own, since `reason` is never read back.
 - Deciding about the added half itself (a category, a split, another other half) makes it
-  an ordinary transaction of yours, which stays.
-- If the account later gets a file, the bank's row of the same amount within three days
-  takes the added half's place, as it does for any transaction added by hand, and keeps the
-  transfer. It's the bank's from then on.
+  an ordinary transaction of yours, which stays, even after Remove import of a file whose row
+  had taken its place.
+- If the account later gets a file, the bank's row of the same amount within ten days (as
+  far apart as a transfer's two halves pair: a transfer to another bank can post days later)
+  takes the added half's place, as it does within three days for any transaction added by
+  hand, and keeps the transfer. It's the bank's from then on, and so is one a merge gives the
+  bank's row's ID. Remove import of that file puts the added half back while it's still the
+  transfer's.
 - A balance adjustment is never the other half, so marking a transfer never pairs with one.
 - The added half is often an empty Wallet's first transaction. No download can be missing from
   an account kept by hand, so its first transaction doesn't hold Usual back, whenever the

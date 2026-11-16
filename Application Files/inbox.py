@@ -566,9 +566,10 @@ class Inbox:
         if after is None and by_hand:
             after, added = self._add_other_half(self._txn(txn_id)), account["name"]
         c.execute("UPDATE transactions SET by_you = 1, similar_payee_id = NULL WHERE id IN (?, ?)", (txn_id, after or 0))
-        if before and before != after:
-            self._adopt(txn)  # the half the app added, with another other half now
-            self._let_go(before)
+        if before != after:
+            self._adopt(txn)  # a half the app added (or whose place the bank's row took), with another other half now
+            if before:
+                self._let_go(before)
         return added
 
     def _add_other_half(self, txn):
@@ -598,9 +599,11 @@ class Inbox:
 
     def _adopt(self, txn):
         """You decided about a half the app added, on its own (a category, a split, another other
-        half): from now on it's yours like a transaction you added, and stays when the transfer ends."""
-        if txn["hint"] == ADDED_HALF:
-            self.conn.execute("UPDATE transactions SET hint = '' WHERE id = ?", (txn["id"],))
+        half): from now on it's yours like a transaction you added, and stays when the transfer ends.
+        So once the bank's row has taken its place: Remove import of that file puts back one of yours
+        (Inbox.put_back), not the app's half."""
+        self.conn.execute("UPDATE transactions SET hint = '' WHERE id = ? AND hint = ?", (txn["id"], ADDED_HALF))
+        self.conn.execute("UPDATE before_file SET hint = '' WHERE transaction_id = ? AND hint = ?", (txn["id"], ADDED_HALF))
 
     def not_a_transfer(self, txn_id):
         """It isn't a transfer: both halves wait for you, and are never paired again. A half the
@@ -660,9 +663,8 @@ class Inbox:
         if txn["transfer_account_id"]:
             for other in transfers.unlink(self.conn, txn_id)[1:]:
                 self._let_go(other)
-            self._adopt(txn)
-            txn = self._txn(txn_id)
-        return txn
+        self._adopt(txn)
+        return self._txn(txn_id)
 
     # ── answers to an item's own question ──
 

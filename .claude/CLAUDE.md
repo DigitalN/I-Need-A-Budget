@@ -352,8 +352,11 @@ All in `Application Files/`:
   on the other half, marking that one with another account, deleting it or removing its import, a
   merge putting both in one account. Deciding about the half itself (a category, a split, another
   other half) makes it an ordinary one of yours (`_adopt`); the bank's row taking its place (the
-  account's first file, `importer.MANUAL_DAYS`) makes it the bank's; Remove import of that file
-  puts it back as the app's half while it's still the transfer's, else as yours (`Inbox.put_back`). Accounts that get files wait
+  account's first file, within `transfers.MARK_WINDOW_DAYS`, 10, not `importer.MANUAL_DAYS`: a
+  transfer to another bank can post days later), or a merge giving it the bank's row's ID
+  (`ledger._drop_copy`), makes it the bank's; Remove import of that file puts it back as the app's
+  half while it's still the transfer's, else as yours (`Inbox.put_back`; `_adopt` clears what
+  `before_file` remembers too). Accounts that get files wait
   for theirs, and a closed account gets nothing new. The app's own guesses (an import's "its
   other half isn't imported yet") still wait.
 - **`reason` is only text to show; no code reads it back.** "Charged you again",
@@ -454,7 +457,9 @@ whole months and its "above usual" marks stay. That's one added after the budget
 or one kept by hand whenever it was added (decided 2026-11-09: no download can be missing from
 the Wallet, so the half #75 adds to an empty one doesn't hide every Usual). Onboarding's
 accounts that get files always count (a card with a month downloaded really is missing
-history): `finish_onboarding` keeps the newest account as meta `last_onboarding_account`, and
+history): `finish_onboarding` keeps the newest account as meta `last_onboarding_account` (an id
+`ledger.create_account` never gives a new account: SQLite would reuse the top id of one deleted
+or merged away), and
 a budget set up before 1.4.2 has every account it had then counted as onboarding's
 (`db._migrate`, written once). While setting up, every account counts. An old account added
 late with only recent transactions counts as new (the accepted cost).

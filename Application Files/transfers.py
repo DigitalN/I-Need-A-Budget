@@ -30,6 +30,9 @@ import re
 from payees import describe
 
 PAIR_WINDOW_DAYS = 7
+# A transfer you mark pairs with the opposite amount this many days either side (make_transfer); the bank's row
+# takes the place of a half the app added for one within it too (importer, issue #75).
+MARK_WINDOW_DAYS = 10
 
 
 def _accounts(conn):
@@ -163,9 +166,10 @@ def make_transfer(conn, txn_id, account_id, kept_by_hand=False):
     other = conn.execute(
         """
         SELECT * FROM transactions WHERE account_id = ? AND amount = ? AND transfer_id IS NULL AND id != ?
-           AND hint != 'adjustment' AND date BETWEEN date(?, '-10 days') AND date(?, '+10 days')
+           AND hint != 'adjustment' AND date BETWEEN date(?, ?) AND date(?, ?)
          ORDER BY abs(julianday(date) - julianday(?)) LIMIT 1
-        """, (account_id, -txn["amount"], txn_id, txn["date"], txn["date"], txn["date"])).fetchone()
+        """, (account_id, -txn["amount"], txn_id, txn["date"], f"-{MARK_WINDOW_DAYS} days", txn["date"],
+              f"+{MARK_WINDOW_DAYS} days", txn["date"])).fetchone()
     if other is not None:
         link(conn, txn, other)
     elif not kept_by_hand:

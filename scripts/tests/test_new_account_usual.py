@@ -167,3 +167,25 @@ def test_an_account_is_added_on_the_apps_today(tmp_path):
         account = ledger.create_account(c, "Wallet", "cash")
         assert c.execute("SELECT created_at FROM accounts WHERE id = ?", (account,)).fetchone()[0][:10] == TODAY
     db.close()
+
+
+def test_a_new_account_never_takes_the_id_of_onboardings_that_is_gone(app):
+    """Onboarding's newest account deleted (never used): SQLite would give its id to the next account, which
+    would then count as onboarding's and hide Usual with its October-only download (the review of #155)."""
+    b = Budget(app, onboarding=[lambda b: b.add_wallet()])
+    call(app, "delete_account", b.wallet)
+    b.card_file()
+    assert max(a["id"] for a in call(app, "accounts")) > b.wallet
+    assert b.usual() == 40000
+
+
+def test_merging_a_copy_from_onboarding_frees_no_id_for_a_new_account(app):
+    """Onboarding brought one account twice; Merge into… drops the newer copy. The next new account isn't
+    given its id, so it's still new."""
+    b = Budget(app, onboarding=[lambda b: b.add_wallet(),
+                                lambda b: setattr(b, "copy", call(b.app, "add_account", "Copy", "chequing", 0,
+                                                                  "2026-05-31"))])
+    call(app, "merge_accounts", b.copy, b.chequing)
+    b.card_file()
+    assert max(a["id"] for a in call(app, "accounts")) > b.copy
+    assert b.usual() == 40000

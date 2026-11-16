@@ -4,6 +4,8 @@ brought transactions to): with no other half there, the app adds it, paired and 
 takes it away again when the transfer ends (issue #75). Accounts that get files still wait for
 their file. Made-up data only."""
 
+import pytest
+
 from helpers import bank_csv, call, categories, txns, write
 
 ATM = ("10/05/2026", "ABM Withdrawal - SAMPLE BANK", "ABM Withdrawal - SAMPLE BANK", "-100.00")
@@ -291,3 +293,69 @@ def test_removing_the_file_keeps_the_half_you_decided_about_since(app):
     b.mark(half["id"], b.chequing)  # a transfer you marked again: it stays when that ends
     out = b.mark(half["id"], None)
     assert len(b.rows(other)) == 1 and out["removed_from"] is None
+
+
+CU = "000111222333"  # a made-up credit union account number
+
+
+def _kept_with_half(app):
+    """Savings at another bank, kept by hand, with the withdrawal's other half the app added there (Oct 5)."""
+    b = Budget(app)
+    kept = call(app, "add_account", "Sample Savings", "savings", 0, "2026-09-30", "Sample Credit Union")
+    b.mark(b.atm, kept)
+    [half] = b.rows(kept)
+    return b, kept, half
+
+
+def _cu_file(app, rows, balance, account):
+    """The credit union's file, into `account` (an id), or a new account named that."""
+    target = {"account_id": account} if isinstance(account, int) else {"name": account}
+    call(app, "set_file_accounts", str(write(app.test_downloads, "cu.ofx", ofx(rows, balance, "20261020", acct_id=CU))),
+         [{"index": 0, **target}])
+
+
+@pytest.mark.parametrize("day, taken", [("20261009", True), ("20261015", True), ("20261016", False)])
+def test_the_banks_row_takes_the_added_halfs_place_as_late_as_a_transfer_pairs(app, day, taken):
+    """A transfer to another bank can post days later (a weekend): the bank's row 4, or 10, days after the half the
+    app added takes its place, as a transfer's two halves pair over 10 days. Not 11 days later."""
+    b, kept, half = _kept_with_half(app)
+    _cu_file(app, [(day, "100.00", "TRANSFER IN", "CU1")], "100.00", kept)
+    rows = b.rows(kept)
+    assert (len(rows) == 1) is taken, [dict(r) for r in rows]
+    if taken:
+        assert rows[0]["transfer_id"] == b.atm and rows[0]["fitid"] == "CU1"
+
+
+def test_one_you_added_by_hand_still_needs_the_banks_row_within_three_days(app):
+    """Anything else added by hand keeps importer.MANUAL_DAYS: a row 4 days off is another transaction."""
+    b = Budget(app)
+    kept = call(app, "add_account", "Sample Savings", "savings", 0, "2026-09-30", "Sample Credit Union")
+    call(app, "add_transaction", kept, "2026-10-05", "Sample Deposit", 10000)
+    _cu_file(app, [("20261009", "100.00", "SAMPLE DEPOSIT", "CU1")], "100.00", kept)
+    assert len(b.rows(kept)) == 2
+
+
+def test_a_merge_that_brings_the_banks_row_makes_the_added_half_the_banks(app):
+    """The credit union's file went into a new account; Merge into… the account kept by hand keeps the half the app
+    added (yours) with the bank's ID and file: it's the bank's now, so Not a transfer sends it back, it doesn't go."""
+    b, kept, half = _kept_with_half(app)
+    _cu_file(app, [("20261006", "100.00", "TRANSFER IN", "CU1"), ("20261008", "5.00", "SAMPLE DEPOSIT", "CU2")],
+             "105.00", "CU copy")
+    call(app, "merge_accounts", next(a["id"] for a in call(app, "accounts") if a["name"] == "CU copy"), kept)
+    assert b.row(half["id"])["hint"] != "added_half" and b.row(half["id"])["fitid"] == "CU1"
+    out = b.mark(b.atm, None)
+    assert b.row(half["id"]) is not None and out["removed_from"] is None
+
+
+def test_removing_the_file_after_pairing_the_banks_row_with_another_half(app):
+    """The file's row took the added half's place, then you paired it with a withdrawal you'd added to the Wallet:
+    an other half you chose. Remove import puts it back as yours, so Not a transfer from the Wallet keeps it."""
+    b, kept, half = _kept_with_half(app)
+    _cu_file(app, [("20261006", "100.00", "TRANSFER IN", "CU1")], "100.00", kept)
+    out_wallet = call(app, "add_transaction", b.wallet, "2026-10-06", "Cash to the credit union", -10000)["id"]
+    b.mark(half["id"], b.wallet)
+    assert b.row(half["id"])["transfer_id"] == out_wallet
+    call(app, "undo_import", next(i["id"] for i in call(app, "imports") if i["filename"] == "cu.ofx"))
+    assert b.row(half["id"])["hint"] == "" and b.row(half["id"])["transfer_id"] == out_wallet
+    b.mark(out_wallet, None)
+    assert b.row(half["id"]) is not None
