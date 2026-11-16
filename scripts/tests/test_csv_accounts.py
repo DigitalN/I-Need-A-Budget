@@ -379,3 +379,19 @@ def test_a_file_whose_balance_goes_down_with_charges_can_go_into_a_card(app):
     path = write(app.test_downloads, "activity.csv", NEXT_CHEQUING)
     out = _pick(app, path, {"name": "Sample Card", "kind": "credit_card", "bank": "Sample CU"})
     assert [(r["account_name"], r["added"]) for r in out["results"]] == [("Sample Card", 3)]
+
+
+def test_a_check_balance_adjustment_doesnt_make_the_next_download_look_like_another_accounts(app, monkeypatch):
+    """The review of #159: a Check balance… adjustment, dated today, stretched the account's dates, so every row of the
+    next download fell inside them without being there, and the app asked which account it was for."""
+    app.db.set_meta("onboarded", "1")
+    _set_up(app, VISA_TO_OCT_8, "TD Visa", "credit_card")
+    acct = _accounts(app)["TD Visa"]["id"]
+    call(app, "set_balance", acct, 60000, "2026-10-08")
+    monkeypatch.setenv("INAB_TODAY", "2026-10-12")
+    call(app, "reconcile", acct, 64000)  # the bank shows $640.00 owed: a balance adjustment dated Oct 12
+    path = write(app.test_downloads, "accountactivity.csv", "10/09/2026,SAMPLE TAXI,25.00,,625.00\n"
+                 "10/10/2026,SAMPLE BOOKS,10.00,,635.00\n10/11/2026,SAMPLE CAFE,5.00,,640.00\n")
+    out = call(app, "import_files", [str(path)])
+    assert not out["needs_setup"]
+    assert [(r["account_name"], r["added"]) for r in out["results"]] == [("TD Visa", 3)]

@@ -705,8 +705,8 @@ def csv_fit(conn, account_id, rows, balance, trusted=False):
         ours = ledger.account_balance(conn, account_id, day_before(balance["date"]))
         if ours is not None and not trusted:
             scores.append(FITS if ours == balance["sign"] * balance["opening"] else CONTRADICTS)
-    span = conn.execute("SELECT MIN(date) AS first, MAX(date) AS last FROM transactions WHERE account_id = ?",
-                        (account_id,)).fetchone()
+    span = conn.execute("SELECT MIN(date) AS first, MAX(date) AS last FROM transactions WHERE account_id = ? "
+                        "AND hint != ?", (account_id, ADJUSTMENT)).fetchone()  # a balance adjustment isn't a file's row
     inside = [r for r in rows if span["first"] and span["first"] <= r.date <= span["last"]]
     if len(inside) >= OVERLAP_ROWS:
         # Already there as the import sees it (issue #159): the same amount up to OTHER_KIND_DAYS away, each once,
