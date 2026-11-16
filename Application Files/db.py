@@ -37,7 +37,7 @@ from errors import UserError
 
 log = logging.getLogger("inab")
 
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 
 CANT_UNDO = "That can't be undone any more."
 
@@ -240,6 +240,24 @@ CREATE TABLE IF NOT EXISTS import_rows (
 );
 CREATE INDEX IF NOT EXISTS import_rows_transaction ON import_rows(transaction_id);
 
+-- A transaction you added by hand, or a balance adjustment from Check balance…, as it was before a file's row took its
+-- place (importer: the same amount within a few days): what the file's row changed. Remove import of the last file that
+-- has it puts it back (issue #149). Its fingerprint, bank ID and import were none.
+CREATE TABLE IF NOT EXISTS before_file (
+    transaction_id INTEGER PRIMARY KEY REFERENCES transactions(id) ON DELETE CASCADE,
+    date TEXT NOT NULL,
+    raw_name TEXT NOT NULL DEFAULT '',
+    raw_memo TEXT NOT NULL DEFAULT '',
+    bank_type TEXT NOT NULL DEFAULT '',
+    bank_category TEXT NOT NULL DEFAULT '',
+    hint TEXT NOT NULL DEFAULT '',
+    payee_id INTEGER REFERENCES payees(id) ON DELETE SET NULL,
+    similar_payee_id INTEGER REFERENCES payees(id) ON DELETE SET NULL,
+    after_import INTEGER,                -- as transactions.after_import: not a reference
+    file_payee_id INTEGER REFERENCES payees(id) ON DELETE SET NULL  -- the payee the file's row gave it: the payee
+                                         -- goes back only if it's still that one (not one you chose since)
+);
+
 CREATE TABLE IF NOT EXISTS budget (
     month TEXT NOT NULL,
     category_id INTEGER NOT NULL REFERENCES categories(id) ON DELETE CASCADE,
@@ -279,7 +297,7 @@ INSERT OR IGNORE INTO undo_state (id, active) VALUES (1, 0);
 # Tables whose changes can be undone.
 UNDO_TABLES = ("meta", "accounts", "account_sources", "category_groups", "categories", "payees", "payee_keys",
                "imports", "subscriptions", "transactions", "splits", "budget", "examples", "csv_layouts",
-               "ignored_files", "import_rows")
+               "ignored_files", "import_rows", "before_file")
 
 
 class Database:
@@ -415,7 +433,9 @@ class Database:
                                   "file_balance = anchor_after_balance WHERE anchor_after_date IS NOT NULL")
                 self.conn.execute("INSERT INTO meta (key, value) VALUES ('read_imported_files', '1') "
                                   "ON CONFLICT(key) DO UPDATE SET value = excluded.value")
-            # Next upgrade: `if version is not None and version < 14: ...`, then raise SCHEMA_VERSION.
+            # Version 14: before_file (issue #149), created empty by SCHEMA above. A transaction a file's row took the
+            # place of before this wasn't remembered: it still goes with its file.
+            # Next upgrade: `if version is not None and version < 15: ...`, then raise SCHEMA_VERSION.
             self.conn.execute("INSERT INTO meta (key, value) VALUES ('schema_version', ?) "
                               "ON CONFLICT(key) DO UPDATE SET value = excluded.value", (str(SCHEMA_VERSION),))
             if version is not None and version < SCHEMA_VERSION:

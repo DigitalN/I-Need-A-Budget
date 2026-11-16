@@ -78,10 +78,10 @@ All in `Application Files/`:
   when it changes none; a write without a label that changes anything clears undo, unless
   `keep_undo`; `big_step()` marks a step ⌘Z asks about first;
   `steps_made()` is the step a request made, for its toast's Undo; see Key rules). Schema is at
-  version 13. To change it: raise `SCHEMA_VERSION`,
+  version 14. To change it: raise `SCHEMA_VERSION`,
   add the column to `SCHEMA` *and* an `ALTER TABLE` step in `_migrate` for existing
   databases. Upgrades copy the database to the backups folder
-  (`budget-before-upgrade-v13-to-v14-<date and time>.db`) first. The
+  (`budget-before-upgrade-v14-to-v15-<date and time>.db`) first. The
   user's real database has real data in it: test every upgrade on a copy of it first.
 - `backups.py`: backups ([ADR 0004](../docs/adr/0004-live-budget-stays-out-of-synced-folders.md)).
   `at_quit` and `at_launch` (a backup only if `changed`: the budget's `digest` differs from
@@ -119,7 +119,7 @@ All in `Application Files/`:
   `Inbox(conn, today)`: `arrive` (an import's new rows), `recheck`, `view` (what the Inbox
   page shows: suggestions, today's reason, the item's question, its final group key and
   guess), and every decision: `categorize(txn_ids, category_id, recheck_payee)`,
-  `accept_all`, `split`, `mark_transfer`, `not_a_transfer`, `send_back`, `ask_again`,
+  `accept_all`, `split`, `mark_transfer`, `not_a_transfer`, `send_back`, `ask_again`, `put_back`,
   `same_payee`, `new_price`, `set_always_ask`, and the balance adjustment: `check_balance`
   (after every import into an account), `remove_adjustment`, `keep_both`, `drop_adjustments`
   (Set balance). **Only it puts a transaction in the inbox or
@@ -185,7 +185,16 @@ All in `Application Files/`:
   recurring charge): where it would be if the removed file had never come in, so the balance
   check counts it from that file. A balance a later file set too stays (the same file imported
   again, two downloads the same day): Remove import took it back. Merge into… moves the copy's
-  notes to the transaction kept.
+  notes to the transaction kept. **A transaction whose place a file's row took** (one you added by
+  hand, or a Check balance… adjustment: see the balance check) goes back, once no imported file has
+  it, to what it was before that file came in (issue #149): the importer remembers what the file's
+  row changed (`before_file`: its date, the bank's wording it didn't have, its hint and
+  `after_import`, its payee) and `Inbox.put_back` restores it, keeping what you decided (a payee you
+  chose since stays). The bank's date could fall inside an older balance that never had it. A Check
+  balance… adjustment is a balance adjustment again; one that's still the app's waits in the Inbox as
+  Check balance… made it, whatever the app did with the bank's row. Merge into… gives a dropped copy's
+  to the transaction kept. The message after says so: "Removed 3 transactions · 1 you added stays".
+  One a file's row took the place of before 1.4.1 wasn't remembered: it goes with its file.
   An import's "new" figure in Accounts → Imported files is what it holds now. A budget from
   before 1.4.1 only knew the file each transaction is under: the first launch after the
   upgrade reads the files kept in Imported Files again (`read_imported_files`, the same file

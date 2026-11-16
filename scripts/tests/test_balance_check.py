@@ -311,8 +311,8 @@ def test_an_existing_database_learns_where_its_balances_came_from(tmp_path):
     again = db.Database(path)
     rows = {r["id"]: (r["anchor_source"], r["check_from"]) for r in again.conn.execute("SELECT * FROM accounts")}
     assert rows == {1: ("file", 1), 2: ("file", None), 3: ("typed", None), 4: (None, None)}
-    assert again.get_meta("schema_version") == "13"
-    assert list((tmp_path / "I Need A Budget Backups").glob("budget-before-upgrade-v7-to-v13-*.db"))
+    assert again.get_meta("schema_version") == "14"
+    assert list((tmp_path / "I Need A Budget Backups").glob("budget-before-upgrade-v7-to-v14-*.db"))
 
 
 def test_an_existing_database_keeps_where_each_file_says_it_starts(tmp_path):
@@ -337,8 +337,8 @@ def test_an_existing_database_keeps_where_each_file_says_it_starts(tmp_path):
     assert (old["filename"], old["first_date"], old["anchor_after_date"], old["covers_from"]) == \
         ("a.ofx", "2026-09-01", "2026-10-10", None)
     assert again.conn.execute("SELECT anchor_source, check_from FROM accounts").fetchone()[:] == ("file", 1)
-    assert again.get_meta("schema_version") == "13"
-    assert list((tmp_path / "I Need A Budget Backups").glob("budget-before-upgrade-v8-to-v13-*.db"))
+    assert again.get_meta("schema_version") == "14"
+    assert list((tmp_path / "I Need A Budget Backups").glob("budget-before-upgrade-v8-to-v14-*.db"))
 
 
 # ── onboarding's 3. Balances (issue #135) ────────────────────────────────────
@@ -984,8 +984,8 @@ def test_an_existing_database_gets_a_place_to_keep_the_last_day_each_file_covers
             old["covers_to"]) == ("a.ofx", "2026-09-01", "2026-09-10", "2026-09-01", "2026-10-12", None)
     assert again.conn.execute("SELECT anchor_source, check_from FROM accounts").fetchone()[:] == ("file", 1)
     assert ledger.check_span(again.conn, 1).last_day == "2026-10-12"
-    assert again.get_meta("schema_version") == "13"
-    assert list((tmp_path / "I Need A Budget Backups").glob("budget-before-upgrade-v10-to-v13-*.db"))
+    assert again.get_meta("schema_version") == "14"
+    assert list((tmp_path / "I Need A Budget Backups").glob("budget-before-upgrade-v10-to-v14-*.db"))
 
 
 # ── Check balance… (issue #137) ──────────────────────────────────────────────
@@ -1049,8 +1049,8 @@ def test_an_existing_database_gets_a_place_to_remember_what_a_check_balance_came
     again = db.Database(path)
     old = again.conn.execute("SELECT * FROM transactions").fetchone()
     assert (old["date"], old["amount"], old["hint"], old["after_import"]) == ("2026-10-12", -1000, "adjustment", None)
-    assert again.get_meta("schema_version") == "13"
-    assert list((tmp_path / "I Need A Budget Backups").glob("budget-before-upgrade-v9-to-v13-*.db"))
+    assert again.get_meta("schema_version") == "14"
+    assert list((tmp_path / "I Need A Budget Backups").glob("budget-before-upgrade-v9-to-v14-*.db"))
 
 
 def test_a_later_file_that_doesnt_explain_it_leaves_the_rest_as_the_accounts_balance_adjustment(app, monkeypatch):

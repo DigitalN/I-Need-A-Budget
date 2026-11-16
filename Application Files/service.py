@@ -789,19 +789,27 @@ class BudgetService:
         """Deletes the transactions only this import's file has (and a balance adjustment it made). One
         that another imported file has too stays (issue #148), under the earliest of them, the way that
         file has it (_move_under): where it would be if this file had never come in, so the balance check
-        counts it from that file. The other halves of the deleted ones' transfers are the app's to decide
-        about again (Inbox.ask_again), and the account's balance adjustment is worked out again without
-        it. `removed` and `stayed` count them."""
+        counts it from that file. One whose place the file's row took (you added it by hand, or Check
+        balance… did) goes back to what it was before that file came in (Inbox.put_back, issue #149). The
+        other halves of the deleted ones' transfers are the app's to decide about again (Inbox.ask_again),
+        and the account's balance adjustment is worked out again without it. `removed`, `stayed` and
+        `restored` count them."""
         with self.db.write("Remove import") as c:
             imp = _existing(c, "imports", import_id, "*")
             rows = c.execute("SELECT * FROM transactions WHERE import_id = ?", (import_id,)).fetchall()
             nexts = {r["id"]: c.execute("SELECT * FROM import_rows WHERE transaction_id = ? AND import_id != ? "
                                         "ORDER BY import_id LIMIT 1", (r["id"], import_id)).fetchone() for r in rows}
             staying = [r for r in rows if nexts[r["id"]] is not None]
-            ids = {r["id"] for r in rows if nexts[r["id"]] is None}
+            remembered = {r[0] for r in c.execute("SELECT transaction_id FROM before_file f JOIN transactions t "
+                                                  "ON t.id = f.transaction_id WHERE t.import_id = ?", (import_id,))}
+            restored = [r["id"] for r in rows if nexts[r["id"]] is None and r["id"] in remembered]
+            ids = {r["id"] for r in rows if nexts[r["id"]] is None and r["id"] not in remembered}
             others = [r["transfer_id"] for r in rows if r["id"] in ids and r["transfer_id"] and r["transfer_id"] not in ids]
             c.execute("DELETE FROM transactions WHERE import_id = ? AND id NOT IN "
-                      "(SELECT transaction_id FROM import_rows WHERE import_id != ?)", (import_id, import_id))
+                      "(SELECT transaction_id FROM import_rows WHERE import_id != ?) "
+                      "AND id NOT IN (SELECT transaction_id FROM before_file)", (import_id, import_id))
+            inbox = self._inbox(c)
+            inbox.put_back(restored)
             # After the deletions, what they had is free to take. One that stays can want the fingerprint or bank ID
             # another gives up as it moves (two identical rows the files list in another order): again until none can.
             for _ in range(len(staying) + 1):
@@ -813,11 +821,12 @@ class BudgetService:
                 self._take_back_balance(c, imp)
             # A balance adjustment from Check balance… made after this import now comes after the one before it:
             # the next import can be given this one's number, and a file's balance as new as it still takes it over.
-            c.execute("UPDATE transactions SET after_import = (SELECT MAX(id) FROM imports WHERE account_id = ? "
-                      "AND id < ? AND anchor_after_date IS NOT NULL) WHERE after_import = ?",
-                      (imp["account_id"], import_id, import_id))
+            # So does one remembered from before a file's row took its place.
+            for table in ("transactions", "before_file"):
+                c.execute(f"UPDATE {table} SET after_import = (SELECT MAX(id) FROM imports WHERE account_id = ? "
+                          "AND id < ? AND anchor_after_date IS NOT NULL) WHERE after_import = ?",
+                          (imp["account_id"], import_id, import_id))
             c.execute("DELETE FROM imports WHERE id = ?", (import_id,))
-            inbox = self._inbox(c)
             inbox.ask_again(others, "Its other half was removed with its import")
             if imp["account_id"] is not None:
                 inbox.check_balance(imp["account_id"])
@@ -825,7 +834,7 @@ class BudgetService:
             self.db.big_step(f"The import of {name} comes back." if not ids else
                              f"The transaction from {name} comes back." if len(ids) == 1 else
                              f"The {len(ids)} transactions from {name} come back.")
-        return {"removed": len(ids), "stayed": len(staying), "counts": self.counts()}
+        return {"removed": len(ids), "stayed": len(staying), "restored": len(restored), "counts": self.counts()}
 
     def _move_under(self, c, txn, row):
         """A transaction another import's file has too goes under that import, the way its file has it: its
@@ -1865,9 +1874,8 @@ class BudgetService:
                           (diff, account_id))
             payee = ledger.get_or_create_payee(c, ledger.ADJUSTMENT_PAYEE, "bank")
             txn_id = c.execute("INSERT INTO transactions (account_id, date, amount, payee_id, hint, category_id, status, "
-                               "reason, after_import) VALUES (?, ?, ?, ?, ?, NULL, 'review', "
-                               "'To match the balance the bank shows', ?)",
-                               (account_id, day, diff, payee, ADJUSTMENT,
+                               "reason, after_import) VALUES (?, ?, ?, ?, ?, NULL, 'review', ?, ?)",
+                               (account_id, day, diff, payee, ADJUSTMENT, ledger.CHECK_BALANCE_REASON,
                                 ledger.newest_balance_import(c, account_id))).lastrowid
             self._inbox(c).arrive([txn_id])  # it waits for you: no guess, never in Accept all
         return {"adjusted": diff}

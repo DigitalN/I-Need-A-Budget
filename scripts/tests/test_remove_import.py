@@ -98,10 +98,10 @@ def test_an_existing_database_upgrades_with_imports_that_remember_nothing(tmp_pa
     again = db.Database(path)
     columns = [r["name"] for r in again.conn.execute("PRAGMA table_info(imports)")]
     assert {"anchor_before_date", "anchor_before_balance", "anchor_after_date", "anchor_after_balance"} <= set(columns)
-    assert again.get_meta("schema_version") == str(db.SCHEMA_VERSION) == "13"
+    assert again.get_meta("schema_version") == str(db.SCHEMA_VERSION) == "14"
     old = again.conn.execute("SELECT * FROM imports").fetchone()
     assert (old["filename"], old["anchor_after_date"]) == ("old.ofx", None)  # removing it leaves the balance as it is
-    assert list((tmp_path / "I Need A Budget Backups").glob("budget-before-upgrade-v6-to-v13-*.db"))
+    assert list((tmp_path / "I Need A Budget Backups").glob("budget-before-upgrade-v6-to-v14-*.db"))
 
 
 # ── Transactions another imported file still has (issue #148) ────────────────────────────────
@@ -573,8 +573,8 @@ def test_the_upgrade_notes_each_transactions_own_file(tmp_path):
         c.execute("UPDATE meta SET value = ? WHERE key = 'schema_version'", (version,))
         service.db.close()
         again = db.Database(folder / "budget.db")
-        assert again.get_meta("schema_version") == str(db.SCHEMA_VERSION) == "13"
-        assert list((folder / "I Need A Budget Backups").glob(f"budget-before-upgrade-v{version}-to-v13-*.db"))
+        assert again.get_meta("schema_version") == str(db.SCHEMA_VERSION) == "14"
+        assert list((folder / "I Need A Budget Backups").glob(f"budget-before-upgrade-v{version}-to-v14-*.db"))
         assert again.get_meta("read_imported_files") == "1"
         with again.read() as c:
             own = c.execute("SELECT COUNT(*) FROM import_rows r JOIN transactions t ON t.id = r.transaction_id "

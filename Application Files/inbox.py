@@ -224,6 +224,33 @@ class Inbox:
                                 import_id or diff.current)).lastrowid
         return before, diff.waiting, len(self._arrived_for(self._txn(txn_id)))
 
+    def put_back(self, txn_ids):
+        """Transactions whose place a removed file's row took, that no other imported file has (issue #149): each goes
+        back to what it was before that file came in (before_file), keeping what you decided. Its payee goes back
+        only if it's still the one the file's row gave it. A balance adjustment from Check balance… that's still the
+        app's waits in the inbox again as Check balance… made it: what the app did with the bank's row (a category, a
+        transfer, a recurring charge) goes, and a transfer's other half is the app's to decide again."""
+        c = self.conn
+        others = []
+        for txn_id in txn_ids:
+            before = c.execute("SELECT * FROM before_file WHERE transaction_id = ?", (txn_id,)).fetchone()
+            txn = self._txn(txn_id)
+            payee = txn["payee_id"] == before["file_payee_id"]
+            c.execute("UPDATE transactions SET date = ?, raw_name = ?, raw_memo = ?, bank_type = ?, bank_category = ?, "
+                      "hint = ?, after_import = ?, fingerprint = NULL, fitid = NULL, import_id = NULL, "
+                      "payee_id = CASE WHEN ? THEN ? ELSE payee_id END, "
+                      "similar_payee_id = CASE WHEN ? THEN ? ELSE similar_payee_id END WHERE id = ?",
+                      (before["date"], before["raw_name"], before["raw_memo"], before["bank_type"],
+                       before["bank_category"], before["hint"], before["after_import"], payee, before["payee_id"],
+                       payee, before["similar_payee_id"], txn_id))
+            c.execute("DELETE FROM before_file WHERE transaction_id = ?", (txn_id,))
+            if before["hint"] == ADJUSTMENT and not txn["by_you"]:
+                others += transfers.unlink(c, txn_id)[1:]
+                c.execute("DELETE FROM splits WHERE transaction_id = ?", (txn_id,))
+                c.execute("UPDATE transactions SET category_id = NULL, is_split = 0, status = 'review', refund_of = NULL, "
+                          "subscription_id = NULL, reason = ? WHERE id = ?", (ledger.CHECK_BALANCE_REASON, txn_id))
+        self.ask_again(others, "Its other half is a balance adjustment again")
+
     def drop_adjustments(self, account_id, ids=None):
         """A balance you typed stands for everything (service.set_balance): the app's balance
         adjustments waiting for the account go (issue #137). One you kept stays (docs/adr/0005).
