@@ -37,7 +37,7 @@ from errors import UserError
 
 log = logging.getLogger("inab")
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 
 CANT_UNDO = "That can't be undone any more."
 
@@ -152,6 +152,8 @@ CREATE TABLE IF NOT EXISTS imports (
     anchor_before_source TEXT,
     anchor_after_date TEXT,              -- ... and the one it set (none: it didn't move the balance)
     anchor_after_balance INTEGER,
+    file_balance_date TEXT,              -- the balance this file states, whether or not it became the account's
+    file_balance INTEGER,
     balance_note TEXT NOT NULL DEFAULT ''  -- what the import said about the balance, shown with it
 );
 
@@ -400,7 +402,20 @@ class Database:
                     "AND import_id IN (SELECT id FROM imports)")
                 self.conn.execute("INSERT INTO meta (key, value) VALUES ('read_imported_files', '1') "
                                   "ON CONFLICT(key) DO UPDATE SET value = excluded.value")
-            # Next upgrade: `if version is not None and version < 13: ...`, then raise SCHEMA_VERSION.
+            if version is not None and version < 13:
+                # Every file's balance, including an older download's, so Remove import can settle the balance and
+                # its check from the files still imported (issues #151 and #169). Kept files are read again at the
+                # next launch. One no longer kept counts only for a balance it set, as its anchor_after says.
+                columns = [r["name"] for r in self.conn.execute("PRAGMA table_info(imports)")]
+                if "file_balance_date" not in columns:
+                    self.conn.execute("ALTER TABLE imports ADD COLUMN file_balance_date TEXT")
+                if "file_balance" not in columns:
+                    self.conn.execute("ALTER TABLE imports ADD COLUMN file_balance INTEGER")
+                self.conn.execute("UPDATE imports SET file_balance_date = anchor_after_date, "
+                                  "file_balance = anchor_after_balance WHERE anchor_after_date IS NOT NULL")
+                self.conn.execute("INSERT INTO meta (key, value) VALUES ('read_imported_files', '1') "
+                                  "ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+            # Next upgrade: `if version is not None and version < 14: ...`, then raise SCHEMA_VERSION.
             self.conn.execute("INSERT INTO meta (key, value) VALUES ('schema_version', ?) "
                               "ON CONFLICT(key) DO UPDATE SET value = excluded.value", (str(SCHEMA_VERSION),))
             if version is not None and version < SCHEMA_VERSION:

@@ -311,8 +311,8 @@ def test_an_existing_database_learns_where_its_balances_came_from(tmp_path):
     again = db.Database(path)
     rows = {r["id"]: (r["anchor_source"], r["check_from"]) for r in again.conn.execute("SELECT * FROM accounts")}
     assert rows == {1: ("file", 1), 2: ("file", None), 3: ("typed", None), 4: (None, None)}
-    assert again.get_meta("schema_version") == "12"
-    assert list((tmp_path / "I Need A Budget Backups").glob("budget-before-upgrade-v7-to-v12-*.db"))
+    assert again.get_meta("schema_version") == "13"
+    assert list((tmp_path / "I Need A Budget Backups").glob("budget-before-upgrade-v7-to-v13-*.db"))
 
 
 def test_an_existing_database_keeps_where_each_file_says_it_starts(tmp_path):
@@ -337,8 +337,8 @@ def test_an_existing_database_keeps_where_each_file_says_it_starts(tmp_path):
     assert (old["filename"], old["first_date"], old["anchor_after_date"], old["covers_from"]) == \
         ("a.ofx", "2026-09-01", "2026-10-10", None)
     assert again.conn.execute("SELECT anchor_source, check_from FROM accounts").fetchone()[:] == ("file", 1)
-    assert again.get_meta("schema_version") == "12"
-    assert list((tmp_path / "I Need A Budget Backups").glob("budget-before-upgrade-v8-to-v12-*.db"))
+    assert again.get_meta("schema_version") == "13"
+    assert list((tmp_path / "I Need A Budget Backups").glob("budget-before-upgrade-v8-to-v13-*.db"))
 
 
 # ── onboarding's 3. Balances (issue #135) ────────────────────────────────────
@@ -984,8 +984,8 @@ def test_an_existing_database_gets_a_place_to_keep_the_last_day_each_file_covers
             old["covers_to"]) == ("a.ofx", "2026-09-01", "2026-09-10", "2026-09-01", "2026-10-12", None)
     assert again.conn.execute("SELECT anchor_source, check_from FROM accounts").fetchone()[:] == ("file", 1)
     assert ledger.check_span(again.conn, 1).last_day == "2026-10-12"
-    assert again.get_meta("schema_version") == "12"
-    assert list((tmp_path / "I Need A Budget Backups").glob("budget-before-upgrade-v10-to-v12-*.db"))
+    assert again.get_meta("schema_version") == "13"
+    assert list((tmp_path / "I Need A Budget Backups").glob("budget-before-upgrade-v10-to-v13-*.db"))
 
 
 # ── Check balance… (issue #137) ──────────────────────────────────────────────
@@ -1049,8 +1049,8 @@ def test_an_existing_database_gets_a_place_to_remember_what_a_check_balance_came
     again = db.Database(path)
     old = again.conn.execute("SELECT * FROM transactions").fetchone()
     assert (old["date"], old["amount"], old["hint"], old["after_import"]) == ("2026-10-12", -1000, "adjustment", None)
-    assert again.get_meta("schema_version") == "12"
-    assert list((tmp_path / "I Need A Budget Backups").glob("budget-before-upgrade-v9-to-v12-*.db"))
+    assert again.get_meta("schema_version") == "13"
+    assert list((tmp_path / "I Need A Budget Backups").glob("budget-before-upgrade-v9-to-v13-*.db"))
 
 
 def test_a_later_file_that_doesnt_explain_it_leaves_the_rest_as_the_accounts_balance_adjustment(app, monkeypatch):
@@ -1370,6 +1370,54 @@ def _merge(app, copy, into):
 def _balance(app):
     [account] = call(app, "accounts")
     return account["balance"]
+
+
+def _remove_import(app, name):
+    call(app, "undo_import", next(i["id"] for i in call(app, "imports") if i["filename"] == name))
+
+
+def _waiting(app):
+    return [(a["amount"], a["date"]) for a in _adjustments(app)]
+
+
+def test_after_merge_into_removing_the_copys_file_whose_balance_won_puts_back_the_accounts(app):
+    _import(app, "chequing-1.ofx", ofx(SEPTEMBER, "3000.00", "20260915"))
+    _new_account(app, "copy.ofx", ofx(SEPTEMBER + MISSING + OCTOBER + LATE, "2590.00", "20261012", acct_id=COPY,
+                                      start="20260901"))
+    call(app, "finish_onboarding", "2026-09")
+    _merge(app, "Copy", "SAMPLE CU Chequing")
+    _remove_import(app, "copy.ofx")
+    assert _balance(app) == 300000 and _waiting(app) == [] and _start(app) == 105000
+
+
+def test_after_merge_into_removing_the_accounts_newest_file_puts_back_the_copys_newer_balance(app):
+    _import(app, "chequing-1.ofx", ofx(SEPTEMBER, "3000.00", "20260915"))
+    _new_account(app, "copy.ofx", ofx(OCTOBER, "2600.00", "20261010", acct_id=COPY, start="20261001"))
+    call(app, "finish_onboarding", "2026-09")
+    _import(app, "chequing-2.ofx", ofx(LATE, "2590.00", "20261012", start="20261011"))
+    _merge(app, "Copy", "SAMPLE CU Chequing")
+    _remove_import(app, "chequing-2.ofx")
+    assert _balance(app) == 260000 and _waiting(app) == [(-30000, "2026-10-10")]
+
+
+def test_removing_the_file_the_check_starts_from_starts_it_from_the_next_file_with_a_balance(app):
+    _import(app, "chequing-oct.ofx", ofx(MISSING + OCTOBER + LATE, "2590.00", "20261012", start="20260916"))
+    _import(app, "chequing-sep.ofx", ofx(SEPTEMBER, "3000.00", "20260915", start="20260901"))
+    call(app, "finish_onboarding", "2026-09")
+    _import(app, "chequing-3.ofx", ofx(NEXT_WEEK, "2570.00", "20261020", start="20261013"))
+    _remove_import(app, "chequing-oct.ofx")
+    assert _waiting(app) == [(-41000, "2026-10-20")] and _start(app) == 105000
+
+
+def test_removing_the_file_whose_balance_is_used_keeps_another_files_balance(app):
+    _import(app, "sep.ofx", ofx(SEPTEMBER, "2950.00", "20260915", start="20260901"))
+    _import(app, "aug.ofx", ofx(AUGUST, "1000.00", "20260831", start="20260801"))
+    call(app, "finish_onboarding", "2026-08")
+    _remove_import(app, "sep.ofx")
+    assert call(app, "accounts")[0]["balance"] is not None
+    account = call(app, "accounts")[0]["id"]
+    call(app, "update_account", account, {"closed": True})
+    assert call(app, "month", "2026-08")["summary"]["off"] == 0
 
 
 def test_merging_a_copy_with_a_newer_balance_after_a_later_file_leaves_nothing_waiting(app):

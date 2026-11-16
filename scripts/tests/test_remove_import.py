@@ -98,10 +98,10 @@ def test_an_existing_database_upgrades_with_imports_that_remember_nothing(tmp_pa
     again = db.Database(path)
     columns = [r["name"] for r in again.conn.execute("PRAGMA table_info(imports)")]
     assert {"anchor_before_date", "anchor_before_balance", "anchor_after_date", "anchor_after_balance"} <= set(columns)
-    assert again.get_meta("schema_version") == str(db.SCHEMA_VERSION) == "12"
+    assert again.get_meta("schema_version") == str(db.SCHEMA_VERSION) == "13"
     old = again.conn.execute("SELECT * FROM imports").fetchone()
     assert (old["filename"], old["anchor_after_date"]) == ("old.ofx", None)  # removing it leaves the balance as it is
-    assert list((tmp_path / "I Need A Budget Backups").glob("budget-before-upgrade-v6-to-v12-*.db"))
+    assert list((tmp_path / "I Need A Budget Backups").glob("budget-before-upgrade-v6-to-v13-*.db"))
 
 
 # ── Transactions another imported file still has (issue #148) ────────────────────────────────
@@ -478,11 +478,12 @@ def test_the_upgrade_notes_each_transactions_own_file(tmp_path):
         for suffix in ("ins", "upd", "del"):
             c.execute(f"DROP TRIGGER IF EXISTS undo_import_rows_{suffix}")
         c.execute("DROP TABLE import_rows")  # a version 11 database (and the same tables as 7 for this)
+        c.execute("UPDATE imports SET file_balance_date = NULL, file_balance = NULL")
         c.execute("UPDATE meta SET value = ? WHERE key = 'schema_version'", (version,))
         service.db.close()
         again = db.Database(folder / "budget.db")
-        assert again.get_meta("schema_version") == str(db.SCHEMA_VERSION) == "12"
-        assert list((folder / "I Need A Budget Backups").glob(f"budget-before-upgrade-v{version}-to-v12-*.db"))
+        assert again.get_meta("schema_version") == str(db.SCHEMA_VERSION) == "13"
+        assert list((folder / "I Need A Budget Backups").glob(f"budget-before-upgrade-v{version}-to-v13-*.db"))
         assert again.get_meta("read_imported_files") == "1"
         with again.read() as c:
             own = c.execute("SELECT COUNT(*) FROM import_rows r JOIN transactions t ON t.id = r.transaction_id "
@@ -494,6 +495,9 @@ def test_the_upgrade_notes_each_transactions_own_file(tmp_path):
         upgraded = BudgetService(again, Settings(folder / "settings.json"), folder / "data")
         upgraded.read_imported_files()
         assert _links(upgraded) == links
+        with again.read() as c:
+            assert c.execute("SELECT file_balance_date, file_balance FROM imports WHERE filename = 'a.ofx'").fetchone()[:] == \
+                ("2026-09-20", 291000)
         again.close()
 
 
@@ -606,9 +610,8 @@ def test_removing_any_file_is_as_if_it_had_never_come_in(app, tmp_path, seed):
 @pytest.mark.parametrize("seed", range(20))
 def test_after_merge_into_removing_any_file_is_as_from_one_account(tmp_path, monkeypatch, seed):
     """#147's random downloads, some under the copy's number, merged: then removing any one file leaves every transaction
-    as removing it does where every file went into one account (its date, amount and the file it's under), and ⌘Z puts
-    both back. Not the balance: after a merge, the balance a removed file replaced, and the file the check starts from
-    next, are still each account's own (older than #148: the same on main)."""
+    as removing it does where every file went into one account (its date, amount and the file it's under), with the
+    same balance, balance adjustment and check start, and ⌘Z puts both back (issues #147 and #169)."""
     from helpers import card_number
     rng = random.Random(seed)
     card = seed % 2 == 1
@@ -629,7 +632,7 @@ def test_after_merge_into_removing_any_file_is_as_from_one_account(tmp_path, mon
     for k in range(len(files)):
         before = check._outcome(one)
         outs = [_remove(budget, f"file-{k}.ofx") for budget in (one, two)]
-        assert check._outcome(two)[3] == check._outcome(one)[3], (seed, k)
+        assert check._outcome(two) == check._outcome(one), (seed, k)
         assert outs[0]["stayed"] == outs[1]["stayed"], (seed, k)  # (`removed` counts its balance adjustment too)
         for budget in (one, two):
             call(budget, "undo")
