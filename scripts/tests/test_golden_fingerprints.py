@@ -11,7 +11,9 @@ here to make a test pass.
 import importer
 from importer import Row
 import csvlayout
-from helpers import CARD_FILE, bank_csv, card_csv, card_number, write
+import test_balance_check as check
+from helpers import CARD_FILE, bank_csv, call, card_csv, card_number, write
+from test_card_signs import card_ofx
 
 CAFE_1 = "bd76e32e09c1a550d953"  # 2026-10-01, -$4.50, SAMPLE CAFE CALGARY AB, the first in its file
 CAFE_2 = "5548599cf57b3d6f4e31"  # ... the second identical one in the same file
@@ -92,10 +94,84 @@ def test_an_rbc_csv(tmp_path):
 
 
 def test_a_set_up_csv():
-    """A CSV set up once: its description columns joined."""
-    text = ("Date,Description,Amount,Balance\n2026-10-01,SAMPLE CAFE CALGARY AB,-4.50,995.50\n"
-            "2026-10-01,SAMPLE CAFE CALGARY AB,-4.50,991.00\n2026-10-02,SAMPLE GROCER,-61.20,929.80\n")
-    layout = {"id": 7, "has_header": True, "date_col": 0, "date_order": "ymd", "desc_cols": [1], "amount_col": 2,
+    """A CSV set up once: its description columns joined, in order."""
+    text = ("Date,Description,Details,Amount\n2026-10-01,SAMPLE CAFE,CALGARY AB,-4.50\n"
+            "2026-10-01,SAMPLE CAFE,CALGARY AB,-4.50\n2026-10-02,SAMPLE GROCER,,-61.20\n")
+    layout = {"id": 7, "has_header": True, "date_col": 0, "date_order": "ymd", "desc_cols": [1, 2], "amount_col": 3,
               "out_col": None, "in_col": None, "negate": False}
     rows = [Row(day, cents, description) for day, cents, description in csvlayout.read(text, layout)]
     assert importer.fingerprints(rows) == [CAFE_1, CAFE_2, GROCER]
+
+
+# ── what an import stores ────────────────────────────────────
+# The fingerprints above are worked out from rows; these are read back from transactions.fingerprint after an
+# import through the app, so a change on the way there fails too (a card's signs flipped after fingerprinting, a
+# Quicken file's NAME read differently, a set-up CSV's columns, the next free occurrence).
+
+def stored(app):
+    with app.db.read() as c:
+        return [tuple(r) for r in c.execute("SELECT date, amount, fingerprint FROM transactions ORDER BY date, amount, id")]
+
+
+def imported(app, filename, text):
+    return call(app, "import_files", [str(write(app.test_downloads, filename, text))])["results"]
+
+
+def test_stored_from_a_tangerine_csv(app):
+    imported(app, "Chequing.CSV", bank_csv([
+        ("10/01/2026", "SAMPLE CAFE CALGARY AB", "", "-4.50"),
+        ("10/01/2026", "SAMPLE CAFE CALGARY AB", "", "-4.50"),
+        ("10/02/2026", "EFT Deposit from SAMPLE EMPLOYER", "EFT Deposit from SAMPLE EMPLOYER INC", "1500.00")]))
+    assert stored(app) == [("2026-10-01", -450, CAFE_1), ("2026-10-01", -450, CAFE_2),
+                           ("2026-10-02", 150000, "c961ea68729f21df201f")]
+
+
+def test_stored_from_a_card_file_whose_signs_are_flipped(app):
+    """This card writes purchases as positive: a row is fingerprinted once its sign is settled (the $4.50 coffee
+    as -450, the same as a CSV's), never as the file wrote it."""
+    imported(app, "visa.ofx", card_ofx([("20261001", "4.50", "SAMPLE CAFE CALGARY AB", "A1"),
+                                        ("20261002", "61.20", "SAMPLE GROCER", "A2"),
+                                        ("20261003", "23.10", "SAMPLE DINER", "A3"),
+                                        ("20261004", "-100.00", "PAYMENT THANK YOU", "A4")], "-11.00"))
+    assert stored(app) == [("2026-10-01", -450, CAFE_1), ("2026-10-02", -6120, GROCER),
+                           ("2026-10-03", -2310, "c6442fe5f9837cee3d88"), ("2026-10-04", 10000, "b215b91de1bf98b2aab5")]
+
+
+def stmttrn(**tags):
+    return "<STMTTRN><TRNTYPE>OTHER" + "".join(f"<{tag}>{value}" for tag, value in tags.items()) + "</STMTTRN>\n"
+
+
+def test_stored_from_a_quicken_files_names(app):
+    """NAME unescaped (& as &amp;), PAYEE when there's no NAME, NAME over PAYEE, and no name at all (never the MEMO)."""
+    account = "<BANKACCTFROM><BANKID>0000<ACCTID>000123456789<ACCTTYPE>CHECKING</BANKACCTFROM>"
+    text = quicken_file("Sample Credit Union", account, [])
+    text = text.replace("<BANKTRANLIST>\n", "<BANKTRANLIST>\n" + "".join([
+        stmttrn(DTPOSTED="20261001", TRNAMT="-4.50", FITID="B1", NAME="SAMPLE &amp; CO CAFE"),
+        stmttrn(DTPOSTED="20261002", TRNAMT="-5.50", FITID="B2", PAYEE="SAMPLE PAYEE CO"),
+        stmttrn(DTPOSTED="20261003", TRNAMT="-6.50", FITID="B3", NAME="SAMPLE NAME", PAYEE="SAMPLE OTHER"),
+        stmttrn(DTPOSTED="20261004", TRNAMT="-7.50", FITID="B4", MEMO="SAMPLE MEMO ONLY")]))
+    imported(app, "statement.qfx", text)
+    assert stored(app) == [("2026-10-01", -450, "b1eee73d0b60fca29dac"), ("2026-10-02", -550, "b3926feb7af3dc80aae5"),
+                           ("2026-10-03", -650, "2a36c212ceeee56f1ce6"), ("2026-10-04", -750, "f5c6dec11e6de105d14e")]
+
+
+def test_stored_from_a_set_up_csv_with_two_description_columns(app):
+    app.db.set_meta("onboarded", "1")
+    path = write(app.test_downloads, "Sample chequing.csv",
+                 "Date,Description,Details,Amount\n2026-10-01,SAMPLE CAFE,CALGARY AB,-4.50\n"
+                 "2026-10-01,SAMPLE CAFE,CALGARY AB,-4.50\n2026-10-02,SAMPLE GROCER,,-61.20\n")
+    layout = dict(call(app, "csv_setup", str(path))["layout"], desc_cols=[1, 2])
+    call(app, "setup_csv", str(path), layout, {"name": "Sample Chequing", "kind": "chequing", "bank": "Sample CU"})
+    assert stored(app) == [("2026-10-01", -450, CAFE_1), ("2026-10-01", -450, CAFE_2), ("2026-10-02", -6120, GROCER)]
+
+
+def test_stored_when_a_rows_own_fingerprint_is_taken(app):
+    """The bank re-dated the first coffee (its ID kept), and a second coffee bought the same day comes with an ID of
+    its own: its fingerprint is the first's, so it's stored under the next occurrence (_free_fingerprint)."""
+    check._import(app, "a.ofx", check.ofx([("20260912", "-4.00", "SAMPLE COFFEE CALGARY AB", "C1")], "996.00", "20260912",
+                                          start="20260901"))
+    call(app, "finish_onboarding", "2026-09")
+    check._import(app, "b.ofx", check.ofx([("20260914", "-4.00", "SAMPLE COFFEE CALGARY", "C1"),
+                                           ("20260912", "-4.00", "SAMPLE COFFEE CALGARY AB", "C2")], "992.00", "20260920",
+                                          start="20260912"))
+    assert stored(app) == [("2026-09-12", -400, "d80c61ca5a9994f8ef1a"), ("2026-09-12", -400, "be017b6f6ee1dce35f1f")]

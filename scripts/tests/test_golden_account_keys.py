@@ -131,8 +131,8 @@ def test_bank_slugs(name, slug):
 
 def test_every_bank_has_a_golden_slug():
     """A bank added to banks.py gets its rows above too."""
-    assert len(SLUGS) == len(banks._NAMES)
-    assert len(OTHER_NAMES) - 5 == sum(len(other) for other in banks._NAMES.values())
+    assert [shown for shown, _ in SLUGS] == list(banks._NAMES)
+    assert {name for name, _ in OTHER_NAMES} >= {other for others in banks._NAMES.values() for other in others}
 
 
 def test_account_number_keys():
@@ -204,7 +204,15 @@ def test_set_up_csv_account_keys():
                           ("accountactivity.csv", "csv:7:accountactivity"),
                           ("Sample CU Chequing 10-13-2026.CSV", "csv:7:sample cu chequing"),
                           ("Visa 2026.10.13.csv", "csv:7:visa"),
-                          ("export_20261013.csv", "csv:7:export")]:
+                          ("export_20261013.csv", "csv:7:export"),
+                          ("2026-10-13 (1).csv", "csv:7:file"),
+                          # A browser's or macOS's repeat number
+                          ("accountactivity-2.csv", "csv:7:accountactivity"),
+                          ("accountactivity (3).csv", "csv:7:accountactivity"),
+                          ("accountactivity 2.csv", "csv:7:accountactivity"),
+                          # Numbers that aren't dates
+                          ("Account 12-345.csv", "csv:7:account 12"),
+                          ("Acct 1-23-456.csv", "csv:7:acct 1 23")]:
         assert importer.csv_account_key(7, filename) == key
 
 

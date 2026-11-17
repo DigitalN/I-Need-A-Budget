@@ -161,7 +161,7 @@ All in `Application Files/`:
   left the account. Dates are ISO strings, months `YYYY-MM`.
 - **Never change `importer.fingerprint()`** (or `fingerprints()`): already-imported rows
   would stop matching and every overlapping file would import twice.
-  `scripts/tests/test_golden_fingerprints.py` pins them (issue #79). Two identical rows in
+  `scripts/tests/test_golden_fingerprints.py` pins them, and what an import stores (issue #79). Two identical rows in
   one file are both kept (the occurrence count is part of the fingerprint). A row is also
   a duplicate of one from a *different kind* of file in the same account with the same
   amount, up to `ledger.OTHER_KIND_DAYS` days apart (each matched once, nearest first),
