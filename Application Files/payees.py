@@ -19,6 +19,15 @@ with the store in the memo. Those rules come after Tangerine's, and only see tex
 Tangerine's rules didn't match, so a Tangerine row always reads the same as it always
 has (a changed description would split its payee in two).
 
+One step runs before Tangerine's rules: a Name that only says what kind of transaction it
+is ("BILL PAYMENT", "Direct Deposit", "IDP PURCHASE", "e-Transfer sent"), with who it was
+with in the Memo, is read as both together (`_TYPE_ONLY`), so "BILL PAYMENT" + "SAMPLE
+UTILITY CO" is Sample Utility Co, not a payee called Bill Payment that every bill would
+share. It has run first since 1.0.1, so every payee made since has its keys: moving it
+now would split payees (decided on #79). With no Memo the Name goes through the rules
+alone: a bare "BILL PAYMENT" is a merchant by that name.
+`scripts/tests/test_golden_payees.py` pins what describe() returns.
+
 Only well-known chains belong in BRANDS. Never put anything personal in this file
 (people's names, local businesses someone uses, employers): the repository is meant
 to hold no private data at all.

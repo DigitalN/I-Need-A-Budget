@@ -160,7 +160,8 @@ All in `Application Files/`:
 - **Money is integer cents** everywhere (Python and the page's API). Negative means money
   left the account. Dates are ISO strings, months `YYYY-MM`.
 - **Never change `importer.fingerprint()`** (or `fingerprints()`): already-imported rows
-  would stop matching and every overlapping file would import twice. Two identical rows in
+  would stop matching and every overlapping file would import twice.
+  `scripts/tests/test_golden_fingerprints.py` pins them, and what an import stores (issue #79). Two identical rows in
   one file are both kept (the occurrence count is part of the fingerprint). A row is also
   a duplicate of one from a *different kind* of file in the same account with the same
   amount, up to `ledger.OTHER_KIND_DAYS` days apart (each matched once, nearest first),
@@ -203,6 +204,12 @@ All in `Application Files/`:
 - **Never change what `payees.describe()` returns for text it already handles**: a
   changed key splits a payee in two. Add other banks' wording after Tangerine's rules,
   and check it on a copy of real data (every existing transaction must describe the same).
+  `scripts/tests/test_golden_payees.py` pins describe()'s keys and hints for every rule and
+  chain (issue #79); a new rule or chain adds its rows there. The one step before Tangerine's
+  rules, a Name that only says the kind of transaction read with its Memo (`_TYPE_ONLY`),
+  stays first (decided on #79). The other keys a budget keeps (an account number's
+  `number:<bank>:<last4>`, Tangerine's nicknames, a set-up CSV's name and layout signature)
+  are pinned in `scripts/tests/test_golden_account_keys.py`.
 - **Accounts are never guessed across banks.** A file finds its account by bank and
   number (`number:<bank>:<last4>`, the same from a CSV or a Quicken file), Tangerine's by
   file name too, else the one account already holding its rows; otherwise it's a new
@@ -471,8 +478,8 @@ late with only recent transactions counts as new (the accepted cost).
   set by the PRs themselves, so merging is all the maintainer does. The first PR after a
   release raises it (1.0.1 → 1.0.2 by default, 1.0.x → 1.1.0 only for a change big enough
   to deserve it); the PRs after it leave it alone until that version is released, so PRs
-  made side by side don't clash on it. It's 1.4.2 until 1.4.2 is released: 1.4.1 came out on
-  2026-11-16, and #155's PR, the first after it, raised it. Never leave the bump for a separate
+  made side by side don't clash on it. It's 1.4.3 until 1.4.3 is released: 1.4.2 came out on
+  2026-11-17, and #79's PR, the first after it, raised it. Never leave the bump for a separate
   PR after the merge.
 - **A release happens only when the maintainer says it's ready** (their rule since
   2026-11-09, as bugs kept turning up). A merge, a finished list or every session being
