@@ -204,11 +204,77 @@ def sha256_of(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
+_REPEAT = re.compile(r"(\s*\(\d+\)|-\d{1,3}|\s+\d{1,3})$")
+
+
 def base_name(filename):
     """'Chequing-2.CSV' / 'Chequing (1).csv' → 'Chequing': browsers number repeat downloads."""
     stem = Path(filename).stem.strip()
-    stem = re.sub(r"(\s*\(\d+\)|-\d{1,3}|\s+\d{1,3})$", "", stem)
+    stem = _REPEAT.sub("", stem)
     return stem.strip()
+
+
+# Dates in a set-up CSV's file name (issue #177), each checked to be a real day or month, so an account number
+# shaped a little like one ("Acct 1-23-456") stays. A year is 1900-2099 written in full, any two digits short.
+_MONTH = (r"(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|"
+          r"oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)")
+_TIME = r"(?:[t_ -]?(?P<hh>\d{2})[-.:h]?(?P<mi>\d{2})(?:[-.:m]?(?P<ss>\d{2}))?)?"
+_DATES = re.compile(
+    r"(?<![0-9])(?:"
+    rf"(?P<y>(?:19|20)\d{{2}})(?P<s1>[-_.]?)(?P<m>\d{{2}})(?P=s1)(?P<d>\d{{2}}){_TIME}"  # 2026-10-13, 20261013, a time after
+    r"|(?P<a>\d{1,2})(?P<s2>[-_.])(?P<b>\d{1,2})(?P=s2)(?P<c>\d{4}|\d{2})"  # 10-13-2026, 13.10.2026, 10-13-26, 26-10-13
+    r"|(?P<ym>(?:19|20)\d{2})[-_.]?(?P<mm>\d{2})"  # 2026-10, 202610
+    rf"|(?P<mon1>{_MONTH})\.?[ _-]?(?P<md>\d{{1,2}})(?:st|nd|rd|th)?,?[ _-]?(?P<my>\d{{4}})"  # Oct 13 2026, October 13, 2026
+    rf"|(?P<dm>\d{{1,2}})[ _-]?(?P<mon2>{_MONTH})\.?[ _-]?(?P<y2>\d{{4}}|\d{{2}})"  # 13-Oct-2026, 13 Oct 26
+    rf"|(?P<mon3>{_MONTH})\.?[ _-]?(?P<y3>\d{{4}})"  # Oct 2026, October_2026
+    r")(?![0-9])", re.IGNORECASE)
+
+
+def _real_date(m):
+    """Whether a _DATES match is a real day (or month), and a real time of day after it when there's one."""
+    def day(month, d):
+        return 1 <= int(month) <= 12 and 1 <= int(d) <= 31
+    if m.group("y"):
+        if m.group("hh") and not (int(m.group("hh")) <= 23 and int(m.group("mi")) <= 59 and int(m.group("ss") or 0) <= 59):
+            return False
+        return day(m.group("m"), m.group("d"))
+    if m.group("a"):
+        a, b, c = m.group("a"), m.group("b"), m.group("c")
+        if len(c) == 4:
+            return 1900 <= int(c) <= 2099 and (day(a, b) or day(b, a))
+        return day(a, b) or day(b, a) or day(b, c)  # month first, day first, or a two-digit year first
+    if m.group("ym"):
+        return 1 <= int(m.group("mm")) <= 12
+    if m.group("mon1"):
+        return 1 <= int(m.group("md")) <= 31 and 1900 <= int(m.group("my")) <= 2099
+    if m.group("mon2"):
+        return 1 <= int(m.group("dm")) <= 31 and (len(m.group("y2")) == 2 or 1900 <= int(m.group("y2")) <= 2099)
+    return 1900 <= int(m.group("y3")) <= 2099
+
+
+def _without_dates(filename):
+    """A set-up CSV's file name (no extension) with its dates taken out, and a browser's repeat number unless what
+    looks like one is the end of a date ("…2026-10-13": the 13 is the day). (stem, the stem with only the repeat
+    number taken out, whether a date was taken out)."""
+    stem = Path(filename).stem.strip()
+    dates = [m.span() for m in _DATES.finditer(stem) if _real_date(m)]
+    repeat = _REPEAT.search(stem)
+    if repeat and not any(start < repeat.end() and repeat.start() < end for start, end in dates):
+        stem = stem[:repeat.start()].rstrip()
+        dates = [span for span in dates if span[1] <= len(stem)]
+    undated = stem
+    for start, end in reversed(dates):
+        stem = stem[:start] + " " + stem[end:]
+    return stem, undated, bool(dates)
+
+
+def csv_account_name(filename):
+    """The name suggested for a new account from a set-up CSV's file name: 'Visa transactions 2026-10-13.csv' →
+    'Visa transactions'. A name with no date in it is as base_name() gives it."""
+    stem, undated, dated = _without_dates(filename)
+    if not dated:
+        return base_name(filename)
+    return " ".join(stem.split()).strip(" _-.,") or undated  # a name that's only a date keeps it
 
 
 def detect(text):
@@ -606,8 +672,10 @@ def _unescape(text):
 
 def csv_name_key(filename):
     """What a set-up CSV's file name says about its account, dates left out:
-    'Visa transactions 2026-10-13 (1).csv' → 'visa transactions'."""
-    stem = base_name(filename).lower()
+    'Visa transactions 2026-10-13 (1).csv' → 'visa transactions', and 'Visa transactions 2026-10-13.csv' too (issue
+    #177: the 13 was taken for a repeat number). Budgets keep this key and find it again by it, so a name with no date
+    in it gives exactly what it always has (scripts/tests/test_golden_account_keys.py)."""
+    stem = _without_dates(filename)[0].lower()
     stem = re.sub(r"\d{4}[-_.]?\d{2}[-_.]?\d{2}|\d{1,2}[-_.]\d{1,2}[-_.]\d{2,4}", " ", stem)
     return " ".join(re.sub(r"[^a-z0-9]+", " ", stem).split()) or "file"
 
@@ -674,7 +742,7 @@ def _parse_csv(text, filename, conn, picked=None):
         raise NeedsSetup("layout", f"{e}. Set the file up again from the Inbox.") from None
     key = csv_account_key(layout["id"], filename)
     account_id = picked or csv_account(conn, layout["id"], key, rows, balance)
-    hint = AccountHint([key], "chequing", base_name(filename), create=False, account_id=account_id)
+    hint = AccountHint([key], "chequing", csv_account_name(filename), create=False, account_id=account_id)
     opening = (day_before(balance["date"]), balance["sign"] * balance["opening"]) if balance else None
     return Parsed("csv", [Part(hint, rows, opening=opening)], kind=layout_kind(layout))
 

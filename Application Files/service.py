@@ -722,7 +722,7 @@ class BudgetService:
                 "sample": sniffed["rows"][:6], "rows": len(sniffed["rows"]), "layout": layout,
                 "mostly_positive": sniffed["mostly_positive"], "balance_sign": balance and balance["sign"],
                 "saved": saved is not None, "account_id": suggested_account,
-                "suggested_name": importer.base_name(path.name)}
+                "suggested_name": importer.csv_account_name(path.name)}
 
     @exposed
     def csv_preview(self, path, layout):

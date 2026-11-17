@@ -212,7 +212,23 @@ def test_set_up_csv_account_keys():
                           ("accountactivity 2.csv", "csv:7:accountactivity"),
                           # Numbers that aren't dates
                           ("Account 12-345.csv", "csv:7:account 12"),
-                          ("Acct 1-23-456.csv", "csv:7:acct 1 23")]:
+                          ("Acct 1-23-456.csv", "csv:7:acct 1 23"),
+                          # Issue #177: dates the repeat-number rule took the end of, or that weren't taken out at all
+                          ("Visa transactions 2026-10-13.csv", "csv:7:visa transactions"),
+                          ("Visa transactions 2026-10-13-2.csv", "csv:7:visa transactions"),
+                          ("Visa 10-13-26.csv", "csv:7:visa"),
+                          ("Visa 26-10-13.csv", "csv:7:visa"),
+                          ("2026-10-13.csv", "csv:7:file"),
+                          ("Visa 2026-10.csv", "csv:7:visa"),
+                          ("export_202610.csv", "csv:7:export"),
+                          ("Visa Oct 13 2026.csv", "csv:7:visa"),
+                          ("Visa October 13, 2026.csv", "csv:7:visa"),
+                          ("Visa 13-Oct-2026.csv", "csv:7:visa"),
+                          ("Statement_Oct_2026.csv", "csv:7:statement"),
+                          ("transactions-2026-10-13T14-32-05.csv", "csv:7:transactions"),
+                          ("Account 7 2026-10-13.csv", "csv:7:account 7"),
+                          # A year alone isn't a date
+                          ("Visa 2026.csv", "csv:7:visa 2026")]:
         assert importer.csv_account_key(7, filename) == key
 
 
