@@ -212,7 +212,44 @@ def test_set_up_csv_account_keys():
                           ("accountactivity 2.csv", "csv:7:accountactivity"),
                           # Numbers that aren't dates
                           ("Account 12-345.csv", "csv:7:account 12"),
-                          ("Acct 1-23-456.csv", "csv:7:acct 1 23")]:
+                          ("Acct 1-23-456.csv", "csv:7:acct 1 23"),
+                          # Issue #177: dates the repeat-number rule took the end of, or that weren't taken out at all
+                          ("Visa transactions 2026-10-13.csv", "csv:7:visa transactions"),
+                          ("Visa transactions 2026-10-13-2.csv", "csv:7:visa transactions"),
+                          ("Visa 10-13-26.csv", "csv:7:visa"),
+                          ("Visa 26-10-13.csv", "csv:7:visa"),
+                          ("2026-10-13.csv", "csv:7:file"),
+                          ("Visa 2026-10.csv", "csv:7:visa"),
+                          ("export_202610.csv", "csv:7:export"),
+                          ("Visa Oct 13 2026.csv", "csv:7:visa"),
+                          ("Visa October 13, 2026.csv", "csv:7:visa"),
+                          ("Visa 13-Oct-2026.csv", "csv:7:visa"),
+                          ("Statement_Oct_2026.csv", "csv:7:statement"),
+                          ("transactions-2026-10-13T14-32-05.csv", "csv:7:transactions"),
+                          ("Account 7 2026-10-13.csv", "csv:7:account 7"),
+                          ("transactions_20261013" + "143205.csv", "csv:7:transactions"),  # a time straight after
+                          ("Statement 10-2026.csv", "csv:7:statement"),
+                          ("Visa 2026-10_13.csv", "csv:7:visa"),
+                          # A date range is two dates
+                          ("transactions_2026-10-01_2026-10-31_chequing.csv", "csv:7:transactions chequing"),
+                          ("Visa 2026-10-01_2026-10-31 (1).csv", "csv:7:visa"),
+                          ("Statement 2026-10-13 2026-11-12 (1).csv", "csv:7:statement"),
+                          ("Visa 2026-10_2026-12.csv", "csv:7:visa"),
+                          ("Visa 2026-10-01_10-31-2026.csv", "csv:7:visa"),
+                          # A repeat number after a year and month
+                          ("Visa 2026-10-2.csv", "csv:7:visa"),
+                          ("Statement 10-2026-2.csv", "csv:7:statement"),
+                          # Not dates: a year alone, a month name inside a word, numbers that aren't a real day or
+                          # month, four digits after a date (an account's, not a time)
+                          ("Visa 2026.csv", "csv:7:visa 2026"),
+                          ("Grammar 2026.csv", "csv:7:grammar 2026"),
+                          ("Visa Dec 12005.csv", "csv:7:visa dec 12005"),
+                          ("Acct 45-67-89.csv", "csv:7:acct 45 67"),
+                          ("Chequing 2026-99.csv", "csv:7:chequing 2026"),
+                          ("Visa 2026-10-13 1234.csv", "csv:7:visa 1234"),
+                          ("Visa 20261013_1234.csv", "csv:7:visa 1234"),
+                          # A compact date and six digits that aren't a time: the key it always had
+                          ("transactions_20261013" + "999999.csv", "csv:7:transactions 999999")]:
         assert importer.csv_account_key(7, filename) == key
 
 

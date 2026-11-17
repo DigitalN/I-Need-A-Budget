@@ -204,11 +204,105 @@ def sha256_of(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
+_REPEAT = re.compile(r"(\s*\(\d+\)|-\d{1,3}|\s+\d{1,3})$")
+
+
 def base_name(filename):
     """'Chequing-2.CSV' / 'Chequing (1).csv' → 'Chequing': browsers number repeat downloads."""
     stem = Path(filename).stem.strip()
-    stem = re.sub(r"(\s*\(\d+\)|-\d{1,3}|\s+\d{1,3})$", "", stem)
+    stem = _REPEAT.sub("", stem)
     return stem.strip()
+
+
+# Dates in a set-up CSV's file name (issue #177), each checked to be a real day or month, so an account number
+# shaped a little like one ("Acct 1-23-456") stays. A year is 1900-2099 written in full, any two digits short. A month
+# name only counts as a word of its own ("Grammar 2026" has no date in it).
+_MONTH = (r"(?<![a-z])(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|"
+          r"sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)(?![a-z])")
+_DATES = re.compile(
+    r"(?<![0-9])(?:"
+    r"(?P<y>(?:19|20)\d{2})(?P<s1>[-_.]?)(?P<m>\d{2})(?P=s1)(?P<d>\d{2})(?:(?![0-9])|(?=\d{6}(?![0-9])))"  # 2026-10-13, 20261013
+    r"|(?P<a>\d{1,2})(?P<s2>[-_.])(?P<b>\d{1,2})(?P=s2)(?P<c>\d{4}|\d{2})(?![0-9])"  # 10-13-2026, 13.10.2026, 10-13-26, 26-10-13
+    r"|(?P<ym>(?:19|20)\d{2})[-_.]?(?P<mm>\d{2})(?![0-9]|[-_.]\d{2}(?![0-9]))"  # 2026-10, 202610 (not 2026-10_13)
+    r"|(?P<my1>\d{1,2})[-_.](?P<my2>(?:19|20)\d{2})(?![0-9]|[-_.]\d{2}(?![0-9]))"  # 10-2026, 01.2026
+    rf"|(?P<mon1>{_MONTH})\.?[ _-]?(?P<md>\d{{1,2}})(?:st|nd|rd|th)?(?:,[ _]?|[ _-])(?P<my>\d{{4}})(?![0-9])"  # Oct 13 2026
+    rf"|(?P<dm>\d{{1,2}})[ _-]?(?P<mon2>{_MONTH})\.?[ _-]?(?P<y2>\d{{4}}|\d{{2}})(?![0-9])"  # 13-Oct-2026, 13 Oct 26
+    rf"|(?P<mon3>{_MONTH})\.?[ _-]?(?P<y3>\d{{4}})(?![0-9])"  # Oct 2026, October_2026
+    r")", re.IGNORECASE)
+# A time of day after a year-month-day date, only when it can't be anything else: after a T, hours and minutes with a
+# separator between them, or six digits (143205, straight after the date or after a separator). Never four digits on
+# their own ("Visa 2026-10-13 1234": an account's).
+_TIME = re.compile(r"(?:t(?P<h1>\d{2})(?P<x1>[-.:h]?)(?P<m1>\d{2})(?:(?P=x1)(?P<s1>\d{2}))?"
+                   r"|[_ -](?P<h2>\d{2})(?P<x2>[-.:h])(?P<m2>\d{2})(?:(?P=x2)(?P<s2>\d{2}))?"
+                   r"|[_ -]?(?P<h3>\d{2})(?P<m3>\d{2})(?P<s3>\d{2}))(?![0-9])", re.IGNORECASE)
+
+
+def _real_date(m):
+    """Whether a _DATES match is a real day, or a real month."""
+    def day(month, d):
+        return 1 <= int(month) <= 12 and 1 <= int(d) <= 31
+    if m.group("y"):
+        return day(m.group("m"), m.group("d"))
+    if m.group("a"):
+        a, b, c = m.group("a"), m.group("b"), m.group("c")
+        if len(c) == 4:
+            return 1900 <= int(c) <= 2099 and (day(a, b) or day(b, a))
+        return day(a, b) or day(b, a) or day(b, c)  # month first, day first, or a two-digit year first
+    if m.group("ym"):
+        return 1 <= int(m.group("mm")) <= 12
+    if m.group("my1"):
+        return 1 <= int(m.group("my1")) <= 12
+    if m.group("mon1"):
+        return 1 <= int(m.group("md")) <= 31 and 1900 <= int(m.group("my")) <= 2099
+    if m.group("mon2"):
+        return 1 <= int(m.group("dm")) <= 31 and (len(m.group("y2")) == 2 or 1900 <= int(m.group("y2")) <= 2099)
+    return 1900 <= int(m.group("y3")) <= 2099
+
+
+def _date_spans(stem):
+    """Where the dates in a file name are: (start, end), with a valid time after a year-month-day date as long as it
+    doesn't run into the next date (a range "2026-10-01_2026-10-31" is two dates)."""
+    found = [m for m in _DATES.finditer(stem) if _real_date(m)]
+    spans = []
+    for i, m in enumerate(found):
+        start, end = m.span()
+        if m.group("y"):
+            t = _TIME.match(stem, end)
+            ok = t and t.end() <= (found[i + 1].start() if i + 1 < len(found) else len(stem)) and all(
+                int(t.group(g) or 0) <= top for g, top in (("h1", 23), ("m1", 59), ("s1", 59), ("h2", 23), ("m2", 59),
+                                                          ("s2", 59), ("h3", 23), ("m3", 59), ("s3", 59)))
+            if ok:
+                end = t.end()
+            elif end < len(stem) and stem[end].isdigit():
+                continue  # 20261013 and six more digits that aren't a time: one long number, not a date
+        spans.append((start, end))
+    return spans
+
+
+def _without_dates(filename):
+    """A set-up CSV's file name (no extension) with its dates taken out, and a browser's repeat number unless what
+    looks like one is the end of a date ("…2026-10-13": the 13 is the day). (stem, the stem with only the repeat
+    number taken out, whether a date was taken out)."""
+    stem = Path(filename).stem.strip()
+    dates = _date_spans(stem)
+    repeat = _REPEAT.search(stem)
+    if repeat and not any(start < repeat.end() and repeat.start() < end for start, end in dates):
+        stem = stem[:repeat.start()].rstrip()
+        dates = [span for span in dates if span[1] <= len(stem)]
+    undated = stem
+    for start, end in reversed(dates):
+        stem = stem[:start] + "\0" + stem[end:]
+    return stem, undated, bool(dates)
+
+
+def csv_account_name(filename):
+    """The name suggested for a new account from a set-up CSV's file name: 'Visa transactions 2026-10-13.csv' →
+    'Visa transactions'. A name with no date in it is as base_name() gives it."""
+    stem, undated, dated = _without_dates(filename)
+    if not dated:
+        return base_name(filename)
+    stem = re.sub(r"[\s_.,-]*(?:\0[\s_.,-]*)+", " ", stem)  # the separators around a date go with it
+    return " ".join(stem.split()) or undated  # a name that's only a date keeps it
 
 
 def detect(text):
@@ -606,8 +700,10 @@ def _unescape(text):
 
 def csv_name_key(filename):
     """What a set-up CSV's file name says about its account, dates left out:
-    'Visa transactions 2026-10-13 (1).csv' → 'visa transactions'."""
-    stem = base_name(filename).lower()
+    'Visa transactions 2026-10-13 (1).csv' → 'visa transactions', and 'Visa transactions 2026-10-13.csv' too (issue
+    #177: the 13 was taken for a repeat number). Budgets keep this key and find it again by it, so a name with no date
+    in it gives exactly what it always has (scripts/tests/test_golden_account_keys.py)."""
+    stem = _without_dates(filename)[0].replace("\0", " ").lower()
     stem = re.sub(r"\d{4}[-_.]?\d{2}[-_.]?\d{2}|\d{1,2}[-_.]\d{1,2}[-_.]\d{2,4}", " ", stem)
     return " ".join(re.sub(r"[^a-z0-9]+", " ", stem).split()) or "file"
 
@@ -674,7 +770,7 @@ def _parse_csv(text, filename, conn, picked=None):
         raise NeedsSetup("layout", f"{e}. Set the file up again from the Inbox.") from None
     key = csv_account_key(layout["id"], filename)
     account_id = picked or csv_account(conn, layout["id"], key, rows, balance)
-    hint = AccountHint([key], "chequing", base_name(filename), create=False, account_id=account_id)
+    hint = AccountHint([key], "chequing", csv_account_name(filename), create=False, account_id=account_id)
     opening = (day_before(balance["date"]), balance["sign"] * balance["opening"]) if balance else None
     return Parsed("csv", [Part(hint, rows, opening=opening)], kind=layout_kind(layout))
 

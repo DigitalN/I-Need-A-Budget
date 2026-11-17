@@ -3,6 +3,9 @@
 same name. Before a file goes into the account its name points to, it has to look like that
 account. Made-up data only."""
 
+import pytest
+
+import importer
 from helpers import call, write
 
 # TD-style: no header, date, description, debit, credit, running balance (same name for every account)
@@ -395,3 +398,55 @@ def test_a_check_balance_adjustment_doesnt_make_the_next_download_look_like_anot
     out = call(app, "import_files", [str(path)])
     assert not out["needs_setup"]
     assert [(r["account_name"], r["added"]) for r in out["results"]] == [("TD Visa", 3)]
+
+
+# Issue #177: a bank that dates its CSVs' names. The account is found by the name with the date taken out, so the
+# next month's file goes where the first one did without asking.
+@pytest.mark.parametrize("first, after", [
+    ("Sample chequing 2026-10-03.csv", "Sample chequing 2026-11-06.csv"),
+    ("Sample chequing 10-03-26.csv", "Sample chequing 11-06-26.csv"),
+    ("Sample chequing Oct 3 2026.csv", "Sample chequing Nov 6 2026.csv"),
+    ("Sample chequing 2026-12.csv", "Sample chequing 2027-01.csv"),  # across a year: "2026" was left before
+])
+def test_next_months_dated_file_finds_its_account(app, first, after):
+    app.db.set_meta("onboarded", "1")
+    _set_up(app, CHEQUING, "TD Chequing", "chequing", filename=first)
+    out = call(app, "import_files", [str(write(app.test_downloads, after, NEXT_CHEQUING))])
+    assert not out["needs_setup"]
+    [result] = out["results"]
+    assert (result["account_name"], result["added"]) == ("TD Chequing", 3)
+
+
+def test_a_dated_files_suggested_account_name_has_no_date(app):
+    path = write(app.test_downloads, "Sample chequing 2026-10-03.csv", CHEQUING)
+    assert call(app, "csv_setup", str(path))["suggested_name"] == "Sample chequing"
+    assert importer.csv_account_name("Sample chequing 2026-10-03 (1).csv") == "Sample chequing"
+    assert importer.csv_account_name("export_20261003.csv") == "export"
+    assert importer.csv_account_name("transactions_2026-10-01_2026-10-31_chequing.csv") == "transactions chequing"
+    assert importer.csv_account_name("2026-10-03.csv") == "2026-10-03"  # nothing but a date: it keeps it
+    assert importer.csv_account_name("2026-10-03 (1).csv") == "2026-10-03"
+    # A name with no date in it is as before
+    assert importer.csv_account_name("accountactivity-2.csv") == "accountactivity"
+    assert importer.csv_account_name("Acct 1-23-456.csv") == "Acct 1-23"
+
+
+def test_a_file_known_by_the_old_broken_key_asks_once_more_then_stays_found(app):
+    """Before #177 the key kept part of the date ("sample chequing 2026 10"). Those keys aren't migrated: the next
+    dated file asks which account once, and the one after finds it."""
+    app.db.set_meta("onboarded", "1")
+    _set_up(app, CHEQUING, "TD Chequing", "chequing", filename="Sample chequing 2026-10-03.csv")
+    with app.db.write() as c:
+        c.execute("UPDATE account_sources SET key = replace(key, ':sample chequing', ':sample chequing 2026 10') "
+                  "WHERE key LIKE 'csv:%:sample chequing%'")
+    second = write(app.test_downloads, "Sample chequing 2026-11-06.csv", NEXT_CHEQUING)
+    out = call(app, "import_files", [str(second)])
+    assert [(f["filename"], f["needs"]) for f in out["needs_setup"]] == [(second.name, "account")]
+    setup = call(app, "csv_setup", str(second))
+    tdc = _accounts(app)["TD Chequing"]["id"]
+    call(app, "setup_csv", str(second), setup["layout"], {"id": tdc})
+    third = write(app.test_downloads, "Sample chequing 2026-12-05.csv",
+                  "12/01/2026,SAMPLE BAKERY,8.00,,2406.30\n12/02/2026,SAMPLE PHARMACY,12.00,,2394.30\n"
+                  "12/03/2026,SAMPLE PARKING,3.00,,2391.30\n")
+    out = call(app, "import_files", [str(third)])
+    assert not out["needs_setup"]
+    assert [(r["account_name"], r["added"]) for r in out["results"]] == [("TD Chequing", 3)]
