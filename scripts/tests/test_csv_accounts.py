@@ -422,7 +422,9 @@ def test_a_dated_files_suggested_account_name_has_no_date(app):
     assert call(app, "csv_setup", str(path))["suggested_name"] == "Sample chequing"
     assert importer.csv_account_name("Sample chequing 2026-10-03 (1).csv") == "Sample chequing"
     assert importer.csv_account_name("export_20261003.csv") == "export"
+    assert importer.csv_account_name("transactions_2026-10-01_2026-10-31_chequing.csv") == "transactions chequing"
     assert importer.csv_account_name("2026-10-03.csv") == "2026-10-03"  # nothing but a date: it keeps it
+    assert importer.csv_account_name("2026-10-03 (1).csv") == "2026-10-03"
     # A name with no date in it is as before
     assert importer.csv_account_name("accountactivity-2.csv") == "accountactivity"
     assert importer.csv_account_name("Acct 1-23-456.csv") == "Acct 1-23"

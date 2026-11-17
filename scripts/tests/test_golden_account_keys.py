@@ -227,8 +227,22 @@ def test_set_up_csv_account_keys():
                           ("Statement_Oct_2026.csv", "csv:7:statement"),
                           ("transactions-2026-10-13T14-32-05.csv", "csv:7:transactions"),
                           ("Account 7 2026-10-13.csv", "csv:7:account 7"),
-                          # A year alone isn't a date
-                          ("Visa 2026.csv", "csv:7:visa 2026")]:
+                          ("transactions_20261013" + "143205.csv", "csv:7:transactions"),  # a time straight after
+                          ("Statement 10-2026.csv", "csv:7:statement"),
+                          ("Visa 2026-10_13.csv", "csv:7:visa"),
+                          # A date range is two dates
+                          ("transactions_2026-10-01_2026-10-31_chequing.csv", "csv:7:transactions chequing"),
+                          ("Visa 2026-10-01_2026-10-31 (1).csv", "csv:7:visa"),
+                          ("Statement 2026-10-13 2026-11-12 (1).csv", "csv:7:statement"),
+                          # Not dates: a year alone, a month name inside a word, numbers that aren't a real day or
+                          # month, four digits after a date (an account's, not a time)
+                          ("Visa 2026.csv", "csv:7:visa 2026"),
+                          ("Grammar 2026.csv", "csv:7:grammar 2026"),
+                          ("Visa Dec 12005.csv", "csv:7:visa dec 12005"),
+                          ("Acct 45-67-89.csv", "csv:7:acct 45 67"),
+                          ("Chequing 2026-99.csv", "csv:7:chequing 2026"),
+                          ("Visa 2026-10-13 1234.csv", "csv:7:visa 1234"),
+                          ("Visa 20261013_1234.csv", "csv:7:visa 1234")]:
         assert importer.csv_account_key(7, filename) == key
 
 
