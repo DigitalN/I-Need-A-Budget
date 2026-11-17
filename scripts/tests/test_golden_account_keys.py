@@ -234,6 +234,11 @@ def test_set_up_csv_account_keys():
                           ("transactions_2026-10-01_2026-10-31_chequing.csv", "csv:7:transactions chequing"),
                           ("Visa 2026-10-01_2026-10-31 (1).csv", "csv:7:visa"),
                           ("Statement 2026-10-13 2026-11-12 (1).csv", "csv:7:statement"),
+                          ("Visa 2026-10_2026-12.csv", "csv:7:visa"),
+                          ("Visa 2026-10-01_10-31-2026.csv", "csv:7:visa"),  # a time never runs into the next date
+                          # A repeat number after a year and month
+                          ("Visa 2026-10-2.csv", "csv:7:visa"),
+                          ("Statement 10-2026-2.csv", "csv:7:statement"),
                           # Not dates: a year alone, a month name inside a word, numbers that aren't a real day or
                           # month, four digits after a date (an account's, not a time)
                           ("Visa 2026.csv", "csv:7:visa 2026"),
@@ -242,7 +247,9 @@ def test_set_up_csv_account_keys():
                           ("Acct 45-67-89.csv", "csv:7:acct 45 67"),
                           ("Chequing 2026-99.csv", "csv:7:chequing 2026"),
                           ("Visa 2026-10-13 1234.csv", "csv:7:visa 1234"),
-                          ("Visa 20261013_1234.csv", "csv:7:visa 1234")]:
+                          ("Visa 20261013_1234.csv", "csv:7:visa 1234"),
+                          # A compact date and six digits that aren't a time: one long number
+                          ("transactions_20261013" + "999999.csv", "csv:7:transactions 999999")]:
         assert importer.csv_account_key(7, filename) == key
 
 

@@ -223,15 +223,15 @@ _DATES = re.compile(
     r"(?<![0-9])(?:"
     r"(?P<y>(?:19|20)\d{2})(?P<s1>[-_.]?)(?P<m>\d{2})(?P=s1)(?P<d>\d{2})(?:(?![0-9])|(?=\d{6}(?![0-9])))"  # 2026-10-13, 20261013
     r"|(?P<a>\d{1,2})(?P<s2>[-_.])(?P<b>\d{1,2})(?P=s2)(?P<c>\d{4}|\d{2})(?![0-9])"  # 10-13-2026, 13.10.2026, 10-13-26, 26-10-13
-    r"|(?P<ym>(?:19|20)\d{2})[-_.]?(?P<mm>\d{2})(?![0-9]|[-_.]\d)"  # 2026-10, 202610 (not the start of a longer date)
-    r"|(?P<my1>\d{1,2})[-_.](?P<my2>(?:19|20)\d{2})(?![0-9]|[-_.]\d)"  # 10-2026, 01.2026
+    r"|(?P<ym>(?:19|20)\d{2})[-_.]?(?P<mm>\d{2})(?![0-9]|[-_.]\d{2}(?![0-9]))"  # 2026-10, 202610 (not 2026-10_13)
+    r"|(?P<my1>\d{1,2})[-_.](?P<my2>(?:19|20)\d{2})(?![0-9]|[-_.]\d{2}(?![0-9]))"  # 10-2026, 01.2026
     rf"|(?P<mon1>{_MONTH})\.?[ _-]?(?P<md>\d{{1,2}})(?:st|nd|rd|th)?(?:,[ _]?|[ _-])(?P<my>\d{{4}})(?![0-9])"  # Oct 13 2026
     rf"|(?P<dm>\d{{1,2}})[ _-]?(?P<mon2>{_MONTH})\.?[ _-]?(?P<y2>\d{{4}}|\d{{2}})(?![0-9])"  # 13-Oct-2026, 13 Oct 26
     rf"|(?P<mon3>{_MONTH})\.?[ _-]?(?P<y3>\d{{4}})(?![0-9])"  # Oct 2026, October_2026
     r")", re.IGNORECASE)
 # A time of day after a year-month-day date, only when it can't be anything else: after a T, hours and minutes with a
-# separator between them, or six digits (straight after a date written 20261013). Never four digits on their own
-# ("Visa 2026-10-13 1234": an account's).
+# separator between them, or six digits (143205, straight after the date or after a separator). Never four digits on
+# their own ("Visa 2026-10-13 1234": an account's).
 _TIME = re.compile(r"(?:t(?P<h1>\d{2})(?P<x1>[-.:h]?)(?P<m1>\d{2})(?:(?P=x1)(?P<s1>\d{2}))?"
                    r"|[_ -](?P<h2>\d{2})(?P<x2>[-.:h])(?P<m2>\d{2})(?:(?P=x2)(?P<s2>\d{2}))?"
                    r"|[_ -]?(?P<h3>\d{2})(?P<m3>\d{2})(?P<s3>\d{2}))(?![0-9])", re.IGNORECASE)
