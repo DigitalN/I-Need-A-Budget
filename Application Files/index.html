@@ -3214,7 +3214,8 @@ async function renderOnboarding() {
     const files = ob.files.files;
     body = `<h3>1. Bring in your bank files</h3>
       <p class="muted">From your bank's website, download a few months of transactions for each account. Pick <b>Quicken (QFX)</b> or <b>Money (OFX)</b> if it's offered: those include the balance and need no setting up. CSV works too. Overlapping files are fine: nothing is imported twice.</p>
-      <div class="card filelist">${files.length ? files.map((f, i) => f.needs_setup ? `<label><button type="button" data-ob="setup" data-file="${i}" class="btn small">Set up…</button>
+      <div class="card filelist">${files.length ? files.map((f, i) => f.refused ? `<label><span></span>
+          <div><b>${esc(f.filename)}</b><div class="small muted">${esc(f.error)} It won't be imported.</div></div></label>` : f.needs_setup ? `<label><button type="button" data-ob="setup" data-file="${i}" class="btn small">Set up…</button>
           <div><b>${esc(f.filename)}</b><div class="small muted">${plural(f.rows, 'transaction')}${f.first_date ? `, ${dayYear(f.first_date)} – ${dayYear(f.last_date)}` : ''} · ${f.needs_setup === 'layout' ? 'show the app its columns once' : 'which account is it for?'}</div></div>
           <span class="tag">CSV</span></label>` : `<label><input type="checkbox" data-file="${i}" ${f.already_imported ? '' : 'checked'}>
           <div><b>${esc(f.account_name || f.filename)}</b> <span class="muted small">${esc(f.filename)}</span><div class="small muted">${f.format === 'actual' ? 'Learn your categories and which payees go where' : `${plural(f.rows, 'transaction')}, ${dayYear(f.first_date)} – ${dayYear(f.last_date)}`}${f.already_imported ? ' · already imported' : ''}</div></div>
@@ -3222,7 +3223,7 @@ async function renderOnboarding() {
         : `<div class="empty"><b>No bank files in ${esc(ob.files.folder)}</b>Download some, then look again.</div>`}</div>
       ${ob.results ? `<div class="notice info" style="margin-top:12px">${esc(ob.results)}</div>` : ''}
       <div class="row" style="margin-top:16px"><button class="btn" data-ob="rescan">Look again</button><button class="btn" data-ob="choose">Choose files…</button><span class="spacer"></span>
-        <button class="btn primary" data-ob="import">${files.some(f => !f.already_imported) ? 'Import and continue' : 'Continue'}</button></div>`;
+        <button class="btn primary" data-ob="import">${files.some(f => !f.already_imported && !f.refused) ? 'Import and continue' : 'Continue'}</button></div>`;
   } else if (ob.step === 1) {
     await loadCategories();
     const normal = state.categories.filter(g => g.role === 'normal');

@@ -237,6 +237,8 @@ class BudgetService:
                 needs = self._needs(c, path, parsed)
         except importer.NeedsSetup:
             needs, parsed = "layout", None
+        except importer.OtherCurrency as e:  # listed, not to import: onboarding says why (issue #76)
+            return {**item, "format": None, "error": str(e), "refused": True}
         except (importer.ImportError_, OSError) as e:
             return {**item, "format": None, "error": str(e)}
         except Exception as e:  # one odd file must not stop the others being listed
@@ -279,14 +281,14 @@ class BudgetService:
         found = importer.find_account(c, part.account, part.rows, importer.fingerprints(part.rows))
         return None if found else "account"
 
-    def _parse_fitting(self, c, path, picked=None, currency=None):
+    def _parse_fitting(self, c, path):
         """(the file as importer.parse reads it, with only the accounts that fit the budget's currency, [the parts
-        left out]): see importer.fitting (issue #76). `currency`: the one an import sets, else the budget's, else the
-        one most of the file's own accounts say. Raises importer.OtherCurrency for a file all in another currency, a
-        set-up CSV's Currency column included, before it's set up or asked which account it's for."""
-        currency = currency or importer.budget_currency(c)
+        left out]): see importer.fitting (issue #76). With no currency yet, the one most of the file's own accounts
+        say. Raises importer.OtherCurrency for a file all in another currency, a set-up CSV's Currency column
+        included, before it's set up or asked which account it's for."""
+        currency = importer.budget_currency(c)
         try:
-            parsed = importer.parse(path, c, picked)
+            parsed = importer.parse(path, c)
         except importer.NeedsSetup as e:
             if e.currency and currency and e.currency != currency:
                 raise importer.OtherCurrency(e.currency, currency) from None
@@ -354,9 +356,10 @@ class BudgetService:
         found = []
         for path in self._candidates(self.settings.downloads_dir()):
             item = self._describe_file(path)
-            if item.get("format"):
+            if item.get("format") or item.get("refused"):
                 found.append(item)
-        found.sort(key=lambda i: (i["format"] == "actual", i.get("account_name") or "", i.get("first_date") or ""))
+        found.sort(key=lambda i: (bool(i.get("refused")), i["format"] == "actual", i.get("account_name") or "",
+                                  i.get("first_date") or ""))
         return {"folder": str(self.settings.downloads_dir()), "files": found}
 
     @exposed
@@ -373,7 +376,7 @@ class BudgetService:
         answers = {str(Path(k)): v for k, v in (answers or {}).items()}
         downloads = self.settings.downloads_dir().resolve()
         results, learnt, errors, needs_setup, skipped = [], None, [], [], []
-        parsed_files = []
+        parsed_files, saying, later = [], [], []
         with self.db.read() as c:
             budget = importer.budget_currency(c)
         for p in paths:
@@ -384,6 +387,8 @@ class BudgetService:
             except importer.NeedsSetup as e:
                 if e.currency and budget and e.currency != budget:  # a set-up CSV's Currency column (issue #76)
                     errors.append(_refused(path, importer.OtherCurrency(e.currency, budget)))
+                elif e.currency and budget is None:
+                    saying.append((path, e))  # checked once this import's currency is known
                 else:
                     needs_setup.append({"path": str(path), "filename": path.name, "needs": e.what})
             except (importer.ImportError_, OSError) as e:
@@ -396,10 +401,17 @@ class BudgetService:
         parsed_files.sort(key=lambda pf: (pf[1].format != "actual", pf[1].first_date or ""))
         # The budget's currency (issue #76): until a file says one, the one most of these files' accounts say, set by
         # the first of them that's imported. Then the accounts in another currency are left out.
+        # A file in another currency waits until the currency is set (`later`): the file that would set it may wait
+        # on a question and never be imported, and then the budget isn't in that currency.
         decided = None
         if budget is None:
             with self.db.read() as c:
                 decided = importer.majority_currency(c, [parsed for _, parsed in parsed_files])
+        for path, e in saying:
+            if decided and e.currency != decided:
+                later.append(str(path))
+            else:
+                needs_setup.append({"path": str(path), "filename": path.name, "needs": e.what})
         rechecked = 0
         for path, parsed in parsed_files:
             in_downloads = path.resolve().parent == downloads
@@ -422,12 +434,21 @@ class BudgetService:
                 continue
             try:
                 with self.db.read() as c:
-                    parsed, left_out = importer.fitting(c, parsed, budget or decided)
+                    now = importer.budget_currency(c)
+                    kept, left_out = importer.fitting(c, parsed, now or decided)
                     left_out = [{"filename": path.name, "account": self._skipped_account(c, part),
-                                 "currency": part.currency, "budget": budget or decided} for part in left_out]
+                                 "currency": part.currency, "budget": now or decided} for part in left_out]
             except importer.OtherCurrency as e:
-                errors.append(_refused(path, e))
+                if now is None:
+                    later.append(str(path))
+                else:
+                    errors.append(_refused(path, e))
                 continue
+            sets = decided if decided and any(part.currency == decided for part in kept.parts) else None
+            if left_out and now is None and not sets:
+                later.append(str(path))
+                continue
+            parsed = kept
             accounts = chosen.get(str(path), {})
             if parsed.format != "csv":
                 with self.db.read() as c:
@@ -438,7 +459,6 @@ class BudgetService:
                 if self._balance_questions(c, parsed, accounts, answers.get(str(path), {})):
                     needs_setup.append({"path": str(path), "filename": path.name, "needs": "balance_sign"})
                     continue
-            sets = decided if decided and any(part.currency == decided for part in parsed.parts) else None
             try:
                 file_results = self._import_one(path, parsed, archive and in_downloads, accounts, answers.get(str(path)),
                                                 sets)
@@ -452,6 +472,14 @@ class BudgetService:
             skipped += left_out
         if results:
             rechecked += self.recheck()
+        if later and len(later) < len(paths):
+            # Refused (or their accounts skipped) now that the currency is set; or, when the file that would have set
+            # it is waiting on a question, they're this import's files and set it themselves.
+            more = self._import_files(later, archive, chosen, answers)
+            results, errors, needs_setup = results + more["results"], errors + more["errors"], needs_setup + more["needs_setup"]
+            skipped, rechecked = skipped + more["skipped"], rechecked + more["rechecked"]
+        elif later:  # can't happen: a file of the currency most accounts say is never put off
+            log.warning("Files put off for their currency weren't imported: %s", ", ".join(Path(p).name for p in later))
         return {"results": results, "learnt": learnt, "errors": errors, "needs_setup": needs_setup,
                 "skipped": skipped, "rechecked": rechecked, "counts": self.counts()}
 
@@ -464,6 +492,7 @@ class BudgetService:
             if currency and importer.budget_currency(c) is None:
                 importer.set_budget_currency(c, currency)
                 log.info("The budget's currency is %s, from %s", currency, path.name)
+                self._file_status.clear()  # what files in Downloads need is looked at again (not _seen_files: no re-import)
             file_results = importer.import_parsed(c, parsed, path.name, sha, accounts=accounts, answers=answers)
             inbox = self._inbox(c)
             for result in file_results:

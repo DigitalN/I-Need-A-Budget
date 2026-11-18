@@ -566,8 +566,7 @@ def _ofx_currency(text):
     """The currency a statement says it's in: its own CURDEF ("USD"), else None (issue #76). A row's ORIGCURRENCY or
     CURRENCY (a purchase made in another currency) never counts: the transaction list is left out."""
     outside = re.sub(r"<BANKTRANLIST>.*?(?:</BANKTRANLIST>|$)", "", text, flags=re.IGNORECASE | re.DOTALL)
-    code = (_ofx_value(outside, "CURDEF") or "").upper()
-    return code if re.fullmatch(r"[A-Z]{3}", code) else None
+    return csvlayout.currency_code(_ofx_value(outside, "CURDEF"))
 
 
 def _ofx_listing(text, tag):

@@ -320,3 +320,74 @@ def test_an_old_budget_with_mixed_files_takes_most_and_logs_the_others_once(app,
     assert app.read_currency() is None and currency(app) is None  # only once
     out = imports(app, ("Chequing.qfx", ofx(statement(CHEQUING, rows(2, "D", day=5)))))
     assert currency(app) == "CAD" and len(out["results"]) == 1
+
+
+# ── the review's cases ───────────────────────────────────────
+
+def test_a_cad_code_written_cdn_is_cad(app):
+    assert csvlayout.currency(csvlayout.sniff(usd_csv(("CDN", "cdn", "CDN")))) == "CAD"
+    cad_budget(app)
+    imports(app, ("Card.qfx", ofx(statement(card_number("4444"), rows(2, "M"), "CDN", card=True))))
+    assert len(call(app, "accounts")) == 2
+
+
+def test_a_csv_saying_another_currency_in_the_import_that_sets_it_is_refused(app):
+    """No currency yet: a CAD QFX and a CSV (not set up) whose Currency column says USD come in together."""
+    out = imports(app, ("Chequing.qfx", ofx(statement(CHEQUING, rows(3, "C")))), ("Visa.csv", usd_csv()))
+    assert currency(app) == "CAD"
+    assert out["needs_setup"] == [] and [(e["filename"], e["error"]) for e in out["errors"]] == [("Visa.csv", REFUSED)]
+
+
+def test_files_arent_refused_for_a_currency_the_budget_never_takes(app):
+    """No currency yet, set up: a USD card file (a new card, so "new account?") and a CAD file come in together.
+    USD is most of them, but the USD file waits on its question: the CAD file sets the budget's currency."""
+    imports(app, (CARD_FILE, card_csv([("10/02/2026", "SAMPLE DINER CALGARY AB", "-12.00", "Restaurant")])))
+    app.db.set_meta("onboarded", "1")
+    out = imports(app, ("US Card.qfx", ofx(statement(card_number("9999"), rows(4, "V"), "USD", card=True,
+                                                     balance="-40.00"))),
+                  ("Chequing.qfx", ofx(statement(CHEQUING, rows(2, "C")))))
+    assert [f["filename"] for f in out["needs_setup"]] == ["US Card.qfx"]
+    assert [r["filename"] for r in out["results"]] == ["Chequing.qfx"] and out["errors"] == []
+    assert currency(app) == "CAD"
+    path = str(app.test_downloads / "US Card.qfx")
+    assert app.dispatch("set_file_accounts", [path, [{"index": 0, "name": "US Card"}]]) == {"ok": False, "error": REFUSED}
+
+
+def test_the_inbox_looks_again_once_the_currency_is_set(app):
+    """A file waiting in Downloads as "new account?" before the budget had a currency is a file in another currency
+    once it has one."""
+    imports(app, ("Chequing.CSV", bank_csv([("10/01/2026", "SAMPLE CAFE", "SAMPLE CAFE CALGARY AB", "-4.50")])))
+    app.db.set_meta("onboarded", "1")
+    write(app.test_downloads, "US.qfx", ofx(statement(US_ACCOUNT, rows(2, "U"), "USD")))
+    assert [f["needs"] for f in app.pending_files()] == ["new_account"]
+    other = app.test_downloads.parent / "dropped"
+    other.mkdir()
+    dropped = write(other, "Card.qfx", ofx(statement(card_number("4444"), rows(2, "M"), card=True, balance="-20.00")))
+    call(app, "import_files", [str(dropped)])
+    assert currency(app) == "CAD"
+    assert [(f["filename"], f["needs"]) for f in app.pending_files()] == [("US.qfx", "currency")]
+
+
+def test_part_numbers_stay_in_step_when_an_account_before_it_is_skipped(app):
+    """A file whose first statement is in USD (skipped) and whose second is a new CAD card: asked "new account?"
+    about the card, then imported into the account picked."""
+    cad_budget(app)
+    imports(app, ("Card.qfx", ofx(statement(card_number("4444"), rows(2, "M"), card=True, balance="-20.00"))))
+    app.db.set_meta("onboarded", "1")
+    out = imports(app, ("Both.qfx", ofx(statement(US_ACCOUNT, rows(2, "U"), "USD"),
+                                        statement(card_number("9999"), rows(2, "V"), card=True, balance="-20.00"))))
+    [waiting] = out["needs_setup"]
+    assert waiting["needs"] == "new_account"
+    [part] = call(app, "file_accounts", waiting["path"])["parts"]
+    assert (part["index"], part["last4"]) == (0, "9999")
+    card_id = next(a["id"] for a in call(app, "accounts") if a["last4"] == "4444")
+    out = call(app, "set_file_accounts", waiting["path"], [{"index": 0, "account_id": card_id}])
+    assert [(r["account_id"], r["added"]) for r in out["results"]] == [(card_id, 2)]
+    assert [s["account"] for s in out["skipped"]] == ["SAMPLE BANK Chequing ••8777"]
+
+
+def test_onboarding_lists_a_file_in_another_currency_and_says_why(app):
+    cad_budget(app)
+    write(app.test_downloads, "US.qfx", ofx(statement(US_ACCOUNT, rows(2, "U"), "USD")))
+    [listed] = call(app, "scan_downloads")["files"]
+    assert (listed["filename"], listed["refused"], listed["error"]) == ("US.qfx", True, REFUSED)

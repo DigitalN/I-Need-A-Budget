@@ -46,7 +46,9 @@ Application logs: `~/Library/Logs/I Need A Budget/app.log` (rotating, 3 × 1 MB)
 first**. The updater logs `Automatic updates off: <reason>`, `Up to date at`,
 `Downloading`, `ready to install`, `Installed …` or `Update check failed: …`. "Up to date"
 also when no release has been published yet: merging isn't releasing.
-`Page connected` means the window loaded and reached Python. `Backed up the budget to …`
+`Page connected` means the window loaded and reached Python. `The budget's currency is USD, from …`
+when a file first sets it (issue #76), `… not imported: This file is in USD; your budget is in CAD.` and
+`… skipped: it's in USD; your budget is in CAD` for what doesn't fit. `Backed up the budget to …`
 at a quit after a change (`No backup made: …` when nothing changed since the newest one),
 and at launch only when no backup holds the budget as it is: after a session that didn't
 quit normally, at the first launch of 1.4.0 (no file named in meta yet), or after the
@@ -218,7 +220,10 @@ All in `Application Files/`:
   that says none (Tangerine's CSVs, a set-up CSV without that column, a transaction added by hand)
   always fits. The first import with a file that says one sets it, to the one most of that import's
   accounts say (each account once, whatever file it's in; a tie goes to more transactions:
-  `importer.majority_currency`); once set it never changes, and it isn't in Settings. Then a file all in
+  `importer.majority_currency`; a file in another currency is put off until it's set, as the file that
+  would set it may wait on a question and never come in: then the rest set it themselves, and a
+  waiting file whose need was worked out before is looked at again); once set it never changes, and it
+  isn't in Settings. Then a file all in
   another currency fails ("This file is in USD; your budget is in CAD.", `importer.OtherCurrency`),
   and in a file with several accounts only the other currency's are left out (`importer.fitting`),
   before `_accounts_to_ask` and `_balance_questions`, so they're never asked about; the file's toast
@@ -227,7 +232,8 @@ All in `Application Files/`:
   import it or ask about it goes through `service._parse_fitting`; a set-up CSV is refused before it's
   set up or asked which account. A dropped file's errors show in its toast. A refused file from
   Downloads waits at the top of the Inbox (need `currency`) with Don't import, and toasts with Open
-  Inbox when it arrives (other files there the app can't read are logged and skipped, #47). "$" stays
+  Inbox when it arrives (other files there the app can't read are logged and skipped, #47); onboarding's
+  list shows it, unticked, with why. A Currency column's "CDN" is CAD. "$" stays
   for every currency: the currency only decides which files fit. A budget from before 1.4.3 takes the
   currency most of its accounts' kept files say at its first launch (`service.read_currency`, once:
   meta `currency_read`, which db.py writes for a new budget); none says one → none yet; an account whose

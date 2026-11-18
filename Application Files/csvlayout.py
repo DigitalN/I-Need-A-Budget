@@ -237,6 +237,14 @@ def signature(sniffed):
 
 
 CURRENCY_HEADERS = ("currency", "devise")
+_CURRENCY_NAMES = {"CDN": "CAD"}  # what some Canadian banks write for the Canadian dollar
+
+
+def currency_code(text):
+    """A currency as a file writes it, as its code: "usd" → "USD", "CDN" → "CAD". None for anything that isn't three
+    letters."""
+    code = str(text or "").strip().upper()
+    return _CURRENCY_NAMES.get(code, code) if re.fullmatch(r"[A-Z]{3}", code) else None
 
 
 def currency(sniffed):
@@ -248,10 +256,8 @@ def currency(sniffed):
     for col, name in enumerate(sniffed["header"]):
         if name.strip().casefold() not in CURRENCY_HEADERS:
             continue
-        codes = {(r[col] if col < len(r) else "").strip().upper() for r in sniffed["rows"]}
-        if len(codes) == 1 and re.fullmatch(r"[A-Z]{3}", next(iter(codes))):
-            return codes.pop()
-        return None
+        codes = {currency_code(r[col] if col < len(r) else "") for r in sniffed["rows"]}
+        return codes.pop() if len(codes) == 1 else None  # a blank or an odd cell is None: says nothing
     return None
 
 
