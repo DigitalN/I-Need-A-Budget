@@ -133,6 +133,8 @@ class BudgetService:
         self.hooks = hooks or {}          # window features: choose_files, reveal, updates, app_info
         self._seen_files = {}             # Downloads watcher: path → (mtime, size) already looked at
         self._file_status = {}            # path → ((mtime, size), what it needs or None): see _needs()
+        self._status_round = 0            # bumped whenever _file_status is cleared: a need worked out before isn't kept
+        self._told_refused = set()        # files in another currency the watcher has toasted about (sha256): once a session
         move_into_budget(db, settings)    # a budget from before 1.4.1: Overspending and Usual's months (issue #153)
 
     # ── plumbing ──
@@ -417,7 +419,7 @@ class BudgetService:
                 log.info("The budget's currency is %s, from %s", budget,
                          ", ".join(path.name for path, parsed in parsed_files if str(path) not in ignored
                                    and any(part.currency == budget for part in parsed.parts)))
-                self._file_status.clear()  # what files in Downloads need is looked at again (not _seen_files: no re-import)
+                self._clear_file_status()  # what files in Downloads need is looked at again (not _seen_files: no re-import)
         for path, e in saying:
             if budget and e.currency != budget:
                 errors.append(_refused(path, importer.OtherCurrency(e.currency, budget)))
@@ -640,9 +642,18 @@ class BudgetService:
             ignored = {r["sha256"] for r in c.execute("SELECT sha256 FROM ignored_files")}
         outcome = self._import_files(ready, ignored=[p for p in ready if _sha_or_none(p) in ignored])
         outcome["needs_setup"] = [f for f in outcome["needs_setup"] if importer.sha256_of(f["path"]) not in ignored]
-        # A file in another currency waits in the Inbox (pending_files), unless you said not to import it.
-        outcome["errors"] = [e for e in outcome["errors"] if not e.get("currency")
-                             or importer.sha256_of(e["path"]) not in ignored]
+        # A file in another currency waits in the Inbox (pending_files), unless you said not to import it. Its toast
+        # shows once a session: the currency never changes, so neither does what happens to it (the watcher looks at
+        # files again after every set-up).
+        errors = []
+        for e in outcome["errors"]:
+            if e.get("currency"):
+                sha = _sha_or_none(e["path"])
+                if sha in ignored or sha in self._told_refused:
+                    continue
+                self._told_refused.add(sha)
+            errors.append(e)
+        outcome["errors"] = errors
         outcome["auto"] = True  # the page offers to set files up rather than asking straight away
         refused = [e for e in outcome["errors"] if e.get("currency")]
         return outcome if outcome["results"] or outcome["needs_setup"] or refused else None
@@ -673,12 +684,14 @@ class BudgetService:
             if cached and cached[0] == signature:
                 needs, sha = cached[1], cached[2]
             else:
+                round_ = self._status_round
                 needs, sha = self._file_needs(path), None
                 try:
                     sha = importer.sha256_of(path)
                 except OSError:
                     continue
-                self._file_status[str(path)] = (signature, needs, sha)
+                if self._status_round == round_:  # else what it needs may have changed while it was worked out
+                    self._file_status[str(path)] = (signature, needs, sha)
             if needs and sha not in ignored:
                 what, *codes = needs.split(":")  # 'currency:USD:CAD': in USD, and the budget's in CAD
                 out.append({"path": str(path), "filename": path.name, "needs": what, "modified": st.st_mtime,
@@ -709,8 +722,14 @@ class BudgetService:
 
     def _forget_file_status(self):
         """After a layout or account is set up, files waiting in Downloads are looked at again."""
-        self._file_status.clear()
+        self._clear_file_status()
         self._seen_files = {}
+
+    def _clear_file_status(self):
+        """What files in Downloads need is worked out again: also a need being worked out right now (the watcher may
+        set the budget's currency meanwhile) isn't kept."""
+        self._file_status.clear()
+        self._status_round += 1
 
     # ── bank files for an account the app hasn't seen ──
 

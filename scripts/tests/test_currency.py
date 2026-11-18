@@ -275,6 +275,39 @@ def test_a_file_from_downloads_in_another_currency_waits_in_the_inbox(app):
     assert path.exists() and len(call(app, "accounts")) == 2
 
 
+def test_a_refused_files_toast_shows_once(app):
+    """The watcher looks at Downloads again after every set-up: a file in another currency still there is toasted
+    about only the first time (it still waits in the Inbox)."""
+    cad_budget(app)
+    app.db.set_meta("onboarded", "1")
+    path = write(app.test_downloads, "US.qfx", ofx(statement(US_ACCOUNT, rows(2, "U"), "USD")))
+    os.utime(path, (time.time() - 10, time.time() - 10))
+    assert [e["filename"] for e in app.watch_downloads()["errors"]] == ["US.qfx"]
+    app._forget_file_status()  # as after a set-up or an answer
+    assert app.watch_downloads() is None
+    assert [f["needs"] for f in app.pending_files()] == ["currency"]
+
+
+def test_a_need_worked_out_while_the_currency_is_set_isnt_kept(app):
+    """pending_files works a file's need out outside the database's lock: when the currency is set meanwhile (the
+    watcher clears what's kept), what it worked out isn't kept, and the next look sees the file refused."""
+    imports(app, ("Chequing.CSV", bank_csv([("10/01/2026", "SAMPLE CAFE", "SAMPLE CAFE CALGARY AB", "-4.50")])))
+    app.db.set_meta("onboarded", "1")
+    write(app.test_downloads, "US.qfx", ofx(statement(US_ACCOUNT, rows(2, "U"), "USD")))
+    work_out = app._file_needs
+
+    def meanwhile(path):
+        needs = work_out(path)
+        app.db.set_meta("currency", "CAD")
+        app._clear_file_status()
+        return needs
+
+    app._file_needs = meanwhile
+    assert [f["needs"] for f in app.pending_files()] == ["new_account"]
+    app._file_needs = work_out
+    assert [f["needs"] for f in app.pending_files()] == ["currency"]
+
+
 def test_a_file_you_said_not_to_import_never_decides_the_currency(app):
     """No currency yet, set up with a card CSV: a USD card file in Downloads you said Don't import to (as in 1.4.2)
     has no say at the next launch. A CAD file arriving beside it then sets CAD, and the ignored one is refused, with
@@ -440,6 +473,24 @@ def test_part_numbers_stay_in_step_when_an_account_before_it_is_skipped(app):
     out = call(app, "set_file_accounts", waiting["path"], [{"index": 0, "account_id": card_id}])
     assert [(r["account_id"], r["added"]) for r in out["results"]] == [(card_id, 2)]
     assert [s["account"] for s in out["skipped"]] == ["SAMPLE BANK Chequing ••8777"]
+
+
+def test_the_balance_question_stays_in_step_when_an_account_before_it_is_skipped(app):
+    """A file whose first statement is in USD (skipped) and whose second is a new CAD card with $35.00 above zero:
+    asked whether that's what you owe, about the card, then imported into it."""
+    cad_budget(app)
+    app.db.set_meta("onboarded", "1")
+    out = imports(app, ("Both.qfx", ofx(statement(US_ACCOUNT, rows(2, "U"), "USD"),
+                                        statement(card_number("9999"), rows(2, "V"), card=True, balance="35.00"))))
+    [waiting] = out["needs_setup"]
+    assert waiting["needs"] == "balance_sign"
+    [question] = call(app, "file_balance_question", waiting["path"])["questions"]
+    assert (question["index"], question["amount"]) == (0, 3500)
+    out = call(app, "answer_balance", waiting["path"], "owed")
+    assert [r["added"] for r in out["results"]] == [2]
+    assert [s["account"] for s in out["skipped"]] == ["SAMPLE BANK Chequing ••8777"]
+    card = next(a for a in call(app, "accounts") if a["last4"] == "9999")
+    assert card["balance"] == -3500
 
 
 def test_onboarding_lists_a_file_in_another_currency_and_says_why(app):

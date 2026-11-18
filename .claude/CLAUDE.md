@@ -228,7 +228,7 @@ All in `Application Files/`:
   another currency fails ("This file is in USD; your budget is in CAD.", `importer.OtherCurrency`),
   and in a file with several accounts only the other currency's are left out (`importer.fitting`),
   before `_accounts_to_ask` and `_balance_questions`, so they're never asked about; the file's toast
-  says so ("RBC US Dollar ••5678 skipped: it's in USD; your budget is in CAD", `skipped` in the
+  says so ("RBC Chequing ••5678 skipped: it's in USD; your budget is in CAD", `skipped` in the
   import's answer) and so does the log, not Accounts → Imported files. Everything that reads a file to
   import it or ask about it goes through `service._parse_fitting`; a set-up CSV is refused before it's
   set up or asked which account. A dropped file's errors show in its toast. A refused file from

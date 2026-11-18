@@ -2657,11 +2657,14 @@ async function askBalanceSign(f) {
 }
 
 // One after another: each pop-up waits for the one before.
-async function setupFiles(files) {
+// `before`: what the import that found them has to say (a dropped file refused, say), shown with the first
+// pop-up's outcome, or after them all: shown before, it was hidden under the pop-up and then replaced.
+async function setupFiles(files, before = null) {
   for (const f of files) {
     const outcome = await (f.needs === 'new_account' ? chooseAccounts(f.path) : f.needs === 'balance_sign' ? askBalanceSign(f) : setupFile(f.path));
-    if (outcome) window.appEvent('imported', outcome);
+    if (outcome) { window.appEvent('imported', before ? { ...outcome, before } : outcome); before = null; }
   }
+  if (before) importToast(before);
   await refresh();
 }
 
@@ -3311,7 +3314,14 @@ const skippedNote = s => `${s.account} skipped: it's in ${s.currency}; your budg
 // What an import's toast says: {text, inbox (Open Inbox), error}, or null for nothing to say. A dropped file's errors
 // show (issue #76); from Downloads, only a file in another currency, which waits in the Inbox (#47: the others are
 // logged and skipped).
+const importToast = message => toast(message.text, message.inbox ? { action: { label: 'Open Inbox', run: () => navigate('inbox') } } : { error: message.error });
+// What an import's toast says. `payload.before`: what the import before it had to say (see setupFiles), first.
 function importMessage(payload) {
+  if (payload.before) {
+    const { before, ...rest } = payload, message = importMessage(rest);
+    return message ? { text: `${before.text} · ${message.text}`, ...((message.inbox || before.inbox) ? { inbox: true } : {}),
+      ...((message.error || before.error) && !(message.inbox || before.inbox) ? { error: true } : {}) } : before;
+  }
   const results = payload.results || [];
   const added = results.reduce((s, r) => s + r.added, 0);
   const review = (payload.counts && payload.counts.inbox) || 0;
@@ -3440,15 +3450,18 @@ window.appEvent = (name, payload) => {
     if (payload.error) return toast(payload.error, { error: true });
     if (payload.counts) setCounts(payload.counts);
     const waiting = payload.needs_setup || [];
-    if (waiting.length && !payload.auto) setupFiles(waiting);  // you dropped them: ask now
-    else if (waiting.length) {
+    const message = importMessage(payload);
+    if (waiting.length && !payload.auto) {  // you dropped them: ask now, and say the rest after (it redraws then)
+      setupFiles(waiting, message);
+      return;
+    }
+    if (waiting.length) {
       const names = waiting.map(f => f.filename).join(', ');
       toast(waiting.every(f => f.needs === 'new_account') ? `${names}: a new account?` : `${names} ${waiting.length === 1 ? 'needs' : 'need'} setting up`,
         { action: { label: waiting.every(f => f.needs === 'new_account') ? 'Choose…' : 'Set up', run: () => setupFiles(waiting) } });
     }
-    const message = importMessage(payload);
     if (!message) return;
-    toast(message.text, message.inbox ? { action: { label: 'Open Inbox', run: () => navigate('inbox') } } : { error: message.error });
+    importToast(message);
     refreshWhenIdle();
   } else if (name === 'update') {
     state.update = payload;

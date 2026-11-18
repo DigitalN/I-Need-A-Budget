@@ -514,6 +514,9 @@ def test_an_imports_errors_and_skipped_accounts_are_toasted():
         "auto": {"auto": True, "results": [], "errors": [refused, unreadable], "counts": {"inbox": 1}},
         "auto_unreadable": {"auto": True, "results": [], "errors": [unreadable], "counts": {"inbox": 0}},
         "skipped": {"results": [rbc], "errors": [], "skipped": [skipped], "counts": {"inbox": 0}},
+        # dropped beside a file that asked "new account?": what the first import said comes with the pop-up's outcome
+        "carried": {"results": [rbc], "errors": [], "counts": {"inbox": 0},
+                    "before": {"text": "Savings USD.qfx: This file is in USD; your budget is in CAD.", "error": True}},
     }
     script = "\n".join(parts) + f"""
 const payloads = {json.dumps(payloads)};
@@ -529,7 +532,10 @@ console.log(JSON.stringify(out));
     assert got["skipped"]["text"] == "Imported 12 new transactions from RBC.csv · RBC US Dollar ••5678 skipped: it's in " \
                                      "USD; your budget is in CAD"
     assert got["summary"] == "RBC.csv: 12 new · RBC US Dollar ••5678 skipped: it's in USD; your budget is in CAD"
+    assert got["carried"] == {"text": "Savings USD.qfx: This file is in USD; your budget is in CAD. · Imported 12 new "
+                                      "transactions from RBC.csv", "error": True}
     assert "const message = importMessage(payload);" in PAGE  # what appEvent('imported') shows
+    assert "setupFiles(waiting, message);" in PAGE  # a dropped file's: after its pop-ups, not hidden under them
 
 
 def test_a_file_in_another_currency_waits_in_the_inbox_with_dont_import():
