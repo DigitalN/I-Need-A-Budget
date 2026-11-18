@@ -67,6 +67,11 @@ could have been, as a transfer to another bank can post days later; issue #75):
 it takes the bank's date, text and IDs and keeps what you decided. What it was is remembered
 (`before_file`), so Remove import of the last file that has it puts it back (issue #149).
 
+Currency (issue #76): a budget has one, and a file in another doesn't fit (see fitting()). What a file says:
+an OFX statement's own CURDEF (never a row's ORIGCURRENCY or CURRENCY), RBC's column most of an account's
+rows use, a set-up CSV's "Currency" or "Devise" column with one code on every row (csvlayout.currency).
+Tangerine's CSVs say nothing, and always fit. Amounts are read as written: nothing is converted.
+
 New rows are only added here: each Result's `new_ids` then arrive in the inbox
 (inbox.Inbox.arrive), which categorizes what it can.
 Every row is noted with the transaction it is (`import_rows`: the rows matched as well as the
@@ -110,10 +115,19 @@ class NeedsSetup(ImportError_):
     """A CSV the app hasn't been shown how to read yet ('layout'), or whose account it
     doesn't know yet ('account'). The page asks, then calls the import again."""
 
-    def __init__(self, what, message=None):
+    def __init__(self, what, message=None, currency=None):
         super().__init__(message or ("This file needs setting up first." if what == "layout"
                                      else "Which account is this file for?"))
         self.what = what
+        self.currency = currency  # what the file says it's in, when it says (a Currency column): checked first
+
+
+class OtherCurrency(ImportError_):
+    """A file whose accounts are all in another currency than the budget's (issue #76)."""
+
+    def __init__(self, currency, budget):
+        super().__init__(f"This file is in {currency}; your budget is in {budget}.")
+        self.currency, self.budget = currency, budget
 
 
 @dataclass
@@ -155,6 +169,7 @@ class Part:
     covers_to: str = None    # ... and the last day (DTEND), when it says: a download of a past date range stops
                              # before the day its balance is for
     opening: tuple = None  # (day, cents): a set-up CSV's running balance at the end of the day before its first row
+    currency: str = None   # the currency the file says this account is in ("USD"), or None when it doesn't say
 
     @property
     def first_date(self):
@@ -431,14 +446,14 @@ def _parse_rbc(text):
     ("e-Transfer sent") and Description 2 who with; the name is both."""
     reader = csv.reader(io.StringIO(text))
     next(reader)
-    parts = {}
+    parts, amounts = {}, {}
     for line in reader:
         if len(line) < 7 or not any(cell.strip() for cell in line):
             continue
         acct_type, number, date_text, _cheque, d1, d2, cad = (cell.strip() for cell in line[:7])
         usd = line[7].strip() if len(line) > 7 else ""
         try:
-            row = Row(parse_date(date_text), to_cents(cad or usd), " ".join(p for p in (d1, d2) if p))
+            row = Row(parse_date(date_text), 0, " ".join(p for p in (d1, d2) if p))
         except ValueError as e:
             raise ImportError_(f"Couldn't read a row ({e}).") from None
         digits = re.sub(r"\D", "", number)
@@ -451,6 +466,18 @@ def _parse_rbc(text):
             parts[(acct_type.lower(), digits)] = Part(
                 AccountHint(keys, kind, f"RBC {label}", last4, bank="RBC", number_key=number_key, full_key=full_key), [])
         parts[(acct_type.lower(), digits)].rows.append(row)
+        amounts.setdefault((acct_type.lower(), digits), []).append((cad, usd))
+    # Each account is in the currency of the column most of its rows use (issue #76), and a row with both filled
+    # is read from that one: before, CAD$ always won.
+    for key, part in parts.items():
+        cells = amounts[key]
+        usd_first = sum(bool(u) for _, u in cells) > sum(bool(c) for c, _ in cells)
+        part.currency = "USD" if usd_first else "CAD"
+        for row, (cad, usd) in zip(part.rows, cells):
+            try:
+                row.amount = to_cents((usd or cad) if usd_first else (cad or usd))
+            except ValueError as e:
+                raise ImportError_(f"Couldn't read a row ({e}).") from None
     return Parsed("rbc", list(parts.values()))
 
 
@@ -529,10 +556,18 @@ def _ofx_statement(text, bank, filename):
         except ValueError:
             balance = None
     covers_from = _ofx_covers_from(text, balance)
-    covers = {"covers_from": covers_from, "covers_to": _ofx_covers_to(text, covers_from)}
+    covers = {"covers_from": covers_from, "covers_to": _ofx_covers_to(text, covers_from), "currency": _ofx_currency(text)}
     if is_card or hint.kind in ("credit_card", "line_of_credit"):
         return Part(hint, rows, balance, card_file=True, flip_guess=_flip_guess(rows), **covers)
     return Part(hint, rows, balance, **covers)
+
+
+def _ofx_currency(text):
+    """The currency a statement says it's in: its own CURDEF ("USD"), else None (issue #76). A row's ORIGCURRENCY or
+    CURRENCY (a purchase made in another currency) never counts: the transaction list is left out."""
+    outside = re.sub(r"<BANKTRANLIST>.*?(?:</BANKTRANLIST>|$)", "", text, flags=re.IGNORECASE | re.DOTALL)
+    code = (_ofx_value(outside, "CURDEF") or "").upper()
+    return code if re.fullmatch(r"[A-Z]{3}", code) else None
 
 
 def _ofx_listing(text, tag):
@@ -760,19 +795,24 @@ def save_layout(conn, sniffed, layout):
 
 def _parse_csv(text, filename, conn, picked=None):
     sniffed = csvlayout.sniff(text)
+    currency = csvlayout.currency(sniffed)  # a Currency column: checked before anything's set up (issue #76)
     layout = saved_layout(conn, sniffed) if conn is not None else None
     if layout is None:
-        raise NeedsSetup("layout")
+        raise NeedsSetup("layout", currency=currency)
     try:
         rows = [Row(day, cents, description) for day, cents, description in csvlayout.read(text, layout)]
         balance = csvlayout.running_balance(text, layout)
     except csvlayout.LayoutError as e:  # the bank changed its file: show the app its columns again
-        raise NeedsSetup("layout", f"{e}. Set the file up again from the Inbox.") from None
+        raise NeedsSetup("layout", f"{e}. Set the file up again from the Inbox.", currency) from None
     key = csv_account_key(layout["id"], filename)
-    account_id = picked or csv_account(conn, layout["id"], key, rows, balance)
+    try:
+        account_id = picked or csv_account(conn, layout["id"], key, rows, balance)
+    except NeedsSetup as e:  # which account? Not before the currency is checked
+        e.currency = currency
+        raise
     hint = AccountHint([key], "chequing", csv_account_name(filename), create=False, account_id=account_id)
     opening = (day_before(balance["date"]), balance["sign"] * balance["opening"]) if balance else None
-    return Parsed("csv", [Part(hint, rows, opening=opening)], kind=layout_kind(layout))
+    return Parsed("csv", [Part(hint, rows, opening=opening, currency=currency)], kind=layout_kind(layout))
 
 
 # How well a set-up CSV fits an account (csv_fit), from -1 to 1.
@@ -882,6 +922,79 @@ def _parse_actual(text):
         except (ValueError, KeyError):
             continue
     return Parsed("actual", actual_rows=out)
+
+
+# ── the budget's currency ────────────────────────────────────
+
+def budget_currency(conn):
+    """The budget's currency ("CAD"), or None until a file says one (issue #76). Kept in meta; never changes once set."""
+    row = conn.execute("SELECT value FROM meta WHERE key = 'currency'").fetchone()
+    return row["value"] if row and row["value"] else None
+
+
+def set_budget_currency(conn, currency):
+    """Sets the budget's currency, unless it has one. Call inside db.write()."""
+    conn.execute("INSERT OR IGNORE INTO meta (key, value) VALUES ('currency', ?)", (currency,))
+
+
+def majority_currency(conn, parsed_files):
+    """The currency most of these files' accounts say, or None when none says one (issue #76). Each account counts
+    once, whatever file it's in (an RBC CSV with three accounts counts three, two downloads of one account count one),
+    and a tie goes to the currency whose accounts have more transactions (the most a file of it has, or the account
+    has already): Chequing (CAD, 300 transactions), Mastercard (CAD, 120), US Dollar (USD, 15) → CAD. A file that
+    says no currency (Tangerine's CSVs) counts for nothing."""
+    accounts = {}
+    for parsed in parsed_files:
+        for part in parsed.parts:
+            if not part.currency:
+                continue
+            rows = _match_rows(part)
+            found = find_account(conn, part.account, rows, fingerprints(rows))
+            identity = ("account", found) if found else ("file", tuple(part.account.keys) or part.account.name)
+            held = conn.execute("SELECT COUNT(*) FROM transactions WHERE account_id = ?",
+                                (found,)).fetchone()[0] if found else 0
+            currency, most = accounts.get(identity, (part.currency, 0))
+            accounts[identity] = (currency, max(most, held, len(part.rows)))
+    return most_said(accounts.values())
+
+
+def most_said(accounts):
+    """The currency most of these (currency, transactions) accounts are in; a tie goes to the one with more
+    transactions, then the first code in alphabetical order (so it's always the same). None when there are none."""
+    tally = {}
+    for currency, transactions in accounts:
+        count, total = tally.get(currency, (0, 0))
+        tally[currency] = (count + 1, total + transactions)
+    return min(tally, key=lambda c: (-tally[c][0], -tally[c][1], c)) if tally else None
+
+
+def fitting(conn, parsed, currency):
+    """(the file with only the accounts that fit a budget in `currency`, [the parts left out]). An account fits when
+    the file says it's in that currency or says nothing (Tangerine's CSVs). A file whose accounts are all in another
+    currency raises OtherCurrency: "This file is in USD; your budget is in CAD." In a file with several accounts (RBC's
+    CSV, an OFX file with several statements) only the other currency's are left out, so they're never asked about
+    ("new account?", "is it what you owe?"). `currency` None (the budget has none yet): the one most of the file's own
+    accounts say."""
+    if parsed.format == "actual":
+        return parsed, []
+    currency = currency or majority_currency(conn, [parsed])
+    skipped = [p for p in parsed.parts if p.currency and p.currency != currency]
+    if not skipped:
+        return parsed, []
+    kept = [p for p in parsed.parts if not p.currency or p.currency == currency]
+    if not kept:
+        raise OtherCurrency(Counter(p.currency for p in skipped).most_common(1)[0][0], currency)
+    return replace(parsed, parts=kept), skipped
+
+
+def kept_file_currency(conn, imp, path):
+    """The currency an imported file, kept in Imported Files, says the import's account is in, or None (issue #76:
+    a budget from before 1.4.3 takes the currency its files say)."""
+    parsed = parse(path, conn, imp["account_id"])
+    if parsed.format == "actual":
+        return None
+    part = _part_of(conn, parsed, imp["account_id"])
+    return part.currency if part else None
 
 
 # ── fingerprints ─────────────────────────────────────────────

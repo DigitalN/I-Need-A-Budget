@@ -2097,7 +2097,8 @@ function drawInbox() {
   const alerts = data.alerts.map(a => a.type === 'balance' ? `<div class="notice">${esc(a.text)}<span class="spacer"></span>
       <input style="width:130px;text-align:right" placeholder="Balance" data-balance-for="${a.account_id}">${a.is_debt ? favourBox(a.account_id) : ''}<button class="btn small" data-act="save-balance" data-account="${a.account_id}">Save</button></div>`
     : a.type === 'duplicate' ? duplicateNotice(a) : '').join('') +
-    (data.files || []).map((f, i) => `<div class="notice info"><span><b>${esc(f.filename)}</b> ${f.needs === 'layout' ? 'needs setting up once.' : f.needs === 'new_account' ? 'is for an account the app hasn\'t seen: a new one, or one you have?' : f.needs === 'balance_sign' ? 'has a card balance the app can\'t read: is it what you owe?' : 'is from a bank the app knows: which account is it for?'}</span><span class="spacer"></span>
+    (data.files || []).map((f, i) => f.needs === 'currency' ? `<div class="notice info"><span><b>${esc(f.filename)}</b> is in ${esc(f.currency)}; your budget is in ${esc(f.budget)}.</span><span class="spacer"></span>
+      <button class="btn small" data-act="ignore-file" data-index="${i}">Don't import</button></div>` : `<div class="notice info"><span><b>${esc(f.filename)}</b> ${f.needs === 'layout' ? 'needs setting up once.' : f.needs === 'new_account' ? 'is for an account the app hasn\'t seen: a new one, or one you have?' : f.needs === 'balance_sign' ? 'has a card balance the app can\'t read: is it what you owe?' : 'is from a bank the app knows: which account is it for?'}</span><span class="spacer"></span>
       <button class="btn small" data-act="ignore-file" data-index="${i}">${f.needs === 'new_account' || f.needs === 'balance_sign' ? 'Don\'t import' : 'Not a bank file'}</button><button class="btn small primary" data-act="setup-file" data-index="${i}">${f.needs === 'layout' ? 'Set up…' : f.needs === 'balance_sign' ? 'Answer…' : 'Choose…'}</button></div>`).join('');
   const cards = state.blocks.map((b, i) => b.items.length > 1 ? groupCard(b, i) : itemCard(b.items[0], i)).join('');
   const filedRows = data.categorized.map(t => `<tr><td class="muted nowrap">${day(t.date)}</td><td>${esc(t.payee_name || t.raw_name)}${t.subscription_name ? ` <span class="tag info">${esc(t.subscription_name)}</span>` : ''}</td>
@@ -2422,7 +2423,7 @@ async function inboxAction(btn, e) {
   else if (act === 'ignore-file') {
     const f = state.inbox.files[Number(btn.dataset.index)];
     await call('ignore_file', [f.path]);
-    toast(`${f.filename} won't be asked about again`);
+    toast(`${f.filename} won't be ${f.needs === 'currency' ? 'imported' : 'asked about again'}`);
     await renderInbox();
   } else if (act === 'merge-account') {
     const a = state.inbox.alerts.find(x => x.type === 'duplicate' && x.account_id === Number(btn.dataset.account));
@@ -3304,10 +3305,37 @@ async function onboardingAction(btn) {
 }
 // What an import said about each account's balance (importer, Inbox.check_balance): shown with it.
 const balanceNotes = results => (results || []).filter(x => x.balance_note).map(x => `${x.account_name}: ${x.balance_note}`);
+// An account left out of a file for its currency (issue #76): in the file's toast, after the file's own figures.
+const skippedNote = s => `${s.account} skipped: it's in ${s.currency}; your budget is in ${s.budget}`;
+// What an import's toast says: {text, inbox (Open Inbox), error}, or null for nothing to say. A dropped file's errors
+// show (issue #76); from Downloads, only a file in another currency, which waits in the Inbox (#47: the others are
+// logged and skipped).
+function importMessage(payload) {
+  const results = payload.results || [];
+  const added = results.reduce((s, r) => s + r.added, 0);
+  const review = (payload.counts && payload.counts.inbox) || 0;
+  const errors = payload.errors || [];
+  const refused = payload.auto ? errors.filter(e => e.currency).map(e => `${e.filename} is in ${e.currency}; your budget is in ${e.budget}.`) : [];
+  const failed = payload.auto ? [] : errors.map(e => `${e.filename}: ${e.error}`);
+  const skipped = (payload.skipped || []).map(skippedNote);
+  if (!results.length && !payload.learnt) {
+    if (refused.length) return { text: refused.join(' · '), inbox: true };
+    return failed.length ? { text: failed.join(' · '), error: true } : null;
+  }
+  const notes = [...balanceNotes(results), ...skipped, ...failed, ...refused].map(n => ` · ${n}`).join('');
+  const files = results.map(r => r.filename).filter((f, i, all) => all.indexOf(f) === i).join(', ');
+  return { text: (added ? `Imported ${plural(added, 'new transaction')} from ${files}${review ? ` · ${review} in the Inbox` : ''}`
+    : results.length ? `Nothing new in ${files}` : summarizeImport(payload)) + (results.length ? notes : ''), inbox: !!(review || refused.length) };
+}
 function summarizeImport(r) {
   const parts = [];
-  const several = new Set((r.results || []).filter((x, i, all) => all.findIndex(y => y.filename === x.filename) !== i).map(x => x.filename));
-  for (const x of r.results || []) parts.push(`${x.filename}${several.has(x.filename) ? ` (${x.account_name})` : ''}: ${x.added} new${x.duplicates ? `, ${x.duplicates} already there` : ''}${x.balance_note ? ` (${x.balance_note})` : ''}`);
+  const results = r.results || [];
+  const several = new Set(results.filter((x, i, all) => all.findIndex(y => y.filename === x.filename) !== i).map(x => x.filename));
+  results.forEach((x, i) => {
+    parts.push(`${x.filename}${several.has(x.filename) ? ` (${x.account_name})` : ''}: ${x.added} new${x.duplicates ? `, ${x.duplicates} already there` : ''}${x.balance_note ? ` (${x.balance_note})` : ''}`);
+    if (!results.slice(i + 1).some(y => y.filename === x.filename))
+      for (const s of (r.skipped || []).filter(s => s.filename === x.filename)) parts.push(skippedNote(s));
+  });
   if (r.learnt) parts.push(`learnt ${r.learnt.examples} examples from ${r.learnt.filename}`);
   for (const e of r.errors || []) parts.push(`${e.filename}: ${e.error}`);
   return parts.join(' · ') || 'Nothing new';
@@ -3409,9 +3437,6 @@ document.addEventListener('focusout', () => setTimeout(() => { if (state.refresh
 window.appEvent = (name, payload) => {
   if (name === 'imported') {
     if (payload.error) return toast(payload.error, { error: true });
-    const results = payload.results || [];
-    const added = results.reduce((s, r) => s + r.added, 0);
-    const review = (payload.counts && payload.counts.inbox) || 0;
     if (payload.counts) setCounts(payload.counts);
     const waiting = payload.needs_setup || [];
     if (waiting.length && !payload.auto) setupFiles(waiting);  // you dropped them: ask now
@@ -3420,11 +3445,9 @@ window.appEvent = (name, payload) => {
       toast(waiting.every(f => f.needs === 'new_account') ? `${names}: a new account?` : `${names} ${waiting.length === 1 ? 'needs' : 'need'} setting up`,
         { action: { label: waiting.every(f => f.needs === 'new_account') ? 'Choose…' : 'Set up', run: () => setupFiles(waiting) } });
     }
-    if (!results.length && !payload.learnt) return;
-    const notes = balanceNotes(results).map(n => ` · ${n}`).join('');
-    toast((added ? `Imported ${plural(added, 'new transaction')} from ${results.map(r => r.filename).join(', ')}${review ? ` · ${review} in the Inbox` : ''}`
-      : `Nothing new in ${results.map(r => r.filename).join(', ')}`) + notes,
-      review ? { action: { label: 'Open Inbox', run: () => navigate('inbox') } } : {});
+    const message = importMessage(payload);
+    if (!message) return;
+    toast(message.text, message.inbox ? { action: { label: 'Open Inbox', run: () => navigate('inbox') } } : { error: message.error });
     refreshWhenIdle();
   } else if (name === 'update') {
     state.update = payload;

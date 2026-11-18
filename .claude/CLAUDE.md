@@ -210,6 +210,28 @@ All in `Application Files/`:
   stays first (decided on #79). The other keys a budget keeps (an account number's
   `number:<bank>:<last4>`, Tangerine's nicknames, a set-up CSV's name and layout signature)
   are pinned in `scripts/tests/test_golden_account_keys.py`.
+- **One currency per budget** (issue #76). Kept in `meta` (`currency`, `importer.budget_currency`),
+  none until a file says one: an OFX statement's own `CURDEF` (a row's `ORIGCURRENCY` or `CURRENCY`
+  never counts, and rows are read as they are), RBC's CAD$ or USD$ column, whichever most of an
+  account's rows use (a row with both is read from that one), or a set-up CSV's column headed exactly
+  "Currency" or "Devise" with the same code on every row (mixed codes or a blank say nothing). A file
+  that says none (Tangerine's CSVs, a set-up CSV without that column, a transaction added by hand)
+  always fits. The first import with a file that says one sets it, to the one most of that import's
+  accounts say (each account once, whatever file it's in; a tie goes to more transactions:
+  `importer.majority_currency`); once set it never changes, and it isn't in Settings. Then a file all in
+  another currency fails ("This file is in USD; your budget is in CAD.", `importer.OtherCurrency`),
+  and in a file with several accounts only the other currency's are left out (`importer.fitting`),
+  before `_accounts_to_ask` and `_balance_questions`, so they're never asked about; the file's toast
+  says so ("RBC US Dollar ••5678 skipped: it's in USD; your budget is in CAD", `skipped` in the
+  import's answer) and so does the log, not Accounts → Imported files. Everything that reads a file to
+  import it or ask about it goes through `service._parse_fitting`; a set-up CSV is refused before it's
+  set up or asked which account. A dropped file's errors show in its toast. A refused file from
+  Downloads waits at the top of the Inbox (need `currency`) with Don't import, and toasts with Open
+  Inbox when it arrives (other files there the app can't read are logged and skipped, #47). "$" stays
+  for every currency: the currency only decides which files fit. A budget from before 1.4.3 takes the
+  currency most of its accounts' kept files say at its first launch (`service.read_currency`, once:
+  meta `currency_read`, which db.py writes for a new budget); none says one → none yet; an account whose
+  files say another gets a line in the log, and its next file is refused.
 - **Accounts are never guessed across banks.** A file finds its account by bank and
   number (`number:<bank>:<last4>`, the same from a CSV or a Quicken file), Tangerine's by
   file name too, else the one account already holding its rows; otherwise it's a new

@@ -236,6 +236,25 @@ def signature(sniffed):
     return f"n:{sniffed['width']}:" + "".join("m" if t == "e" else t for t in sniffed["types"])
 
 
+CURRENCY_HEADERS = ("currency", "devise")
+
+
+def currency(sniffed):
+    """The currency a file says it's in (issue #76): a column headed exactly "Currency" (or "Devise") with the
+    same code on every row, "USD". None when there's no such column, or its rows differ or have one blank: a card
+    listing the original currency of a US purchase, its amount in the card's own currency, says nothing."""
+    if not sniffed or not sniffed["header"]:
+        return None
+    for col, name in enumerate(sniffed["header"]):
+        if name.strip().casefold() not in CURRENCY_HEADERS:
+            continue
+        codes = {(r[col] if col < len(r) else "").strip().upper() for r in sniffed["rows"]}
+        if len(codes) == 1 and re.fullmatch(r"[A-Z]{3}", next(iter(codes))):
+            return codes.pop()
+        return None
+    return None
+
+
 def legacy_signature(sniffed):
     """signature() as versions before the empty-column rule wrote it (layouts saved then are
     still found by it)."""
