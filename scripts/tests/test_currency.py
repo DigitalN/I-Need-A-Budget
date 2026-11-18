@@ -275,6 +275,27 @@ def test_a_file_from_downloads_in_another_currency_waits_in_the_inbox(app):
     assert path.exists() and len(call(app, "accounts")) == 2
 
 
+def test_a_file_you_said_not_to_import_never_decides_the_currency(app):
+    """No currency yet, set up with a card CSV: a USD card file in Downloads you said Don't import to (as in 1.4.2)
+    has no say at the next launch. A CAD file arriving beside it then sets CAD, and the ignored one is refused, with
+    no toast."""
+    imports(app, (CARD_FILE, card_csv([("10/02/2026", "SAMPLE DINER CALGARY AB", "-12.00", "Restaurant")])))
+    app.db.set_meta("onboarded", "1")
+    path = write(app.test_downloads, "US Card.qfx",
+                 ofx(statement(card_number("9999"), rows(4, "V"), "USD", card=True, balance="-40.00")))
+    call(app, "ignore_file", str(path))
+    os.utime(path, (time.time() - 10, time.time() - 10))
+    assert app.watch_downloads() is None
+    assert currency(app) is None and path.exists()
+    chequing = write(app.test_downloads, "Chequing.qfx", ofx(statement(CHEQUING, rows(2, "C"))))
+    os.utime(chequing, (time.time() - 10, time.time() - 10))
+    app._seen_files = {}  # as at the next launch
+    out = app.watch_downloads()
+    assert currency(app) == "CAD"
+    assert [r["filename"] for r in out["results"]] == ["Chequing.qfx"] and out["errors"] == []
+    assert out["needs_setup"] == [] and app.pending_files() == [] and path.exists()
+
+
 # ── a budget from before 1.4.3 ───────────────────────────────
 
 def as_before_143(app):

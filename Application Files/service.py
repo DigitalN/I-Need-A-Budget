@@ -368,10 +368,11 @@ class BudgetService:
         moved into the app's Imported Files folder afterwards."""
         return self._import_files(paths, archive)
 
-    def _import_files(self, paths, archive=True, chosen=None, answers=None):
+    def _import_files(self, paths, archive=True, chosen=None, answers=None, ignored=()):
         """`chosen`: {path: {part index: account id}} for accounts the person picked (a set-up CSV's
         goes into it whatever its rows: importer.parse). `answers`: {path: {part index: 'owed' or
-        'favour'}} for card balances they said the sign of."""
+        'favour'}} for card balances they said the sign of. `ignored`: files in Downloads you said
+        not to import (the watcher's), which have no say in the budget's currency."""
         chosen = {str(Path(k)): v for k, v in (chosen or {}).items()}
         answers = {str(Path(k)): v for k, v in (answers or {}).items()}
         downloads = self.settings.downloads_dir().resolve()
@@ -404,16 +405,18 @@ class BudgetService:
         # them, a file of the few could set it for good while they waited). Declining them later leaves it set.
         # Then a file in another currency is refused, and in a file with several accounts the other currency's are left
         # out, before anything asks about them.
+        ignored = {str(Path(p)) for p in ignored}
         if budget is None:
             with self.db.read() as c:
-                decided = importer.majority_currency(c, [parsed for _, parsed in parsed_files])
+                decided = importer.majority_currency(c, [parsed for path, parsed in parsed_files
+                                                         if str(path) not in ignored])
             if decided:
                 with self.db.write(keep_undo=True) as c:  # no step's undo touches it: it's never undone
                     importer.set_budget_currency(c, decided)
                     budget = importer.budget_currency(c)
                 log.info("The budget's currency is %s, from %s", budget,
-                         ", ".join(path.name for path, parsed in parsed_files
-                                   if any(part.currency == budget for part in parsed.parts)))
+                         ", ".join(path.name for path, parsed in parsed_files if str(path) not in ignored
+                                   and any(part.currency == budget for part in parsed.parts)))
                 self._file_status.clear()  # what files in Downloads need is looked at again (not _seen_files: no re-import)
         for path, e in saying:
             if budget and e.currency != budget:
@@ -440,6 +443,8 @@ class BudgetService:
                     self.db.big_step(undoes)
                 learnt = {"filename": path.name, **outcome}
                 continue
+            if budget is None and str(path) in ignored and any(part.currency for part in parsed.parts):
+                continue  # a file you said not to import never decides the currency: it waits until another does
             try:
                 with self.db.read() as c:
                     kept, left_out = importer.fitting(c, parsed, budget)
@@ -631,9 +636,9 @@ class BudgetService:
                 ready.append(str(path))
         if not ready:
             return None
-        outcome = self.import_files(ready)
         with self.db.read() as c:
             ignored = {r["sha256"] for r in c.execute("SELECT sha256 FROM ignored_files")}
+        outcome = self._import_files(ready, ignored=[p for p in ready if _sha_or_none(p) in ignored])
         outcome["needs_setup"] = [f for f in outcome["needs_setup"] if importer.sha256_of(f["path"]) not in ignored]
         # A file in another currency waits in the Inbox (pending_files), unless you said not to import it.
         outcome["errors"] = [e for e in outcome["errors"] if not e.get("currency")
@@ -2229,6 +2234,14 @@ class BudgetService:
         if not paths:
             return None
         return self.import_files(paths, archive=False)
+
+
+def _sha_or_none(path):
+    """A file's sha256, or None when it's gone or can't be read."""
+    try:
+        return importer.sha256_of(path)
+    except OSError:
+        return None
 
 
 def _refused(path, e):
