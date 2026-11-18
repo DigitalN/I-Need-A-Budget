@@ -156,6 +156,11 @@ class BudgetApp:
             self._service.read_imported_files()
         except Exception:
             log.warning("Couldn't read the imported files again", exc_info=True)
+        # Once, at the first launch of 1.4.3: the budget takes the currency its kept files say (issue #76).
+        try:
+            self._service.read_currency()
+        except Exception:
+            log.warning("Couldn't read the imported files' currency", exc_info=True)
         self._window = None
         self._quitting = False
         self._quit_asked = None  # when the page was last asked to quit and hasn't answered yet

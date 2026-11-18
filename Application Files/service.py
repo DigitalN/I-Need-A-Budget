@@ -15,6 +15,7 @@ import math
 import os
 import re
 import shutil
+from collections import Counter
 from datetime import date, datetime
 from pathlib import Path
 
@@ -132,6 +133,8 @@ class BudgetService:
         self.hooks = hooks or {}          # window features: choose_files, reveal, updates, app_info
         self._seen_files = {}             # Downloads watcher: path → (mtime, size) already looked at
         self._file_status = {}            # path → ((mtime, size), what it needs or None): see _needs()
+        self._status_round = 0            # bumped whenever _file_status is cleared: a need worked out before isn't kept
+        self._told_refused = set()        # files in another currency the watcher has toasted about (sha256): once a session
         move_into_budget(db, settings)    # a budget from before 1.4.1: Overspending and Usual's months (issue #153)
 
     # ── plumbing ──
@@ -232,10 +235,12 @@ class BudgetService:
         item = {"path": str(path), "filename": path.name}
         try:
             with self.db.read() as c:
-                parsed = importer.parse(path, c)
+                parsed = self._parse_fitting(c, path)[0]
                 needs = self._needs(c, path, parsed)
         except importer.NeedsSetup:
             needs, parsed = "layout", None
+        except importer.OtherCurrency as e:  # listed, not to import: onboarding says why (issue #76)
+            return {**item, "format": None, "error": str(e), "refused": True}
         except (importer.ImportError_, OSError) as e:
             return {**item, "format": None, "error": str(e)}
         except Exception as e:  # one odd file must not stop the others being listed
@@ -277,6 +282,29 @@ class BudgetService:
         part = parsed.parts[0]
         found = importer.find_account(c, part.account, part.rows, importer.fingerprints(part.rows))
         return None if found else "account"
+
+    def _parse_fitting(self, c, path):
+        """(the file as importer.parse reads it, with only the accounts that fit the budget's currency, [the parts
+        left out]): see importer.fitting (issue #76). With no currency yet, the one most of the file's own accounts
+        say. Raises importer.OtherCurrency for a file all in another currency, a set-up CSV's Currency column
+        included, before it's set up or asked which account it's for."""
+        currency = importer.budget_currency(c)
+        try:
+            parsed = importer.parse(path, c)
+        except importer.NeedsSetup as e:
+            if e.currency and currency and e.currency != currency:
+                raise importer.OtherCurrency(e.currency, currency) from None
+            raise
+        return importer.fitting(c, parsed, currency)
+
+    def _skipped_account(self, c, part):
+        """How an account left out of a file for its currency is named in the file's toast: "RBC US Dollar ••5678"."""
+        rows = importer._match_rows(part)
+        found = importer.find_account(c, part.account, rows, importer.fingerprints(rows))
+        row = c.execute("SELECT name FROM accounts WHERE id = ?", (found,)).fetchone() if found else None
+        name = row["name"] if row else part.account.name
+        last4 = part.account.last4
+        return f"{name} ••{last4}" if last4 and last4 not in name else name
 
     def _accounts_to_ask(self, c, parsed, chosen=()):
         """The parts of a bank file whose account the app hasn't seen, when you already have
@@ -330,9 +358,10 @@ class BudgetService:
         found = []
         for path in self._candidates(self.settings.downloads_dir()):
             item = self._describe_file(path)
-            if item.get("format"):
+            if item.get("format") or item.get("refused"):
                 found.append(item)
-        found.sort(key=lambda i: (i["format"] == "actual", i.get("account_name") or "", i.get("first_date") or ""))
+        found.sort(key=lambda i: (bool(i.get("refused")), i["format"] == "actual", i.get("account_name") or "",
+                                  i.get("first_date") or ""))
         return {"folder": str(self.settings.downloads_dir()), "files": found}
 
     @exposed
@@ -341,22 +370,30 @@ class BudgetService:
         moved into the app's Imported Files folder afterwards."""
         return self._import_files(paths, archive)
 
-    def _import_files(self, paths, archive=True, chosen=None, answers=None):
+    def _import_files(self, paths, archive=True, chosen=None, answers=None, ignored=()):
         """`chosen`: {path: {part index: account id}} for accounts the person picked (a set-up CSV's
         goes into it whatever its rows: importer.parse). `answers`: {path: {part index: 'owed' or
-        'favour'}} for card balances they said the sign of."""
+        'favour'}} for card balances they said the sign of. `ignored`: files in Downloads you said
+        not to import (the watcher's), which have no say in the budget's currency."""
         chosen = {str(Path(k)): v for k, v in (chosen or {}).items()}
         answers = {str(Path(k)): v for k, v in (answers or {}).items()}
         downloads = self.settings.downloads_dir().resolve()
-        results, learnt, errors, needs_setup = [], None, [], []
-        parsed_files = []
+        results, learnt, errors, needs_setup, skipped = [], None, [], [], []
+        parsed_files, saying = [], []
+        with self.db.read() as c:
+            budget = importer.budget_currency(c)
         for p in paths:
             path = Path(p)
             try:
                 with self.db.read() as c:
                     parsed_files.append((path, importer.parse(path, c, chosen.get(str(path), {}).get(0))))
             except importer.NeedsSetup as e:
-                needs_setup.append({"path": str(path), "filename": path.name, "needs": e.what})
+                if e.currency and budget and e.currency != budget:  # a set-up CSV's Currency column (issue #76)
+                    errors.append(_refused(path, importer.OtherCurrency(e.currency, budget)))
+                elif e.currency and budget is None:
+                    saying.append((path, e))  # checked once this import's currency is known
+                else:
+                    needs_setup.append({"path": str(path), "filename": path.name, "needs": e.what})
             except (importer.ImportError_, OSError) as e:
                 errors.append({"filename": path.name, "error": str(e)})
             except Exception as e:  # one odd file must not stop the others
@@ -365,6 +402,29 @@ class BudgetService:
         # Learn from Actual first, then bank files oldest first, so refunds and transfers
         # find what they belong to.
         parsed_files.sort(key=lambda pf: (pf[1].format != "actual", pf[1].first_date or ""))
+        # The budget's currency (issue #76): until a file says one, the one most of these files' accounts say, set
+        # straight away, whether or not those files then wait on a question (decided on #76's review: held back for
+        # them, a file of the few could set it for good while they waited). Declining them later leaves it set.
+        # Then a file in another currency is refused, and in a file with several accounts the other currency's are left
+        # out, before anything asks about them.
+        ignored = {str(Path(p)) for p in ignored}
+        if budget is None:
+            with self.db.read() as c:
+                decided = importer.majority_currency(c, [parsed for path, parsed in parsed_files
+                                                         if str(path) not in ignored])
+            if decided:
+                with self.db.write(keep_undo=True) as c:  # no step's undo touches it: it's never undone
+                    importer.set_budget_currency(c, decided)
+                    budget = importer.budget_currency(c)
+                log.info("The budget's currency is %s, from %s", budget,
+                         ", ".join(path.name for path, parsed in parsed_files if str(path) not in ignored
+                                   and any(part.currency == budget for part in parsed.parts)))
+                self._clear_file_status()  # what files in Downloads need is looked at again (not _seen_files: no re-import)
+        for path, e in saying:
+            if budget and e.currency != budget:
+                errors.append(_refused(path, importer.OtherCurrency(e.currency, budget)))
+            else:
+                needs_setup.append({"path": str(path), "filename": path.name, "needs": e.what})
         rechecked = 0
         for path, parsed in parsed_files:
             in_downloads = path.resolve().parent == downloads
@@ -385,6 +445,17 @@ class BudgetService:
                     self.db.big_step(undoes)
                 learnt = {"filename": path.name, **outcome}
                 continue
+            if budget is None and str(path) in ignored and any(part.currency for part in parsed.parts):
+                continue  # a file you said not to import never decides the currency: it waits until another does
+            try:
+                with self.db.read() as c:
+                    kept, left_out = importer.fitting(c, parsed, budget)
+                    left_out = [{"filename": path.name, "account": self._skipped_account(c, part),
+                                 "currency": part.currency, "budget": budget} for part in left_out]
+            except importer.OtherCurrency as e:
+                errors.append(_refused(path, e))
+                continue
+            parsed = kept
             accounts = chosen.get(str(path), {})
             if parsed.format != "csv":
                 with self.db.read() as c:
@@ -401,10 +472,14 @@ class BudgetService:
                 needs_setup.append({"path": str(path), "filename": path.name, "needs": e.what})
                 continue
             results += file_results
+            for note in left_out:  # in the file's toast and the log, not in Accounts → Imported files
+                log.info("%s: %s skipped: it's in %s; your budget is in %s", note["filename"], note["account"],
+                         note["currency"], note["budget"])
+            skipped += left_out
         if results:
             rechecked += self.recheck()
         return {"results": results, "learnt": learnt, "errors": errors, "needs_setup": needs_setup,
-                "rechecked": rechecked, "counts": self.counts()}
+                "skipped": skipped, "rechecked": rechecked, "counts": self.counts()}
 
     def _import_one(self, path, parsed, archive, accounts=None, answers=None):
         """One bank file, in one change without a label: an import clears undo (db.write), and
@@ -466,6 +541,52 @@ class BudgetService:
         log.info("Read %d of %d imported files again: %d transactions they share noted", read, len(imports), added)
         return added
 
+    def read_currency(self):
+        """Once, at the first launch of 1.4.3 (issue #76): a budget from before then takes the currency most of its
+        accounts' files kept in Imported Files say (each account once, as the currency of most of its files; a tie
+        goes to the accounts with more transactions). None says one: no currency yet, and the next file that says one
+        sets it. A copy whose files all say USD mustn't start refusing every download (ADR 0007). An account whose
+        files say another currency gets a line in the log, nothing else: its next file is refused. A new budget has
+        nothing to read (db.py marks it done). Runs before the window opens. Returns the currency, or None."""
+        if self.db.get_meta("currency_read") is not None:
+            return None
+        with self.db.read() as c:
+            imports = c.execute("SELECT * FROM imports WHERE account_id IS NOT NULL ORDER BY id").fetchall()
+        said = {}  # account id → how many of its kept files say each currency
+        for imp in imports:
+            path = self._kept_file(imp)
+            if path is None:
+                continue
+            try:
+                with self.db.read() as c:
+                    currency = importer.kept_file_currency(c, imp, path)
+            except Exception as e:  # one odd file must not stop the others
+                log.warning("Couldn't read %s again for its currency: %s", imp["filename"], e)
+                continue
+            if currency:
+                said.setdefault(imp["account_id"], Counter())[currency] += 1
+        with self.db.write(keep_undo=True) as c:  # meta only: no step's undo trips over it
+            accounts = {}
+            for account_id, counts in said.items():
+                row = c.execute("SELECT name, (SELECT COUNT(*) FROM transactions WHERE account_id = a.id) AS held "
+                                "FROM accounts a WHERE id = ?", (account_id,)).fetchone()
+                if row is not None:
+                    accounts[account_id] = (counts.most_common(1)[0][0], row["held"], row["name"])
+            currency = importer.budget_currency(c) or importer.most_said((cur, n) for cur, n, _ in accounts.values())
+            if currency:
+                importer.set_budget_currency(c, currency)
+            c.execute("INSERT INTO meta (key, value) VALUES ('currency_read', '1') "
+                      "ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+        if currency:
+            log.info("The budget's currency is %s, from the files kept in Imported Files", currency)
+        else:
+            log.info("No currency for the budget yet: none of the files kept in Imported Files says one")
+        for account_currency, _, name in accounts.values():
+            if account_currency != currency:
+                log.info("%s: its files say %s; the budget is in %s. Its next file will be refused", name,
+                         account_currency, currency)
+        return currency
+
     def _kept_file(self, imp):
         """The file an import read, kept in Imported Files (where it was moved, or the same place in this data
         folder), or None: one dropped from another folder was never kept, and one changed since isn't it."""
@@ -517,12 +638,25 @@ class BudgetService:
                 ready.append(str(path))
         if not ready:
             return None
-        outcome = self.import_files(ready)
         with self.db.read() as c:
             ignored = {r["sha256"] for r in c.execute("SELECT sha256 FROM ignored_files")}
+        outcome = self._import_files(ready, ignored=[p for p in ready if _sha_or_none(p) in ignored])
         outcome["needs_setup"] = [f for f in outcome["needs_setup"] if importer.sha256_of(f["path"]) not in ignored]
+        # A file in another currency waits in the Inbox (pending_files), unless you said not to import it. Its toast
+        # shows once a session: the currency never changes, so neither does what happens to it (the watcher looks at
+        # files again after every set-up).
+        errors = []
+        for e in outcome["errors"]:
+            if e.get("currency"):
+                sha = _sha_or_none(e["path"])
+                if sha in ignored or sha in self._told_refused:
+                    continue
+                self._told_refused.add(sha)
+            errors.append(e)
+        outcome["errors"] = errors
         outcome["auto"] = True  # the page offers to set files up rather than asking straight away
-        return outcome if outcome["results"] or outcome["needs_setup"] else None
+        refused = [e for e in outcome["errors"] if e.get("currency")]
+        return outcome if outcome["results"] or outcome["needs_setup"] or refused else None
 
     @exposed
     def choose_and_import(self):
@@ -550,23 +684,32 @@ class BudgetService:
             if cached and cached[0] == signature:
                 needs, sha = cached[1], cached[2]
             else:
+                round_ = self._status_round
                 needs, sha = self._file_needs(path), None
                 try:
                     sha = importer.sha256_of(path)
                 except OSError:
                     continue
-                self._file_status[str(path)] = (signature, needs, sha)
+                if self._status_round == round_:  # else what it needs may have changed while it was worked out
+                    self._file_status[str(path)] = (signature, needs, sha)
             if needs and sha not in ignored:
-                out.append({"path": str(path), "filename": path.name, "needs": needs, "modified": st.st_mtime})
+                what, *codes = needs.split(":")  # 'currency:USD:CAD': in USD, and the budget's in CAD
+                out.append({"path": str(path), "filename": path.name, "needs": what, "modified": st.st_mtime,
+                            **(dict(zip(("currency", "budget"), codes)) if codes else {})})
         return sorted(out, key=lambda f: f["modified"])
 
     def _file_needs(self, path):
+        """What a file in Downloads needs: see _needs, or 'currency:USD:CAD' for one in another currency than the
+        budget's (issue #76), which waits in the Inbox with Don't import. None for one that needs nothing, or that
+        the app can't read (#47: logged when it was tried, and skipped)."""
         try:
             text = importer.read_text(path)
             if importer.detect(text) not in importer.BANK_FORMATS:
                 return None
             with self.db.read() as c:
-                return self._needs(c, path, importer.parse(path, c))
+                return self._needs(c, path, self._parse_fitting(c, path)[0])
+        except importer.OtherCurrency as e:
+            return f"currency:{e.currency}:{e.budget}"
         except importer.NeedsSetup as e:
             if e.what == "layout" and "fit" in str(e):
                 log.info("%s no longer fits its saved layout: %s", path.name, e)
@@ -579,8 +722,14 @@ class BudgetService:
 
     def _forget_file_status(self):
         """After a layout or account is set up, files waiting in Downloads are looked at again."""
-        self._file_status.clear()
+        self._clear_file_status()
         self._seen_files = {}
+
+    def _clear_file_status(self):
+        """What files in Downloads need is worked out again: also a need being worked out right now (the watcher may
+        set the budget's currency meanwhile) isn't kept."""
+        self._file_status.clear()
+        self._status_round += 1
 
     # ── bank files for an account the app hasn't seen ──
 
@@ -591,7 +740,7 @@ class BudgetService:
         sort (card or bank account) first, since what a file says it is can be wrong."""
         path = Path(path)
         with self.db.read() as c:
-            parsed = importer.parse(path, c)
+            parsed = self._parse_fitting(c, path)[0]
             if parsed.format in ("actual", "csv"):
                 raise UserError("That isn't a file the app asks this about.")
             accounts = [a for a in self._accounts(c) if not a["closed"]]
@@ -627,7 +776,7 @@ class BudgetService:
         path = Path(path)
         picked, answers, asked = {}, {}, set()
         with self.db.read() as c:
-            parsed = importer.parse(path, c)
+            parsed = self._parse_fitting(c, path)[0]
             for choice in choices or []:
                 i = int(choice["index"])
                 if not 0 <= i < len(parsed.parts):
@@ -645,7 +794,7 @@ class BudgetService:
                 raise UserError(f"Is ${q['amount'] / 100:,.2f} what you owe on {q['name']}, or in your favour?")
         picked = {}
         with self.db.write() as c:
-            parsed = importer.parse(path, c)
+            parsed = self._parse_fitting(c, path)[0]
             for choice in choices or []:
                 i = int(choice["index"])
                 if not 0 <= i < len(parsed.parts):
@@ -672,7 +821,7 @@ class BudgetService:
         app can't read. [] once an earlier answer or balance has settled it."""
         path = Path(path)
         with self.db.read() as c:
-            questions = self._balance_questions(c, importer.parse(path, c))
+            questions = self._balance_questions(c, self._parse_fitting(c, path)[0])
         return {"path": str(path), "filename": path.name, "questions": questions}
 
     @exposed
@@ -683,7 +832,7 @@ class BudgetService:
             raise UserError("Pick one: what you owe, or in your favour.")
         path = Path(path)
         with self.db.read() as c:
-            questions = self._balance_questions(c, importer.parse(path, c))
+            questions = self._balance_questions(c, self._parse_fitting(c, path)[0])
         self._forget_file_status()
         downloads = self.settings.downloads_dir().resolve()
         return self._import_files([str(path)], archive=path.resolve().parent == downloads,
@@ -697,6 +846,7 @@ class BudgetService:
         sniffed = csvlayout.sniff(importer.read_text(path))
         if sniffed is None:
             raise UserError("This doesn't look like a bank file: no column of dates and amounts.")
+        self._check_csv_currency(sniffed)
         with self.db.read() as c:
             saved = importer.saved_layout(c, sniffed)
             if saved:
@@ -707,7 +857,7 @@ class BudgetService:
             suggested_account = None
             if saved:
                 try:  # not the account the name points to when the file doesn't look like it
-                    part = importer.parse(path, c).parts[0]
+                    part = self._parse_fitting(c, path)[0].parts[0]
                     suggested_account = importer.find_account(c, part.account, part.rows, importer.fingerprints(part.rows))
                 except importer.ImportError_:
                     pass
@@ -747,6 +897,7 @@ class BudgetService:
         sniffed = csvlayout.sniff(text)
         if sniffed is None:
             raise UserError("This doesn't look like a bank file.")
+        self._check_csv_currency(sniffed)  # before the layout or an account is saved
         clean = csvlayout.clean_layout(layout, sniffed["width"])
         csvlayout.read(text, clean)  # every row must fit
         balance = csvlayout.running_balance(text, clean)
@@ -774,6 +925,14 @@ class BudgetService:
         downloads = self.settings.downloads_dir().resolve()
         return self._import_files([str(path)], archive=path.resolve().parent == downloads,
                                   chosen={str(path): {0: account_id}})
+
+    def _check_csv_currency(self, sniffed):
+        """A CSV whose Currency column says another currency than the budget's is refused before it's set up."""
+        currency = csvlayout.currency(sniffed)
+        with self.db.read() as c:
+            budget = importer.budget_currency(c)
+        if currency and budget and currency != budget:
+            raise importer.OtherCurrency(currency, budget)
 
     @exposed
     def ignore_file(self, path):
@@ -2094,6 +2253,21 @@ class BudgetService:
         if not paths:
             return None
         return self.import_files(paths, archive=False)
+
+
+def _sha_or_none(path):
+    """A file's sha256, or None when it's gone or can't be read."""
+    try:
+        return importer.sha256_of(path)
+    except OSError:
+        return None
+
+
+def _refused(path, e):
+    """An import's error for a file all in another currency than the budget's (importer.OtherCurrency): a dropped
+    file's toast says it, and one from Downloads waits in the Inbox."""
+    log.info("%s not imported: %s", path.name, e)
+    return {"filename": path.name, "error": str(e), "path": str(path), "currency": e.currency, "budget": e.budget}
 
 
 def _count(n, one, many=None):

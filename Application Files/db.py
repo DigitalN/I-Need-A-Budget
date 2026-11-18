@@ -339,6 +339,9 @@ class Database:
             self.conn.executescript(SCHEMA)
             if version is None:  # a new budget: Overspending and Usual's months are kept in it (issue #153)
                 settings.new_budget(self.conn)
+                # Nothing imported to read the currency from (service.read_currency, issue #76): the first file that
+                # says one sets it.
+                self.conn.execute("INSERT OR IGNORE INTO meta (key, value) VALUES ('currency_read', '1')")
             if version is not None and version < 2:
                 columns = [r["name"] for r in self.conn.execute("PRAGMA table_info(categories)")]
                 if "note" not in columns:

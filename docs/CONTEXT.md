@@ -178,6 +178,10 @@ Everything one copy of the app keeps: accounts, categories, payees and the money
 assigned. Starting over means starting a new budget. The Budget page shows its
 categories month by month.
 
+**Currency**:
+The one currency a budget's files are in, set by the first file that says one. A file in
+another currency isn't imported. Amounts show as $ whatever it is.
+
 **Dashboard**:
 The page the app opens on: Ready to assign, the inbox, overspent categories, cash and
 what's owed, and what each category spent month by month.

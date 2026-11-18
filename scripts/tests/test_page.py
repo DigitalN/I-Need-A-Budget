@@ -496,3 +496,50 @@ def test_quitting_saves_what_you_are_typing_and_asks_only_when_it_cant():
     assert "fields() !== opened" in PAGE and "openDialog.dataset.picked = '1'" in PAGE
     # call() and tryCall() are tracked, so quitting waits for their answers
     assert "await track(api.call(" in PAGE and "await track(window.pywebview.api.call(" in PAGE
+
+
+def test_an_imports_errors_and_skipped_accounts_are_toasted():
+    """Issue #76: a dropped file's errors show in its toast (they used to show nothing); from Downloads only a file
+    in another currency does, with Open Inbox, where it waits (#47: the others are logged and skipped); an account
+    left out of a file for its currency is in the file's toast. Runs the page's own code in Node."""
+    parts = [re.search(rf"^const {name} = [^\n]*$", PAGE, re.M).group(0) for name in ("plural", "balanceNotes", "skippedNote")]
+    parts += [re.search(rf"^function {name}\(.*?^}}$", PAGE, re.S | re.M).group(0) for name in ("importMessage", "summarizeImport")]
+    refused = {"filename": "Savings USD.qfx", "error": "This file is in USD; your budget is in CAD.", "currency": "USD",
+               "budget": "CAD", "path": "/x/Savings USD.qfx"}
+    unreadable = {"filename": "notes.csv", "error": "This doesn't look like a bank file: no column of dates and amounts."}
+    rbc = {"filename": "RBC.csv", "account_name": "RBC Chequing", "added": 12, "duplicates": 0, "balance_note": ""}
+    skipped = {"filename": "RBC.csv", "account": "RBC US Dollar ••5678", "currency": "USD", "budget": "CAD"}
+    payloads = {
+        "dropped": {"results": [], "errors": [refused, unreadable], "counts": {"inbox": 0}},
+        "auto": {"auto": True, "results": [], "errors": [refused, unreadable], "counts": {"inbox": 1}},
+        "auto_unreadable": {"auto": True, "results": [], "errors": [unreadable], "counts": {"inbox": 0}},
+        "skipped": {"results": [rbc], "errors": [], "skipped": [skipped], "counts": {"inbox": 0}},
+        # dropped beside a file that asked "new account?": what the first import said comes with the pop-up's outcome
+        "carried": {"results": [rbc], "errors": [], "counts": {"inbox": 0},
+                    "before": {"text": "Savings USD.qfx: This file is in USD; your budget is in CAD.", "error": True}},
+    }
+    script = "\n".join(parts) + f"""
+const payloads = {json.dumps(payloads)};
+const out = Object.fromEntries(Object.entries(payloads).map(([k, p]) => [k, importMessage(p)]));
+out.summary = summarizeImport(payloads.skipped);
+console.log(JSON.stringify(out));
+"""
+    got = _run_node(script)
+    assert got["dropped"] == {"text": "Savings USD.qfx: This file is in USD; your budget is in CAD. · notes.csv: This "
+                                      "doesn't look like a bank file: no column of dates and amounts.", "error": True}
+    assert got["auto"] == {"text": "Savings USD.qfx is in USD; your budget is in CAD.", "inbox": True}
+    assert got["auto_unreadable"] is None
+    assert got["skipped"]["text"] == "Imported 12 new transactions from RBC.csv · RBC US Dollar ••5678 skipped: it's in " \
+                                     "USD; your budget is in CAD"
+    assert got["summary"] == "RBC.csv: 12 new · RBC US Dollar ••5678 skipped: it's in USD; your budget is in CAD"
+    assert got["carried"] == {"text": "Savings USD.qfx: This file is in USD; your budget is in CAD. · Imported 12 new "
+                                      "transactions from RBC.csv", "error": True}
+    assert "const message = importMessage(payload);" in PAGE  # what appEvent('imported') shows
+    assert "setupFiles(waiting, message);" in PAGE  # a dropped file's: after its pop-ups, not hidden under them
+
+
+def test_a_file_in_another_currency_waits_in_the_inbox_with_dont_import():
+    notice = re.search(r"f\.needs === 'currency' \? `(.*?)` :", PAGE, re.S).group(1)
+    assert "<b>${esc(f.filename)}</b> is in ${esc(f.currency)}; your budget is in ${esc(f.budget)}." in notice
+    assert re.findall(r'data-act="([a-z-]+)"', notice) == ["ignore-file"] and "Don't import" in notice
+    assert "act === 'ignore-file'" in PAGE

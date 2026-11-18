@@ -73,6 +73,7 @@ def main():
         "open_license": lambda: subprocess.run(["open", "-t", str(ROOT / "LICENSE")], check=True) and True,
     })
     service.read_imported_files()  # as the app does at launch, after an upgrade (issue #148)
+    service.read_currency()  # as the app does at the first launch of 1.4.3 (issue #76)
 
     class Handler(BaseHTTPRequestHandler):
         def _send(self, code, body, content_type):
