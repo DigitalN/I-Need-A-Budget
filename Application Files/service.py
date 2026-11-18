@@ -376,7 +376,7 @@ class BudgetService:
         answers = {str(Path(k)): v for k, v in (answers or {}).items()}
         downloads = self.settings.downloads_dir().resolve()
         results, learnt, errors, needs_setup, skipped = [], None, [], [], []
-        parsed_files, saying, later = [], [], []
+        parsed_files, saying = [], []
         with self.db.read() as c:
             budget = importer.budget_currency(c)
         for p in paths:
@@ -399,17 +399,25 @@ class BudgetService:
         # Learn from Actual first, then bank files oldest first, so refunds and transfers
         # find what they belong to.
         parsed_files.sort(key=lambda pf: (pf[1].format != "actual", pf[1].first_date or ""))
-        # The budget's currency (issue #76): until a file says one, the one most of these files' accounts say, set by
-        # the first of them that's imported. Then the accounts in another currency are left out.
-        # A file in another currency waits until the currency is set (`later`): the file that would set it may wait
-        # on a question and never be imported, and then the budget isn't in that currency.
-        decided = None
+        # The budget's currency (issue #76): until a file says one, the one most of these files' accounts say, set
+        # straight away, whether or not those files then wait on a question (decided on #76's review: held back for
+        # them, a file of the few could set it for good while they waited). Declining them later leaves it set.
+        # Then a file in another currency is refused, and in a file with several accounts the other currency's are left
+        # out, before anything asks about them.
         if budget is None:
             with self.db.read() as c:
                 decided = importer.majority_currency(c, [parsed for _, parsed in parsed_files])
+            if decided:
+                with self.db.write(keep_undo=True) as c:  # no step's undo touches it: it's never undone
+                    importer.set_budget_currency(c, decided)
+                    budget = importer.budget_currency(c)
+                log.info("The budget's currency is %s, from %s", budget,
+                         ", ".join(path.name for path, parsed in parsed_files
+                                   if any(part.currency == budget for part in parsed.parts)))
+                self._file_status.clear()  # what files in Downloads need is looked at again (not _seen_files: no re-import)
         for path, e in saying:
-            if decided and e.currency != decided:
-                later.append(str(path))
+            if budget and e.currency != budget:
+                errors.append(_refused(path, importer.OtherCurrency(e.currency, budget)))
             else:
                 needs_setup.append({"path": str(path), "filename": path.name, "needs": e.what})
         rechecked = 0
@@ -434,19 +442,11 @@ class BudgetService:
                 continue
             try:
                 with self.db.read() as c:
-                    now = importer.budget_currency(c)
-                    kept, left_out = importer.fitting(c, parsed, now or decided)
+                    kept, left_out = importer.fitting(c, parsed, budget)
                     left_out = [{"filename": path.name, "account": self._skipped_account(c, part),
-                                 "currency": part.currency, "budget": now or decided} for part in left_out]
+                                 "currency": part.currency, "budget": budget} for part in left_out]
             except importer.OtherCurrency as e:
-                if now is None:
-                    later.append(str(path))
-                else:
-                    errors.append(_refused(path, e))
-                continue
-            sets = decided if decided and any(part.currency == decided for part in kept.parts) else None
-            if left_out and now is None and not sets:
-                later.append(str(path))
+                errors.append(_refused(path, e))
                 continue
             parsed = kept
             accounts = chosen.get(str(path), {})
@@ -460,8 +460,7 @@ class BudgetService:
                     needs_setup.append({"path": str(path), "filename": path.name, "needs": "balance_sign"})
                     continue
             try:
-                file_results = self._import_one(path, parsed, archive and in_downloads, accounts, answers.get(str(path)),
-                                                sets)
+                file_results = self._import_one(path, parsed, archive and in_downloads, accounts, answers.get(str(path)))
             except importer.NeedsSetup as e:
                 needs_setup.append({"path": str(path), "filename": path.name, "needs": e.what})
                 continue
@@ -472,27 +471,14 @@ class BudgetService:
             skipped += left_out
         if results:
             rechecked += self.recheck()
-        if later and len(later) < len(paths):
-            # Refused (or their accounts skipped) now that the currency is set; or, when the file that would have set
-            # it is waiting on a question, they're this import's files and set it themselves.
-            more = self._import_files(later, archive, chosen, answers)
-            results, errors, needs_setup = results + more["results"], errors + more["errors"], needs_setup + more["needs_setup"]
-            skipped, rechecked = skipped + more["skipped"], rechecked + more["rechecked"]
-        elif later:  # can't happen: a file of the currency most accounts say is never put off
-            log.warning("Files put off for their currency weren't imported: %s", ", ".join(Path(p).name for p in later))
         return {"results": results, "learnt": learnt, "errors": errors, "needs_setup": needs_setup,
                 "skipped": skipped, "rechecked": rechecked, "counts": self.counts()}
 
-    def _import_one(self, path, parsed, archive, accounts=None, answers=None, currency=None):
+    def _import_one(self, path, parsed, archive, accounts=None, answers=None):
         """One bank file, in one change without a label: an import clears undo (db.write), and
-        Remove in Accounts → Imported files is what takes it back. `currency`: the budget's currency
-        this file sets, when the budget has none yet (issue #76)."""
+        Remove in Accounts → Imported files is what takes it back."""
         sha = importer.sha256_of(path)
         with self.db.write() as c:
-            if currency and importer.budget_currency(c) is None:
-                importer.set_budget_currency(c, currency)
-                log.info("The budget's currency is %s, from %s", currency, path.name)
-                self._file_status.clear()  # what files in Downloads need is looked at again (not _seen_files: no re-import)
             file_results = importer.import_parsed(c, parsed, path.name, sha, accounts=accounts, answers=answers)
             inbox = self._inbox(c)
             for result in file_results:

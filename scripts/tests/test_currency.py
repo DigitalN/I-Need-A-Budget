@@ -338,19 +338,54 @@ def test_a_csv_saying_another_currency_in_the_import_that_sets_it_is_refused(app
     assert out["needs_setup"] == [] and [(e["filename"], e["error"]) for e in out["errors"]] == [("Visa.csv", REFUSED)]
 
 
-def test_files_arent_refused_for_a_currency_the_budget_never_takes(app):
+def test_the_currency_is_set_even_when_the_files_of_it_wait_on_a_question(app):
     """No currency yet, set up: a USD card file (a new card, so "new account?") and a CAD file come in together.
-    USD is most of them, but the USD file waits on its question: the CAD file sets the budget's currency."""
+    One account each, and the USD one has more transactions: the budget is in USD straight away, though its file
+    waits on its question, so the CAD file is refused (decided on #76's review). Answering it imports it."""
     imports(app, (CARD_FILE, card_csv([("10/02/2026", "SAMPLE DINER CALGARY AB", "-12.00", "Restaurant")])))
     app.db.set_meta("onboarded", "1")
     out = imports(app, ("US Card.qfx", ofx(statement(card_number("9999"), rows(4, "V"), "USD", card=True,
                                                      balance="-40.00"))),
                   ("Chequing.qfx", ofx(statement(CHEQUING, rows(2, "C")))))
-    assert [f["filename"] for f in out["needs_setup"]] == ["US Card.qfx"]
-    assert [r["filename"] for r in out["results"]] == ["Chequing.qfx"] and out["errors"] == []
-    assert currency(app) == "CAD"
+    assert currency(app) == "USD"
+    assert [f["filename"] for f in out["needs_setup"]] == ["US Card.qfx"] and out["results"] == []
+    assert [(e["filename"], e["error"]) for e in out["errors"]] == \
+        [("Chequing.qfx", "This file is in CAD; your budget is in USD.")]
     path = str(app.test_downloads / "US Card.qfx")
-    assert app.dispatch("set_file_accounts", [path, [{"index": 0, "name": "US Card"}]]) == {"ok": False, "error": REFUSED}
+    out = call(app, "set_file_accounts", path, [{"index": 0, "name": "US Card"}])
+    assert [r["added"] for r in out["results"]] == [4]
+
+
+def test_a_file_of_the_few_never_sets_the_currency_while_the_others_wait_on_a_question(app):
+    """No currency yet, set up with a card CSV: two new CAD cards (each asks "new account?") and a USD bank account
+    (asks nothing) come in together. The budget is in CAD, the USD file is refused, and both cards import once
+    their question is answered."""
+    imports(app, (CARD_FILE, card_csv([("10/02/2026", "SAMPLE DINER CALGARY AB", "-12.00", "Restaurant")])))
+    app.db.set_meta("onboarded", "1")
+    out = imports(app, ("Card A.qfx", ofx(statement(card_number("1111"), rows(2, "A"), card=True, balance="-20.00"))),
+                  ("Card B.qfx", ofx(statement(card_number("2222"), rows(2, "B"), card=True, balance="-20.00"))),
+                  ("US.qfx", ofx(statement(US_ACCOUNT, rows(3, "U"), "USD"))))
+    assert currency(app) == "CAD"
+    assert sorted(f["filename"] for f in out["needs_setup"]) == ["Card A.qfx", "Card B.qfx"]
+    assert out["results"] == [] and [(e["filename"], e["error"]) for e in out["errors"]] == [("US.qfx", REFUSED)]
+    for name in ("Card A", "Card B"):
+        out = call(app, "set_file_accounts", str(app.test_downloads / f"{name}.qfx"), [{"index": 0, "name": name}])
+        assert [r["added"] for r in out["results"]] == [2] and out["errors"] == []
+    assert currency(app) == "CAD"
+
+
+def test_a_file_in_the_other_currency_is_refused_at_once_never_asked_about(app):
+    """No currency yet, set up: a new USD card (it would ask "new account?") beside a CAD chequing file that's most
+    of them. The USD card is refused in the same import, never put to the page as a question."""
+    imports(app, (CARD_FILE, card_csv([("10/02/2026", "SAMPLE DINER CALGARY AB", "-12.00", "Restaurant")])))
+    app.db.set_meta("onboarded", "1")
+    out = imports(app, ("US Card.qfx", ofx(statement(card_number("9999"), rows(2, "V", day=1), "USD", card=True,
+                                                     balance="-20.00"))),
+                  ("Chequing.qfx", ofx(statement(CHEQUING, rows(5, "C", day=3)))))
+    assert currency(app) == "CAD"
+    assert out["needs_setup"] == []
+    assert [(e["filename"], e["error"]) for e in out["errors"]] == [("US Card.qfx", REFUSED)]
+    assert [r["filename"] for r in out["results"]] == ["Chequing.qfx"]
 
 
 def test_the_inbox_looks_again_once_the_currency_is_set(app):

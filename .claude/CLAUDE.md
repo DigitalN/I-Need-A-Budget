@@ -220,10 +220,10 @@ All in `Application Files/`:
   that says none (Tangerine's CSVs, a set-up CSV without that column, a transaction added by hand)
   always fits. The first import with a file that says one sets it, to the one most of that import's
   accounts say (each account once, whatever file it's in; a tie goes to more transactions:
-  `importer.majority_currency`; a file in another currency is put off until it's set, as the file that
-  would set it may wait on a question and never come in: then the rest set it themselves, and a
-  waiting file whose need was worked out before is looked at again); once set it never changes, and it
-  isn't in Settings. Then a file all in
+  `importer.majority_currency`), straight away, before any file of it is imported, even when those
+  files then wait on a question (decided on #76's review: put off for them, a file of the few could set
+  it for good while they waited); Don't import on them later leaves it set, and a waiting file whose
+  need was worked out before is looked at again. Once set it never changes, and it isn't in Settings. Then a file all in
   another currency fails ("This file is in USD; your budget is in CAD.", `importer.OtherCurrency`),
   and in a file with several accounts only the other currency's are left out (`importer.fitting`),
   before `_accounts_to_ask` and `_balance_questions`, so they're never asked about; the file's toast
