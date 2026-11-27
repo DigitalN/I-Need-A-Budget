@@ -23,6 +23,7 @@
   --shadow: 0 1px 2px rgba(0,0,0,.05), 0 0 0 .5px rgba(0,0,0,.06); --pop: 0 10px 30px rgba(0,0,0,.18), 0 0 0 .5px rgba(0,0,0,.1);
   --seg-bg: rgba(0,0,0,.06); --seg-on: #ffffff; --input: #ffffff;
   --series-1: #2a78d6; --series-2: #eb6834;  /* chart series, checked for colour blindness on --card */
+  --mono: ui-monospace, Menlo, "Cascadia Mono", Consolas, monospace;  /* the Mac's, then Windows' */
   color-scheme: light;
 }
 @media (prefers-color-scheme: dark) {
@@ -54,7 +55,8 @@
 html, body { margin: 0; height: 100%; }
 body {
   background: var(--bg); color: var(--text); overflow: hidden;
-  font: 13px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
+  /* Windows' own fonts first (11's, then 10's): a Mac has neither, and -apple-system is the Mac's */
+  font: 13px/1.45 "Segoe UI Variable Text", "Segoe UI", -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
   -webkit-font-smoothing: antialiased;
 }
 button, input, select, textarea { font: inherit; color: inherit; }
@@ -89,6 +91,13 @@ a:hover, .link:hover { text-decoration: underline; }
 .badge { margin-left: auto; background: var(--accent); color: #fff; border-radius: 9px; padding: 0 7px; font-size: 11px; font-weight: 600; min-width: 18px; text-align: center; }
 .badge:empty { display: none; }
 main { overflow-y: auto; min-width: 0; position: relative; }
+/* Windows (WebView2) draws scrollbars that take room, where the Mac's float over the page: thin
+   ones, like Windows 11's own, with room kept for the page's so it doesn't shift sideways from
+   page to page. `:where` leaves a scrollbar a page hides hidden. And no pinch to zoom on a touch
+   screen: the window isn't a web page (keepBrowserKeysOut does the keys and the mouse wheel). */
+:where(:root[data-platform="windows"]) * { scrollbar-width: thin; }
+:root[data-platform="windows"] main { scrollbar-gutter: stable; }
+:root[data-platform="windows"] { touch-action: pan-x pan-y; }
 .page { max-width: 1060px; margin: 0 auto; padding: 22px 26px 60px; }
 .page-head { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; flex-wrap: wrap; }
 .card { background: var(--card); border-radius: 12px; box-shadow: var(--shadow); padding: 16px 18px; min-width: 0; }
@@ -281,7 +290,8 @@ body.moving-rows, body.moving-rows * { -webkit-user-select: none !important; use
 .item.selected { box-shadow: 0 0 0 2px var(--accent), var(--shadow); }
 .item .who { font-weight: 600; font-size: 14px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .item .meta { color: var(--muted); font-size: 12px; }
-.item .raw { color: var(--faint); font-size: 11px; font-family: ui-monospace, Menlo, monospace; }
+.item .raw { color: var(--faint); font-size: 11px; font-family: var(--mono); }
+.mono { font-family: var(--mono); }
 .item .why { color: var(--muted); font-size: 12px; display: flex; gap: 6px; align-items: baseline; }
 .item .amount { font-size: 16px; font-weight: 600; text-align: right; font-variant-numeric: tabular-nums; }
 .item .chips { grid-column: 1 / -1; display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
@@ -805,6 +815,34 @@ const state = {
   dash: null, dashOpen: new Set(), showHidden: false, dragging: false,
 };
 
+// The system the app runs on, from the app's info ("mac" or "windows"; the preview's --platform
+// pretends). It says the keys the way that system does: ⌘Z and Return on the Mac, Ctrl+Z and Enter
+// on Windows (issue #185).
+const onWindows = () => !!(state.boot && state.boot.app && state.boot.app.platform === 'windows');
+const undoKey = () => onWindows() ? 'Ctrl+Z' : '⌘Z';
+const returnKey = () => onWindows() ? 'Enter' : 'Return';
+// A one-key shortcut is that key alone: with Ctrl, Alt or ⌘ it's another shortcut (Ctrl+S isn't S,
+// which splits). AltGr, which Windows reports as Ctrl+Alt, types a character: that's the key.
+const withModifier = e => (e.ctrlKey || e.altKey || e.metaKey) && !(e.getModifierState && e.getModifierState('AltGraph'));
+// The browser's own keys never reach the window: F5 and Ctrl+R reload the page, losing what you were
+// doing; printing, finding and zooming the page aren't the app's. pywebview already turns WebView2's
+// off (outside debug), but not zooming with Ctrl and the mouse wheel or a touchpad pinch, and the
+// preview is a browser. Only on Windows: on the Mac the window has none of them, and Ctrl+F and
+// Ctrl+P move the cursor in a text box there.
+const BROWSER_KEYS = ['F3', 'F5', 'BrowserBack', 'BrowserForward', 'BrowserRefresh', 'BrowserSearch'];
+const BROWSER_CTRL_KEYS = ['f', 'g', 'p', 'r', 's', '+', '=', '-', '0'];  // find, print, reload, save the page, zoom
+const BROWSER_CTRL_CODES = ['Equal', 'Minus', 'NumpadAdd', 'NumpadSubtract', 'Digit0', 'Numpad0'];  // zoom, any layout
+function browserKey(e) {
+  if (BROWSER_KEYS.includes(e.key)) return true;
+  if (e.altKey && !e.ctrlKey && !e.metaKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) return true;  // back, forward
+  return e.ctrlKey && !e.altKey && !e.metaKey &&
+    (BROWSER_CTRL_KEYS.includes(e.key.toLowerCase()) || BROWSER_CTRL_CODES.includes(e.code));
+}
+function keepBrowserKeysOut() {
+  window.addEventListener('keydown', e => { if (browserKey(e)) e.preventDefault(); }, true);
+  window.addEventListener('wheel', e => { if (e.ctrlKey) e.preventDefault(); }, { passive: false });
+}
+
 function setCounts(c) {
   if (!c) return;
   state.counts = c;
@@ -893,14 +931,16 @@ async function renderBudget() {
   // Each group is its own <tbody>, so dragging one takes its categories along. The tools
   // (⋮⋮ in the margin; +, ✎ and an empty group's ✕ right of the name) show on the row the
   // pointer is on. Every group has ⋮⋮ and + (a group above it), Debt Payments too; ✎,
-  // ✕ and the categories' tools are for ordinary groups only.
+  // ✕ and the categories' tools are for ordinary groups only. They're out of the Tab order, like
+  // the arrows by an Assigned box, so Tab goes from box to box: WebKit leaves buttons out of it,
+  // WebView2 (Windows) doesn't (issue #185).
   const bodies = [];
   const hiddenCount = view.groups.reduce((n, g) => n + g.categories.filter(c => c.hidden).length, 0);
   for (const g of view.groups) {
     const collapsed = !!g.collapsed, normal = g.role === 'normal';
     const rows = [];
     rows.push(`<tr class="group ${collapsed ? 'collapsed' : ''}" data-group="${g.id}">
-      <td>${g.role !== 'income' ? `<span class="gutter"><span class="drag-handle tool" data-drag-group="${g.id}" title="Drag to move">⋮⋮</span></span>` : ''}<span class="caret">▾</span> <span class="gname">${esc(g.name)}</span><span class="row-tools"><button class="plus tool" data-group-plus="${g.id}" title="Add a group above" aria-label="Add a group above">+</button>${normal ? `<button class="icon-btn tool" data-group-pencil="${g.id}" title="Rename" aria-label="Rename">${PENCIL}</button>${g.categories.length ? '' : `<button class="icon-btn danger tool" data-group-x="${g.id}" title="Delete group" aria-label="Delete group">✕</button>`}` : ''}</span></td><td></td>
+      <td>${g.role !== 'income' ? `<span class="gutter"><span class="drag-handle tool" data-drag-group="${g.id}" title="Drag to move">⋮⋮</span></span>` : ''}<span class="caret">▾</span> <span class="gname">${esc(g.name)}</span><span class="row-tools"><button class="plus tool" data-group-plus="${g.id}" tabindex="-1" title="Add a group above" aria-label="Add a group above">+</button>${normal ? `<button class="icon-btn tool" data-group-pencil="${g.id}" tabindex="-1" title="Rename" aria-label="Rename">${PENCIL}</button>${g.categories.length ? '' : `<button class="icon-btn danger tool" data-group-x="${g.id}" tabindex="-1" title="Delete group" aria-label="Delete group">✕</button>`}` : ''}</span></td><td></td>
       <td class="r num">${view.before_start ? '' : money(g.assigned)}</td><td class="r num">${g.activity ? `<span class="spent-link" data-spent-group="${g.id}" title="What makes up this">${money(g.activity)}</span>` : money(g.activity)}</td>
       <td class="r num">${view.before_start ? '' : money(g.available)}</td></tr>`);
     for (const c of collapsed ? [] : g.categories) {
@@ -926,7 +966,7 @@ async function renderBudget() {
       // Each cell's content is wrapped so the row can fold away while a group is dragged.
       const cell = html => `<div class="cell"><div>${html}</div></div>`;
       rows.push(`<tr class="cat ${c.hidden ? 'hidden-cat' : ''}" data-cat-row="${c.id}">
-        <td>${normal ? `<span class="gutter"><span class="drag-handle tool" data-drag-cat="${c.id}" title="Drag to move">⋮⋮</span></span>` : ''}${cell(`<span class="name" data-cat="${c.id}">${esc(c.name)}</span>${normal ? `<span class="row-tools"><button class="plus tool" data-cat-plus="${c.id}" title="Add a category above" aria-label="Add a category above">+</button><button class="icon-btn tool" data-cat-pencil="${c.id}" title="Rename" aria-label="Rename">${PENCIL}</button></span>` : ''}`)}</td>
+        <td>${normal ? `<span class="gutter"><span class="drag-handle tool" data-drag-cat="${c.id}" title="Drag to move">⋮⋮</span></span>` : ''}${cell(`<span class="name" data-cat="${c.id}">${esc(c.name)}</span>${normal ? `<span class="row-tools"><button class="plus tool" data-cat-plus="${c.id}" tabindex="-1" title="Add a category above" aria-label="Add a category above">+</button><button class="icon-btn tool" data-cat-pencil="${c.id}" tabindex="-1" title="Rename" aria-label="Rename">${PENCIL}</button></span>` : ''}`)}</td>
         <td class="r">${cell(monthly)}</td>
         <td class="r assign-cell">${cell(view.before_start ? '' : assignBox(c))}</td>
         <td class="r num ${c.activity < 0 ? '' : (c.activity > 0 ? 'pos' : 'faint')}"${c.debt_account_id ? ' title="Set aside for card spending this month, less what was paid to the card"' : ''}>${cell(c.activity ? `<span class="spent-link" data-spent="${c.id}" title="What makes up this">${money(c.activity)}</span>` : money(c.activity))}</td>
@@ -957,7 +997,7 @@ async function renderBudget() {
           ${bodies.join('')}</table>
       </div>
       ${hiddenCount ? `<div class="small" style="margin-top:-6px"><button class="link" data-act="toggle-hidden">${state.showHidden ? 'Hide hidden categories' : `Show hidden (${hiddenCount})`}</button></div>` : ''}
-      ${view.groups.length ? `<p class="kbd-help">Click a category or what it spent to see this month's transactions and what it spent in past months. Type in Assigned and press Return (+50 adds to what's there, −20 takes away); Tab moves to the next one.</p>` : ''}
+      ${view.groups.length ? `<p class="kbd-help">Click a category or what it spent to see this month's transactions and what it spent in past months. Type in Assigned and press ${returnKey()} (+50 adds to what's there, −20 takes away); Tab moves to the next one.</p>` : ''}
     </div>`); } finally { redrawing = false; }
   main.scrollTop = scrolled;
   if (keep) {
@@ -2113,7 +2153,7 @@ function drawInbox() {
       ${finder}
       ${data.items.length && !shown.length ? `<div class="card empty"><b>Nothing matches</b>Try another search, or show everything.</div>` : ''}
       ${shown.length ? `<div class="items" id="items">${cards}</div>
-        <p class="kbd-help">↑ ↓ to move · Return takes the highlighted suggestion · 1–4 picks one · / any category · T transfer · S split · ⌘Z undo</p>`
+        <p class="kbd-help">↑ ↓ to move · ${returnKey()} takes the highlighted suggestion · 1–4 picks one · / any category · T transfer · S split · ${undoKey()} undo</p>`
         : (data.items.length || (data.files || []).length ? '' : `<div class="card empty"><b>All caught up</b>Everything is categorized. New bank downloads show up here when there's something to decide.</div>`)}
       ${data.categorized.length ? `<details class="card" style="padding:10px 14px"><summary style="cursor:default;font-weight:600">Categorized automatically from recent imports (${data.categorized.length})</summary>
         <p class="small muted">Click a category to change it. The app learns from every change.</p>
@@ -2347,7 +2387,7 @@ async function renameDialog(txId) {
   const payees = await call('payees');
   const v = await dialog({
     title: 'Payee',
-    body: `<p class="muted small">The bank wrote <span style="font-family:ui-monospace,Menlo,monospace">${esc(t.raw_name)}</span>. Give it a clearer name, or pick another payee it belongs to: every transaction with the same bank description moves with it, and the app remembers.</p>
+    body: `<p class="muted small">The bank wrote <span class="mono">${esc(t.raw_name)}</span>. Give it a clearer name, or pick another payee it belongs to: every transaction with the same bank description moves with it, and the app remembers.</p>
       <div class="field"><label>Payee</label><input id="payee-name" list="payee-list" value="${esc(t.payee_name || '')}"></div>
       <datalist id="payee-list">${payees.map(p => `<option value="${esc(p.name)}">`).join('')}</datalist>`,
     actions: [{ label: 'Cancel', value: null }, { label: 'Save', value: 'ok', primary: true }],
@@ -2685,7 +2725,7 @@ async function saveBalanceFrom(btn) {
 
 function inboxKeys(e) {
   if (state.page !== 'inbox' || !state.blocks || !state.blocks.length) return;
-  if (e.target.closest('input, textarea, select, dialog, .popover')) return;
+  if (e.target.closest('input, textarea, select, dialog, .popover') || withModifier(e)) return;
   const b = state.blocks[state.inboxSel];
   const card = $(`.item[data-index="${state.inboxSel}"]`);
   if (e.key === 'ArrowDown' || e.key === 'j') { state.inboxSel = Math.min(state.inboxSel + 1, state.blocks.length - 1); markSelected(); e.preventDefault(); }
@@ -2747,7 +2787,7 @@ async function editTransaction(id) {
         <div class="field"><label>Amount</label>${t.manual ? `<input id="ed-amount" value="${moneyPlain(t.amount)}">` : `<div class="num ${t.amount > 0 ? 'pos' : ''}">${money(t.amount)}</div>`}</div></div>
       <div class="grid2"><div class="field"><label>Account</label><div>${esc(t.account_name)}</div></div>
         ${t.is_split || t.transfer_account_id ? '' : `<div class="field"><label>Category</label><button type="button" class="btn" id="ed-cat" data-id="${t.category_id || ''}" style="text-align:left">${esc(t.category_name || 'Pick…')}</button></div>`}</div>
-      ${t.raw_name ? `<div class="field"><label>The bank wrote</label><div class="small" style="font-family:ui-monospace,Menlo,monospace">${esc(t.raw_name)}${t.raw_memo ? '<br>' + esc(t.raw_memo) : ''}</div></div>` : ''}
+      ${t.raw_name ? `<div class="field"><label>The bank wrote</label><div class="small mono">${esc(t.raw_name)}${t.raw_memo ? '<br>' + esc(t.raw_memo) : ''}</div></div>` : ''}
       <div class="field"><label>Note</label><input id="ed-note" value="${esc(t.note || '')}"></div>
       ${t.amount < 0 && t.payee_id && !t.transfer_account_id ? `<div class="field"><label>Subscription</label><div class="row">
         ${t.subscription_name ? `<span>${esc(t.subscription_name)}</span>` : '<span class="muted">Not tracked</span>'}<span class="spacer"></span>
@@ -3172,7 +3212,7 @@ async function renderSettings() {
         ${row('Check for updates', '', '<button class="btn" data-act="check-updates">Check now</button>')}
       </div>
       <div class="card">
-        ${row('Your data', 'Open the folder where all data is stored on your Mac.', open('open_data'))}
+        ${row('Your data', 'Open the folder where all data is stored on this computer.', open('open_data'))}
         ${row('Imported files', 'Open the folder where all previously imported data is kept.', open('open_imports'))}
         ${row('Log', 'For developer use: open log files for troubleshooting.', open('open_log'))}
       </div>
@@ -3184,7 +3224,7 @@ async function settingsAction(btn) {
   const act = btn.dataset.act;
   if (act === 'save-token') {
     const st = await call('window_action', ['set_github_token', $('#gh-token').value]);
-    state.update = st; toast($('#gh-token').value ? 'Token saved in the Keychain' : 'Token removed');
+    state.update = st; toast($('#gh-token').value ? (onWindows() ? 'Token saved' : 'Token saved in the Keychain') : 'Token removed');
   } else if (act === 'check-updates') {
     state.checkingByHand = true;  // the answer comes as an 'update' event: see appEvent
     try { state.update = await call('window_action', ['check_updates']); }
@@ -3634,6 +3674,8 @@ function applyTheme(theme) {
 
 async function start() {
   state.boot = await call('bootstrap');
+  document.documentElement.dataset.platform = onWindows() ? 'windows' : 'mac';
+  if (onWindows()) keepBrowserKeysOut();
   applyTheme(state.boot.settings.theme);
   setCounts(state.boot.counts);
   state.update = state.boot.app && state.boot.app.updates;
