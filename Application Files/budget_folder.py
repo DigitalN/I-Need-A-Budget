@@ -320,7 +320,7 @@ def arriving(save, mine):
 def read_save(path):
     """What's kept about the save in the budget file at `path`, a Save (without `name` or `path`),
     and its contents' digest, worked out here. A file without it (a backup copied in to restore it)
-    is a restored backup: its id and its line come from its contents, so every computer that reads
+    is a restored backup: its id and its counts come from its contents, so every computer that reads
     it makes the same of it. NotABudget for a file that isn't there or isn't a whole budget."""
     try:
         with closing(sqlite3.connect(f"{Path(path).resolve().as_uri()}?mode=rw", uri=True)) as c:  # never made
@@ -841,9 +841,10 @@ class BudgetFolder:
         """Makes this computer's budget `save`, another computer's (or a restored backup), whole
         (db.replace_with: upgraded if an older version saved it, ⌘Z cleared), once the page's requests
         under way are done. Its copy in Saves/ is checked to be that save first. The upgrade isn't a
-        change to save. A newer save, or one in this computer's line, carries on in its line; an older
-        or apart one taken by choice (Keep the other one, Use it) is recorded as coming after this
-        computer's, so its next save is taken by the others. False, taking nothing, when
+        change to save. A newer save's counts become this computer's; a restore's alone (nothing this
+        computer had joined in: its budget goes into Backups/ first); one taken by choice (`chosen`:
+        Keep the other one, Use it) is recorded as coming after this computer's too, so its next save
+        is taken by the others. False, taking nothing, when
         `only_if_unchanged` and this computer changed its budget since its last save. NotABudget when
         its copy isn't there or isn't it (it's read again next look). `fresh`: another budget
         (open_from), taken as it is."""
@@ -1132,7 +1133,7 @@ class BudgetFolder:
                         if not self._empty():
                             backups.save(self.db, self._not_kept_name())
                         self._take(save, fresh=True)
-                    self._new_id()  # another budget: this computer's saves in it start a line of their own
+                    self._new_id()  # another budget: this computer counts its saves in it from the start
             except BaseException:
                 if old is not None:
                     self._use(old)
