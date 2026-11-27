@@ -365,8 +365,9 @@ python_cmd() {
 # privacy hook would refuse to commit (a digit run like a card number, a word from .git-denylist:
 # rare, but random) is thrown away for another.
 new_key() {
-  local der tries=0 py
+  local der tries=0 py rc
   py=$(python_cmd)
+  [[ -f scripts/hooks/privacy_check.py ]] || py=""
   while :; do
     tries=$((tries + 1))
     [[ $tries -le 20 ]] || fail "Couldn't make a release key the privacy hook would let through."
@@ -380,7 +381,9 @@ new_key() {
     [[ "$(printf '%s' "$RELEASE_SEED" | public_of)" == "$RELEASE_PUBLIC" ]] ||
       fail "The key doesn't match its public half. Nothing was saved."
     [[ -z "$py" ]] && return 0
-    printf '%s\n' "$RELEASE_PUBLIC" | "$py" scripts/hooks/privacy_check.py >/dev/null 2>&1 && return 0
+    rc=0
+    printf '%s\n' "$RELEASE_PUBLIC" | "$py" scripts/hooks/privacy_check.py >/dev/null 2>&1 || rc=$?
+    [[ $rc -eq 1 ]] || return 0   # 1: it found something; anything else, the hook would say so too
   done
 }
 
