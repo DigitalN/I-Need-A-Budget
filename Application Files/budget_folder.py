@@ -299,9 +299,12 @@ def relation(save, mine):
         if _covers(mine.counts, save.counts):
             return OLDER
         return NEWER if _covers(save.counts, mine.counts) else APART
-    if mine.line in save.supersedes:
+    after, before = mine.line in save.supersedes, save.line in mine.supersedes
+    if after and before:  # each says it came after the other's line (Keep this over a restore): no order at all
+        return APART
+    if after:
         return NEWER
-    if save.line in mine.supersedes:
+    if before:
         return OLDER
     if save.raw or mine.line == ORIGINAL:
         return NEWER
@@ -826,6 +829,8 @@ class BudgetFolder:
                 raise
             mine = None if fresh else self._mine()
             landed = self.db.get_meta(LANDED_KEY)  # this computer's, not the budget's: kept across the take
+            if save.raw and not fresh and found.digest != self._working_digest():
+                backups.save(self.db, self._not_kept_name())  # a restore taken: this computer's budget is kept first
             self.db.replace_with(save.path)
             self._mark = None
             if mine is None or relation(save, mine) == NEWER or save.line == mine.line:
