@@ -6,7 +6,7 @@ Where the app runs from: it has to run from an Applications folder to update its
 from a disk image or Downloads, macOS runs a temporary hidden copy ("app translocation") that
 can't be replaced, so on launch from anywhere else it offers to move.
 
-Updates: each release has a .dmg (scripts/package.sh). The app is copied out of it, and
+Updates: each release has a .dmg (scripts/make-dmg.py, in the release run). The app is copied out of it, and
 `codesign --verify` must show it's signed by the same team as this copy, for the same bundle
 identifier. The two are swapped in one step at quit. The token is in the Keychain (service
 "I Need A Budget", account "GitHub"), through `security`, and goes to it on stdin.

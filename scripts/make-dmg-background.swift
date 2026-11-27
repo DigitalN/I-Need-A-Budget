@@ -6,7 +6,7 @@
 //   swift scripts/make-dmg-background.swift <output.tiff>
 //
 // Finder always draws icon names in black over a background picture, even in dark mode,
-// so the background stays light. Icon centers (used by package.sh) are at x = 170 and
+// so the background stays light. Icon centers (used by make-dmg.py) are at x = 170 and
 // x = 490, y = 205 in a 660 × 420 pt window.
 
 import AppKit

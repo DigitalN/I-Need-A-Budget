@@ -12,7 +12,7 @@
 #      name per line (account digits, people's names, employers). Matching ignores case. It lives
 #      in the main checkout; privacy_check.py finds it from a git worktree too.
 #
-# 2 and 3 are privacy_check.py, which the commit-msg hook and scripts/release.sh run too.
+# 2 and 3 are privacy_check.py, which the commit-msg hook and the release run (its notes) run too.
 # Only ever bypass with `git commit --no-verify` after checking the diff yourself.
 
 set -uo pipefail
