@@ -24,19 +24,25 @@ INSTALLED = Path("/Applications/I Need A Budget.app")
 
 
 def load_updater(version, folder):
-    """The updater as `version` has it: from the tag if there is one, else this checkout's."""
+    """The updater as `version` has it, from the tag if there is one, else this checkout's, and the
+    module with its Mac steps: updater.py itself before 1.5.0, computer_mac.py since."""
     tag = f"v{version}"
-    for name in ("updater.py", "launch.py"):
-        shown = subprocess.run(["git", "-C", str(REPO), "show", f"{tag}:Application Files/{name}"],
-                               capture_output=True, text=True)
-        if shown.returncode != 0:
-            print(f"No tag {tag}: checking with this checkout's updater instead.")
-            folder = REPO / "Application Files"
-            break
-        (folder / name).write_text(shown.stdout, encoding="utf-8")
+    listed = subprocess.run(["git", "-C", str(REPO), "ls-tree", "--name-only", f"{tag}:Application Files"],
+                            capture_output=True, text=True)
+    if listed.returncode != 0:
+        print(f"No tag {tag}: checking with this checkout's updater instead.")
+        folder = REPO / "Application Files"
+    for name in listed.stdout.splitlines() if listed.returncode == 0 else []:
+        if name.endswith(".py"):
+            shown = subprocess.run(["git", "-C", str(REPO), "show", f"{tag}:Application Files/{name}"],
+                                   capture_output=True, encoding="utf-8", check=True)
+            (folder / name).write_text(shown.stdout, encoding="utf-8")
     sys.path.insert(0, str(folder))
     import updater
-    return updater
+    if hasattr(updater, "own_team"):
+        return updater, updater
+    import computer_mac
+    return updater, computer_mac
 
 
 def main():
@@ -52,9 +58,9 @@ def main():
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
         (tmp / "code").mkdir()
-        updater = load_updater(current, tmp / "code")
-        team = updater.own_team(installed)
-        bundle_id = updater.info_value(installed, "CFBundleIdentifier")
+        updater, mac = load_updater(current, tmp / "code")
+        team = mac.own_team(installed)
+        bundle_id = mac.info_value(installed, "CFBundleIdentifier")
         if team is None:
             print(f"The installed copy ({current}) isn't signed by a developer team: it can't update itself.")
             return 1
@@ -62,8 +68,8 @@ def main():
         shutil.copy2(image, downloaded)  # where the updater would have downloaded it
         app = tmp / installed.name
         try:
-            updater.copy_app_from_image(downloaded, app, bundle_id)
-            version = updater.verify(app, team, bundle_id)
+            mac.copy_app_from_image(downloaded, app, bundle_id)
+            version = mac.verify(app, team, bundle_id)
         except updater.UpdateError as e:
             print(f"The installed copy ({current}) would refuse it: {e}")
             return 1

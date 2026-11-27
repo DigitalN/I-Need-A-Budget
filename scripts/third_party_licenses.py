@@ -121,7 +121,8 @@ def _python_license():
     incorporates too; LICENSE.txt is Python's own license only."""
     docs = Path(sys.base_prefix) / "Resources/English.lproj/Documentation/_sources/license.rst.txt"
     own = Path(sysconfig.get_paths()["stdlib"]) / "LICENSE.txt"
-    for path in (docs, own):
+    windows = Path(sys.base_prefix) / "LICENSE.txt"
+    for path in (docs, own, windows):
         if path.exists():
             return path.read_text(encoding="utf-8")
-    raise MissingLicense(f"No license text for Python: neither {docs} nor {own} exists.")
+    raise MissingLicense(f"No license text for Python: none of {docs}, {own} or {windows} exists.")

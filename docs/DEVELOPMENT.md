@@ -181,7 +181,8 @@ is up to date (1.0.0 and 1.0.1 also said that when the token couldn't see the re
 ## How updates work
 
 `Application Files/updater.py`, ported from Pythonflow's, changed for a windowed app
-and for a repository that was private at first:
+and for a repository that was private at first. The Mac's own steps (the Keychain, the disk
+image, `codesign`, swapping the app in, relaunching) are in `computer_mac.py`:
 
 - **Access:** a request carries a token when there is one: the one saved in the Keychain
   from Settings (service "I Need A Budget", account "GitHub"), else the GitHub CLI's
