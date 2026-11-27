@@ -33,7 +33,7 @@ else:
 datas = [('index.html', '.')]
 # Windows updates are checked with our release key's public half (ADR 0009, #188).
 RELEASE_KEY = os.path.join(SPECPATH, 'release-key.pub')
-if False and not MAC and os.path.exists(RELEASE_KEY):  # DEMO: a failing check (reverted next)
+if not MAC and os.path.exists(RELEASE_KEY):
     datas.append((RELEASE_KEY, '.'))
 
 a = Analysis(
@@ -130,7 +130,7 @@ if MAC:
             'CFBundleDisplayName': 'I Need A Budget',
             'CFBundleVersion': VERSION,
             'CFBundleShortVersionString': VERSION,
-            'LSMinimumSystemVersion': '10.13',  # DEMO: a failing check (reverted next)
+            'LSMinimumSystemVersion': '12.0',
             'LSApplicationCategoryType': 'public.app-category.finance',
             'NSHighResolutionCapable': True,
             'NSDownloadsFolderUsageDescription':
