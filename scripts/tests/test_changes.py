@@ -445,18 +445,35 @@ def test_a_payee_under_a_reused_id_is_another_payee(budgets):
     assert texts(side, "payees") == ["Sample Deli merged into Sample Bakery"]
 
 
-def test_a_category_or_group_under_a_reused_id_is_another_one(budgets):
+def test_a_category_under_a_reused_id_is_another_one(budgets):
     this = budgets.this
     gifts = call(this, "add_category", group_id(this, "Everyday"), "Gifts")
-    spare = call(this, "add_group", "Spare")
     start = save(this, budgets.tmp / "gifts.inab")
     call(this, "delete_category", gifts)
-    call(this, "delete_group", spare)
     assert call(this, "add_category", group_id(this, "Everyday"), "Pets") == gifts
-    assert call(this, "add_group", "Holidays") == spare
     side = changes.what_changed(start, this.db)
-    assert texts(side) == ["Added category group Holidays", "Deleted category group Spare",
-                           "Added category Pets in Everyday", "Deleted category Gifts"]
+    assert texts(side) == ["Added category Pets in Everyday", "Deleted category Gifts"]
+
+
+def test_a_category_group_under_the_same_id_is_the_same_group(budgets):
+    """Nothing a group keeps tells one deleted and another added apart from one renamed: it's renamed."""
+    this = budgets.this
+    spare = call(this, "add_group", "Spare")  # the newest group, empty
+    start = save(this, budgets.tmp / "spare.inab")
+    call(this, "rename_group", spare, "Holidays")
+    assert texts(changes.what_changed(start, this.db)) == ["Renamed category group Spare → Holidays"]
+    call(this, "delete_group", spare)
+    assert call(this, "add_group", "Holidays") == spare
+    assert texts(changes.what_changed(start, this.db)) == ["Renamed category group Spare → Holidays"]
+
+
+def test_a_group_emptied_and_renamed_is_still_there(budgets):
+    this = budgets.this
+    bills = group_id(this, "Bills")
+    call(this, "move_category", cat(this, "Rent"), group_id(this, "Everyday"))
+    call(this, "rename_group", bills, "Later")
+    assert texts(budgets.this_side()) == ["Renamed category group Bills → Later",
+                                          "Moved category Rent from Bills to Everyday"]
 
 
 # ── what the app did on its own ──
@@ -498,6 +515,69 @@ def test_a_price_that_follows_its_charge_is_the_apps(budgets):
     assert side["summary"] == "1 recurring charge changed"
     assert next(s for s in side["sections"] if s["kind"] == "recurring_charges")["items"] == [
         {"text": "Sample Stream: renamed to Sample Stream Plus; price $12.13 → $14.99", "app": False}]
+
+
+def test_new_price_for_is_yours_whoever_decides_the_charge(budgets):
+    """"New price for…" is only asked about a charge outside its price type's tolerance; the app follows one inside
+    it. The charge's category (by_you) says nothing about who moved the price."""
+    this = budgets.this
+    first = write(this.test_downloads, "chequing-2.ofx",
+                  ofx([("20261003", "-11.99", "SAMPLE STREAM", "S1")], "2988.01", "20261003"))
+    call(this, "import_files", [str(first)])
+    sub = call(this, "subscription_from_transaction", txn_id=txn(this, "STREAM")["id"], name="Sample Stream")
+    start = save(this, budgets.tmp / "stream.inab")
+    later = write(this.test_downloads, "chequing-3.ofx",
+                  ofx([("20261011", "-14.99", "SAMPLE STREAM", "S2")], "2973.02", "20261011"))
+    call(this, "import_files", [str(later)])
+    charge = next(t for t in call(this, "transactions", {})["items"] if t["amount"] == -1499)
+    call(this, "link_subscription", charge["id"], sub["subscription_id"])  # New price for Sample Stream
+    side = changes.what_changed(start, this.db)
+    assert next(s for s in side["sections"] if s["kind"] == "recurring_charges")["items"] == [
+        {"text": "Sample Stream: price $11.99 → $14.99", "app": False}]
+
+
+def test_a_price_the_app_followed_stays_the_apps_after_you_categorize_its_charge(budgets):
+    this = budgets.this
+    first = write(this.test_downloads, "chequing-2.ofx",
+                  ofx([("20261003", "-11.99", "SAMPLE STREAM", "S1")], "2988.01", "20261003"))
+    call(this, "import_files", [str(first)])
+    call(this, "subscription_from_transaction", txn_id=txn(this, "STREAM")["id"], name="Sample Stream",
+         pricing="currency")
+    start = save(this, budgets.tmp / "stream.inab")
+    later = write(this.test_downloads, "chequing-3.ofx",
+                  ofx([("20261011", "-12.13", "SAMPLE STREAM", "S2")], "2975.88", "20261011"))
+    call(this, "import_files", [str(later)])
+    charge = next(t for t in call(this, "transactions", {})["items"] if t["amount"] == -1213)
+    call(this, "update_transaction", charge["id"], {"category_id": cat(this, "Fun")})  # the charge follows you there
+    side = changes.what_changed(start, this.db)
+    assert next(s for s in side["sections"] if s["kind"] == "recurring_charges")["items"] == [
+        {"text": "Sample Stream: price $11.99 → $12.13 by the app, from its charge on Oct 11; category none → Fun",
+         "app": False}]  # partly yours
+
+
+def test_an_accounts_bank_from_its_file_is_the_apps(budgets):
+    this = budgets.this
+    chequing = account(this, "SAMPLE CU Chequing")["id"]
+    call(this, "update_account", chequing, {"bank": ""})
+    start = save(this, budgets.tmp / "no-bank.inab")
+    second = write(this.test_downloads, "chequing-2.ofx", ofx(SECOND, "2949.75", "20261010"))
+    call(this, "import_files", [str(second)])
+    side = changes.what_changed(start, this.db)
+    assert next(s for s in side["sections"] if s["kind"] == "accounts")["items"] == [
+        {"text": "SAMPLE CU Chequing: bank none → SAMPLE CU by the app, from its file", "app": True}]
+
+
+def test_a_balance_adjustment_under_a_removed_import_doesnt_stay_as_a_transaction(budgets):
+    this = budgets.this
+    short = write(this.test_downloads, "chequing-2.ofx", ofx(SECOND, "2948.75", "20261010"))  # $1.00 short
+    call(this, "import_files", [str(short)])
+    kiosk = write(this.test_downloads, "chequing-3.ofx",
+                  ofx([("20261011", "-5.00", "SAMPLE KIOSK CALGARY AB", "C1")], "2943.75", "20261011"))
+    call(this, "import_files", [str(kiosk)])
+    start = save(this, budgets.tmp / "kiosk.inab")
+    call(this, "undo_import", next(i for i in call(this, "imports") if i["filename"] == "chequing-3.ofx")["id"])
+    side = changes.what_changed(start, this.db)
+    assert texts(side, "import_removed") == ["chequing-3.ofx (SAMPLE CU Chequing): 1 transaction removed"]
 
 
 def test_a_transfer_undone_and_the_half_left_to_decide_again(budgets):
@@ -674,7 +754,16 @@ def test_a_file_still_being_written_is_refused(budgets):
     assert Path(f"{live}-wal").stat().st_size
     with pytest.raises(ValueError, match="-wal"):
         changes.what_changed(budgets.start, live)
-    assert changes.what_changed(budgets.start, budgets.this.db.conn)["summary"] == "1 category group added"
+    own = sqlite3.connect(str(live))  # a connection only this thread uses: it reads what's in the -wal
+    try:
+        assert changes.what_changed(budgets.start, own)["summary"] == "1 category group added"
+    finally:
+        own.close()
+
+
+def test_no_save_to_start_from(budgets):
+    with pytest.raises(ValueError, match="no save both computers started from"):
+        changes.compare(None, budgets.this.db, budgets.other.db)
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="a Windows network path")

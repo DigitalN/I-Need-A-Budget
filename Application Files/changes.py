@@ -16,21 +16,29 @@ Each budget is one of:
   locked or left beside it (no `-wal`, no `-shm`), and a network path (`\\\\server\\share\\…`, a
   mapped drive) works. A file with changes still in its `-wal` is refused (ValueError): it's
   open somewhere, so pass a connection to it instead;
-- an open `sqlite3.Connection`, or a `db.Database` (under its lock): a budget the app keeps
-  writing, such as this computer's working copy. It's read inside one transaction, so all of it
-  is from one moment.
+- a `db.Database` (read under its lock), or a `sqlite3.Connection` only this thread uses: a
+  budget the app keeps writing, such as this computer's working copy. It's read inside one
+  transaction, so all of it is from one moment. (Not the Database's own shared `conn` without
+  its lock: another thread could be in the middle of a write on it.)
+
+`start` is None when this computer no longer has the save both started from: there's nothing to
+compare with, and a ValueError says so.
 
 A side is:
 
-    {"changed": bool,          # anything listed at all
+    {"changed": bool,          # anything to show: False, and there's nothing this side would lose
      "summary": str,           # one line: "1 file imported (14 transactions) · 9 categorized · …"
      "sections": [{"kind": str, "title": str, "items": [{"text": str, "app": bool}, …]}, …]}
 
-`summary` is the sections' titles joined by " · ", in the order below; "Show every change"
-lists every section's items under its title. An item's `app` is true for what the app did on
+`changed` false means nothing to show, even when the files differ (backups.digest counts what
+this module never lists: the inbox's reasons, a group folded): the page can take the other
+computer's version without asking. `summary` is the sections' titles joined by " · ", in the
+order below; "Show every change" lists every section's items under its title. An item's `app` is true for what the app did on
 its own, and its text says so: the re-check categorizing or pairing a transfer, a transaction
 it decides about again ("back in the Inbox"), the balance check's balance adjustments after
-an import, a recurring charge's price following a charge as it arrived. Otherwise it's false:
+an import, a recurring charge's price following a charge as it arrived (within its price type's
+tolerance: "New price for…" is only asked about one outside it), an account's bank filled in
+from its file. Otherwise it's false:
 yours, or what can't be told apart from yours (an import: a file you dropped and one the app
 found in Downloads leave nothing to tell them apart). The kinds, in order: imported,
 import_removed, not_imported, categorized, split, transfer, sent_back, back_in_inbox, edited,
@@ -38,13 +46,16 @@ added, deleted, balance_adjustment, assigned, budgeted, categories, accounts,
 recurring_charges, payees, settings, actual.
 
 Rows are matched by id, and each side is only ever compared with the start, so an id both
-sides added is two different things. SQLite gives a deleted newest row's id to the next one,
-so a row under the same id is only the same thing when what it keeps says so: a transaction,
-account, import or recurring charge made at the same moment (an account of the same type); a
-category with the same name or the start's among its earlier names (a card's payment category:
-the same card); a category group with the same name or the same categories in it; a payee with
-the same transactions or the same bank wording that finds it. Otherwise it's one removed and
-another added, never a rename.
+sides added is two different things. SQLite gives a deleted newest row's id to the next one
+(never an id below one that's still there), so a row under the same id is only the same thing
+when what it keeps says so: a transaction, account, import or recurring charge made at the same
+moment (an account of the same type); a category with the same name or the start's among its
+earlier names (a card's payment category: the same card); a payee with the same transactions or
+the same bank wording that finds it, or the same name. A category or payee below one that's
+still the same is the same too. Otherwise it's one removed and another added, never a rename. A
+category group under the same id is the same group: only an empty one can be deleted, nothing
+it keeps tells one deleted and another added apart from one renamed, and renaming is what
+people do.
 
 Some differences are never changes: this session's undo, backups' own meta, what the budget
 folder keeps about saves (`BOOKKEEPING_META`), the inbox's reasons (only text to show), a group
@@ -67,7 +78,7 @@ import backups
 from ledger import DEBT_KINDS, KIND_LABELS
 from payees import ADDED_HALF, ADJUSTMENT
 from settings import BUDGET_RAN_ON, validate_budget
-from subscriptions import PRICINGS
+from subscriptions import PRICINGS, looks_foreign, same_price_for
 from util import month_name, short_day
 
 # Meta keys that are the app's own bookkeeping, never a change: backups' (what the last backup
@@ -128,13 +139,19 @@ _THINGS = {"balance_adjustment": "balance adjustments", "categories": "categorie
 
 def compare(start, this, other):
     """What each computer changed since the save both started from."""
-    begin = _read(start)
+    begin = _read(_a_start(start))
     return {"this": _Side(begin, _read(this)).result(), "other": _Side(begin, _read(other)).result()}
 
 
 def what_changed(start, side):
     """What one budget changed since `start`."""
-    return _Side(_read(start), _read(side)).result()
+    return _Side(_read(_a_start(start)), _read(side)).result()
+
+
+def _a_start(start):
+    if start is None:
+        raise ValueError("There's no save both computers started from, so what each one changed can't be shown")
+    return start
 
 
 # ── words ──
@@ -223,7 +240,10 @@ class _Budget:
         # wording only where there's no payee to name it by.
         self.transactions = by_id("transactions", (
             ("from_file", "(fingerprint IS NOT NULL OR fitid IS NOT NULL)", ("fingerprint", "fitid")),
-            ("raw_name", "CASE WHEN payee_id IS NULL THEN raw_name END", ("raw_name", "payee_id"))))
+            ("raw_name", "CASE WHEN payee_id IS NULL THEN raw_name END", ("raw_name", "payee_id")),
+            # what a recurring charge's price type is worked out from (subscriptions.effective_pricing)
+            ("bank_category", "CASE WHEN subscription_id IS NOT NULL THEN bank_category END",
+             ("bank_category", "subscription_id"))))
         self.keys = {}  # payee id → the bank wording that finds it (payee_keys)
         if have("payee_keys"):
             for key, payee_id in conn.execute("SELECT key, payee_id FROM payee_keys"):
@@ -287,14 +307,17 @@ def _snapshot(conn):
             conn.execute("ROLLBACK")
 
 
-def _split_rows(start, side, same):
+def _split_rows(start, side, same, kept_below=False):
     """(gone, new, both) between two tables of rows by id: rows only the start has, rows only the
     side has, and (start's, side's) pairs. A row under the same id that `same(start's, side's)`
-    says is another thing is two rows: one gone, one new."""
+    says is another thing is two rows: one gone, one new. With `kept_below`, an id below one
+    `same` says is still there is the same row whatever it looks like: SQLite only gives an id
+    above every row there is."""
+    floor = max((i for i, b in start.items() if i in side and same(b, side[i])), default=None) if kept_below else None
     gone, new, both = {}, {}, []
     for row_id, b in start.items():
         s = side.get(row_id)
-        if s is not None and same(b, s):
+        if s is not None and ((floor is not None and row_id < floor) or same(b, s)):
             both.append((b, s))
         else:
             gone[row_id] = b
@@ -359,14 +382,13 @@ class _Side:
         self.i_gone, self.i_new, _ = _split_rows(start.imports, side.imports, _made_alike("imported_at", "sha256"))
         self.t_gone, self.t_new, self.t_both = _split_rows(start.transactions, side.transactions,
                                                            _made_alike("created_at"))
-        self.c_gone, self.c_new, self.c_both = _split_rows(start.categories, side.categories, _same_category)
-        kept_in = {b["group_id"] for b, s in self.c_both if b["group_id"] == s["group_id"]}
-        self.g_gone, self.g_new, self.g_both = _split_rows(
-            start.groups, side.groups, lambda b, s: b["role"] == s["role"] and (b["name"] == s["name"] or b["id"] in kept_in))
+        self.c_gone, self.c_new, self.c_both = _split_rows(start.categories, side.categories, _same_category,
+                                                           kept_below=True)
+        self.g_gone, self.g_new, self.g_both = _split_rows(start.groups, side.groups, lambda b, s: b["role"] == s["role"])
         paid = {b["payee_id"] for b, s in self.t_both if b["payee_id"] is not None and b["payee_id"] == s["payee_id"]}
         self.p_gone, self.p_new, self.p_both = _split_rows(
             start.payees, side.payees, lambda b, s: b["id"] in paid or b["name"] == s["name"]
-            or bool(start.keys.get(b["id"], set()) & side.keys.get(s["id"], set())))
+            or bool(start.keys.get(b["id"], set()) & side.keys.get(s["id"], set())), kept_below=True)
         self.s_gone, self.s_new, self.s_both = _split_rows(start.subscriptions, side.subscriptions,
                                                            _made_alike("created_at"))
         self.copies = self._merges()
@@ -442,8 +464,9 @@ class _Side:
         for i in self.i_gone.values():
             n = sum(1 for t in self.t_gone.values() if t["import_id"] == i["id"] and t["hint"] != ADJUSTMENT)
             # As Remove import's message says it (removedText in the page): what another file has stays under
-            # that file; one you added that the file's row had taken the place of goes back to what you entered.
-            under = [s for b, s in self.t_both if b["import_id"] == i["id"]]
+            # that file; one you added that the file's row had taken the place of goes back to what you entered. The
+            # balance check's balance adjustment that stays is the check's again: it says so with the balance adjustments.
+            under = [s for b, s in self.t_both if b["import_id"] == i["id"] and b["hint"] != ADJUSTMENT]
             stay = sum(1 for s in under if s["import_id"] is not None)
             yours = len(under) - stay
             files.add(i["sha256"])
@@ -728,14 +751,18 @@ class _Side:
                 self.add("accounts", f"Merged {a['name']} into {self.account(merged_away[a['id']])}", verb="merged")
             else:
                 self.add("accounts", f"Deleted account {a['name']}", verb="deleted")
+        imported_into = {i["account_id"] for i in self.i_new.values()}
         for b, s in self.a_both:
             merged = self.copies.get(s["id"], [])
-            parts = []
+            parts, app_bank = [], False
             if b["name"] != s["name"]:
                 parts.append(f"renamed to {s['name']}")
             # A merge gives the account its copy's bank when it had none, and the newer balance: the merge says so.
+            # A file imported into an account without a bank gives it the file's (importer.learn_keys): the app's.
             if (b["bank"] or "") != (s["bank"] or "") and not (not b["bank"] and s["bank"] in [a["bank"] for a in merged]):
-                parts.append(f"bank {b['bank'] or 'none'} → {s['bank'] or 'none'}")
+                app_bank = not b["bank"] and s["id"] in imported_into
+                parts.append(f"bank {b['bank'] or 'none'} → {s['bank'] or 'none'}"
+                             + (" by the app, from its file" if app_bank else ""))
             if b["apr"] != s["apr"]:
                 parts.append(f"interest rate {_rate(b['apr'])} → {_rate(s['apr'])}")
             if b["planned_payment"] != s["planned_payment"]:
@@ -743,7 +770,7 @@ class _Side:
             if parts == [f"renamed to {s['name']}"]:
                 self.add("accounts", f"Renamed account {b['name']} → {s['name']}", verb="renamed")
             elif parts:
-                self.add("accounts", f"{b['name']}: {'; '.join(parts)}", verb="edited")
+                self.add("accounts", f"{b['name']}: {'; '.join(parts)}", app=app_bank and len(parts) == 1, verb="edited")
             if b["closed"] != s["closed"]:
                 self.add("accounts", f"Closed account {s['name']}" if s["closed"] else f"Reopened account {s['name']}",
                          verb="closed" if s["closed"] else "reopened")
@@ -776,15 +803,17 @@ class _Side:
     # ── recurring charges ──
 
     def _recurring_charges(self):
-        # The charges linked to a recurring charge here (new, or newly linked): a price that follows one of them,
-        # as it arrived, is the app's (subscriptions.link_transaction); "New price for…" makes the charge yours.
-        linked = {}
+        # The charges linked to a recurring charge here (new, or newly linked), and the ones it had at the start.
+        linked, had = {}, {}
         for t in self.t_new.values():
             if t["subscription_id"] is not None:
                 linked.setdefault(t["subscription_id"], []).append(t)
         for b, s in self.t_both:
             if s["subscription_id"] is not None and s["subscription_id"] != b["subscription_id"]:
                 linked.setdefault(s["subscription_id"], []).append(s)
+        for t in self.start.transactions.values():
+            if t["subscription_id"] is not None:
+                had.setdefault(t["subscription_id"], []).append(t)
 
         for s in self.s_new.values():
             if s["status"] == "ignored":
@@ -801,10 +830,10 @@ class _Side:
             if b["name"] != s["name"]:
                 parts.append(f"renamed to {s['name']}")
             if b["amount"] != s["amount"]:
-                follows = [t for t in linked.get(s["id"], ()) if -t["amount"] == s["amount"]]
-                app_price = bool(follows) and not any(t["by_you"] for t in follows)
+                followed = self._price_followed(b, s, linked.get(s["id"], ()), had.get(b["id"], ()))
+                app_price = followed is not None
                 price = f"price {money(b['amount'])} → {money(s['amount'])}"
-                parts.append(f"{price} by the app, from its charge on {_day(follows[-1]['date'])}" if app_price else price)
+                parts.append(f"{price} by the app, from its charge on {_day(followed['date'])}" if app_price else price)
             if b["cadence"] != s["cadence"]:
                 parts.append(f"charges {_EVERY.get(b['cadence'], b['cadence'])} → {_EVERY.get(s['cadence'], s['cadence'])}")
             if b["kind"] != s["kind"]:
@@ -815,7 +844,8 @@ class _Side:
             if b["ends_on"] != s["ends_on"]:
                 parts.append(f"ends {_long_day(s['ends_on'])}" if s["ends_on"] else "no end date")
             if b["category_id"] != s["category_id"]:
-                parts.append(f"category {self.category(b['category_id'], self.start)} → {self.category(s['category_id'])}")
+                was = self.category(b["category_id"], self.start) if b["category_id"] else "none"
+                parts.append(f"category {was} → {self.category(s['category_id']) if s['category_id'] else 'none'}")
             if (b["note"] or "") != (s["note"] or ""):
                 parts.append(f"note {_quoted(s['note'])}" if s["note"] else "note removed")
             if b["status"] != s["status"]:
@@ -826,6 +856,27 @@ class _Side:
             elif parts:
                 self.add("recurring_charges", f"{b['name']}: {'; '.join(parts)}", app=app_price and len(parts) == 1,
                          verb="edited")
+
+    @staticmethod
+    def _price_followed(b, s, linked, had):
+        """The charge whose price a recurring charge's price followed as it arrived, the app's doing
+        (subscriptions.link_transaction), or None: you changed it (Edit…, or "New price for…").
+        A charge is followed only when it matched, within its price type's tolerance of the price
+        then (subscriptions.match), and "New price for…" is only asked about one that didn't: so
+        the price is the app's when following each charge that matched, from the start's price,
+        ends on this side's price."""
+        pricing = b["pricing"]
+        if pricing == "varies":
+            return None  # no price to follow
+        charges = sorted(had, key=lambda t: (t["date"], t["id"]))
+        if pricing == "fixed" and looks_foreign([{"amt": -t["amount"], "bank_category": t["bank_category"]}
+                                                 for t in charges]):
+            pricing = "currency"  # as subscriptions.effective_pricing treats it
+        price, last = b["amount"], None
+        for t in sorted(linked, key=lambda t: (t["date"], t["id"])):
+            if same_price_for(pricing, price, -t["amount"]):
+                price, last = -t["amount"], t
+        return last if last is not None and price == s["amount"] else None
 
     # ── payees ──
 
