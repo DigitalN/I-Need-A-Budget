@@ -741,8 +741,10 @@ class BudgetFolder:
                 digest = backups.digest(self.db)
                 self.db.conn.execute("VACUUM INTO ?", (str(local),))
             mine = self._mine()
+            if as_is and (mine is None or mine.digest != digest):
+                as_is = False  # it changed since (a request slipped in): never other contents under the same save
             stamp = self._now().isoformat(timespec="seconds")
-            if as_is and mine is not None:
+            if as_is:
                 save = replace(mine, computer=self.computer, saved_at=stamp, app_version=self.app_version,
                                schema_version=SCHEMA_VERSION, digest=digest, raw=False, name=FILE_NAME,
                                path=saves / f"{mine.id}{EXTENSION}")

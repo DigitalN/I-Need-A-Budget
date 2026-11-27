@@ -47,9 +47,14 @@ from db import Database
 from errors import UserError
 
 NAMES = ("PC-A", "PC-B", "PC-C")
-FOUND = []  # (seed, steps) that found a bug once, kept as they were
+# (seed, steps) that found a bug once, in the app or in this test, kept as they were (without restores):
+# 172 Move… made an unchanged budget a new save; 582 a copy put away after a move stayed in the old
+# folder; 1559 a save found on following a move read as put back; 4045 the same contents joined read
+# as older; 66, 1053, 1193, 1236, 1558 and 2442 this test's own mistakes.
+FOUND = [(seed, 40) for seed in (66, 172, 582, 1053, 1193, 1236, 1558, 1559, 2442, 4045)]
 STEPS = int(os.environ.get("INAB_STEPS", "40"))
-SEEDS = [(seed, STEPS) for seed in range(int(os.environ.get("INAB_SEEDS", "100")))] + FOUND
+SEEDS = [(seed, STEPS) for seed in range(int(os.environ.get("INAB_SEEDS", "100")))]
+SEEDS += [found for found in FOUND if found not in SEEDS]
 START = datetime(2026, 11, 27, 9, 0, tzinfo=timezone(timedelta(hours=-7)))
 
 

@@ -1646,3 +1646,24 @@ def test_following_a_moved_budget_brings_what_reached_the_old_folder_since(tmp_p
     b.open_from(moved)
     assert len(not_kept(moved)) == 1
     assert not (folder / "Backups").exists()
+
+
+def test_moving_an_unchanged_budget_is_the_same_save_and_a_changed_one_a_new_save(tmp_path, monkeypatch):
+    """Move… with nothing changed puts the very save in the new folder (random seed 172); a change
+    that slips in before the copy is made (a request) makes it a new save, never other contents
+    under the same one."""
+    a = computer(tmp_path, "PC-A")
+    add_category(a.db, "Groceries")
+    a.move_to(tmp_path / "Budget")
+    first = a._mine()
+    a.move_to(tmp_path / "Moved")
+    assert save_in(tmp_path / "Moved" / FILE_NAME)["id"] == first.id
+
+    def unchanged():  # it looks unchanged, then a request changes it before the copy is made
+        add_category(a.db, "Rent")
+        return True
+    monkeypatch.setattr(a, "_unchanged", unchanged)
+    a.move_to(tmp_path / "Moved again")
+    moved = save_in(tmp_path / "Moved again" / FILE_NAME)
+    assert moved["id"] != first.id and moved["counts"] != first.counts
+    assert categories_in(tmp_path / "Moved again" / FILE_NAME) == ["Groceries", "Rent"]
