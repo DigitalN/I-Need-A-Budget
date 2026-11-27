@@ -34,6 +34,7 @@ def test_the_installer_is_the_one_an_update_looks_for():
     """Windows updates (#188) pick I-Need-A-Budget-<version>-Setup.exe from a release and run it quietly
     over the copy that's installed: the same AppId, always."""
     assert setup("OutputBaseFilename") == "I-Need-A-Budget-{#Version}-Setup"
+    assert setup("VersionInfoVersion") == "{#Version}"  # its ProductVersion, which the updater reads
     assert setup("AppId") == "{{BA0375DB-A1F9-4F91-A81B-A0B01ABF18B6}"  # never change it
     assert "skipifsilent" in re.search(r"^\[Run\]\n(.*)$", INSTALLER, re.MULTILINE).group(1)  # the update reopens it
 

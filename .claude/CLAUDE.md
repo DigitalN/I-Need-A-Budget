@@ -85,9 +85,9 @@ All in `Application Files/`:
   parts are tested on either. On Windows (#187) the window is pywebview's WinForms form drawing
   the page with WebView2 (Edge's engine, through pythonnet); `when_asked_to_quit` replaces
   pywebview's FormClosing handler before the window is made, to tell the person's closes from
-  Windows' own; the window's frame is kept in the registry (`HKCU\Software\I Need A Budget`), the
-  token in Credential Manager; the copy holding the lock keeps the mutex (`RUNNING_MUTEX`) the
-  installer's AppMutex waits for. The update's steps raise NotImplementedError until #188.
+  Windows' own; the window's frame is kept in the registry (`HKCU\Software\I Need A Budget`); the
+  copy holding the lock keeps the mutex (`RUNNING_MUTEX`) the installer's AppMutex waits for. The
+  token and the update's steps are #188's.
   `scripts/tests/test_computer.py` checks each keeps to its own file.
 - `INeedABudget.spec`: the PyInstaller build on either system, each with its own side of pywebview
   and computer.py only. A Mac makes `I Need A Budget.app` (`scripts/build.sh`); Windows a folder

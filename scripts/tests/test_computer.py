@@ -189,14 +189,12 @@ def test_windows_knows_where_the_installed_app_is(monkeypatch, tmp_path):
 
 @pytest.fixture
 def windows_for_tests(monkeypatch):
-    """A Windows whose settings and token are its own, not the app's: removed afterwards."""
+    """A Windows whose settings are its own, not the app's: removed afterwards."""
     import winreg
 
     windows = Windows()
     monkeypatch.setattr(windows, "_settings_key", r"Software\I Need A Budget tests")
-    monkeypatch.setattr(windows, "_credential", "I Need A Budget tests: GitHub")
     yield windows
-    windows.save_token("")
     try:
         winreg.DeleteKey(winreg.HKEY_CURRENT_USER, windows._settings_key)
     except OSError:
@@ -208,22 +206,6 @@ def test_windows_keeps_the_window_in_this_computers_settings(windows_for_tests):
     assert windows_for_tests._setting("Main window") is None
     windows_for_tests._set_setting("Main window", "192 104 2176 1183 maximized")
     assert windows_for_tests._setting("Main window") == "192 104 2176 1183 maximized"
-
-
-@WINDOWS
-def test_windows_keeps_the_token_in_credential_manager(windows_for_tests):
-    from updater import UpdateError
-
-    token = "github_pat_" + "S4mple" * 10  # a made-up token of the right shape
-    assert windows_for_tests.saved_token() is None
-    windows_for_tests.save_token(token)
-    assert windows_for_tests.saved_token() == token
-    with pytest.raises(UpdateError, match="doesn't look like"):
-        windows_for_tests.save_token("not a token")
-    assert windows_for_tests.saved_token() == token
-    windows_for_tests.save_token("")
-    assert windows_for_tests.saved_token() is None
-    windows_for_tests.save_token("")  # none to remove is fine
 
 
 @WINDOWS

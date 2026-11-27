@@ -17,7 +17,7 @@ The installer (scripts/installer.iss) puts the app in the person's own Programs 
 %LOCALAPPDATA%\\Programs\\I Need A Budget, and refuses to run while the app is open: it looks
 for the mutex RUNNING_MUTEX, which the copy holding the lock keeps.
 
-The update's steps and relaunching are Windows updates' (#188).
+The token, the update's steps and relaunching are Windows updates' (#188).
 
 Windows' APIs are reached through ctypes, msvcrt, winreg and pythonnet, imported in the
 methods that use them, so this file imports on any system and its pure parts are tested
@@ -42,7 +42,6 @@ DONT_VERIFY = 0x00004000  # KF_FLAG_DONT_VERIFY: where it is even if it's been d
 
 RUNNING_MUTEX = f"{APP_NAME} is running"  # the installer's AppMutex: it waits for the app to be closed
 SETTINGS_KEY = rf"Software\{APP_NAME}"     # this computer's settings for the app, under HKEY_CURRENT_USER
-CREDENTIAL = f"{APP_NAME}: GitHub"         # the token's name in Credential Manager (Windows Credentials)
 WINDOW_CLASS = "WindowsForms10.Window."    # what every WinForms window's class name starts with
 APPS_THEME = r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
 
@@ -187,42 +186,12 @@ def _form():
     return form
 
 
-def _credential_api():
-    import ctypes
-    from ctypes import wintypes
-
-    class CREDENTIAL(ctypes.Structure):
-        _fields_ = [("Flags", wintypes.DWORD), ("Type", wintypes.DWORD), ("TargetName", wintypes.LPWSTR),
-                    ("Comment", wintypes.LPWSTR), ("LastWritten", wintypes.FILETIME),
-                    ("CredentialBlobSize", wintypes.DWORD), ("CredentialBlob", ctypes.POINTER(ctypes.c_ubyte)),
-                    ("Persist", wintypes.DWORD), ("AttributeCount", wintypes.DWORD),
-                    ("Attributes", ctypes.c_void_p), ("TargetAlias", wintypes.LPWSTR),
-                    ("UserName", wintypes.LPWSTR)]
-
-    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
-    advapi32.CredReadW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
-                                   ctypes.POINTER(ctypes.POINTER(CREDENTIAL))]
-    advapi32.CredReadW.restype = wintypes.BOOL
-    advapi32.CredWriteW.argtypes = [ctypes.POINTER(CREDENTIAL), wintypes.DWORD]
-    advapi32.CredWriteW.restype = wintypes.BOOL
-    advapi32.CredDeleteW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD]
-    advapi32.CredDeleteW.restype = wintypes.BOOL
-    advapi32.CredFree.argtypes = [ctypes.c_void_p]
-    advapi32.CredFree.restype = None
-    return advapi32, CREDENTIAL
-
-
-GENERIC = 1         # CRED_TYPE_GENERIC
-ON_THIS_PC = 2      # CRED_PERSIST_LOCAL_MACHINE: this person on this PC, never roamed to another
-
-
 class Windows(Computer):
     name = "windows"
     curl = str(Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "curl.exe")  # Windows 10 and later
     gh = (str(Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "GitHub CLI" / "gh.exe"),)
 
     _settings_key = SETTINGS_KEY  # the tests use their own
-    _credential = CREDENTIAL
 
     def __init__(self):
         self._running = None  # the mutex the installer looks for, once this copy has the lock
@@ -475,37 +444,10 @@ class Windows(Computer):
     # ── updates ──
 
     def saved_token(self):
-        """From Credential Manager (Windows Credentials, "I Need A Budget: GitHub")."""
-        import ctypes
+        """None until Windows updates (#188) has somewhere to keep one."""
+        return None
 
-        advapi32, CREDENTIAL = _credential_api()
-        found = ctypes.POINTER(CREDENTIAL)()
-        if not advapi32.CredReadW(self._credential, GENERIC, 0, ctypes.byref(found)):
-            return None
-        try:
-            saved = found.contents
-            return ctypes.string_at(saved.CredentialBlob, saved.CredentialBlobSize).decode("utf-8") or None
-        finally:
-            advapi32.CredFree(found)
-
-    def save_token(self, token):
-        import ctypes
-
-        from updater import UpdateError, valid_token
-
-        advapi32, CREDENTIAL = _credential_api()
-        if not token:
-            advapi32.CredDeleteW(self._credential, GENERIC, 0)  # none saved is fine too
-            return
-        if not valid_token(token):
-            raise UpdateError("That doesn't look like a GitHub token.")
-        blob = ctypes.create_string_buffer(token.encode("utf-8"), len(token.encode("utf-8")))
-        saved = CREDENTIAL(Type=GENERIC, TargetName=self._credential, Persist=ON_THIS_PC, UserName="GitHub",
-                           CredentialBlobSize=len(blob), CredentialBlob=ctypes.cast(blob, ctypes.POINTER(ctypes.c_ubyte)))
-        if not advapi32.CredWriteW(ctypes.byref(saved), 0) or self.saved_token() != token:
-            raise UpdateError("Couldn't save the token in Windows' Credential Manager.")
-
-    # ── until Windows updates (#188): a frozen copy asks these at launch ──
+    # Until Windows updates (#188), so that a built copy starts: it asks these at launch.
 
     def why_updates_off(self, app):
         return "this build doesn't update itself yet"
