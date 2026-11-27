@@ -926,8 +926,8 @@ working tree has anything from `.git-denylist` or a card-number shape.
 
 GitHub runs the whole suite on macOS and Windows for every pull request into `main` or
 `claude/cross-platform` and every push to them (`.github/workflows/tests.yml`, issue #186):
-Python 3.13, the pinned packages, node for the page tests, no secrets. Windows' check doesn't
-fail the run until #182 has made the suite pass there (`experimental` in the workflow). GitHub's
+Python 3.13, the pinned packages, node for the page tests, no secrets. Both checks count: a
+failure on either system fails the run (since #182 made the suite pass on Windows). GitHub's
 machines have no `.git-denylist`: there the privacy checks look for card numbers, bank files and
 databases only. Making the checks required for merging into `main` is the maintainer's setting
 on GitHub: ask before changing it.
