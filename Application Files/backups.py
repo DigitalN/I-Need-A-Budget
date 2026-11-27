@@ -48,9 +48,10 @@ quit the app, delete `budget.db-wal` and `budget.db-shm` in the data folder if t
 copy the backup in as `budget.db`.
 
 With a budget folder, backups from every computer share its `Backups/`: each computer's names
-end with its own name (`db.backup_tag`: `budget-2026-11-08-14-32-05 on Office PC.db`), so two
-made in the same second never share one, and `prune` only deletes the copies left half made that
-are its own, or a day old.
+end with its own name and the start of its id (`db.backup_tag`, budget_folder.computer_tag:
+`budget-2026-11-08-14-32-05 on Office PC 3f2a9c.db`), so two made in the same second never share
+one, even on two computers with the same name. `prune` deletes only this computer's backups, and
+copies left half made that are its own, or a day old.
 """
 
 import calendar

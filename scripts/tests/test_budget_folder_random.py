@@ -468,7 +468,7 @@ class World:
             state = c.state()["state"]
             if state in ("two_computers", "older") and c._other is not None:
                 other = self._of_save(c._other)
-                if other is None or (state == "older" and budget_folder.a_restore(c._other)):
+                if other is None or (state == "older" and c._other.raw):
                     continue  # the same backup restored again, older by now: asked (decided on #196's review)
                 mine = self.cur[name]
                 assert other not in self._ancestry([mine]) and mine not in self._ancestry([other]), \
