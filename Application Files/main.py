@@ -172,8 +172,8 @@ class BudgetApp:
         return True
 
     def _open_license(self):
-        """The license shipped with the app, as a read-only copy in the default text app:
-        TextEdit saving into the app itself would break its signature."""
+        """The license shipped with the app, as a read-only copy in the default text app
+        (TextEdit, Notepad): saving into the app itself would break its signature."""
         import shutil
         import tempfile
 
@@ -181,6 +181,8 @@ class BudgetApp:
         source = _app_files_dir() / "LICENSE.txt" if frozen else _app_files_dir().parent / "LICENSE"
         copy = Path(tempfile.gettempdir()) / APP_NAME / "LICENSE.txt"
         copy.parent.mkdir(parents=True, exist_ok=True)
+        if copy.exists():
+            copy.chmod(0o644)  # Windows refuses to delete a read-only file: the second click would fail
         copy.unlink(missing_ok=True)
         shutil.copyfile(source, copy)
         copy.chmod(0o444)
@@ -349,8 +351,8 @@ class BudgetApp:
 
     def _should_quit(self, logging_out):
         """⌘Q (or Quit in the Dock) goes the close button's way, through the page. Logging
-        out, restarting or shutting down quits straight away: holding it up would stop the
-        computer. True quits now."""
+        out, restarting or shutting down (on Windows Task Manager and installers too) quits
+        straight away: holding it up would stop the computer. True quits now."""
         if self._quitting:
             return True
         if logging_out or self._ask_page_to_quit():
@@ -370,6 +372,7 @@ class BudgetApp:
             APP_NAME, html=html, js_api=Api(self), width=width, height=height,
             min_size=MIN_SIZE, background_color=self._background_color(), text_select=True)
         self._window.events.before_show += self._restore_frame
+        self._window.events.before_show += lambda: self._apply_theme(self._settings.get()["theme"])  # the title bar
         self._window.events.closing += self._on_closing
         self._window.events.loaded += self._on_loaded
         threading.Thread(target=self._watch, name="downloads-watcher", daemon=True).start()

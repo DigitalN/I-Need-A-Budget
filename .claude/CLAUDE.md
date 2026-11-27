@@ -82,9 +82,21 @@ All in `Application Files/`:
   and codesign, `swap_in`). `computer_mac.py` is the only file using AppKit, Foundation, objc,
   PyObjCTools, fcntl or the Mac's own tools; `computer_windows.py` the only one using Windows'
   APIs. Both import anywhere (each system's modules are imported in its methods), so their pure
-  parts are tested on either. On Windows the window, quitting and opening things raise
-  NotImplementedError until the Windows app (#187), and updates until #188.
+  parts are tested on either. On Windows (#187) the window is pywebview's WinForms form drawing
+  the page with WebView2 (Edge's engine, through pythonnet); `when_asked_to_quit` replaces
+  pywebview's FormClosing handler before the window is made, to tell the person's closes from
+  Windows' own; the window's frame is kept in the registry (`HKCU\Software\I Need A Budget`), the
+  token in Credential Manager; the copy holding the lock keeps the mutex (`RUNNING_MUTEX`) the
+  installer's AppMutex waits for. The update's steps raise NotImplementedError until #188.
   `scripts/tests/test_computer.py` checks each keeps to its own file.
+- `INeedABudget.spec`: the PyInstaller build on either system, each with its own side of pywebview
+  and computer.py only. A Mac makes `I Need A Budget.app` (`scripts/build.sh`); Windows a folder
+  with `I Need A Budget.exe` (its `.ico` from `scripts/make-ico.py`, a version resource with the
+  copyright), which `scripts/installer.iss` (Inno Setup 6) installs: `scripts/build-windows.sh`
+  makes `I-Need-A-Budget-<version>-Setup.exe`. Per-user, no administrator, into
+  `%LOCALAPPDATA%\Programs\I Need A Budget`, a Start menu entry, an uninstaller that leaves the
+  data, a check for WebView2, unsigned (ADR 0009). Never change its `AppId`: an update installs
+  over the copy it finds by it. `scripts/tests/test_windows_app.py` checks both.
 - `service.py`: everything the page can ask for. `BudgetService.dispatch()` runs only
   methods marked `@exposed`; results are `{"ok": true, "result": …, "step": …}` (`step`, on a
   change or an undo: the undo step it made, so a toast's Undo reverses exactly its own; None
@@ -474,6 +486,10 @@ All in `Application Files/`:
   recurring charge, payee or import) says "That category no longer exists." and so on, changes
   nothing and has no Undo (`service._existing`): it said "Saved", or its toast's Undo took back
   the step before it.
+- On Windows the repository may be in OneDrive: `scripts/build-windows.sh` builds in
+  `%LOCALAPPDATA%\I Need A Budget-build`. The maintainer's Windows PC runs Python from the
+  Microsoft Store, whose registry writes are kept in a copy of its own: what the app run from
+  source keeps in the registry isn't what `reg query` (or the installed app) sees.
 - `~/Documents` is iCloud-synced on this machine; `scripts/build.sh` builds in
   `~/Library/Caches` and runs `xattr -cr` before signing. One build at a time from any
   checkout or worktree (`scripts/build-lock.sh`, taken by build, package, install and
@@ -799,7 +815,9 @@ Don't undo these without asking:
   quitting" (with the reason for an entry), then Keep editing or Go back / Quit anyway / for
   a pop-up "<its own button> and quit". The maintainer's wording: "finish", never "save",
   which would suggest the rest might not be saved. Logging out or shutting down quits
-  straight away. A downloaded update installs on quit.
+  straight away. On Windows ✕ and Alt+F4 are the close button (there's no ⌘Q); logging off,
+  shutting down, Task Manager and an installer's Restart Manager quit straight away, the
+  backup made before Windows is told it may go on. A downloaded update installs on quit.
 - **A backup at a quit after a change, into Documents** (issues #21 and #133,
   [ADR 0004](../docs/adr/0004-live-budget-stays-out-of-synced-folders.md)):
   `~/Documents/I Need A Budget Backups`, which iCloud Drive can back up; the live budget
@@ -826,7 +844,12 @@ Don't undo these without asking:
 - **The window** opens at 85% of the screen the first time on a Mac, then the size and
   place it was left: AppKit's frame autosave (`main.WINDOW_FRAME_NAME`, kept in the app's
   macOS defaults, saved on every change), moved and shrunk onto a screen if it no longer
-  fits one. The log says `Window <w>×<h>` at launch.
+  fits one. The log says `Window <w>×<h>` at launch. On Windows likewise: 85% of the main
+  screen less the taskbar, in its middle, the first time; then as it was left, maximized again
+  if it was, kept in this computer's settings in the registry (`HKCU\Software\I Need A Budget`,
+  value `Main window`: `x y width height[ maximized]`), saved after a move or resize, a maximize
+  and at close. Its smallest size is the page's: pywebview's minimum there is the whole window,
+  frame and title bar included. Appearance colours the title bar too.
 - Budget can start months back; past months are caught up with one click ("Catch up").
 - **Overspending** is a setting with three choices (the maintainer wanted to choose how
   the rollover works): Next month (YNAB; a new budget's default since 1.4.1, issue #166),
@@ -929,7 +952,8 @@ GitHub runs the whole suite on macOS and Windows for every pull request into `ma
 Python 3.13, the pinned packages, node for the page tests, no secrets. Both checks count: a
 failure on either system fails the run (since #182 made the suite pass on Windows). GitHub's
 machines have no `.git-denylist`: there the privacy checks look for card numbers, bank files and
-databases only. Making the checks required for merging into `main` is the maintainer's setting
+databases only. The same run builds both apps to try (issue #187), unsigned: the Windows installer
+and the Mac app zipped (signed ad hoc), downloadable from the run's Summary. Making the checks required for merging into `main` is the maintainer's setting
 on GitHub: ask before changing it.
 
 ## Agent skills

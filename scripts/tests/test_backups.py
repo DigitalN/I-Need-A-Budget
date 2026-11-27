@@ -21,8 +21,8 @@ from db import SCHEMA_VERSION, Database
 MAIN = Path(__file__).resolve().parents[2] / "Application Files" / "main.py"
 QUIT = datetime(2026, 11, 8, 14, 32, 5)
 PERMISSIONS = pytest.mark.skipif(sys.platform == "win32", reason="a folder's permissions don't stop access on Windows")
-MAC = pytest.mark.skipif(sys.platform != "darwin",
-                         reason="macOS asks the app's delegate; the Windows app adds its own ways (#187)")
+MAC = pytest.mark.skipif(sys.platform != "darwin", reason="macOS asks the app's delegate")
+WINDOWS = pytest.mark.skipif(sys.platform != "win32", reason="Windows closes pywebview's WinForms window")
 
 
 def open_db(folder):
@@ -656,7 +656,11 @@ class FakeComputer:
 
 
 ROUTES = ["close button", pytest.param("⌘Q", marks=MAC), pytest.param("Quit in the Dock", marks=MAC), "Restart now",
-          "quit to install an update", pytest.param("logging out or shutting down", marks=MAC)]
+          "quit to install an update", pytest.param("logging out or shutting down", marks=MAC),
+          pytest.param("✕ or Alt+F4", marks=WINDOWS), pytest.param("logging off or shutting down", marks=WINDOWS),
+          pytest.param("Task Manager", marks=WINDOWS)]
+WINDOWS_REASONS = {"✕ or Alt+F4": "UserClosing", "logging off or shutting down": "WindowsShutDown",
+                   "Task Manager": "TaskManagerClosing"}
 
 
 class AppleEvent:
@@ -689,6 +693,32 @@ def the_mac_asks_to_quit(monkeypatch, app, event):
     Mac().when_asked_to_quit(app._should_quit)
     monkeypatch.setattr(AppKit, "NSAppleEventManager", Events)
     return cocoa.BrowserView.AppDelegate.alloc().init().applicationShouldTerminate_(None)
+
+
+def windows_closes_the_window(monkeypatch, app, reason):
+    """What Windows does for ✕, Alt+F4, logging off, shutting down and Task Manager: WinForms raises
+    the window's FormClosing with a reason, which pywebview's form handles (computer_windows'
+    on_closing, then pywebview's own, which raises the closing event main.py's _on_closing listens
+    to and cancels the close when it says so). Returns the event's arguments: Cancel is whether the
+    window stays open."""
+    from types import SimpleNamespace
+
+    from webview.event import Event
+    from webview.platforms import winforms
+
+    import System.Windows.Forms as WinForms
+    from computer_windows import Windows
+
+    form = winforms.BrowserView.BrowserForm
+    monkeypatch.setattr(form, "on_closing", form.on_closing)  # pywebview's own again after the test
+    monkeypatch.setattr(form, "_pywebview_on_closing", None, raising=False)
+    Windows().when_asked_to_quit(app._should_quit)
+
+    window = SimpleNamespace(closing=Event(None, True), pywebview_window=SimpleNamespace(confirm_close=False))
+    window.closing += app._on_closing
+    closing = SimpleNamespace(CloseReason=getattr(WinForms.CloseReason, reason), Cancel=False)
+    form.on_closing(window, None, closing)
+    return closing
 
 
 def start_app(monkeypatch, tmp_path):
@@ -724,6 +754,14 @@ def quit_by(route, main, app, this_computer, monkeypatch):
         import AppKit
 
         assert the_mac_asks_to_quit(monkeypatch, app, AppleEvent("logging out")) == AppKit.NSTerminateNow
+        assert not asked
+    elif route == "✕ or Alt+F4":  # the close button's way
+        assert windows_closes_the_window(monkeypatch, app, WINDOWS_REASONS[route]).Cancel  # stays open for now
+        assert asked and not app._updater.installs  # nothing until the page answers
+        main.Api(app).quit()
+        assert this_computer.terminated
+    elif route in WINDOWS_REASONS:  # straight away, without asking the page: Windows is waiting
+        assert not windows_closes_the_window(monkeypatch, app, WINDOWS_REASONS[route]).Cancel
         assert not asked
     else:
         app._before_quit()

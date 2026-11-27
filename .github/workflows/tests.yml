@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-only
 # The whole test suite on macOS and Windows for every pull request into main or claude/cross-platform,
-# and every push to them (issue #186). The tests use only the repository's made-up data, and nothing
-# here needs a secret: a pull request from someone else's copy runs the same way.
+# and every push to them (issue #186), and both apps built to try (issue #187). The tests use only the
+# repository's made-up data, and nothing here needs a secret: a pull request from someone else's copy
+# runs the same way.
 
 name: Tests
 
@@ -77,3 +78,73 @@ jobs:
 
       - name: Run the tests
         run: python -m pytest -ra
+
+  # Both apps as each pull request has them, to try (issue #187): the Windows installer and the Mac app,
+  # unsigned (the Mac's signed ad hoc, so it can't update itself), downloadable from the run's Summary.
+  # Releases are built and signed separately (docs/adr/0009).
+  build:
+    name: Build (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS
+            os: macos-latest
+          - name: Windows
+            os: windows-latest
+    env:
+      PYTHONUTF8: "1"
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: Application Files/requirements.txt
+
+      - name: Install the pinned packages
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r "Application Files/requirements.txt"
+
+      - name: Which version
+        run: echo "VERSION=$(sed -n 's/^VERSION = "\([^"]*\)".*/\1/p' "Application Files/main.py")" >> "$GITHUB_ENV"
+
+      # GitHub's Windows machines usually have Inno Setup; install it from Chocolatey if not.
+      - name: Inno Setup
+        if: runner.os == 'Windows'
+        run: |
+          if ! command -v iscc >/dev/null && [[ ! -x "/c/Program Files (x86)/Inno Setup 6/ISCC.exe" ]]; then
+            choco install innosetup --no-progress -y
+          fi
+
+      - name: Build the Windows installer
+        if: runner.os == 'Windows'
+        env:
+          INAB_BUILD_DIR: ${{ runner.temp }}/build
+        run: scripts/build-windows.sh "$RUNNER_TEMP/out"
+
+      - name: Build the Mac app
+        if: runner.os == 'macOS'
+        run: |
+          app=$(scripts/build.sh --adhoc)
+          mkdir -p "$RUNNER_TEMP/out"
+          ditto -c -k --keepParent "$app" "$RUNNER_TEMP/out/I-Need-A-Budget-$VERSION-Mac-unsigned.zip"
+
+      - name: The build's log
+        if: failure()
+        run: cat "$RUNNER_TEMP/build/build.log" "$HOME/Library/Caches/I Need A Budget-build/build.log" 2>/dev/null || true
+
+      - uses: actions/upload-artifact@v7
+        with:
+          path: ${{ runner.temp }}/out/*
+          archive: false  # the .exe and the .zip as they are, not zipped again
+          retention-days: 30
+          if-no-files-found: error
