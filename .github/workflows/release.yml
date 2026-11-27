@@ -39,6 +39,8 @@ on:
       - scripts/dmg-requirements.txt
       - scripts/check-update.py
       - scripts/check-mac-app.py
+      - scripts/publish-release.py
+      - scripts/hooks/privacy_check.py
       - scripts/third_party_licenses.py
       - Application Files/INeedABudget.spec
       - Application Files/requirements.txt
