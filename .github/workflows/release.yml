@@ -48,7 +48,7 @@ on:
       - Application Files/computer_windows.py
       - Application Files/windows_update.py
   push:
-    branches: [main, claude/cross-platform]
+    branches: [main, claude/cross-platform, claude/strange-wilbur-14467d]  # TEMPORARY: this branch's own dry runs
     paths: *release-files
 
 permissions:
