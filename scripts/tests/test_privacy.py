@@ -12,7 +12,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts" / "hooks"))
-import privacy_check  # noqa: E402  (the checks the hooks and release.sh run)
+import privacy_check  # noqa: E402  (the checks the hooks and the release run make)
 
 
 def tracked_files():

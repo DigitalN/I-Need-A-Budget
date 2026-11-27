@@ -16,7 +16,7 @@ When: once, a few seconds after each launch (unless "Check for updates at launch
 in Settings), and when you press Check now. Never in between: the maintainer's choice.
 
 What: the repository's latest release (not drafts or pre-releases), tagged `v<version>`,
-with this computer's file attached: a Mac's .dmg from scripts/package.sh, Windows'
+with this computer's file attached: a Mac's .dmg from scripts/make-dmg.py, Windows'
 `I-Need-A-Budget-<version>-Setup.exe` with its signature beside it (`….exe.sig`). It's
 downloaded, and this computer checks it's this app, intact, from the same developer (on a
 Mac, `codesign --verify`: signed by the same team as this copy, for the same bundle

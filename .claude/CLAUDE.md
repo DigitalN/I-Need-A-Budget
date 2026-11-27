@@ -507,8 +507,8 @@ All in `Application Files/`:
   source keeps in the registry isn't what `reg query` (or the installed app) sees.
 - `~/Documents` is iCloud-synced on this machine; `scripts/build.sh` builds in
   `~/Library/Caches` and runs `xattr -cr` before signing. One build at a time from any
-  checkout or worktree (`scripts/build-lock.sh`, taken by build, package, install and
-  release), with its own PyInstaller cache: other projects on this Mac build with
+  checkout or worktree (`scripts/build-lock.sh`, taken by build and install), with its own
+  PyInstaller cache: other projects on this Mac build with
   PyInstaller `--clean`, which empties the shared one.
 
 ## Budget rules (summary; budget.py has the detail)
@@ -563,9 +563,13 @@ late with only recent transactions counts as new (the accepted cost).
   PR after the merge.
 - **A release happens only when the maintainer says it's ready** (their rule since
   2026-11-09, as bugs kept turning up). A merge, a finished list or every session being
-  done is never the go-ahead. Then Claude runs `scripts/release.sh NOTES.md` (notes
-  outside the repo), covering every PR merged since the last release. The maintainer
-  never builds. Installed copies only update when a release is published on GitHub.
+  done is never the go-ahead. Then Claude starts the Release workflow
+  (`.github/workflows/release.yml`, issue #190) from either computer: `gh workflow run
+  release.yml --ref main -F notes=@NOTES.md`, the notes written outside the repo and checked
+  with `scripts/hooks/privacy_check.py` first, covering every PR merged since the last release.
+  It builds, signs and checks both apps on GitHub's machines and publishes only once the
+  maintainer approves its `release` environment and every check passed. The maintainer never
+  builds. Installed copies only update when a release is published on GitHub.
 - The repository is **public** (it was private at first). It's
   **GPL-3.0-only**, the maintainer's choice, made knowing the GPL allows selling: what
   they want is that nobody builds a closed product from it. `docs/NOTICE` is a section 7(b)
@@ -593,10 +597,13 @@ late with only recent transactions counts as new (the accepted cost).
   private again.
 - Ask once before anything on GitHub (pushing, opening a PR, publishing a release), then
   do all of it. Check each step's result before the next one that can't be undone.
-- Releases are signed with the maintainer's Apple Development certificate (team
-  `XT4LT7MS6Y`); installed copies refuse updates from any other team. No Developer ID or
-  notarization.
-- Releases have only the `.dmg`.
+- Releases are signed on GitHub ([ADR 0009](../docs/adr/0009-both-apps-are-built-and-signed-on-github.md)):
+  the Mac app with the maintainer's Apple Development certificate (team `XT4LT7MS6Y`;
+  installed copies refuse updates from any other team; no Developer ID or notarization), the
+  Windows installer with our own Ed25519 release key. Both are secrets of the `release`
+  environment, which only a run on main reaches, after the maintainer's Approve; every other run
+  is a dry run with throwaway identities.
+- Releases have the `.dmg`, `I-Need-A-Budget-<version>-Setup.exe` and its `.sig`, nothing else.
 
 ## Testing on the maintainer's Mac
 
