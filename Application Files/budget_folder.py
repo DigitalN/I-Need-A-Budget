@@ -863,7 +863,7 @@ class BudgetFolder:
         self._behind = False
         self._reachable = None
         self._noted = None
-        self.db.backup_tag = _slug(self.computer)  # two computers' backups in one folder never share a name
+        self.db.backup_tag = computer_tag(self.computer)  # two computers' backups in one folder never share a name
         self._point_backups()
 
     # ── launch and quit ──
@@ -1032,6 +1032,12 @@ def _inside(path, folder):
 def _slug(name):
     """A computer's name as part of a file name, on any system."""
     return re.sub(r'[\\/:*?"<>|\x00-\x1f]', "_", name).strip(" .") or "computer"
+
+
+def computer_tag(name):
+    """What a computer's backups' names end with (db.Database's `backup_tag`), so main.py can give
+    the database it before the budget folder sets it: the copy made before an upgrade is named too."""
+    return _slug(name)
 
 
 def _sha256(path):
