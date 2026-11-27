@@ -37,4 +37,7 @@ under a hidden name, then renamed) a few seconds after changes stop, and when it
 - A computer on an older version refuses a budget saved by a newer one whose budget format
   it doesn't know, and offers the update.
 - Asking at the update keeps ADR 0007: the person chooses, and nothing moves until they do.
+- Restoring a backup: quit the app on every computer and copy it into the folder as
+  `Budget.inab`. Backups keep nothing about saves, so no computer saved it: each takes it as a
+  new save, and one with changes not saved yet asks which to keep, the restored one being the other.
 - Decided 2026-11-27, for 1.5.0.
