@@ -44,10 +44,9 @@ date; `INAB_DEBUG=1` turns on the web inspector. Tests (`scripts/tests/`): `pyth
 
 Every pull request into `main` or `claude/cross-platform`, and every push to them, runs the
 whole suite on macOS and on Windows (`.github/workflows/tests.yml`): Python 3.13, the pinned
-packages (Windows skips pyobjc), node for the page tests, the privacy hooks switched on. The
-pull request shows both checks, and its Checks tab has each test's output. Windows' check is
-shown but doesn't fail the run until the platform piece (#182) has made the suite pass there;
-then remove `experimental` from the workflow. The tests use only made-up data and nothing needs
+packages (pyobjc's are the Mac's only), node for the page tests, the privacy hooks switched on.
+The pull request shows both checks, and its Checks tab has each test's output. Both count: a
+failure on either system fails the run. The tests use only made-up data and nothing needs
 a secret, so a pull request from someone else's copy runs the same way. GitHub's machines have
 no `.git-denylist`, so there the privacy test and the hooks check card numbers, bank files and
 databases, not your private words: those are only checked on your own computer. Making the
