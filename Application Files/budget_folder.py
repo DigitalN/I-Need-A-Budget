@@ -135,6 +135,7 @@ SAVE_KEY = backups.SAVE_KEY   # meta: the save this budget is, or started from
 LANDED_KEY = backups.LANDED_KEY  # meta: the save in the folder this computer's last save is or replaces
 ORIGINAL = ""                 # the line a budget starts on; each restore starts another
 RESTORE = "restore:"          # a restored backup's line: restore:<its contents' digest>
+KEPT = "kept:"                # a line a choice starts, after two lines neither of which came after the other
 MOVED_NOTE = ".Budget moved.json"
 _OPEN_NOTE = re.compile(r"\.Budget open on (.+)\.json")
 _PLACEHOLDER = re.compile(r"\.(.+\.inab)\.icloud", re.IGNORECASE)  # iCloud: in the cloud, not downloaded yet
@@ -317,8 +318,13 @@ def _built_on(first, *others):
     """(line, counts, supersedes) of a save that comes after `first` and every one of `others`: in
     `first`'s line, counting what's in it, and coming after the others' lines."""
     saves = (first, *others)
-    counts = _merge(*(s.counts for s in saves if s.line == first.line))
     supersedes = _union(*(s.supersedes for s in saves), [s.line for s in others if s.line != first.line])
+    if any(s.line != first.line and first.line in s.supersedes for s in others):
+        # Neither line comes after the other (Keep this over a restore that came after this computer's line): the
+        # save starts a line of its own that comes after both, so every computer reads it as the newer one.
+        line = f"{KEPT}{uuid.uuid4().hex}"
+        return line, {}, _union(supersedes, [s.line for s in saves])
+    counts = _merge(*(s.counts for s in saves if s.line == first.line))
     return first.line, counts, [s for s in supersedes if s != first.line]
 
 
