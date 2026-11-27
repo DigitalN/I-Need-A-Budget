@@ -58,8 +58,9 @@ SEEDS = [(seed, STEPS) for seed in range(int(os.environ.get("INAB_SEEDS", "100")
 SEEDS += [found for found in FOUND if found not in SEEDS]
 # The same, with backups restored by hand: 3, 45 and 54 following a move after a restore counted nothing
 # known; 145 a change on top of a restore's very contents forgot what it was built on; 401 a computer that
-# missed the restore of its very contents was asked; 49, 60, 216 and 763 this test's own mistakes.
-FOUND_WITH_RESTORES = [(seed, 40) for seed in (3, 45, 49, 54, 60, 145, 216, 401, 763)]
+# missed the restore of its very contents was asked; 2216 a budget saved again unchanged, and counts joined
+# after a take, each counted one more of its own; 49, 60, 216, 763, 1053, 1120 and 3425 this test's own mistakes.
+FOUND_WITH_RESTORES = [(seed, 40) for seed in (3, 45, 49, 54, 60, 145, 216, 401, 763, 1053, 1120, 2216, 3425)]
 RESTORE_SEEDS = [(seed, STEPS) for seed in range(int(os.environ.get("INAB_SEEDS", "100")))]
 RESTORE_SEEDS += [found for found in FOUND_WITH_RESTORES if found not in RESTORE_SEEDS]
 START = datetime(2026, 11, 27, 9, 0, tzinfo=timezone(timedelta(hours=-7)))
@@ -129,8 +130,7 @@ class World:
 
     def _digest_file(self, path):
         try:
-            stat = path.stat()
-            key = (stat.st_mtime_ns, stat.st_size)
+            key = budget_folder._stat_key(path)  # its start too: one replaced within a clock tick, at the same size
             kept = self.digests.get(str(path))
             if kept is None or kept[0] != key:
                 with closing(sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)) as c:
@@ -200,6 +200,8 @@ class World:
         if kept is not None and kept.id in self.saved:
             return self.saved[kept.id]
         d = self._digest_file(path)
+        if kept is None and d is not None and f"{budget_folder.RESTORED}{d[:24]}" in self.saved:
+            return self.saved[f"{budget_folder.RESTORED}{d[:24]}"]  # a backup copied in: the restore
         return self.by_digest[d][-1] if d in self.by_digest else None
 
     def _of_save(self, save):
@@ -216,6 +218,16 @@ class World:
         doesn't count: a change back to contents once had is a change of its own."""
         came_from = self._ancestry([v])
         return any(u != v and u not in came_from and u in among for u in self.by_digest[self.versions[v][0]])
+
+    def _with_the_same(self, versions):
+        """`versions`, and every version with the very contents of one of them (made apart, or a restore
+        of them), with what it came from: dropping those contents, or keeping them, is the same for it."""
+        versions = set(versions)
+        while True:
+            more = {v for v in range(len(self.versions)) if v not in versions and self._same_as(v, versions)}
+            if not more:
+                return versions
+            versions |= self._ancestry(more)
 
     def _ancestry(self, starts):
         seen, todo = set(), list(starts)
@@ -352,7 +364,7 @@ class World:
             self.cur[name] = self._version(self.versions[kept][0], (kept, *dropping))
             self.choices.add(self.cur[name])
         else:
-            before, known = self.cur[name], set(self.saved)
+            before, known, asked = self.cur[name], set(self.saved), self._of_save(c._other)
             try:
                 c.keep_other()
             except UserError:
@@ -363,6 +375,8 @@ class World:
                 self.dropped.add(before)
                 self.answered.add(before)
                 taken = self.cur[name]
+                if asked is not None and self.versions[asked][0] == self.versions[taken][0]:
+                    taken = asked  # what it was asked about (another version may have the same contents)
                 self.cur[name] = choice = self._version(self.versions[taken][0], (taken, before))
                 self.choices.add(choice)
                 made = c._mine()
@@ -490,11 +504,10 @@ class World:
         final = {self.versions[self.cur[n]][0] for n in NAMES}
         assert set(states.values()) == {"saved"} and len(final) == 1, \
             f"seed {self.seed}: never agree: {states}\n" + self._trail()
-        history = self._ancestry(self.by_digest[final.pop()])
-        dropped = self._ancestry(self.dropped)
+        history = self._with_the_same(self._ancestry(self.by_digest[final.pop()]))
+        dropped = self._with_the_same(self._ancestry(self.dropped))
         for v in range(len(self.versions)):
-            assert v in history or v in dropped or v in self.choices or self._same_as(v, history) or \
-                self._same_as(v, dropped), \
+            assert v in history or v in dropped or v in self.choices, \
                 f"seed {self.seed}: version {v} is in no budget and nobody chose to drop it\n" + self._trail()
         kept = self._kept()
         for v in self.answered:
