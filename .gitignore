@@ -25,6 +25,11 @@ Backups/
 Imported Files/
 .git-denylist
 .env
+# Certificate exports (a .p12 holds the signing certificate's private key: scripts/release-secrets.sh)
+*.p12
+*.P12
+*.pfx
+*.PFX
 
 # Logs, and unfinished copies (settings, backups, saves: whole budgets)
 *.log

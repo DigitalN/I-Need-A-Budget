@@ -82,6 +82,15 @@ def test_database_side_files_and_logs_are_refused(repo):
         repo.git("reset", "-q")
 
 
+def test_certificate_exports_are_refused(repo):
+    """A .p12 (or .pfx) holds a signing certificate's private key: scripts/release-secrets.sh
+    exports one, and a missed step in Keychain Access's Save dialog could put it in the repository."""
+    for name in ("Certificates.p12", "scripts/Apple Development.P12", "release.pfx", "Application Files/key.PFX"):
+        assert _refused(_commit(repo, name, "x", force=True)), name
+        repo.git("reset", "-q")
+    assert _commit(repo, "docs/p12-notes.md", "Made-up notes about a .p12 export.\n").returncode == 0
+
+
 def test_a_private_word_is_refused_even_on_a_line_that_starts_with_plus(repo):
     assert _refused(_commit(repo, "a.txt", f"a normal line about {DENIED}\n"))
     repo.git("reset", "-q")
