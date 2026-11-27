@@ -121,8 +121,10 @@ def valid_token(token):
 
 # ── the token ───────────────────────────────────────────────
 
-def _run(arguments, **kwargs):
-    return subprocess.run(arguments, capture_output=True, **kwargs)
+def _run(arguments, no_window, **kwargs):
+    """A command-line tool, without the console window Windows would flash up for one started
+    from a windowed app (`no_window`: the computer's)."""
+    return subprocess.run(arguments, capture_output=True, **no_window, **kwargs)
 
 
 def saved_token(computer):
@@ -133,7 +135,7 @@ def saved_token(computer):
 def gh_token(computer):
     for path in computer.gh:
         if Path(path).exists():
-            result = _run([path, "auth", "token"], text=True)
+            result = _run([path, "auth", "token"], computer.no_window, text=True)
             token = result.stdout.strip()
             if result.returncode == 0 and valid_token(token):
                 return token
@@ -153,14 +155,14 @@ def find_token(computer):
 
 # ── command line tools ──────────────────────────────────────
 
-def _curl(url, output, max_time, token=None, accept=None, *, curl):
-    """Fetches `url` into `output` ('-' for stdout) with the `curl` given (the computer's).
-    Returns (HTTP status, body); 0 for file://."""
+def _curl(url, output, max_time, token=None, accept=None, *, curl, no_window):
+    """Fetches `url` into `output` ('-' for stdout) with the `curl` given (the computer's, and
+    its `no_window`). Returns (HTTP status, body); 0 for file://."""
     arguments = [curl, "--silent", "--show-error", "--location", "--max-time", str(max_time),
                  "--output", str(output), "--write-out", "\n%{http_code}", "--config", "-"]
     if accept:
         arguments += ["--header", f"Accept: {accept}"]
-    result = _run([*arguments, url], input=curl_config(token), text=True)
+    result = _run([*arguments, url], no_window, input=curl_config(token), text=True)
     if result.returncode != 0:
         raise UpdateError(f"Couldn't reach GitHub ({result.stderr.strip() or result.returncode}).")
     body, _, code = result.stdout.rpartition("\n")
@@ -268,13 +270,14 @@ class Updater:
 
     def _latest_release(self, token):
         code, body = _curl(self._feed, "-", max_time=30, token=token, accept="application/vnd.github+json",
-                           curl=self._computer.curl)
+                           curl=self._computer.curl, no_window=self._computer.no_window)
         if code == 404:
             # GitHub says the same when there are no releases and when this access can't see
             # the (private) repository at all. Only the first is "up to date".
             if not self._feed.startswith("file:"):
                 repo_code, _ = _curl(REPOSITORY_URL, "-", max_time=30, token=token,
-                                     accept="application/vnd.github+json", curl=self._computer.curl)
+                                     accept="application/vnd.github+json", curl=self._computer.curl,
+                                     no_window=self._computer.no_window)
                 if repo_code in (401, 403, 404):
                     self.needs_access = True
                     raise UpdateError("This GitHub access can't see the app's repository. Check the token in Settings."
@@ -300,13 +303,14 @@ class Updater:
             download = folder / f"update{self._computer.update_file[0]}"
             # The asset's API URL redirects to storage; curl drops the token on the redirect.
             code, _ = _curl(url, download, max_time=600, token=token, accept="application/octet-stream",
-                            curl=self._computer.curl)
+                            curl=self._computer.curl, no_window=self._computer.no_window)
             if code not in (200, 0):
                 raise UpdateError(f"GitHub answered with an error ({code}).")
             if signature_url and self._computer.update_signature:  # beside it, where take_update looks
                 signature = download.with_name(download.name + self._computer.update_signature)
                 code, _ = _curl(signature_url, signature, max_time=60, token=token,
-                                accept="application/octet-stream", curl=self._computer.curl)
+                                accept="application/octet-stream", curl=self._computer.curl,
+                                no_window=self._computer.no_window)
                 if code not in (200, 0):
                     raise UpdateError(f"GitHub answered with an error ({code}).")
             version, update = self._computer.take_update(download, self._app, folder)

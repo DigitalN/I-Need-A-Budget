@@ -26,6 +26,7 @@ class Computer:
     update_signature = None      # what's added to that file's name to name its signature, when it has one beside it
     installs_after_quitting = False  # an installer puts the update in once the app has gone (so never while logging out)
     curl = None                  # the curl the updater runs, which uses the system's certificates
+    no_window = {}               # how a command-line tool starts without a console window flashing up (Windows')
     gh = ()                      # where the GitHub CLI may be: an app opened from Finder or Start lacks the shell's PATH
 
     # ── folders ──

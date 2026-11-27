@@ -129,7 +129,7 @@ def test_without_a_token_it_asks_anonymously_and_says_when_it_needs_one(monkeypa
 
 class Computer:
     """A computer whose steps are noted, standing in for the Mac's (computer_mac.py)."""
-    update_file, update_signature, installs_after_quitting, curl, gh = DMG, None, False, "curl", ()
+    update_file, update_signature, installs_after_quitting, curl, gh, no_window = DMG, None, False, "curl", (), {}
 
     def __init__(self, folder, version="9.9"):
         self.folder, self.version, self.steps, self.token, self.refuse = folder, version, [], None, None

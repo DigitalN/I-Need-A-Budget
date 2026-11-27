@@ -398,7 +398,7 @@ def pc(tmp_path, monkeypatch):
     monkeypatch.setenv("INAB_UPDATE_FEED", "file:///feed.json")
     feed, fetched, files = {}, [], {}
 
-    def fake_curl(url, output, max_time, token=None, accept=None, *, curl):
+    def fake_curl(url, output, max_time, token=None, accept=None, *, curl, no_window):
         fetched.append(url)
         if output == "-":
             return 0, json.dumps(feed)
@@ -618,6 +618,42 @@ def test_restart_now_without_an_update_still_reopens_the_app(pc):
     pc["computers"][-1].relaunch(pc["app"])
     [(folder, installer, version)] = pc["started"]
     assert installer is None and version is None and (folder / "relaunch").exists()
+
+
+def test_gh_and_curl_start_without_a_console_window_on_windows(tmp_path, monkeypatch):
+    """Console programs started from the windowed app flash a console window up on Windows: gh at
+    every launch and whenever Settings opens (Updater.state looks for a token, even with updates
+    off), curl at every check. Windows' CREATE_NO_WINDOW stops that; a Mac needs nothing."""
+    import types
+
+    ran = []
+    monkeypatch.setattr(updater.subprocess, "run", lambda arguments, **kwargs: ran.append(
+        kwargs.get("creationflags")) or types.SimpleNamespace(returncode=0, stdout="\n200", stderr=""))
+    gh = tmp_path / "gh.exe"
+    gh.write_bytes(b"")
+    for computer, flags in ((Windows(), 0x08000000), (Mac(), None)):
+        computer.gh = (str(gh),)
+        ran.clear()
+        updater.gh_token(computer)
+        updater._curl("https://example.invalid/x", "-", 30, curl=computer.curl, no_window=computer.no_window)
+        assert ran == [flags, flags], type(computer).__name__
+    if sys.platform == "win32":
+        assert Windows.no_window == {"creationflags": subprocess.CREATE_NO_WINDOW}
+
+
+def test_nothing_the_app_starts_on_windows_flashes_a_console_window():
+    """Outside the Mac's own file, every program the app starts says how it starts without a
+    window: the computer's no_window, or creationflags of its own."""
+    starts = {"subprocess": {"run", "Popen", "call", "check_call", "check_output"}, "os": {"system", "popen"}}
+    for path in sorted((ROOT / "Application Files").glob("*.py")):
+        if path.name == "computer_mac.py":
+            continue
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                    and isinstance(node.func.value, ast.Name) and node.func.attr in starts.get(node.func.value.id, ())):
+                said = {k.arg for k in node.keywords} | {"no_window" for k in node.keywords
+                                                         if k.arg is None and "no_window" in ast.unparse(k.value)}
+                assert said & {"creationflags", "no_window"}, f"{path.name}:{node.lineno} starts a program with a window"
 
 
 # ── on a PC: Windows' own programs ──────────────────────────

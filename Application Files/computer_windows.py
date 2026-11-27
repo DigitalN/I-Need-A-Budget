@@ -106,6 +106,7 @@ class Windows(Computer):
 
     update_file = ("-setup.exe", "installer")  # I-Need-A-Budget-<version>-Setup.exe
     update_signature = ".sig"                  # beside it: our release key's signature (windows_update.py)
+    no_window = {"creationflags": 0x08000000}  # CREATE_NO_WINDOW: curl and gh would flash a console up
     installs_after_quitting = True             # its installer: never while logging off, when Windows could stop it half-way
     _CREDENTIAL = APP_NAME                     # the token's name in Credential Manager
     _PROGRAMS = uuid.UUID("{5CD7AEE2-2219-4A67-B85D-6C9CE15660CB}")  # FOLDERID_UserProgramFiles: %LOCALAPPDATA%\Programs
