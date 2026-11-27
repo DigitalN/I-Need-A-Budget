@@ -480,7 +480,7 @@ def test_a_file_held_too_long_is_saved_at_the_next_look(tmp_path, monkeypatch):
 @pytest.mark.parametrize("separator", ["/", "\\"])
 def test_an_imported_file_is_found_from_the_other_computer(tmp_path, separator):
     """The path an import kept is the computer's that imported it, maybe another system's."""
-    seen_on_a, seen_on_b = tmp_path / "PC-A" / "OneDrive" / "Budget", tmp_path / "PC-B" / "Dropbox" / "Budget"
+    seen_on_a, seen_on_b = tmp_path / "A sees" / "OneDrive" / "Budget", tmp_path / "B sees" / "Dropbox" / "Budget"
     a = service(tmp_path, "PC-A")
     call(a, "move_budget_folder", str(seen_on_a))
     statement = write(a.test_downloads, "statement.csv", bank_csv([("10/05/2026", "SAMPLE CAFE CALGARY AB",
@@ -488,7 +488,9 @@ def test_an_imported_file_is_found_from_the_other_computer(tmp_path, separator):
     call(a, "import_files", [str(statement)])
     a.budget_folder_at_quit()
     [kept] = list((seen_on_a / "Imported Files").rglob("*statement.csv"))
-    shutil.copytree(seen_on_a, seen_on_b)  # the sync tool takes the folder to PC-B, another path there
+    a.db.close()
+    shutil.copytree(seen_on_a, seen_on_b)  # the sync tool takes the folder to PC-B, another path there,
+    shutil.rmtree(seen_on_a.parent)        # and PC-A's path isn't there on PC-B
     b = service(tmp_path, "PC-B")
     call(b, "open_budget_folder", str(seen_on_b))
     with b.db.read() as c:

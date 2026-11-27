@@ -335,12 +335,14 @@ class BudgetFolder:
 
     def _changed(self):
         """Whether this computer's budget changed since the save it started from (it has none: it
-        has). The digest is worked out again only when something was written."""
+        has). The digest is worked out again only when something was written. The first time (at
+        launch, after taking a save) isn't a change seen: what an earlier session left is saved at once."""
         with self.db.lock:
             mark = self.db.conn.total_changes
             if mark != self._mark:
+                if self._mark is not None:
+                    self._last_change = self._clock()
                 self._mark, self._digest = mark, backups.digest(self.db)
-                self._last_change = self._clock()
             digest = self._digest
         mine = self._mine()
         return mine is None or mine.digest != digest
