@@ -112,8 +112,9 @@ All in `Application Files/`:
 - `budget_folder.py`: the budget folder ([ADR 0008](../docs/adr/0008-the-budget-lives-in-a-folder-you-choose.md),
   issue #183; not wired to the window yet, #189 does that). `BudgetFolder` saves the working
   copy into the folder whole as `Budget.inab` (a copy in the data folder's `Saves/` with meta
-  `save`: id, each computer's count of saves in it (a version vector, exact however long the
-  history), computer, time, versions; recorded as this computer's before it goes into the folder
+  `save`: id, its line (the original, or a restore's, named from the restored file's contents,
+  so every computer makes the same of a restore), each computer's count of saves in that line (a
+  version vector, exact however long the history), computer, time, versions; recorded as this computer's before it goes into the folder
   under a hidden name, renamed, retried while Windows or a sync tool holds the file), a few
   seconds after changes stop and at quit, only when `backups.digest` changed. `check` (every few
   seconds) takes another computer's save built on this one's when nothing changed here (after
@@ -126,7 +127,9 @@ All in `Application Files/`:
   `open_from`, notes of where it's open. This computer's id in saves is new for each budget and
   machine (`computer.json`, `computer.machine_id`).
   `INAB_COMPUTER` names this computer (two previews on one folder).
-  `scripts/tests/test_budget_folder.py` covers it with two data folders sharing one folder.
+  The rule whatever the counts say: contents this computer never had are never put away or saved
+  over without a question or a copy in `Backups/`. `scripts/tests/test_budget_folder.py` covers it
+  with two data folders sharing one folder, `test_budget_folder_random.py` on random histories.
 - `importer.py`: detects and parses OFX/QFX/QBO from any bank, Tangerine card and bank
   CSVs, RBC's CSV (every account in one file, so a file has `parts`), CSVs set up once
   (`csvlayout.py`), and Actual Budget's export (learnt from, never imported as

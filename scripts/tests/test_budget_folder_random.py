@@ -31,9 +31,10 @@ from errors import UserError
 
 # (seed, steps) that found a bug once, kept as they were: 12 made the budget folder again from a backup
 # while it was unplugged; the others asked a computer whose other side held nothing new (a Move…'s save with
-# the contents it started from, an older copy in its own line it had never had).
+# the contents it started from, an older copy in its own line it had never had, a restore another computer
+# went back to that it had had).
 FOUND = [(12, 40), (46, 60), (61, 60), (80, 60), (104, 60), (114, 60), (150, 60), (156, 60), (161, 60),
-         (185, 60), (188, 60), (267, 60), (282, 60), (299, 60)]
+         (185, 60), (188, 60), (267, 60), (282, 60), (299, 60), (305, 60)]
 STEPS = int(os.environ.get("INAB_STEPS", "40"))
 SEEDS = [(seed, STEPS) for seed in range(int(os.environ.get("INAB_SEEDS", "20")))] + FOUND
 START = datetime(2026, 11, 27, 9, 0, tzinfo=timezone(timedelta(hours=-7)))

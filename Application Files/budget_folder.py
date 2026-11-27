@@ -514,10 +514,14 @@ class BudgetFolder:
         others, publish = [], False
         for save in saves:  # Budget.inab first
             kind = relation(save, mine)
-            if kind != SAME and save.schema_version == SCHEMA_VERSION and save.digest in (current, mine and mine.digest):
-                # The very contents of this computer's budget, or of the save it started from: nothing in it is new
-                # here (another computer's Move… or Open…, its own save after a crash). The same save, and any change
-                # this computer made since is saved on top of it.
+            if kind != SAME and save.schema_version == SCHEMA_VERSION and (
+                    save.digest in (current, mine and mine.digest) or
+                    (kind == APART and mine is not None and self._had(save.digest))):
+                # The very contents of this computer's budget, or of the save it started from, or (apart: it didn't come
+                # after this computer's) contents this computer has had: nothing in it is new here (another computer's
+                # Move…, its own save after a crash, a restore another computer went back to). The same save, and any
+                # change this computer made since is saved on top of it. A newer one that went back to contents this
+                # computer had came after its own, so that's a choice made there: taken, or asked about.
                 mine, kind = self._adopt(save, mine), SAME
             if kind == SAME and save.name == FILE_NAME:
                 self._landed(save.id)
@@ -1298,8 +1302,13 @@ def _is_dir(path):
 
 
 def _stat_key(path):
+    """What tells a budget file in the folder from the one read before: its time and size, and its first
+    64 KB (where its `save` meta is), since two saves can share a size and be written within one tick of
+    the clock (a sync tool's "restore previous version" over a save just made)."""
     stat = path.stat()
-    return stat.st_mtime_ns, stat.st_size
+    with open(path, "rb") as f:
+        head = hashlib.sha256(f.read(1 << 16)).hexdigest()
+    return stat.st_mtime_ns, stat.st_size, head
 
 
 def _same(a, b):
