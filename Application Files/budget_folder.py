@@ -78,8 +78,13 @@ folder must not be made on the disk it's mounted from.
 **Moving in** (`move_to`: the 1.5.0 upgrade, and Settings' Move… later): the budget is saved
 there, the backups and imported files follow, and an old budget folder keeps a note that it
 moved (`.Budget moved.json`), so a computer still using it doesn't put the budget back. A folder
-that already has a budget is never written to. **Opening** one (`open_from`, a new computer):
-this computer's budget, unless it's new and empty, goes into that folder's Backups/ first.
+that already has a budget is never written to. A budget that hasn't changed since its last save
+goes in as that same save (Save again too), so a computer that changed it meanwhile simply comes
+after it. **Opening** one (`open_from`, a new computer): this computer's budget, unless it's new
+and empty, goes into that folder's Backups/ first. The same budget opened in another folder
+(following a move) carries on as `check` does; the save found there was never put back, so one
+older than this computer's is saved over, and what reached the old folder after the move (a copy
+a question put away, a file imported while this computer's sync was behind) follows.
 
 **Restoring a backup** (backups.py): quit the app on every computer, then copy the backup into
 the budget folder as `Budget.inab`. Backups keep nothing about saves, so it's one no computer
@@ -493,9 +498,10 @@ class BudgetFolder:
                 return self._set("waiting")
 
     def _look(self, folder, wait):
-        """One look (`check`). The rule it keeps, whatever the counts say: a save whose contents this
-        computer's budget has never had is never put away, saved over or removed without the person
-        choosing or a copy going into Backups/, and one that reads as older is a question."""
+        """One look (`check`). The rule it keeps: a save in the folder is put away or saved over
+        without a copy in Backups/ only when this computer's comes after it or has its very contents;
+        one apart from this computer's budget, with other contents, is a question, and so is an older
+        Budget.inab put back."""
         self._note_open(folder)
         saves, unreadable = self._read_folder(folder)
         main = next((s for s in saves if s.name == FILE_NAME), None)

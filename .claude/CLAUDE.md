@@ -147,9 +147,11 @@ All in `Application Files/`:
   `open_from`, notes of where it's open. This computer's id in saves is new for each budget and
   machine (`computer.json`, `computer.machine_id`).
   `INAB_COMPUTER` names this computer (two previews on one folder).
-  The rule whatever the counts say: contents this computer never had are never put away or saved
-  over without a question or a copy in `Backups/`. `scripts/tests/test_budget_folder.py` covers it
-  with two data folders sharing one folder, `test_budget_folder_random.py` on random histories.
+  The rule: a file in the folder is saved over or removed without a copy in `Backups/` only when
+  the save written comes after it, has its very contents, or a copy with them is in `Backups/`
+  already; a question comes up exactly when what arrives is apart from this computer's budget and
+  its contents differ. Never by a clock. `scripts/tests/test_budget_folder.py` covers it with two
+  data folders sharing one folder, `test_budget_folder_random.py` on random histories (the arbiter).
 - `importer.py`: detects and parses OFX/QFX/QBO from any bank, Tangerine card and bank
   CSVs, RBC's CSV (every account in one file, so a file has `parts`), CSVs set up once
   (`csvlayout.py`), and Actual Budget's export (learnt from, never imported as
