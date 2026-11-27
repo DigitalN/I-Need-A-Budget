@@ -129,3 +129,173 @@ def test_settings_default_to_the_systems_downloads_folder(tmp_path, monkeypatch)
 
     monkeypatch.setattr(computer.this(), "downloads_dir", lambda: tmp_path / "Downloads from the system")
     assert Settings(tmp_path / "settings.json").downloads_dir() == tmp_path / "Downloads from the system"
+
+
+# ── the Windows app (issue #187) ──
+
+WINDOWS = pytest.mark.skipif(sys.platform != "win32", reason="asks Windows itself")
+
+
+def test_a_windows_frame_is_kept_as_text_and_read_back():
+    from computer_windows import frame_text, read_frame
+
+    assert frame_text((192, 104, 2176, 1183), False) == "192 104 2176 1183"
+    assert read_frame(frame_text((-1900, 20, 1400, 900), True)) == ((-1900, 20, 1400, 900), True)  # left of the main screen
+    for nonsense in (None, "", "1 2 3", "1 2 3 4 5", "1 2 3 4 minimised", "a b c d", "0 0 0 900", "1 2 3 4 maximized x"):
+        assert read_frame(nonsense) is None, nonsense
+
+
+def test_a_windows_frame_is_kept_on_a_screen():
+    from computer_windows import keep_on_a_screen
+
+    main_screen, left_screen = (0, 0, 2560, 1392), (-1920, 0, 1920, 1032)  # each without its taskbar
+    assert keep_on_a_screen((100, 80, 1600, 900), [main_screen, left_screen], main_screen) == (100, 80, 1600, 900)
+    assert keep_on_a_screen((-1800, 50, 1600, 900), [main_screen, left_screen], main_screen) == (-1800, 50, 1600, 900)
+    # The monitor on the left unplugged: back onto the main screen.
+    assert keep_on_a_screen((-1800, 50, 1600, 900), [main_screen], main_screen) == (0, 50, 1600, 900)
+    # Mostly on the left screen, too tall for it: moved and shrunk onto it.
+    assert keep_on_a_screen((-1700, 100, 1600, 1200), [main_screen, left_screen], main_screen) == (-1700, 0, 1600, 1032)
+    # Under the taskbar, or bigger than a laptop's screen: moved up, and shrunk to fit.
+    laptop = (0, 0, 1536, 816)
+    assert keep_on_a_screen((200, 300, 2176, 1183), [laptop], laptop) == (0, 0, 1536, 816)
+    assert keep_on_a_screen((100, 400, 1000, 660), [laptop], laptop) == (100, 156, 1000, 660)
+
+
+def test_a_windows_first_window_is_most_of_the_screen_in_the_middle():
+    from computer_windows import centred, first_size
+
+    assert first_size((1000, 660), 0.85, (2560, 1392), 96) == (2176, 1183)
+    assert first_size((1000, 660), 0.85, (3840, 2088), 144) == (2176, 1183)  # 150%: pywebview scales it back up
+    assert first_size((1000, 660), 0.85, (1024, 728), 96) == (1000, 660)     # never below the smallest size
+    assert first_size((1000, 660), 0.85, (800, 560), 96) == (800, 560)       # unless the screen is smaller
+    assert centred(2176, 1183, (0, 0, 2560, 1392)) == (192, 104, 2176, 1183)
+    assert centred(1000, 660, (-1920, 40, 1920, 1032)) == (-1460, 226, 1000, 660)
+
+
+def test_windows_opens_only_web_pages_in_the_browser():
+    with pytest.raises(ValueError):
+        Windows().open_web_page("file:///C:/Windows/System32/calc.exe")
+
+
+def test_windows_knows_where_the_installed_app_is(monkeypatch, tmp_path):
+    windows = Windows()
+    monkeypatch.delattr(sys, "frozen", raising=False)
+    assert windows.installed_app() is None  # from source
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(tmp_path / "Programs" / "I Need A Budget" / "I Need A Budget.exe"))
+    assert windows.installed_app() == (tmp_path / "Programs" / "I Need A Budget").resolve()
+    assert windows.moved_to_install_folder(windows.installed_app()) is False  # the installer put it there
+
+
+@pytest.fixture
+def windows_for_tests(monkeypatch):
+    """A Windows whose settings are its own, not the app's: removed afterwards."""
+    import winreg
+
+    windows = Windows()
+    monkeypatch.setattr(windows, "_settings_key", r"Software\I Need A Budget tests")
+    yield windows
+    try:
+        winreg.DeleteKey(winreg.HKEY_CURRENT_USER, windows._settings_key)
+    except OSError:
+        pass
+
+
+@WINDOWS
+def test_windows_keeps_the_window_in_this_computers_settings(windows_for_tests):
+    assert windows_for_tests._setting("Main window") is None
+    windows_for_tests._set_setting("Main window", "192 104 2176 1183 maximized")
+    assert windows_for_tests._setting("Main window") == "192 104 2176 1183 maximized"
+
+
+@WINDOWS
+def test_the_copy_holding_the_lock_tells_the_installer_its_running(tmp_path):
+    """The installer's AppMutex: it waits for the app to be closed rather than replace it while it runs."""
+    import ctypes
+
+    from computer_windows import RUNNING_MUTEX
+
+    windows = Windows()
+    held = windows.lock(tmp_path / ".lock")
+    kernel32 = ctypes.windll.kernel32
+    kernel32.OpenMutexW.restype = ctypes.c_void_p
+    found = kernel32.OpenMutexW(0x00100000, False, RUNNING_MUTEX)  # SYNCHRONIZE: what Inno Setup asks for
+    assert found
+    kernel32.CloseHandle(ctypes.c_void_p(found))
+    held.close()
+
+
+
+def test_a_windows_windows_smallest_size_fits_its_screen():
+    """The page's smallest size, with the frame around it, unless the screen is smaller: a 1920×1080
+    laptop at 150% leaves about 672 of the page's pixels' height without the taskbar."""
+    from computer_windows import keep_on_a_screen, screen_for, smallest_window
+
+    big, laptop = (0, 0, 2560, 1392), (0, 0, 1280, 672)
+    assert smallest_window((1000, 660), (16, 39), big) == (1016, 699)
+    assert smallest_window((1000, 660), (16, 39), laptop) == (1016, 672)
+    left = (-1920, 0, 1920, 1032)
+    assert screen_for((-1800, 50, 1600, 900), [big, left], big) == left
+    assert screen_for((-1800, 50, 1600, 900), [big], big) == big  # that screen's gone
+    frame = keep_on_a_screen((100, 200, 1016, 699), [laptop], laptop)
+    assert frame == (100, 0, 1016, 672) and frame[3] >= smallest_window((1000, 660), (16, 39), laptop)[1]
+
+
+def pywebviews_windows_side(monkeypatch, side):
+    """What importing pywebview's Windows side gives: a module, or None for an import that fails."""
+    import webview.platforms
+
+    monkeypatch.delattr(webview.platforms, "winforms", raising=False)
+    monkeypatch.setitem(sys.modules, "webview.platforms.winforms", side)
+
+
+def test_without_webview2_windows_says_what_is_missing_instead_of_failing(monkeypatch):
+    """Without WebView2 pywebview goes for Internet Explorer's engine (is_chromium false), which the
+    build leaves out, so importing its Windows side fails. The app says what's missing, offers
+    Microsoft's page, and stops before the window."""
+    from types import SimpleNamespace
+
+    import computer_windows
+
+    asked, opened = [], []
+    pywebviews_windows_side(monkeypatch, SimpleNamespace(is_chromium=False))  # from source, the fallback there
+    monkeypatch.setattr(computer_windows, "_ask", lambda text, yes_or_no=True: asked.append(text) or True)
+    windows = Windows()
+    monkeypatch.setattr(windows, "open_web_page", opened.append)
+    assert windows.can_draw_the_page() is False
+    assert "needs Microsoft Edge WebView2" in asked[0]
+    assert opened == ["https://developer.microsoft.com/microsoft-edge/webview2/"]
+
+    monkeypatch.setattr(computer_windows, "_ask", lambda text, yes_or_no=True: False)  # No: nothing opens
+    assert windows.can_draw_the_page() is False and len(opened) == 1
+
+
+def test_what_import_error_means_webview2_is_missing():
+    from computer_windows import webview2_missing
+
+    left_out = ImportError("cannot import name 'mshtml' from 'webview.platforms'", name="webview.platforms")
+    left_out.name_from = "mshtml"  # what Python 3.12 and later say for `from . import mshtml`
+    assert webview2_missing(left_out)
+    assert webview2_missing(ModuleNotFoundError("No module named 'webview.platforms.mshtml'",
+                                                name="webview.platforms.mshtml"))
+    assert not webview2_missing(ModuleNotFoundError("No module named 'clr'", name="clr"))
+    assert not webview2_missing(ImportError("import of webview.platforms.winforms halted",
+                                            name="webview.platforms.winforms"))
+
+
+def test_a_copy_missing_something_else_says_its_damaged_not_webview2(monkeypatch):
+    """A broken build (pythonnet missing, say) isn't a reason to send the person to Microsoft."""
+    import computer_windows
+
+    told = []
+    pywebviews_windows_side(monkeypatch, None)  # importing it fails, and not for WebView2
+    monkeypatch.setattr(computer_windows, "_ask", lambda text, yes_or_no=True: told.append((text, yes_or_no)))
+    windows = Windows()
+    monkeypatch.setattr(windows, "open_web_page", lambda url: pytest.fail("not Microsoft's page"))
+    assert windows.can_draw_the_page() is False
+    assert told == [("I Need A Budget can't open its window: part of it is missing or damaged.\n\n"
+                     "Install it again from its latest release.", False)]
+
+
+def test_a_mac_can_always_draw_the_page():
+    assert Mac().can_draw_the_page() is True

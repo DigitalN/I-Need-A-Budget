@@ -40,6 +40,28 @@ cd "Application Files" && INAB_DATA_DIR=/tmp/inab-test python3 main.py
 the real Documents); `INAB_TODAY=YYYY-MM-DD` pins today's
 date; `INAB_DEBUG=1` turns on the web inspector. Tests (`scripts/tests/`): `python3 -m pytest`.
 
+### On Windows
+
+Python 3.13, the pinned packages (`python -m pip install -r "Application Files/requirements.txt"`,
+in a virtual environment if you like: on Windows they include pythonnet, which pywebview draws its
+window with) and, for the installer, [Inno Setup](https://jrsoftware.org/isinfo.php) 6.3 or later. Run from
+source as on a Mac (`INAB_DATA_DIR` keeps it off your real data). In Git for Windows' bash:
+
+```bash
+scripts/build-windows.sh
+```
+
+This builds `I Need A Budget.exe` with PyInstaller and the installer,
+`I-Need-A-Budget-<version>-Setup.exe` (`scripts/installer.iss`), in
+`%LOCALAPPDATA%\I Need A Budget-build`, outside the repository (which OneDrive may sync).
+The installer is per-user and unsigned: no administrator, into
+`%LOCALAPPDATA%\Programs\I Need A Budget`. The Windows icon, `Application Files/INeedABudget.ico`,
+is made from the Mac's by `scripts/make-ico.py` (it needs Pillow, which the app doesn't).
+
+Python from the Microsoft Store keeps its registry writes in a copy of its own: run from source
+with it, the window's size and place (`HKEY_CURRENT_USER\Software\I Need A Budget`) aren't the
+ones `reg query` or the installed app see.
+
 ### Checks on GitHub
 
 Every pull request into `main` or `claude/cross-platform`, and every push to them, runs the
@@ -51,6 +73,36 @@ a secret, so a pull request from someone else's copy runs the same way. GitHub's
 no `.git-denylist`, so there the privacy test and the hooks check card numbers, bank files and
 databases, not your private words: those are only checked on your own computer. Making the
 checks required for merging into `main` is the maintainer's setting (Settings → Branches).
+
+The same run builds both apps, unsigned, to try: Build (Windows) makes the installer and Build
+(macOS) the Mac app, signed ad hoc and zipped (it can't update itself). Both are in the run's
+Summary, under Artifacts, for 30 days. The Mac's disk image and the signed builds are the
+release's.
+
+### Trying a pull request's Windows installer
+
+On a Windows 10 or 11 PC:
+
+1. Open the pull request's Checks tab → Tests → Summary, and download
+   `I-Need-A-Budget-<version>-Setup.exe` under Artifacts.
+2. Open it. It's unsigned, so Windows says "Windows protected your PC": More info → Run anyway.
+   It shouldn't ask for an administrator. Leave Open I Need A Budget ticked and finish.
+3. The app opens on onboarding. Put made-up bank files in Downloads
+   (`python scripts/demo_data.py --files-only` writes two Quicken files there), then Look again:
+   they're listed. Go through the steps to the Dashboard.
+4. Start → I Need A Budget is there. With the app open, open it again from Start: the window
+   comes forward, and nothing else opens. Minimize it first and try again.
+5. Settings: Light, Dark and System change the title bar too. Each Open button opens File
+   Explorer; Release notes your browser; License a read-only copy in Notepad, and again
+   on a second click.
+6. Drag a bank file from File Explorer onto the window: it's imported.
+7. Type an amount in an Assigned box and close the window with ✕ before leaving the box: it's
+   saved (it's there when you reopen). Do the same with Alt+F4.
+8. Move and resize the window, close it, open it: it's where you left it. Maximize it, close,
+   open: maximized.
+9. Settings → Apps → Installed apps → I Need A Budget → Uninstall. Then
+   `%LOCALAPPDATA%\I Need A Budget` is still there, with the budget. Install again: the
+   budget's back, without onboarding.
 
 The app icon is drawn by `scripts/make-icon.swift`. To redraw it:
 
