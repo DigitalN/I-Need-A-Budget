@@ -312,16 +312,16 @@ class BudgetApp:
         threading.Thread(target=ask, name="quit", daemon=True).start()
         return False
 
-    def _before_quit(self, backed_up=False):
+    def _before_quit(self, backed_up=False, logging_out=False):
         """Once, whichever way the app quits: a backup (if the budget changed), then a downloaded
-        update is installed."""
+        update is installed (while logging out only where that's one step: Updater.install)."""
         if self._quitting:
             return
         self._quitting = True
         if not backed_up:
             self._back_up()
         try:
-            self._updater.install(relaunch_after=False)
+            self._updater.install(relaunch_after=False, logging_out=logging_out)
         except Exception:
             log.exception("Installing the update on quit failed")
         log.info("Quitting")
@@ -357,25 +357,34 @@ class BudgetApp:
         if self._quitting:
             return True
         if logging_out or self._ask_page_to_quit():
-            self._before_quit()
+            self._before_quit(logging_out=logging_out)
             return True
         return False
 
     def _quit_called_off(self):
         """Windows asked to quit for a log-off or shutdown, the app said it may (backed up and
         quitting), then another app stopped it and the person cancelled: the app carries on as it
-        was. The backup stays; the next quit makes another only after a change."""
+        was. The backup stays; the next quit makes another only after a change. An update the
+        log-off kept for the next launch goes in at the next quit again (Updater.log_off_called_off)."""
         if not self._quitting:
             return
         log.info("The log-off or shutdown was called off: carrying on")
         self._quitting = False
         self._quit_asked = None
+        try:
+            self._updater.log_off_called_off()
+        except Exception:
+            log.exception("Taking back the update the log-off kept failed")
 
     def run(self):
         import webview
 
         if self._app_path and self._computer.moved_to_install_folder(self._app_path):
             return  # it's relaunching from there
+        if self._updater.take_kept():  # an update a log-off kept, checked again: in before the window opens
+            self._back_up()            # as Restart now does it
+            if self._updater.install(relaunch_after=True):
+                return                 # the app reopens once its installer is done
         if not self._computer.can_draw_the_page():
             return  # it has said what's missing
         self._computer.when_asked_to_quit(self._should_quit, self._quit_called_off)

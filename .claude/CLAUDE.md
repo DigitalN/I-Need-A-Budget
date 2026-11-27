@@ -44,8 +44,12 @@ that are local businesses, category names that reveal finances, and real amounts
 Application logs: `~/Library/Logs/I Need A Budget/app.log` (rotating, 3 × 1 MB). Page
 (JavaScript) errors are forwarded there too. When the user reports a bug, **read the log
 first**. The updater logs `Automatic updates off: <reason>`, `Up to date at`,
-`Downloading`, `ready to install`, `Installed …` or `Update check failed: …`. "Up to date"
-also when no release has been published yet: merging isn't releasing.
+`Downloading`, `ready to install`, `Installed …` or `Update check failed: …`. On Windows the
+app logs `Installing … after quitting`, and its installer, once the app has gone, `Installed …`
+or `Couldn't install …: its installer failed (exit code N)`; at a log-off `Not installing …
+while logging out`, and at the next launch `Installing …, kept from logging out, before the
+window opens`. "Up to date" also when no release has been published yet: merging isn't
+releasing.
 `Page connected` means the window loaded and reached Python. `The budget's currency is USD, from …`
 when a file first sets it (issue #76), `… not imported: This file is in USD; your budget is in CAD.` and
 `… skipped: it's in USD; your budget is in CAD` for what doesn't fit. `Backed up the budget to …`
@@ -90,8 +94,8 @@ All in `Application Files/`:
   Windows' own by the message being handled (a comctl32 subclass from when the window is made:
   WinForms' CloseReason stays stale after a cancelled close), which also sees WM_ENDSESSION say a
   log-off is called off; the window's frame is kept in the registry (`HKCU\Software\I Need A Budget`); the
-  copy holding the lock keeps the mutex (`RUNNING_MUTEX`) the installer's AppMutex waits for. The
-  token and the update's steps are #188's.
+  copy holding the lock keeps the mutex (`RUNNING_MUTEX`) the installer's AppMutex waits for. Its
+  updates and the token are #188's (`windows_update.py`).
   `scripts/tests/test_computer.py` checks each keeps to its own file.
 - `INeedABudget.spec`: the PyInstaller build on either system, each with its own side of pywebview
   and computer.py only. A Mac makes `I Need A Budget.app` (`scripts/build.sh`); Windows a folder
@@ -181,6 +185,13 @@ All in `Application Files/`:
   swapping in and relaunching are the computer's (moving into Applications too:
   `computer_mac.py`, which was `launch.py` until 1.5.0). `scripts/check-update.py` reads both
   layouts from a tag.
+- `windows_update.py`: pure. Windows updates (issue #188, ADR 0009): the Ed25519 check of an
+  installer's `.sig` with our release key (`release-key.pub`, built in; tested against RFC 8032's
+  vectors), and the PowerShell helper that runs the installer once the app has quit and, for
+  Restart now, opens it again. `computer_windows.py` reads the installer's version and starts the
+  helper; nothing is installed while Windows logs off (`installs_after_quitting`): the checked download
+  waits in the data folder's `Update waiting`, and the next launch checks it again and installs it
+  before the window opens (`Updater.take_kept`).
 - `settings.py`: settings, validated on every load and save: this Mac's in `settings.json`
   (Appearance, Import from Downloads and its folder, updates, the Dashboard's months), and the
   budget's own, Overspending and Usual's months (`average_months`), in its `meta` (issue #153:
@@ -824,7 +835,9 @@ Don't undo these without asking:
   shutting down, Task Manager and an installer's Restart Manager quit straight away, the
   backup made before Windows is told it may go on. When another app stops the log-off and the
   person cancels, Windows says the session isn't ending: the app carries on as it was
-  (`main._quit_called_off`: not quitting, Downloads watched; the next ✕ asks the page again).
+  (`main._quit_called_off`: not quitting, Downloads watched; the next ✕ asks the page again; an
+  update the log-off kept for the next launch goes in at the next quit instead,
+  `Updater.log_off_called_off`).
   A downloaded update installs on quit.
 - **A backup at a quit after a change, into Documents** (issues #21 and #133,
   [ADR 0004](../docs/adr/0004-live-budget-stays-out-of-synced-folders.md)):

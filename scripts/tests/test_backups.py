@@ -636,11 +636,20 @@ def test_with_inab_data_dir_backups_stay_inside_that_folder(tmp_path, monkeypatc
 
 
 class FakeUpdater:
-    def __init__(self, folder):
-        self.folder, self.installs = folder, []
+    kept = False  # an update a log-off kept, which passed its checks again at this launch
 
-    def install(self, relaunch_after=False):
+    def __init__(self, folder):
+        self.folder, self.installs, self.logging_out = folder, [], []
+
+    def take_kept(self):
+        return self.kept
+
+    def log_off_called_off(self):
+        self.taken_back = getattr(self, "taken_back", 0) + 1
+
+    def install(self, relaunch_after=False, logging_out=False):
         self.installs.append((relaunch_after, names(self.folder)))  # what was backed up by then
+        self.logging_out.append(logging_out)  # Windows installs nothing then: test_windows_update.py
         return True
 
 
@@ -801,6 +810,25 @@ def quit_by(route, main, app, this_computer, monkeypatch):
     app._before_quit()  # asked again while quitting: nothing more
 
 
+def test_an_update_kept_from_a_log_off_goes_in_before_the_window_opens(tmp_path, monkeypatch):
+    """As Restart now does it: a backup with the latest changes first, then the update, and the
+    app reopens once it's in (Windows: test_windows_update.py)."""
+    import types
+
+    main, app, this_computer = start_app(monkeypatch, tmp_path)
+    add_category(app._db, "Groceries")
+    app._app_path, app._updater.kept = None, True
+
+    def window(*args, **kwargs):
+        raise AssertionError("the window opened")
+
+    monkeypatch.setitem(sys.modules, "webview", types.SimpleNamespace(create_window=window))
+    app.run()
+    made = names(main.BACKUP_DIR)
+    assert len(made) == 1 and categories_in(main.BACKUP_DIR / made[0]) == ["Groceries"]
+    assert app._updater.installs == [(True, made)]
+
+
 def test_the_close_button_with_no_page_to_ask_quits_straight_away(tmp_path, monkeypatch):
     main, app, this_computer = start_app(monkeypatch, tmp_path)
     add_category(app._db, "Groceries")
@@ -819,6 +847,8 @@ def test_every_way_of_quitting_leaves_a_backup_with_the_latest_changes(route, tm
     assert len(made) == 1 and categories_in(main.BACKUP_DIR / made[0]) == ["Groceries"]
     relaunch = route == "Restart now"
     assert app._updater.installs[0] == (relaunch, made)  # the update goes in after the backup
+    straight_away = ("logging out or shutting down", "logging off or shutting down", "Task Manager")
+    assert any(app._updater.logging_out) == (route in straight_away)  # the updater is told: nothing installs then
     assert not (tmp_path / "home").exists()  # nothing near the real Documents
 
 
@@ -848,6 +878,7 @@ def test_a_log_off_another_app_stops_is_called_off_and_the_app_carries_on(tmp_pa
     assert app._quitting and len(names(main.BACKUP_DIR)) == 1
     windows_sends(window, LOG_OFF_CALLED_OFF)
     assert not window.IsDisposed and not app._quitting  # still open, and not quitting
+    assert app._updater.taken_back == 1  # an update the log-off kept waits for the next quit again
 
     watched = []
     app._service = type("Service", (), {"watch_downloads": lambda self: watched.append(1)})()
@@ -867,6 +898,7 @@ def test_a_log_off_another_app_stops_is_called_off_and_the_app_carries_on(tmp_pa
     assert window.IsDisposed
     assert len(names(main.BACKUP_DIR)) == 2
     assert categories_in(main.BACKUP_DIR / backups.name(QUIT)) == ["Groceries", "Rent"]
+    assert app._updater.logging_out == [True, False]  # the next quit installs what's waiting
 
 
 @WINDOWS
