@@ -118,12 +118,12 @@ jobs:
           python - <<'PY'
           import os, subprocess
           from pathlib import Path
-          source = ('[assembly: System.Reflection.AssemblyFileVersion("V")]\n[assembly: System.Reflection.AssemblyInformationalVersion("V")]\n'
+          source = ('[assembly: System.Reflection.AssemblyFileVersion("VERSION_HERE")]\n[assembly: System.Reflection.AssemblyInformationalVersion("VERSION_HERE")]\n'
                     'public static class S { public static int Main() { return 0; } }\n')
           def make(path, version):
               path.parent.mkdir(parents=True, exist_ok=True)
               cs = path.with_suffix(".cs")
-              cs.write_text(source.replace("V", version), encoding="utf-8")
+              cs.write_text(source.replace("VERSION_HERE", version), encoding="utf-8")
               env = dict(os.environ, SRC=str(cs), OUT=str(path))
               subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
                               "Add-Type -TypeDefinition ([IO.File]::ReadAllText($env:SRC)) -OutputAssembly $env:OUT -OutputType ConsoleApplication"],

@@ -15,8 +15,8 @@
 #
 # The key never reaches a command line or the log: it goes from the environment to a file only this
 # user can read, in a folder of its own that's deleted on the way out (and by --clean, which the run's
-# always() step calls in case this was stopped half-way). Needs OpenSSL 3 (Git for Windows has it; on a
-# Mac, Homebrew's openssl@3, which GitHub's Macs have).
+# always() step calls in case this was stopped half-way). Needs OpenSSL 3 or later (Git for Windows has it;
+# on a Mac, Homebrew's, which GitHub's Macs have: macOS's own is LibreSSL, which has no Ed25519).
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -36,9 +36,9 @@ INSTALLER="${1:?Say which installer: scripts/sign-windows.sh INSTALLER}"
 
 OPENSSL=""
 for candidate in openssl "$(brew --prefix openssl@3 2>/dev/null)/bin/openssl"; do
-    if [[ "$("$candidate" version 2>/dev/null)" == "OpenSSL 3"* ]]; then OPENSSL="$candidate"; break; fi
+    if [[ "$("$candidate" version 2>/dev/null)" =~ ^OpenSSL\ ([3-9]|[1-9][0-9])\. ]]; then OPENSSL="$candidate"; break; fi
 done
-[[ -n "$OPENSSL" ]] || fail "OpenSSL 3 isn't here (on a Mac: brew install openssl@3)."
+[[ -n "$OPENSSL" ]] || fail "OpenSSL 3 or later isn't here (on a Mac: brew install openssl@3)."
 
 clean
 trap clean EXIT
