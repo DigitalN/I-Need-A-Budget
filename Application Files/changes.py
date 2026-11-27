@@ -9,10 +9,18 @@ It only reads: no window, no network, no files written, the same on any system.
     compare(start, this, other) → {"this": <side>, "other": <side>}
     what_changed(start, side)   → <side>
 
-Each budget is a path to a complete budget file (a save, the copy of the save a computer
-started from, a backup: read through a read-only connection), an open `sqlite3.Connection`,
-or a `db.Database` (read under its lock): this computer's working copy is passed as its
-Database, so what's still in its `-wal` is counted. A side is:
+Each budget is one of:
+- a path to a complete budget file nobody writes while it's read: a save, the copy of the save
+  a computer started from, a backup, or a copy made with VACUUM INTO (budget_folder's
+  `two_computers()` gives all three that way). It's opened `immutable`: nothing is written,
+  locked or left beside it (no `-wal`, no `-shm`), and a network path (`\\\\server\\share\\…`, a
+  mapped drive) works. A file with changes still in its `-wal` is refused (ValueError): it's
+  open somewhere, so pass a connection to it instead;
+- an open `sqlite3.Connection`, or a `db.Database` (under its lock): a budget the app keeps
+  writing, such as this computer's working copy. It's read inside one transaction, so all of it
+  is from one moment.
+
+A side is:
 
     {"changed": bool,          # anything listed at all
      "summary": str,           # one line: "1 file imported (14 transactions) · 9 categorized · …"
@@ -20,31 +28,40 @@ Database, so what's still in its `-wal` is counted. A side is:
 
 `summary` is the sections' titles joined by " · ", in the order below; "Show every change"
 lists every section's items under its title. An item's `app` is true for what the app did on
-its own (the re-check, an import from Downloads, the balance check), which is listed too and
-says so in its text. The kinds, in order: imported, import_removed, not_imported,
-categorized, split, transfer, sent_back, back_in_inbox, edited, added, deleted,
-balance_adjustment, assigned, budgeted, categories, accounts, recurring_charges, payees,
-settings, actual.
+its own, and its text says so: the re-check categorizing or pairing a transfer, a transaction
+it decides about again ("back in the Inbox"), the balance check's balance adjustments after
+an import, a recurring charge's price following a charge as it arrived. Otherwise it's false:
+yours, or what can't be told apart from yours (an import: a file you dropped and one the app
+found in Downloads leave nothing to tell them apart). The kinds, in order: imported,
+import_removed, not_imported, categorized, split, transfer, sent_back, back_in_inbox, edited,
+added, deleted, balance_adjustment, assigned, budgeted, categories, accounts,
+recurring_charges, payees, settings, actual.
 
-Rows are matched by id. An id one side added is new on that side whatever the other side did
-with the same id: each side is only ever compared with the start. A transaction, account,
-import or recurring charge under the same id but made at another time (SQLite gives the id of
-a deleted newest row to the next one) is the old one deleted and a new one added.
+Rows are matched by id, and each side is only ever compared with the start, so an id both
+sides added is two different things. SQLite gives a deleted newest row's id to the next one,
+so a row under the same id is only the same thing when what it keeps says so: a transaction,
+account, import or recurring charge made at the same moment (an account of the same type); a
+category with the same name or the start's among its earlier names (a card's payment category:
+the same card); a category group with the same name or the same categories in it; a payee with
+the same transactions or the same bank wording that finds it. Otherwise it's one removed and
+another added, never a rename.
 
 Some differences are never changes: this session's undo, backups' own meta, what the budget
-folder keeps about saves (`BOOKKEEPING_META`: the budget folder's piece adds its keys there),
-the inbox's reasons (only text to show), a group folded on the Budget page, and what the app
-keeps for itself (how bank wording finds a payee, CSV layouts, which file each transaction was
-in, what a file's row replaced, remembered answers about files). Anything else in the budget's
-meta that isn't one of its settings is listed as "Something else in the budget changed", so a
-key nobody described is seen rather than lost.
+folder keeps about saves (`BOOKKEEPING_META`), the inbox's reasons (only text to show), a group
+folded on the Budget page, a recurring charge's price type as the app works it out (only the
+one you chose is kept), and what the app keeps for itself (how bank wording finds a payee, CSV
+layouts, which file each transaction was in, what a file's row replaced, remembered answers
+about files). Anything else in the budget's meta that isn't one of its settings is listed as
+"Something else in the budget changed", so a key nobody described is seen rather than lost.
 
 Amounts are written as the page writes them ("−$4.50", "$1,234.00"), months as "December 2026"
 and days as "Oct 3", in docs/CONTEXT.md's words.
 """
 
+import os
 import sqlite3
 from pathlib import Path
+from urllib.request import pathname2url
 
 import backups
 from ledger import DEBT_KINDS, KIND_LABELS
@@ -54,11 +71,10 @@ from subscriptions import PRICINGS
 from util import month_name, short_day
 
 # Meta keys that are the app's own bookkeeping, never a change: backups' (what the last backup
-# was), the schema's version, flags for work done once at launch, and what the budget folder
-# keeps about saves (which computer saved it, when, the save's id, the versions: issue #183 adds
-# its keys here).
-BOOKKEEPING_META = {*backups.BACKUP_META, "schema_version", "onboarded", "read_imported_files", "currency_read",
-                    "last_onboarding_account", "interest_category_id"}
+# was), the budget folder's (`save`, backups.SAVE_KEY: the save this budget is or started from,
+# who saved it, when, the versions), the schema's version, and flags for work done once.
+BOOKKEEPING_META = {*backups.BACKUP_META, "save", "schema_version", "onboarded", "read_imported_files",
+                    "currency_read", "last_onboarding_account", "interest_category_id"}
 
 # The budget's own settings and the other meta a person changes, as each is shown.
 OVERSPENDING_LABELS = {"next_month": "Next month", "this_month": "This month", "carry_over": "Carry over"}
@@ -73,7 +89,7 @@ _KINDS = ("imported", "import_removed", "not_imported", "categorized", "split", 
           "accounts", "recurring_charges", "payees", "settings", "actual")
 
 # A section's title when all its items are one kind of change: (for one, for {n}). Mixed, it's
-# "{n} changes to <its things>".
+# "{n} changes to <its things>". Each item is one thing: one account, one recurring charge…
 _TITLES = {
     ("balance_adjustment", "added"): ("1 balance adjustment added", "{n} balance adjustments added"),
     ("balance_adjustment", "removed"): ("1 balance adjustment removed", "{n} balance adjustments removed"),
@@ -153,38 +169,75 @@ def _long_day(day):
 
 # ── reading a budget ──
 
+# The columns each table is read for: only what's compared or shown.
+_COLUMNS = {
+    "accounts": ("id", "name", "kind", "bank", "apr", "planned_payment", "closed", "anchor_date", "anchor_balance",
+                 "anchor_source", "created_at"),
+    "category_groups": ("id", "name", "role", "sort"),
+    "categories": ("id", "group_id", "name", "sort", "hidden", "monthly_budget", "debt_account_id", "old_names", "note"),
+    "payees": ("id", "name", "always_ask"),
+    "imports": ("id", "filename", "sha256", "account_id", "imported_at", "anchor_before_date", "anchor_before_balance"),
+    "subscriptions": ("id", "name", "amount", "cadence", "kind", "status", "pricing", "ends_on", "category_id", "note",
+                      "created_at"),
+    "transactions": ("id", "account_id", "date", "amount", "payee_id", "hint", "category_id", "is_split",
+                     "transfer_account_id", "transfer_id", "subscription_id", "status", "by_you", "note", "import_id",
+                     "created_at"),
+}
+
+
 class _Budget:
     """Everything this module compares, read once from one budget."""
 
     def __init__(self, conn):
-        def rows(sql):
-            try:
-                cur = conn.execute(sql)
-            except sqlite3.OperationalError as e:  # a table an older budget doesn't have yet
-                if "no such table" in str(e):
-                    return []
-                raise
-            names = [d[0] for d in cur.description]
-            return [dict(zip(names, r)) for r in cur]
+        def have(table):
+            return {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
 
-        def by_id(table):
-            return {r["id"]: r for r in rows(f"SELECT * FROM {table} ORDER BY id")}
+        def rows(table, extra=()):
+            """The table's rows as dicts of _COLUMNS[table] (None for a column an older budget doesn't have
+            yet: none at all for a table it doesn't have) and of `extra`: (name, SQL, the columns it needs)."""
+            present = have(table)
+            if not present:
+                return []
+            wanted = _COLUMNS.get(table, ())
+            picked = [c for c in wanted if c in present] + [f"{sql} AS {name}" for name, sql, needs in extra
+                                                            if set(needs) <= present]
+            names = [c for c in wanted if c in present] + [name for name, _, needs in extra if set(needs) <= present]
+            out = [dict(zip(names, r)) for r in conn.execute(f"SELECT {', '.join(picked)} FROM {table}")]
+            missing = dict.fromkeys(n for n in [*wanted, *(name for name, _, _ in extra)] if n not in names)
+            if missing:
+                for row in out:
+                    row.update(missing)
+            return out
 
-        self.meta = {r["key"]: r["value"] for r in rows("SELECT key, value FROM meta")}
+        def by_id(table, extra=()):
+            return {r["id"]: r for r in rows(table, extra)}
+
+        self.meta = {r[0]: r[1] for r in conn.execute("SELECT key, value FROM meta")}
         self.accounts = by_id("accounts")
         self.groups = by_id("category_groups")
         self.categories = by_id("categories")
         self.payees = by_id("payees")
         self.imports = by_id("imports")
         self.subscriptions = by_id("subscriptions")
-        self.transactions = by_id("transactions")
-        self.splits = {}
-        for r in rows("SELECT transaction_id, category_id, amount, note FROM splits ORDER BY id"):
-            self.splits.setdefault(r["transaction_id"], []).append((r["category_id"], r["amount"], r["note"]))
-        self.assigned = {(r["month"], r["category_id"]): r["assigned"]
-                         for r in rows("SELECT month, category_id, assigned FROM budget")}
-        self.examples = {r["id"] for r in rows("SELECT id FROM examples")}
-        self.ignored = {r["sha256"]: r["filename"] for r in rows("SELECT sha256, filename FROM ignored_files")}
+        # Where a transaction came from, not its fingerprint or bank ID (long, and never shown); the bank's
+        # wording only where there's no payee to name it by.
+        self.transactions = by_id("transactions", (
+            ("from_file", "(fingerprint IS NOT NULL OR fitid IS NOT NULL)", ("fingerprint", "fitid")),
+            ("raw_name", "CASE WHEN payee_id IS NULL THEN raw_name END", ("raw_name", "payee_id"))))
+        self.keys = {}  # payee id → the bank wording that finds it (payee_keys)
+        if have("payee_keys"):
+            for key, payee_id in conn.execute("SELECT key, payee_id FROM payee_keys"):
+                self.keys.setdefault(payee_id, set()).add(key)
+        self.splits, self.split_notes = {}, {}
+        if have("splits"):
+            for txn_id, category_id, amount, note in conn.execute(
+                    "SELECT transaction_id, category_id, amount, note FROM splits ORDER BY id"):
+                self.splits.setdefault(txn_id, []).append((category_id, amount))
+                self.split_notes.setdefault(txn_id, []).append(note or "")
+        self.assigned = {(month, cid): cents for month, cid, cents in
+                         conn.execute("SELECT month, category_id, assigned FROM budget")} if have("budget") else {}
+        self.examples = {r[0] for r in conn.execute("SELECT id FROM examples")} if have("examples") else set()
+        self.ignored = dict(conn.execute("SELECT sha256, filename FROM ignored_files")) if have("ignored_files") else {}
 
     def settings(self):
         """Overspending and Usual's months as the budget runs on them (settings.budget_settings)."""
@@ -197,40 +250,71 @@ def _read(source):
     if isinstance(source, _Budget):
         return source
     if isinstance(source, sqlite3.Connection):
-        return _Budget(source)
+        return _snapshot(source)
     if hasattr(source, "read") and hasattr(source, "conn"):  # a db.Database: under its lock
         with source.read() as conn:
-            return _Budget(conn)
+            return _snapshot(conn)
     path = Path(source)
     if not path.is_file():
         raise FileNotFoundError(f"No budget at {path}")
-    conn = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+    wal = Path(f"{path}-wal")
+    if wal.is_file() and wal.stat().st_size:
+        raise ValueError(f"{path.name} has changes in its -wal file, so it's open somewhere: pass a connection to it")
+    conn = sqlite3.connect(f"{_uri(path)}?mode=ro&immutable=1", uri=True)
     try:
         return _Budget(conn)
     finally:
         conn.close()
 
 
-def _split_rows(start, side, same=("created_at",)):
-    """(gone, new, both) between two tables of rows by id: rows only the start has, rows only the
-    side has, and (start's, side's) pairs. A row under the same id that differs in a column of
-    `same` (when it was made, what never changes about it) is two rows: SQLite gives a deleted newest
-    row's id to the next one."""
-    def one(b, s):
-        return all(b.get(column) == s.get(column) for column in same)
+def _uri(path):
+    """A file: URI SQLite opens, for any path: C:\\… or /Users/…, and \\\\server\\share\\… (file:////server/share/…:
+    SQLite refuses a host in the URI). Not resolved: on Windows that would turn a mapped drive into its share."""
+    url = pathname2url(os.path.abspath(path))
+    if url.startswith("//") and not url.startswith("///"):
+        url = "//" + url
+    return f"file:{url}"
 
+
+def _snapshot(conn):
+    """A budget the app may be writing, read inside one transaction: everything from one moment."""
+    began = not conn.in_transaction
+    if began:
+        conn.execute("BEGIN")
+    try:
+        return _Budget(conn)
+    finally:
+        if began:
+            conn.execute("ROLLBACK")
+
+
+def _split_rows(start, side, same):
+    """(gone, new, both) between two tables of rows by id: rows only the start has, rows only the
+    side has, and (start's, side's) pairs. A row under the same id that `same(start's, side's)`
+    says is another thing is two rows: one gone, one new."""
     gone, new, both = {}, {}, []
     for row_id, b in start.items():
         s = side.get(row_id)
-        if s is not None and one(b, s):
+        if s is not None and same(b, s):
             both.append((b, s))
         else:
             gone[row_id] = b
-    for row_id, s in side.items():
-        b = start.get(row_id)
-        if b is None or not one(b, s):
-            new[row_id] = s
+    paired = {s["id"] for _, s in both}
+    new = {row_id: s for row_id, s in side.items() if row_id not in paired}
     return gone, new, both
+
+
+def _made_alike(*columns):
+    """Rows made at the same moment (and alike in what never changes about them) are one row."""
+    return lambda b, s: all(b[c] == s[c] for c in columns)
+
+
+def _same_category(b, s):
+    """A category keeps its name, or has the start's among its earlier names (rename_category keeps
+    them); a card's payment category is named after its card, so it's the same card's."""
+    if b["debt_account_id"] is not None or s["debt_account_id"] is not None:
+        return b["debt_account_id"] == s["debt_account_id"]
+    return b["name"] == s["name"] or b["name"] in (s["old_names"] or "").split("|")
 
 
 def _moved(start_order, side_order):
@@ -270,7 +354,28 @@ class _Side:
         self.start, self.side = start, side
         self.sections = {kind: [] for kind in _KINDS}
         self.verbs = {kind: [] for kind in _KINDS}
-        self.a_gone, self.a_new, self.a_both = _split_rows(start.accounts, side.accounts, ("created_at", "kind"))
+        # What's the same thing in both, what's gone and what's new, table by table.
+        self.a_gone, self.a_new, self.a_both = _split_rows(start.accounts, side.accounts,
+                                                           _made_alike("created_at", "kind"))
+        self.i_gone, self.i_new, _ = _split_rows(start.imports, side.imports, _made_alike("imported_at", "sha256"))
+        self.t_gone, self.t_new, self.t_both = _split_rows(start.transactions, side.transactions,
+                                                           _made_alike("created_at"))
+        self.c_gone, self.c_new, self.c_both = _split_rows(start.categories, side.categories, _same_category)
+        kept_in = {b["group_id"] for b, s in self.c_both if b["group_id"] == s["group_id"]}
+        self.g_gone, self.g_new, self.g_both = _split_rows(
+            start.groups, side.groups, lambda b, s: b["role"] == s["role"] and (b["name"] == s["name"] or b["id"] in kept_in))
+        paid = {b["payee_id"] for b, s in self.t_both if b["payee_id"] is not None and b["payee_id"] == s["payee_id"]}
+        self.p_gone, self.p_new, self.p_both = _split_rows(
+            start.payees, side.payees, lambda b, s: b["id"] in paid or b["name"] == s["name"]
+            or bool(start.keys.get(b["id"], set()) & side.keys.get(s["id"], set())))
+        self.s_gone, self.s_new, self.s_both = _split_rows(start.subscriptions, side.subscriptions,
+                                                           _made_alike("created_at"))
+        self.copies = self._merges()
+        # Accounts an import came into or went out of here, or that a merge went into: the balance check
+        # worked their balance adjustments out again.
+        self.checked = ({i["account_id"] for i in self.i_new.values()} | {i["account_id"] for i in self.i_gone.values()}
+                        | set(self.copies))
+        self.added_ids = set()
         self._imports()
         self._transactions()
         self._assigned()
@@ -290,44 +395,44 @@ class _Side:
                     for kind, items in self.sections.items() if items]
         return {"changed": bool(sections), "summary": " · ".join(s["title"] for s in sections), "sections": sections}
 
-    # Names: from this side, else from the start (what this side deleted). `gone`: for something this side
-    # deleted, from the start first (its id may be another row's here now).
+    # Names. A row refers to rows of its own budget: a start row's (what this side deleted or changed)
+    # is named as the start had it, a side row's as this side has it.
 
-    def _name(self, table, row_id, missing, gone=False):
-        for budget in ((self.start, self.side) if gone else (self.side, self.start)):
-            row = getattr(budget, table).get(row_id)
-            if row is not None:
-                return row["name"]
-        return missing
+    def _name(self, table, row_id, budget, missing):
+        row = getattr(budget, table).get(row_id)
+        return row["name"] if row is not None else missing
 
-    def category(self, category_id):
-        return self._name("categories", category_id, "no category") if category_id else "no category"
+    def category(self, category_id, budget=None):
+        if not category_id:
+            return "no category"
+        return self._name("categories", category_id, budget or self.side, "a category no longer there")
 
-    def account(self, account_id, gone=False):
-        return self._name("accounts", account_id, "an account no longer there", gone)
+    def account(self, account_id, budget=None):
+        return self._name("accounts", account_id, budget or self.side, "an account no longer there")
 
-    def group(self, group_id):
-        return self._name("groups", group_id, "a group no longer there")
+    def group(self, group_id, budget=None):
+        return self._name("groups", group_id, budget or self.side, "a group no longer there")
 
-    def payee(self, payee_id, gone=False):
-        return self._name("payees", payee_id, "a payee no longer there", gone)
+    def payee(self, payee_id, budget=None):
+        return self._name("payees", payee_id, budget or self.side, "a payee no longer there")
 
-    def label(self, t, gone=False):
+    def label(self, t, budget=None):
         """A transaction as a person finds it: "Sample Cafe, Oct 3, −$4.50"."""
-        who = self.payee(t["payee_id"], gone) if t["payee_id"] else (t.get("raw_name") or "A transaction")
+        who = self.payee(t["payee_id"], budget) if t["payee_id"] else (t["raw_name"] or "A transaction")
         return f"{who}, {_day(t['date'])}, {money(t['amount'])}"
+
+    def route(self, t, budget=None):
+        """A transfer's money and accounts: "$60.00 from Chequing to Savings, Sep 5"."""
+        here, there = self.account(t["account_id"], budget), self.account(t["transfer_account_id"], budget)
+        way = f"from {here} to {there}" if t["amount"] < 0 else f"from {there} to {here}"
+        return f"{money(abs(t['amount']))} {way}, {_day(t['date'])}"
 
     # ── files ──
 
     def _imports(self):
-        start, side = self.start, self.side
-        self.gone_imports, self.new_imports, _ = _split_rows(start.imports, side.imports, ("imported_at", "sha256"))
-        t_gone, t_new, t_both = _split_rows(start.transactions, side.transactions)
-        self.t_gone, self.t_new, self.t_both = t_gone, t_new, t_both
-
         files, total = set(), 0
-        for i in self.new_imports.values():
-            n = sum(1 for t in t_new.values() if t["import_id"] == i["id"] and t["hint"] != ADJUSTMENT)
+        for i in self.i_new.values():
+            n = sum(1 for t in self.t_new.values() if t["import_id"] == i["id"] and t["hint"] != ADJUSTMENT)
             files.add(i["sha256"])
             total += n
             what = _plural(n, "new transaction") if n else "no new transactions"
@@ -335,19 +440,25 @@ class _Side:
         self.imported = (len(files), total)
 
         files, total = set(), 0
-        for i in self.gone_imports.values():
-            n = sum(1 for t in t_gone.values() if t["import_id"] == i["id"] and t["hint"] != ADJUSTMENT)
-            stay = sum(1 for b, s in t_both if b["import_id"] == i["id"])
+        for i in self.i_gone.values():
+            n = sum(1 for t in self.t_gone.values() if t["import_id"] == i["id"] and t["hint"] != ADJUSTMENT)
+            # As Remove import's message says it (removedText in the page): what another file has stays under
+            # that file; one you added that the file's row had taken the place of goes back to what you entered.
+            under = [s for b, s in self.t_both if b["import_id"] == i["id"]]
+            stay = sum(1 for s in under if s["import_id"] is not None)
+            yours = len(under) - stay
             files.add(i["sha256"])
             total += n
-            text = f"{i['filename']} ({self.account(i['account_id'], gone=True)}): {_plural(n, 'transaction')} removed"
+            text = f"{i['filename']} ({self.account(i['account_id'], self.start)}): {_plural(n, 'transaction')} removed"
             if stay:
                 text += f"; {stay} {'stays' if stay == 1 else 'stay'}: another file has {'it' if stay == 1 else 'them'}"
+            if yours:
+                text += f"; {yours} you added {'stays' if yours == 1 else 'stay'}"
             self.add("import_removed", text)
         self.removed = (len(files), total)
 
-        for sha, filename in side.ignored.items():
-            if sha not in start.ignored:
+        for sha, filename in self.side.ignored.items():
+            if sha not in self.start.ignored:
                 self.add("not_imported", filename)
 
     # ── transactions ──
@@ -357,32 +468,36 @@ class _Side:
         rows = ([(t["date"], t["id"], t, None) for t in self.t_gone.values()]
                 + [(t["date"], t["id"], None, t) for t in self.t_new.values()]
                 + [(s["date"], s["id"], b, s) for b, s in self.t_both])
-        transfers, self.payee_moves = [], {}
+        transfers, back = [], []
         for _, _, b, s in sorted(rows, key=lambda r: (r[0], r[1], r[2] is None)):
             if s is None:
                 self._gone(b)
             elif b is None:
-                self._new(s, transfers)
+                self._new(s, transfers, back)
             else:
-                self._changed(b, s, transfers)
+                self._changed(b, s, transfers, back)
+        self._back(back)
         self._transfers(transfers)
 
     def _gone(self, t):
         if t["hint"] == ADJUSTMENT:
-            self.add("balance_adjustment", f"{self.adjustment(t, gone=True)}: removed", verb="removed")
-        elif t["import_id"] in self.gone_imports or t["account_id"] in self.a_gone or t["hint"] == ADDED_HALF:
+            app = not t["by_you"] and t["account_id"] in self.checked
+            self.add("balance_adjustment", f"{self.adjustment(t, self.start)}: removed"
+                     + (" by the app" if app else ""), app=app, verb="removed")
+        elif t["import_id"] in self.i_gone or t["account_id"] in self.a_gone or t["hint"] == ADDED_HALF:
             return  # its import was removed, its account merged away, or the transfer it was half of ended
         else:
-            self.add("deleted", f"{self.label(t, gone=True)} in {self.account(t['account_id'], gone=True)}: deleted")
+            self.add("deleted", f"{self.label(t, self.start)} in {self.account(t['account_id'], self.start)}: deleted")
 
-    def _new(self, t, transfers):
+    def _new(self, t, transfers, back):
         if t["hint"] == ADJUSTMENT:
-            by = "Check balance…" if t["import_id"] is None else "the app"
-            self.add("balance_adjustment", f"{self.adjustment(t)}: added by {by}", app=t["import_id"] is not None,
-                     verb="added")
-            self._decided(_INBOX, t, transfers)
-        elif t["fingerprint"] is not None or t["fitid"] is not None or t["import_id"] is not None:
-            self._decided(_INBOX, t, transfers)  # its import says it came; this, what was decided about it
+            # The balance check's, after an import, carries the import it was worked out for; Check balance…'s none.
+            app = t["import_id"] is not None
+            self.add("balance_adjustment", f"{self.adjustment(t)}: added by {'the app' if app else 'Check balance…'}",
+                     app=app, verb="added")
+            self._decided(_INBOX, t, transfers, back)
+        elif t["from_file"] or t["import_id"] is not None:
+            self._decided(_INBOX, t, transfers, back)  # its import says it came; this, what was decided about it
         elif t["hint"] != ADDED_HALF:  # a transfer's other half the app added: the transfer says so
             state, as_what = self.decision(t), ""
             if state[0] == "category":
@@ -391,32 +506,35 @@ class _Side:
                 as_what = " (split)"
             elif state[0] == "transfer":
                 as_what = f" (a transfer {'to' if t['amount'] < 0 else 'from'} {self.account(state[1])})"
+            self.added_ids.add(t["id"])
             self.add("added", f"{self.label(t)} in {self.account(t['account_id'])}: added by hand{as_what}")
 
-    def _changed(self, b, s, transfers):
-        self._decided(self.decision(b, self.start), s, transfers)
-        if b["payee_id"] and s["payee_id"] and b["payee_id"] != s["payee_id"]:
-            self.payee_moves.setdefault((b["payee_id"], s["payee_id"]), []).append(s["id"])  # the payees say so
+    def _changed(self, b, s, transfers, back):
+        self._decided(self.decision(b, self.start), s, transfers, back)
         if b["hint"] == ADJUSTMENT and s["hint"] == ADJUSTMENT:
             if (b["amount"], b["date"]) != (s["amount"], s["date"]):
+                app = not s["by_you"] and s["account_id"] in self.checked
                 self.add("balance_adjustment", f"Balance adjustment in {self.account(s['account_id'])}: "
-                         f"{money(b['amount'])} on {_day(b['date'])} → {money(s['amount'])} on {_day(s['date'])}",
-                         app=not s["by_you"], verb="changed")
+                         f"{money(b['amount'])} on {_day(b['date'])} → {money(s['amount'])} on {_day(s['date'])}"
+                         + (" by the app" if app else ""), app=app, verb="changed")
             return
         parts = []
-        # Only one added by hand has a date and an amount of your own: a file's changes with the files that have it.
-        by_hand = all(x["fingerprint"] is None and x["fitid"] is None and x["import_id"] is None for x in (b, s))
+        # Only one added by hand has a date and an amount of your own: a file's change with the files that have it.
+        by_hand = not (b["from_file"] or s["from_file"]) and b["import_id"] is None and s["import_id"] is None
         if by_hand and b["date"] != s["date"]:
             parts.append(f"date {_day(b['date'])} → {_day(s['date'])}")
         if by_hand and b["amount"] != s["amount"]:
             parts.append(f"amount {money(b['amount'])} → {money(s['amount'])}")
         if (b["note"] or "") != (s["note"] or ""):
             parts.append(f"note {_quoted(s['note'])}" if s["note"] else "note removed")
+        if (b["is_split"] and s["is_split"] and self.decision(b, self.start) == self.decision(s)
+                and self.start.split_notes.get(b["id"]) != self.side.split_notes.get(s["id"])):
+            parts.append("notes on its split lines changed")
         if parts:
-            self.add("edited", f"{self.label(b)}: {'; '.join(parts)}")
+            self.add("edited", f"{self.label(b, self.start)}: {'; '.join(parts)}")
 
-    def adjustment(self, t, gone=False):
-        return f"Balance adjustment in {self.account(t['account_id'], gone)}, {_day(t['date'])}, {money(t['amount'])}"
+    def adjustment(self, t, budget=None):
+        return f"Balance adjustment in {self.account(t['account_id'], budget)}, {_day(t['date'])}, {money(t['amount'])}"
 
     def decision(self, t, budget=None):
         """What was decided about a transaction: in the inbox, a category, split (and how), or a transfer."""
@@ -428,68 +546,96 @@ class _Side:
             return _INBOX
         return ("category", t["category_id"]) if t["category_id"] else ("none",)
 
-    def _decided(self, was, t, transfers):
+    def _decided(self, was, t, transfers, back):
         now = self.decision(t)
         if now == was or now == ("none",):
             return
         app = not t["by_you"]
+        by_app = " by the app" if app else ""
         if now[0] == "transfer":
             transfers.append(t)
         elif now == _INBOX:
-            if app:
-                self.add("back_in_inbox", f"{self.label(t)}: back in the Inbox to decide again", app=True)
-            else:
-                self.add("sent_back", f"{self.label(t)}: sent back to the Inbox")
+            back.append((t, was))
         elif now[0] == "split":
-            lines = " + ".join(f"{self.category(c)} {money(a)}" for c, a, _ in now[1])
-            self.add("split", f"{self.label(t)}: split into {lines}" + (" by the app" if app else ""), app=app)
+            lines = " + ".join(f"{self.category(c)} {money(a)}" for c, a in now[1])
+            self.add("split", f"{self.label(t)}: split into {lines}{by_app}", app=app)
         elif was[0] == "category":
-            self.add("categorized", f"{self.label(t)}: {self.category(was[1])} → {self.category(now[1])}"
-                     + (" by the app" if app else ""), app=app)
+            self.add("categorized", f"{self.label(t)}: {self.category(was[1], self.start)} → "
+                     f"{self.category(now[1])}{by_app}", app=app)
         else:
-            self.add("categorized", f"{self.label(t)}: categorized as {self.category(now[1])}"
-                     + (" by the app" if app else ""), app=app)
+            self.add("categorized", f"{self.label(t)}: categorized as {self.category(now[1])}{by_app}", app=app)
+
+    def _back(self, back):
+        """Back in the Inbox: sent back by you, or for the app to decide again. A transfer's two halves
+        going back together (Not a transfer) are one change, as marking them was."""
+        ids = {t["id"] for t, _ in back}
+        done = set()
+        for t, was in back:
+            if t["id"] in done:
+                continue
+            done.add(t["id"])
+            app = not t["by_you"]
+            kind, went = ("back_in_inbox", "back in the Inbox to decide again") if app else \
+                ("sent_back", "sent back to the Inbox")
+            b = self.start.transactions.get(t["id"])
+            partner = b["transfer_id"] if b is not None and was[0] == "transfer" else None
+            if partner in ids and partner not in done:
+                done.add(partner)
+                self.add(kind, f"{self.route(b, self.start)}: not a transfer, both {went}", app=app)
+            elif was[0] == "transfer":
+                self.add(kind, f"{self.label(t)}: not a transfer, {went}", app=app)
+            else:
+                self.add(kind, f"{self.label(t)}: {went}", app=app)
 
     def _transfers(self, changed):
-        """A transfer's two halves are one transfer."""
+        """A transfer's two halves are one transfer; one added by hand says so where it's added."""
         ids = {t["id"] for t in changed}
         done = set()
         for t in changed:
             if t["id"] in done:
                 continue
             partner = self.side.transactions.get(t["transfer_id"]) if t["transfer_id"] else None
+            if partner is not None and partner["id"] in self.added_ids:
+                continue
             if partner is not None and partner["id"] in ids:
                 done.add(partner["id"])
                 if t["amount"] > 0:
                     t, partner = partner, t
             done.add(t["id"])
-            here, there = self.account(t["account_id"]), self.account(t["transfer_account_id"])
-            route = f"from {here} to {there}" if t["amount"] < 0 else f"from {there} to {here}"
             app = not t["by_you"] and not (partner and partner["by_you"])
             how = "paired as a transfer by the app" if app else "marked as a transfer"
-            self.add("transfer", f"{money(abs(t['amount']))} {route}, {_day(t['date'])}: {how}", app=app)
+            self.add("transfer", f"{self.route(t)}: {how}", app=app)
 
     # ── the budget ──
 
     def _assigned(self):
         start, side = self.start, self.side
-        merged_into = {self._merged_into(a) for a in self.a_gone}
         order = self._category_order(side)
+        # A merge adds the copy's payment category's Assigned to the card it's merged into (ledger.merge_accounts).
+        payment = {c["debt_account_id"]: cid for cid, c in start.categories.items() if c["debt_account_id"] is not None}
+        merged_in = {}
+        for into, copies in self.copies.items():
+            into_cat = next((cid for cid, c in side.categories.items() if c["debt_account_id"] == into), None)
+            for copy in copies:
+                for (month, cid), cents in start.assigned.items():
+                    if cid == payment.get(copy["id"]) and into_cat is not None:
+                        merged_in[(month, into_cat)] = merged_in.get((month, into_cat), 0) + cents
+        same = {s["id"] for _, s in self.c_both}
         changes = []
-        for key in set(start.assigned) | set(side.assigned):
+        for key in set(start.assigned) | set(side.assigned) | set(merged_in):
             month, cid = key
             if cid not in side.categories:
                 continue  # the category went (its Assigned with it): it says so
-            if side.categories[cid]["debt_account_id"] in merged_into - {None}:
-                continue  # a merged card's payment category took the copy's: the merge says so
-            was, now = start.assigned.get(key, 0), side.assigned.get(key, 0)
+            was = (start.assigned.get(key, 0) if cid in same else 0) + merged_in.get(key, 0)
+            now = side.assigned.get(key, 0)
             if was != now:
                 changes.append((month, order.get(cid, (1 << 30,)), cid, was, now))
         for month, _, cid, was, now in sorted(changes):
             self.add("assigned", f"{_owner(self.category(cid))} Assigned for {month_name(month)} {money(was)} → {money(now)}")
 
+        starts = {s["id"]: b for b, s in self.c_both}
         for cid, s in sorted(side.categories.items(), key=lambda kv: order.get(kv[0], (1 << 30,))):
-            b = start.categories.get(cid)
+            b = starts.get(cid)
             was = b["monthly_budget"] if b else None
             if s["monthly_budget"] != was:
                 self.add("budgeted", f"{_owner(s['name'])} Budgeted {_budgeted(was)} → {_budgeted(s['monthly_budget'])}")
@@ -503,45 +649,43 @@ class _Side:
 
     def _categories(self):
         start, side = self.start, self.side
-        own = self._own(start) | self._own(side)
-        g_gone, g_new, g_both = _split_rows(start.groups, side.groups, ("role",))
-        for g in g_new.values():
+        for g in self.g_new.values():
             if g["role"] == "normal":
                 self.add("categories", f"Added category group {g['name']}", verb="group added")
-        for g in g_gone.values():
+        for g in self.g_gone.values():
             if g["role"] == "normal":
                 self.add("categories", f"Deleted category group {g['name']}", verb="group deleted")
-        for b, s in g_both:
+        for b, s in self.g_both:
             if b["name"] != s["name"]:
                 self.add("categories", f"Renamed category group {b['name']} → {s['name']}", verb="group renamed")
+        same_groups = {s["id"] for _, s in self.g_both}
         movable = lambda budget: [g["id"] for g in sorted(budget.groups.values(), key=lambda g: (g["sort"], g["id"]))
-                                  if g["role"] != "income"]
+                                  if g["role"] != "income" and g["id"] in same_groups]
         for gid in _moved(movable(start), movable(side)):
             self.add("categories", f"Moved category group {self.group(gid)}", verb="group moved")
 
-        c_gone, c_new, c_both = _split_rows(start.categories, side.categories, ("debt_account_id",))
-        for c in c_new.values():
-            if c["debt_account_id"] is None and c["id"] not in own:
+        for c in self.c_new.values():
+            if c["debt_account_id"] is None and c["id"] not in self._own(side):
                 self.add("categories", f"Added category {c['name']} in {self.group(c['group_id'])}", verb="added")
-        for c in c_gone.values():
+        for c in self.c_gone.values():
             if c["debt_account_id"] is None:
                 self.add("categories", f"Deleted category {c['name']}", verb="deleted")
         stayed = set()
-        for b, s in c_both:
+        for b, s in self.c_both:
             payment = s["debt_account_id"] is not None  # named after its card, shown while the card is open
             if b["name"] != s["name"] and not payment:
                 self.add("categories", f"Renamed category {b['name']} → {s['name']}", verb="renamed")
             if b["hidden"] != s["hidden"] and not payment:
                 self.add("categories", f"Hid category {s['name']}" if s["hidden"] else f"Showed category {s['name']} again",
                          verb="hidden" if s["hidden"] else "shown")
-            if b["group_id"] != s["group_id"]:
-                self.add("categories", f"Moved category {s['name']} from {self.group(b['group_id'])} to "
-                         f"{self.group(s['group_id'])}", verb="moved")
-            else:
+            if b["group_id"] == s["group_id"] and s["group_id"] in same_groups:
                 stayed.add(s["id"])
+            else:
+                self.add("categories", f"Moved category {s['name']} from {self.group(b['group_id'], start)} to "
+                         f"{self.group(s['group_id'])}", verb="moved")
             if (b["note"] or "") != (s["note"] or ""):
                 self.add("categories", f"Changed the notes for {s['name']}", verb="notes")
-        for gid in side.groups:
+        for gid in same_groups:
             in_group = lambda budget: [c["id"] for c in sorted(budget.categories.values(), key=lambda c: (c["sort"], c["id"]))
                                        if c["group_id"] == gid and c["id"] in stayed]
             for cid in _moved(in_group(start), in_group(side)):
@@ -558,39 +702,38 @@ class _Side:
 
     # ── accounts ──
 
-    def _merged_into(self, account_id):
-        """The account a merge put `account_id`'s transactions in, or None (it was deleted)."""
-        for t in self.start.transactions.values():
-            if t["account_id"] == account_id:
-                s = self.side.transactions.get(t["id"])
-                if s is not None and s["account_id"] not in self.a_gone and s.get("created_at") == t.get("created_at"):
-                    return s["account_id"]
+    def _merges(self):
+        """Merge into…: the account each account gone here went into ({into: [the start's copies]}),
+        found by its transactions or imports, now in that account. One gone without a trace was deleted."""
+        gone = self.a_gone
+        into = {}
+        for b, s in self.t_both:
+            if b["account_id"] in gone and s["account_id"] != b["account_id"]:
+                into.setdefault(b["account_id"], s["account_id"])
         for i in self.start.imports.values():
-            if i["account_id"] == account_id:
-                s = self.side.imports.get(i["id"])
-                if s is not None and s["account_id"] is not None and s["account_id"] not in self.a_gone:
-                    return s["account_id"]
-        return None
+            s = self.side.imports.get(i["id"])
+            if i["account_id"] in gone and i["id"] not in self.i_gone and s["account_id"] not in (None, i["account_id"]):
+                into.setdefault(i["account_id"], s["account_id"])
+        copies = {}
+        for copy_id, target in into.items():
+            copies.setdefault(target, []).append(gone[copy_id])
+        return copies
 
     def _accounts(self):
         start, side = self.start, self.side
-        gone, new, both = self.a_gone, self.a_new, self.a_both
-        copies = {}  # account id → the accounts merged into it here
-        for a in new.values():
+        merged_away = {a["id"]: into for into, copies in self.copies.items() for a in copies}
+        for a in self.a_new.values():
             self.add("accounts", f"Added account {a['name']} ({KIND_LABELS.get(a['kind'], a['kind'])})", verb="added")
-        for a in gone.values():
-            into = self._merged_into(a["id"])
-            if into is None:
-                self.add("accounts", f"Deleted account {a['name']}", verb="deleted")
+        for a in self.a_gone.values():
+            if a["id"] in merged_away:
+                self.add("accounts", f"Merged {a['name']} into {self.account(merged_away[a['id']])}", verb="merged")
             else:
-                copies.setdefault(into, []).append(a)
-                self.add("accounts", f"Merged {a['name']} into {self.account(into)}", verb="merged")
-        anchor = lambda a: (a["anchor_date"], a["anchor_balance"])
-        for b, s in both:
-            merged = copies.get(s["id"], [])
-            if b["name"] != s["name"]:
-                self.add("accounts", f"Renamed account {b['name']} → {s['name']}", verb="renamed")
+                self.add("accounts", f"Deleted account {a['name']}", verb="deleted")
+        for b, s in self.a_both:
+            merged = self.copies.get(s["id"], [])
             parts = []
+            if b["name"] != s["name"]:
+                parts.append(f"renamed to {s['name']}")
             # A merge gives the account its copy's bank when it had none, and the newer balance: the merge says so.
             if (b["bank"] or "") != (s["bank"] or "") and not (not b["bank"] and s["bank"] in [a["bank"] for a in merged]):
                 parts.append(f"bank {b['bank'] or 'none'} → {s['bank'] or 'none'}")
@@ -598,42 +741,71 @@ class _Side:
                 parts.append(f"interest rate {_rate(b['apr'])} → {_rate(s['apr'])}")
             if b["planned_payment"] != s["planned_payment"]:
                 parts.append(f"planned payment {_budgeted(b['planned_payment'])} → {_budgeted(s['planned_payment'])}")
-            if parts:
-                self.add("accounts", f"{s['name']}: {'; '.join(parts)}", verb="edited")
+            if parts == [f"renamed to {s['name']}"]:
+                self.add("accounts", f"Renamed account {b['name']} → {s['name']}", verb="renamed")
+            elif parts:
+                self.add("accounts", f"{b['name']}: {'; '.join(parts)}", verb="edited")
             if b["closed"] != s["closed"]:
                 self.add("accounts", f"Closed account {s['name']}" if s["closed"] else f"Reopened account {s['name']}",
                          verb="closed" if s["closed"] else "reopened")
-            # A balance you typed (Set balance, or one typed when the account was added): a file's comes with its
-            # import.
-            if anchor(b) != anchor(s) and s["anchor_source"] == "typed" and anchor(s) not in map(anchor, merged):
+            if self._balance_typed(b, s, merged):
                 self.add("accounts", f"{_owner(s['name'])} balance set: {_balance(s)} on {_long_day(s['anchor_date'])}",
                          verb="balance")
-        for a in new.values():
+        for a in self.a_new.values():
             if a["anchor_date"] is not None and a["anchor_source"] == "typed":
                 self.add("accounts", f"{_owner(a['name'])} balance set: {_balance(a)} on {_long_day(a['anchor_date'])}",
                          verb="balance")
 
+    def _balance_typed(self, b, s, merged):
+        """Whether you typed this account's balance here (Set balance, onboarding's Balances). Not a file's (its
+        import says so), a merge's (the newer balance), Check balance…'s on the day of a typed balance (its
+        balance adjustment goes into that day's balance: its adjustment says so), nor the typed balance Remove
+        import put back."""
+        anchor = lambda a: (a["anchor_date"], a["anchor_balance"])
+        if anchor(b) == anchor(s) or s["anchor_source"] != "typed" or anchor(s) in map(anchor, merged):
+            return False
+        if any(i["account_id"] == s["id"] and (i["anchor_before_date"], i["anchor_before_balance"]) == anchor(s)
+               for i in self.i_gone.values()):
+            return False
+        if b["anchor_date"] == s["anchor_date"] and b["anchor_balance"] is not None:
+            checked = sum(t["amount"] for t in self.t_new.values() if t["account_id"] == s["id"]
+                          and t["hint"] == ADJUSTMENT and t["import_id"] is None and t["date"] == s["anchor_date"])
+            if checked and b["anchor_balance"] + checked == s["anchor_balance"]:
+                return False
+        return True
+
     # ── recurring charges ──
 
     def _recurring_charges(self):
-        start, side = self.start, self.side
-        gone, new, both = _split_rows(start.subscriptions, side.subscriptions)
-        for s in new.values():
+        # The charges linked to a recurring charge here (new, or newly linked): a price that follows one of them,
+        # as it arrived, is the app's (subscriptions.link_transaction); "New price for…" makes the charge yours.
+        linked = {}
+        for t in self.t_new.values():
+            if t["subscription_id"] is not None:
+                linked.setdefault(t["subscription_id"], []).append(t)
+        for b, s in self.t_both:
+            if s["subscription_id"] is not None and s["subscription_id"] != b["subscription_id"]:
+                linked.setdefault(s["subscription_id"], []).append(s)
+
+        for s in self.s_new.values():
             if s["status"] == "ignored":
                 self.add("recurring_charges", f"{s['name']} at {money(s['amount'])} isn't recurring", verb="not recurring")
             else:
                 kind = " (a bill)" if s["kind"] == "bill" else ""
                 self.add("recurring_charges", f"Started tracking {s['name']}{kind}: {money(s['amount'])} "
                          f"{_EVERY.get(s['cadence'], s['cadence'])}", verb="added")
-        for s in gone.values():
+        for s in self.s_gone.values():
             if s["status"] != "ignored":
                 self.add("recurring_charges", f"Stopped tracking {s['name']}", verb="stopped")
-        for b, s in both:
+        for b, s in self.s_both:
+            parts, app_price = [], False
             if b["name"] != s["name"]:
-                self.add("recurring_charges", f"Renamed recurring charge {b['name']} → {s['name']}", verb="edited")
-            parts = []
+                parts.append(f"renamed to {s['name']}")
             if b["amount"] != s["amount"]:
-                parts.append(f"price {money(b['amount'])} → {money(s['amount'])}")
+                follows = [t for t in linked.get(s["id"], ()) if -t["amount"] == s["amount"]]
+                app_price = bool(follows) and not any(t["by_you"] for t in follows)
+                price = f"price {money(b['amount'])} → {money(s['amount'])}"
+                parts.append(f"{price} by the app, from its charge on {_day(follows[-1]['date'])}" if app_price else price)
             if b["cadence"] != s["cadence"]:
                 parts.append(f"charges {_EVERY.get(b['cadence'], b['cadence'])} → {_EVERY.get(s['cadence'], s['cadence'])}")
             if b["kind"] != s["kind"]:
@@ -644,29 +816,38 @@ class _Side:
             if b["ends_on"] != s["ends_on"]:
                 parts.append(f"ends {_long_day(s['ends_on'])}" if s["ends_on"] else "no end date")
             if b["category_id"] != s["category_id"]:
-                parts.append(f"category {self.category(b['category_id'])} → {self.category(s['category_id'])}")
+                parts.append(f"category {self.category(b['category_id'], self.start)} → {self.category(s['category_id'])}")
             if (b["note"] or "") != (s["note"] or ""):
                 parts.append(f"note {_quoted(s['note'])}" if s["note"] else "note removed")
             if b["status"] != s["status"]:
                 parts.append({"cancelled": "marked cancelled", "active": "marked active again",
                               "ignored": "isn't recurring"}.get(s["status"], s["status"]))
-            if parts:
-                self.add("recurring_charges", f"{s['name']}: {'; '.join(parts)}", verb="edited")
+            if parts == [f"renamed to {s['name']}"]:
+                self.add("recurring_charges", f"Renamed recurring charge {b['name']} → {s['name']}", verb="edited")
+            elif parts:
+                self.add("recurring_charges", f"{b['name']}: {'; '.join(parts)}", app=app_price and len(parts) == 1,
+                         verb="edited")
 
     # ── payees ──
 
     def _payees(self):
-        start, side = self.start, self.side
-        for (was, now), ids in sorted(self.payee_moves.items(), key=lambda kv: (self.payee(kv[0][0]).lower(), kv[0])):
-            if was not in side.payees:
-                self.add("payees", f"{self.payee(was)} merged into {self.payee(now)}", verb="merged")
+        start = self.start
+        gone = self.p_gone
+        moves = {}
+        for b, s in self.t_both:
+            was, now = b["payee_id"], s["payee_id"]
+            if was is not None and now is not None and (was != now or was in gone):
+                moves.setdefault((was, now), []).append(s["id"])
+        places = {}  # where each gone payee's transactions went
+        for was, now in moves:
+            places.setdefault(was, set()).add(now)
+        for (was, now), ids in sorted(moves.items(), key=lambda kv: (self.payee(kv[0][0], start).lower(), kv[0])):
+            if was in gone and len(places[was]) == 1:
+                self.add("payees", f"{self.payee(was, start)} merged into {self.payee(now)}", verb="merged")
             else:
-                self.add("payees", f"{_plural(len(ids), 'transaction')} moved from {self.payee(was)} to "
+                self.add("payees", f"{_plural(len(ids), 'transaction')} moved from {self.payee(was, start)} to "
                          f"{self.payee(now)}", verb="moved")
-        for pid, b in start.payees.items():
-            s = side.payees.get(pid)
-            if s is None:
-                continue
+        for b, s in self.p_both:
             if b["name"] != s["name"]:
                 self.add("payees", f"Renamed payee {b['name']} → {s['name']}", verb="renamed")
             if b["always_ask"] != s["always_ask"]:
