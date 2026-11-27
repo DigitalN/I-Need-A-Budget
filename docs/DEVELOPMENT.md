@@ -192,6 +192,62 @@ is up to date (1.0.0 and 1.0.1 also said that when the token couldn't see the re
   has the pre-upgrade copy.
 - [ ] CLAUDE.md and the README describe what's shipping (new features, decisions, gaps).
 
+## Release secrets
+
+Release runs (#190) sign both apps on GitHub ([ADR 0009](adr/0009-both-apps-are-built-and-signed-on-github.md))
+with secrets kept in a protected GitHub environment. `scripts/release-secrets.sh` sets them up.
+Only the maintainer runs it, in their own terminal. It never prints a secret, writes one into the
+repository or passes one on a command line, so Claude never sees one.
+
+| Name | What it is | Format |
+|---|---|---|
+| Environment `release` | Holds the secrets. A run reaches them only after the maintainer's Approve | Required reviewer DigitalN; self-reviews allowed, because Claude starts runs with the maintainer's own `gh` login; administrators can't bypass it; deploys from `main` only |
+| `RELEASE_KEY` | Our Ed25519 release key, which signs the Windows installer | The raw 32-byte private key (RFC 8032's seed), base64, one line of 44 characters |
+| `Application Files/release-key.pub` | Its public half. It's built into the app, and Windows copies check updates with it. Not secret, so it's in the repository | The raw 32-byte public key, base64, one line |
+| `MAC_CERTIFICATE` | The Apple Development identity (certificate and private key, team `XT4LT7MS6Y`) | Keychain Access's `.p12` export, base64, one line |
+| `MAC_CERTIFICATE_PASSWORD` | The `.p12`'s password | Made up by the script; it exists only on GitHub |
+
+The signature beside a Windows installer, `I-Need-A-Budget-<version>-Setup.exe.sig`, is Ed25519
+(RFC 8032, not pre-hashed) over the installer's exact bytes: the 64-byte signature in base64, one
+line. Python's `cryptography` takes the raw keys as they are (`Ed25519PrivateKey.from_private_bytes`,
+`Ed25519PublicKey.from_public_bytes`). OpenSSL 3 takes them as DER, with hex
+`302e020100300506032b657004220420` before the private key and `302a300506032b6570032100` before the
+public one. The release run makes its temporary keychain's password itself, so that isn't a secret.
+
+- `scripts/release-secrets.sh` (or `check`) shows what's set up and what's left. It shows no
+  secret, and GitHub never returns their values anyway.
+- `scripts/release-secrets.sh key`, on any computer: creates the environment (or fixes its
+  settings) and makes the release key with OpenSSL 3 (Git for Windows has it; on a Mac, `brew
+  install openssl@3`). The key is made in memory. It goes onto the clipboard, never shown, for the
+  password manager's item "I Need A Budget release key". The maintainer pastes the saved copy back
+  (hidden) to check it. Only then does the key go into `RELEASE_KEY` and its public half into the
+  repository, and Claude commits that. The private key never touches a file, so nothing can be
+  synced or left behind. The clipboard is cleared afterwards. Windows' clipboard history (Win+V) keeps its own
+  copy: the script says so when it's on.
+- `scripts/release-secrets.sh certificate`, on the Mac, with macOS's own tools: checks
+  that the keychain has a valid Apple Development certificate of team `XT4LT7MS6Y` and that it has
+  30 or more days left. Keychain Access then exports it as a `.p12` into a folder of its own,
+  outside iCloud, with a password the script makes up and puts on the clipboard. The script checks
+  the `.p12` (the same certificate, with its private key), puts it and its password into the
+  environment, then deletes it, and the folder too if you stop.
+- `scripts/release-secrets.sh selftest` checks the formats: RFC 8032's test vector, and a
+  throwaway key that signs a file, a changed file and another key refused. No GitHub, no
+  secrets.
+
+**Renewing the certificate** before it expires on 2027-10-05 (release runs refuse one with fewer
+than 30 days left). On the Mac: Xcode → Settings → Accounts → the Apple ID → Manage Certificates… →
+**+** → Apple Development. Then run `scripts/release-secrets.sh certificate`, which replaces both
+secrets. Installed Mac copies keep updating, because they check the team, not the certificate. An
+expired certificate left in the keychain is harmless.
+
+**The release key** is kept in the maintainer's password manager as well as on GitHub. If the
+environment loses it, `scripts/release-secrets.sh key` puts the password manager's copy back,
+checking it against `release-key.pub` first. If both copies were lost, Windows copies could never
+update again on their own. You'd delete `release-key.pub`, run `key` for a new key, commit the new
+public half and release, and every Windows copy would need that release installed by hand once.
+Never make a new key otherwise: every Windows copy refuses a release signed with a key it doesn't
+have. Mac copies aren't affected.
+
 ## How updates work
 
 `Application Files/updater.py`, ported from Pythonflow's, changed for a windowed app
