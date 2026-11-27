@@ -8,16 +8,21 @@ import importlib.util
 import os
 import shutil
 import sqlite3
+import sys
 from datetime import date, datetime
 from pathlib import Path
 
 import pytest
 
 import backups
+import computer
 from db import SCHEMA_VERSION, Database
 
 MAIN = Path(__file__).resolve().parents[2] / "Application Files" / "main.py"
 QUIT = datetime(2026, 11, 8, 14, 32, 5)
+PERMISSIONS = pytest.mark.skipif(sys.platform == "win32", reason="a folder's permissions don't stop access on Windows")
+MAC = pytest.mark.skipif(sys.platform != "darwin",
+                         reason="macOS asks the app's delegate; the Windows app adds its own ways (#187)")
 
 
 def open_db(folder):
@@ -321,6 +326,7 @@ def test_a_backup_that_fails_at_quit_doesnt_stop_the_rest(tmp_path, monkeypatch,
     assert wal.stat().st_size == 0                             # and the log is still folded in
 
 
+@PERMISSIONS
 def test_a_backups_folder_that_cant_be_read_makes_a_quit_back_up_in_the_data_folder(tmp_path):
     """Documents access refused after a backup was made there: none can be seen, so none holds
     the budget as it is. That's not an error, and not a reason to skip."""
@@ -544,6 +550,7 @@ def test_moving_to_another_disk_never_leaves_half_a_file_under_a_backups_name(tm
     assert all((new / n).read_bytes() == n.encode() for n in OLD)
 
 
+@PERMISSIONS
 def test_a_backups_folder_that_cant_be_written_falls_back_to_the_data_folder(tmp_path, caplog):
     """Documents access refused in System Settings: the backup still happens, in the old
     folder, and moves over at a launch once Documents can be written again."""
@@ -566,6 +573,7 @@ def test_a_backups_folder_that_cant_be_written_falls_back_to_the_data_folder(tmp
     assert not (tmp_path / "data" / "Backups").exists()
 
 
+@PERMISSIONS
 def test_the_first_launch_of_1_4_with_documents_refused_then_allowed(tmp_path, caplog):
     """Don't Allow: the copy before the upgrade and the launch backup wait in the data folder's
     Backups/ with 1.3.1's, one line in the log each. Allowed later: the next launch moves them all
@@ -615,7 +623,9 @@ def load_main(monkeypatch, home, data=None):
 
 def test_backups_go_to_documents(tmp_path, monkeypatch):
     main = load_main(monkeypatch, tmp_path / "home")
-    assert main.BACKUP_DIR == tmp_path / "home" / "Documents" / backups.FOLDER_NAME
+    assert main.BACKUP_DIR == computer.this().documents_dir() / backups.FOLDER_NAME  # the system's Documents
+    if sys.platform == "darwin":
+        assert main.BACKUP_DIR == tmp_path / "home" / "Documents" / backups.FOLDER_NAME
     assert not (tmp_path / "home").exists()  # working it out writes nothing
 
 
@@ -626,23 +636,33 @@ def test_with_inab_data_dir_backups_stay_inside_that_folder(tmp_path, monkeypatc
 
 
 class FakeUpdater:
-    def __init__(self, folder):
-        self.folder, self.installs = folder, []
+    kept = False  # an update a log-off kept, which passed its checks again at this launch
 
-    def install(self, relaunch_after=False):
+    def __init__(self, folder):
+        self.folder, self.installs, self.logging_out = folder, [], []
+
+    def take_kept(self):
+        return self.kept
+
+    def install(self, relaunch_after=False, logging_out=False):
         self.installs.append((relaunch_after, names(self.folder)))  # what was backed up by then
+        self.logging_out.append(logging_out)  # Windows installs nothing then: test_windows_update.py
         return True
 
 
-class FakeNSApp:
+class FakeComputer:
+    """This computer, as far as quitting goes: what's sent to the window's thread runs straight away."""
     terminated = False
 
-    def terminate_(self, sender):
+    def on_main_thread(self, fn, *args):
+        fn(*args)
+
+    def quit(self):
         self.terminated = True
 
 
-ROUTES = ["close button", "⌘Q", "Quit in the Dock", "Restart now", "quit to install an update",
-          "logging out or shutting down"]
+ROUTES = ["close button", pytest.param("⌘Q", marks=MAC), pytest.param("Quit in the Dock", marks=MAC), "Restart now",
+          "quit to install an update", pytest.param("logging out or shutting down", marks=MAC)]
 
 
 class AppleEvent:
@@ -657,9 +677,12 @@ class AppleEvent:
 
 def the_mac_asks_to_quit(monkeypatch, app, event):
     """What macOS does for ⌘Q, Quit in the Dock, logging out and shutting down: it asks the app's
-    delegate (main.py's applicationShouldTerminate_), with the Apple event the quit came with."""
-    AppKit = pytest.importorskip("AppKit")
-    cocoa = pytest.importorskip("webview.platforms.cocoa")
+    delegate (computer_mac's applicationShouldTerminate_, which asks main.py's _should_quit), with
+    the Apple event the quit came with."""
+    import AppKit
+    from webview.platforms import cocoa
+
+    from computer_mac import Mac
 
     class Events:
         @staticmethod
@@ -669,46 +692,43 @@ def the_mac_asks_to_quit(monkeypatch, app, event):
         def currentAppleEvent(self):
             return event
 
-    app._install_quit_handler()
+    Mac().when_asked_to_quit(app._should_quit)
     monkeypatch.setattr(AppKit, "NSAppleEventManager", Events)
     return cocoa.BrowserView.AppDelegate.alloc().init().applicationShouldTerminate_(None)
 
 
 def start_app(monkeypatch, tmp_path):
     """The app as main.py builds it, without its window: a budget in a throwaway folder."""
-    AppKit = pytest.importorskip("AppKit")
-    from PyObjCTools import AppHelper
-
     main = load_main(monkeypatch, tmp_path / "home", tmp_path / "data")
     app = main.BudgetApp.__new__(main.BudgetApp)
+    app._computer = FakeComputer()
     app._db = Database(main.DATA_DIR / "budget.db", backup_dir=main.BACKUP_DIR)
     app._updater = FakeUpdater(main.BACKUP_DIR)
     app._window, app._quitting, app._quit_asked = None, False, None
-    ns_app = FakeNSApp()
-    monkeypatch.setattr(AppKit, "NSApp", ns_app)
-    monkeypatch.setattr(AppHelper, "callAfter", lambda fn, *args: fn(*args))
-    return main, app, ns_app
+    return main, app, app._computer
 
 
-def quit_by(route, main, app, ns_app, monkeypatch):
-    import AppKit
-
+def quit_by(route, main, app, this_computer, monkeypatch):
     asked = []
     monkeypatch.setattr(app, "_ask_page_to_quit", lambda: asked.append(route) or False)  # a page that's there
     if route == "close button":
         assert app._on_closing() is False and asked  # the page saves what you were typing, then quits
         main.Api(app).quit()
-        assert ns_app.terminated
+        assert this_computer.terminated
     elif route in ("⌘Q", "Quit in the Dock"):  # the Dock's comes as an Apple event with no reason
+        import AppKit
+
         event = AppleEvent(None) if route == "Quit in the Dock" else None
         assert the_mac_asks_to_quit(monkeypatch, app, event) == AppKit.NSTerminateCancel
         assert asked and not app._updater.installs  # nothing until the page answers
         main.Api(app).quit()
-        assert ns_app.terminated
+        assert this_computer.terminated
     elif route == "Restart now":
         app._restart_into_update()
-        assert ns_app.terminated
+        assert this_computer.terminated
     elif route == "logging out or shutting down":  # straight away, without asking the page: the Mac is waiting
+        import AppKit
+
         assert the_mac_asks_to_quit(monkeypatch, app, AppleEvent("logging out")) == AppKit.NSTerminateNow
         assert not asked
     else:
@@ -716,8 +736,27 @@ def quit_by(route, main, app, ns_app, monkeypatch):
     app._before_quit()  # asked again while quitting: nothing more
 
 
+def test_an_update_kept_from_a_log_off_goes_in_before_the_window_opens(tmp_path, monkeypatch):
+    """As Restart now does it: a backup with the latest changes first, then the update, and the
+    app reopens once it's in (Windows: test_windows_update.py)."""
+    import types
+
+    main, app, this_computer = start_app(monkeypatch, tmp_path)
+    add_category(app._db, "Groceries")
+    app._app_path, app._updater.kept = None, True
+
+    def window(*args, **kwargs):
+        raise AssertionError("the window opened")
+
+    monkeypatch.setitem(sys.modules, "webview", types.SimpleNamespace(create_window=window))
+    app.run()
+    made = names(main.BACKUP_DIR)
+    assert len(made) == 1 and categories_in(main.BACKUP_DIR / made[0]) == ["Groceries"]
+    assert app._updater.installs == [(True, made)]
+
+
 def test_the_close_button_with_no_page_to_ask_quits_straight_away(tmp_path, monkeypatch):
-    main, app, ns_app = start_app(monkeypatch, tmp_path)
+    main, app, this_computer = start_app(monkeypatch, tmp_path)
     add_category(app._db, "Groceries")
     assert app._on_closing() is True  # the window closes, and the app quits
     made = names(main.BACKUP_DIR)
@@ -726,24 +765,25 @@ def test_the_close_button_with_no_page_to_ask_quits_straight_away(tmp_path, monk
 
 @pytest.mark.parametrize("route", ROUTES)
 def test_every_way_of_quitting_leaves_a_backup_with_the_latest_changes(route, tmp_path, monkeypatch):
-    main, app, ns_app = start_app(monkeypatch, tmp_path)
+    main, app, this_computer = start_app(monkeypatch, tmp_path)
     add_category(app._db, "Groceries")
-    quit_by(route, main, app, ns_app, monkeypatch)
+    quit_by(route, main, app, this_computer, monkeypatch)
 
     made = names(main.BACKUP_DIR)
     assert len(made) == 1 and categories_in(main.BACKUP_DIR / made[0]) == ["Groceries"]
     relaunch = route == "Restart now"
     assert app._updater.installs[0] == (relaunch, made)  # the update goes in after the backup
+    assert any(app._updater.logging_out) == (route == "logging out or shutting down")  # the updater is told
     assert not (tmp_path / "home").exists()  # nothing near the real Documents
 
 
 @pytest.mark.parametrize("route", ROUTES)
 def test_every_way_of_quitting_with_nothing_changed_makes_no_backup_and_the_update_still_goes_in(
         route, tmp_path, monkeypatch):
-    main, app, ns_app = start_app(monkeypatch, tmp_path)
+    main, app, this_computer = start_app(monkeypatch, tmp_path)
     add_category(app._db, "Groceries")
     earlier = backups.at_quit(app._db, QUIT)  # the last time the app quit
-    quit_by(route, main, app, ns_app, monkeypatch)
+    quit_by(route, main, app, this_computer, monkeypatch)
 
     assert names(main.BACKUP_DIR) == [earlier.name]
     relaunch = route == "Restart now"

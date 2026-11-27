@@ -44,8 +44,12 @@ that are local businesses, category names that reveal finances, and real amounts
 Application logs: `~/Library/Logs/I Need A Budget/app.log` (rotating, 3 × 1 MB). Page
 (JavaScript) errors are forwarded there too. When the user reports a bug, **read the log
 first**. The updater logs `Automatic updates off: <reason>`, `Up to date at`,
-`Downloading`, `ready to install`, `Installed …` or `Update check failed: …`. "Up to date"
-also when no release has been published yet: merging isn't releasing.
+`Downloading`, `ready to install`, `Installed …` or `Update check failed: …`. On Windows the
+app logs `Installing … after quitting`, and its installer, once the app has gone, `Installed …`
+or `Couldn't install …: its installer failed (exit code N)`; at a log-off `Not installing …
+while logging out`, and at the next launch `Installing …, kept from logging out, before the
+window opens`. "Up to date" also when no release has been published yet: merging isn't
+releasing.
 `Page connected` means the window loaded and reached Python. `The budget's currency is USD, from …`
 when a file first sets it (issue #76), `… not imported: This file is in USD; your budget is in CAD.` and
 `… skipped: it's in USD; your budget is in CAD` for what doesn't fit. `Backed up the budget to …`
@@ -65,9 +69,26 @@ real engine over localhost. Claude's shell can't screenshot the app's own window
 All in `Application Files/`:
 
 - `main.py`: launcher. Logging, single-instance lock, where backups go (`BACKUP_DIR`)
-  and every way of quitting (`_before_quit`: the backup, then a waiting update), the pywebview
-  window, the Downloads watcher thread, the updater, and `Api`, which exposes one method,
-  `call(name, args)`, to the page. `VERSION` here is the app's only version number.
+  and every way of quitting (`_before_quit`: the backup, then a waiting update; `_should_quit`
+  for the ways the system asks), the pywebview window, the Downloads watcher thread, the
+  updater, and `Api`, which exposes one method, `call(name, args)`, to the page. Whatever a Mac
+  and a Windows PC do differently it asks `THIS_COMPUTER` (computer.py). `VERSION` here is the
+  app's only version number.
+- `computer.py`: what a Mac and a Windows PC do differently, behind one interface (issue #182):
+  `computer.this()` picks `computer_mac.Mac` or `computer_windows.Windows`, the one place that
+  looks at `sys.platform`. Its methods: this computer's data, log, Documents and Downloads
+  folders (Windows asks for its Known Folders: a Documents OneDrive moved isn't `~/Documents`);
+  the one-copy lock and what a second launch does; the window's first size, remembered frame,
+  Dark mode and theme; `when_asked_to_quit(should_quit)` (⌘Q, the Dock, logging out), `quit`,
+  `bring_forward`, `on_main_thread`; opening a folder, file or web page; where the app is
+  installed, moving it there and relaunching; the update token's keeper, `curl`, `gh`, and the
+  update's steps (`why_updates_off`, `folder_for_update`, `take_update`: on a Mac the disk image
+  and codesign, `swap_in`). `computer_mac.py` is the only file using AppKit, Foundation, objc,
+  PyObjCTools, fcntl or the Mac's own tools; `computer_windows.py` the only one using Windows'
+  APIs. Both import anywhere (each system's modules are imported in its methods), so their pure
+  parts are tested on either. On Windows the window, quitting and opening things raise
+  NotImplementedError until the Windows app (#187).
+  `scripts/tests/test_computer.py` checks each keeps to its own file.
 - `service.py`: everything the page can ask for. `BudgetService.dispatch()` runs only
   methods marked `@exposed`; results are `{"ok": true, "result": …, "step": …}` (`step`, on a
   change or an undo: the undo step it made, so a toast's Undo reverses exactly its own; None
@@ -143,9 +164,18 @@ All in `Application Files/`:
   makes the changes and arranges the figures for the page. Working one of these figures
   out anywhere else (service.py, index.html) is a bug. `scripts/tests/test_figures.py` checks
   it on random databases.
-- `updater.py`, `launch.py`: updates from the repo's GitHub releases (anonymously, or
-  with a token if there is one); moving into Applications;
-  relaunching.
+- `updater.py`: updates from the repo's GitHub releases (anonymously, or with a token if
+  there is one): when to check, GitHub's answers, the token's shape, downloading. Checking,
+  swapping in and relaunching are the computer's (moving into Applications too:
+  `computer_mac.py`, which was `launch.py` until 1.5.0). `scripts/check-update.py` reads both
+  layouts from a tag.
+- `windows_update.py`: pure. Windows updates (issue #188, ADR 0009): the Ed25519 check of an
+  installer's `.sig` with our release key (`release-key.pub`, built in; tested against RFC 8032's
+  vectors), and the PowerShell helper that runs the installer once the app has quit and, for
+  Restart now, opens it again. `computer_windows.py` reads the installer's version and starts the
+  helper; nothing is installed while Windows logs off (`installs_after_quitting`): the checked download
+  waits in the data folder's `Update waiting`, and the next launch checks it again and installs it
+  before the window opens (`Updater.take_kept`).
 - `settings.py`: settings, validated on every load and save: this Mac's in `settings.json`
   (Appearance, Import from Downloads and its folder, updates, the Dashboard's months), and the
   budget's own, Overspending and Usual's months (`average_months`), in its `meta` (issue #153:
@@ -425,7 +455,8 @@ All in `Application Files/`:
   sets `connect-src 'none'`. A future Tangerine sync would be the second network access:
   it must be our own code (see Roadmap).
 - pywebview exposes every public attribute of `Api` to JavaScript; keep internals behind a
-  leading underscore. AppKit calls run on the main thread (`AppHelper.callAfter`).
+  leading underscore. The window's calls run on the main thread (`THIS_COMPUTER.on_main_thread`;
+  `AppHelper.callAfter` on a Mac).
 - Every user-facing change should be undoable: wrap it in `db.write("Short label")`.
   Background imports aren't undoable (they're removed from Accounts → Imported files).
 - **An import or a re-check that changes something clears ⌘Z** (issue #42): undoing an
@@ -536,8 +567,8 @@ late with only recent transactions counts as new (the accepted cost).
     warranty · License"; License opens a read-only copy of the app's `LICENSE.txt` in the
     default text app (TextEdit saving into the app itself would break its signature).
   The updater asks
-  GitHub anonymously, or with a token when there is one (saved in the Keychain from
-  Settings, or the GitHub CLI's login, `gh auth token`). Settings shows the token field
+  GitHub anonymously, or with a token when there is one (saved from Settings, in the Keychain
+  on a Mac, or the GitHub CLI's login, `gh auth token`). Settings shows the token field
   only when GitHub refused this copy (`needs_access`): it would if the repository went
   private again.
 - Ask once before anything on GitHub (pushing, opening a PR, publishing a release), then
@@ -687,7 +718,8 @@ Don't undo these without asking:
   it so typing replaces it, also the box Return or Tab moved you to; another click in a box
   you've clicked into places the cursor. It's done on mouse-down, before WebKit places
   the cursor: cancelling the mouse-up (1.0.7–1.2.2) missed a box you were already in, and
-  Chromium (the preview) hid it. Test clicks in WebKit, the app's engine. A box
+  Chromium (the preview) hid it. Test clicks in WebKit, the Mac app's engine, and in
+  Chromium, Windows' (WebView2). A box
   saves when you leave it (Return, Tab, a click elsewhere), never when a redraw replaces
   it mid-typing. Redrawing the Budget page keeps the scroll position and the box you're
   in (it used to jump to the top after every save: `scrollIntoView` on the month strip
@@ -892,6 +924,17 @@ Don't undo these without asking:
   don't add paragraphs of help text to forms.
 - **Test the interface with the mouse**, not only the keyboard, in the dev preview on a
   copy of the real data (see Testing). Several bugs only showed up when clicking.
+- **The page knows its system** (issue #185): `platform` in the app's info, "mac" or
+  "windows" (`computer.this().name`; the page's `onWindows()`; the preview's `--platform` pretends). Keys are named the way it
+  does: `undoKey()` (⌘Z / Ctrl+Z) and `returnKey()` (Return / Enter). On Windows nothing in the
+  page mentions the Mac, Finder, the Keychain or ⌘; "on this computer" on both (`test_page.py`
+  checks: a Mac word may only be the Mac's side of `onWindows() ? … : …`). Windows' fonts apply only on
+  Windows (`:root[data-platform="windows"]`), so the Mac's stay as they were. A one-key shortcut ignores a key pressed
+  with Ctrl, Alt or ⌘ (`withModifier`; AltGr types a character, so it's the key). On Windows the
+  browser's own keys (F5, Ctrl+R, Ctrl+P, Ctrl+F, zooming, Ctrl and the mouse wheel) never reach the
+  window (`keepBrowserKeysOut`), and scrollbars are thin. WebView2 tabs to buttons where WebKit
+  doesn't: a button beside amount boxes that only the mouse uses is `tabindex="-1"`, so Tab goes
+  from box to box.
 
 ## Working style
 
@@ -906,8 +949,8 @@ working tree has anything from `.git-denylist` or a card-number shape.
 
 GitHub runs the whole suite on macOS and Windows for every pull request into `main` or
 `claude/cross-platform` and every push to them (`.github/workflows/tests.yml`, issue #186):
-Python 3.13, the pinned packages, node for the page tests, no secrets. Windows' check doesn't
-fail the run until #182 has made the suite pass there (`experimental` in the workflow). GitHub's
+Python 3.13, the pinned packages, node for the page tests, no secrets. Both checks count: a
+failure on either system fails the run (since #182 made the suite pass on Windows). GitHub's
 machines have no `.git-denylist`: there the privacy checks look for card numbers, bank files and
 databases only. Making the checks required for merging into `main` is the maintainer's setting
 on GitHub: ask before changing it.
