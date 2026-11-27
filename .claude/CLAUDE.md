@@ -44,8 +44,12 @@ that are local businesses, category names that reveal finances, and real amounts
 Application logs: `~/Library/Logs/I Need A Budget/app.log` (rotating, 3 × 1 MB). Page
 (JavaScript) errors are forwarded there too. When the user reports a bug, **read the log
 first**. The updater logs `Automatic updates off: <reason>`, `Up to date at`,
-`Downloading`, `ready to install`, `Installed …` or `Update check failed: …`. "Up to date"
-also when no release has been published yet: merging isn't releasing.
+`Downloading`, `ready to install`, `Installed …` or `Update check failed: …`. On Windows the
+app logs `Installing … after quitting`, and its installer, once the app has gone, `Installed …`
+or `Couldn't install …: its installer failed (exit code N)`; at a log-off `Not installing …
+while logging out`, and at the next launch `Installing …, kept from logging out, before the
+window opens`. "Up to date" also when no release has been published yet: merging isn't
+releasing.
 `Page connected` means the window loaded and reached Python. `The budget's currency is USD, from …`
 when a file first sets it (issue #76), `… not imported: This file is in USD; your budget is in CAD.` and
 `… skipped: it's in USD; your budget is in CAD` for what doesn't fit. `Backed up the budget to …`
@@ -83,7 +87,7 @@ All in `Application Files/`:
   PyObjCTools, fcntl or the Mac's own tools; `computer_windows.py` the only one using Windows'
   APIs. Both import anywhere (each system's modules are imported in its methods), so their pure
   parts are tested on either. On Windows the window, quitting and opening things raise
-  NotImplementedError until the Windows app (#187), and updates until #188.
+  NotImplementedError until the Windows app (#187).
   `scripts/tests/test_computer.py` checks each keeps to its own file.
 - `service.py`: everything the page can ask for. `BudgetService.dispatch()` runs only
   methods marked `@exposed`; results are `{"ok": true, "result": …, "step": …}` (`step`, on a
@@ -183,6 +187,13 @@ All in `Application Files/`:
   swapping in and relaunching are the computer's (moving into Applications too:
   `computer_mac.py`, which was `launch.py` until 1.5.0). `scripts/check-update.py` reads both
   layouts from a tag.
+- `windows_update.py`: pure. Windows updates (issue #188, ADR 0009): the Ed25519 check of an
+  installer's `.sig` with our release key (`release-key.pub`, built in; tested against RFC 8032's
+  vectors), and the PowerShell helper that runs the installer once the app has quit and, for
+  Restart now, opens it again. `computer_windows.py` reads the installer's version and starts the
+  helper; nothing is installed while Windows logs off (`installs_after_quitting`): the checked download
+  waits in the data folder's `Update waiting`, and the next launch checks it again and installs it
+  before the window opens (`Updater.take_kept`).
 - `settings.py`: settings, validated on every load and save: this Mac's in `settings.json`
   (Appearance, Import from Downloads and its folder, updates, the Dashboard's months), and the
   budget's own, Overspending and Usual's months (`average_months`), in its `meta` (issue #153:
