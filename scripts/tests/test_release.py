@@ -86,7 +86,8 @@ def test_slices_are_read_from_thin_and_universal_files_both_ways_of_saying_the_v
 
 
 def test_an_app_whose_files_all_run_on_its_minimum_passes(tmp_path):
-    app = an_app(tmp_path, python=fat(thin(X86_64, (10, 13)), thin(ARM64, (11, 0))), old=thin(ARM64))
+    app = an_app(tmp_path, python=fat(thin(X86_64, (10, 13)), thin(ARM64, (11, 0))),
+                 old=thin(ARM64, (10, 15), old_style=True))
     assert check_mac_app.problems(app) == []
     assert "for arm64, x86_64: macOS 11.0 at the most" in check_mac_app.summary(app)
 
@@ -103,9 +104,24 @@ def test_a_library_missing_the_main_programs_processor_is_caught(tmp_path):
     assert "intel.so isn't built for arm64" in why
 
 
-def test_an_app_without_a_minimum_or_a_program_is_refused(tmp_path):
-    assert check_mac_app.problems(an_app(tmp_path / "a", minimum="")) == ["Info.plist has no LSMinimumSystemVersion."]
-    assert "isn't a Mac program" in check_mac_app.problems(an_app(tmp_path / "b", main=b"#!/bin/sh\n"))[0]
+def test_a_minimum_that_cant_be_read_doesnt_pass(tmp_path):
+    for folder, minimum in (("a", ""), ("b", "12.x"), ("c", "twelve")):
+        [why] = check_mac_app.problems(an_app(tmp_path / folder, minimum=minimum))
+        assert "isn't a macOS version" in why
+    [why] = check_mac_app.problems(an_app(tmp_path / "d", silent=thin(ARM64)))  # no LC_BUILD_VERSION
+    assert "silent.so (arm64) doesn't say which macOS it needs" in why
+    assert "isn't a Mac program" in check_mac_app.problems(an_app(tmp_path / "e", main=b"#!/bin/sh\n"))[0]
+
+
+def test_an_update_must_run_on_every_mac_the_previous_release_did(tmp_path):
+    both = fat(thin(X86_64, (11, 0)), thin(ARM64, (11, 0)))
+    arm_only, older_arm = an_app(tmp_path / "new"), an_app(tmp_path / "old")   # 1.4.3's is arm64 only
+    assert check_mac_app.problems(arm_only, previous=older_arm) == []
+    universal = an_app(tmp_path / "universal", main=both)
+    [why] = check_mac_app.problems(arm_only, previous=universal)
+    assert "runs on x86_64 Macs, and this one isn't built for them" in why
+    assert check_mac_app.problems(an_app(tmp_path / "new-universal", main=both, lib=both), previous=universal) == []
+    assert check_mac_app.main([str(arm_only), "--previous", str(universal)]) == 1
 
 
 # ── sign-windows.sh: the installer's signature ──
@@ -245,6 +261,161 @@ def test_the_release_is_the_files_beside_the_one_checked(tmp_path):
     assert check_update.picked(Old, answer, computer_mac.Mac) == (dmg.as_uri(), None)
 
 
+# ── publish-release.py: publishing, and finishing a publish that stopped half-way ──
+
+publish_release = script("publish-release")
+OURS, OTHER = "a" * 40, "b" * 40
+
+
+class FakeGitHub:
+    """The part of GitHub publish-release.py talks to through gh: releases (drafts too), tags,
+    which release is the latest, and each asset's digest."""
+
+    def __init__(self, previous="v1.4.3"):
+        self.releases, self.tags, self.calls = [], {}, []
+        self.lag = 0              # how many reads of the latest release still see the old one
+        self.digests = True       # whether GitHub says what each asset holds
+        self.fail = set()         # gh commands that fail ("upload", "draft-previous")
+        if previous:
+            self.add(previous, OTHER, {"I-Need-A-Budget-1.4.3.dmg": "sha256:old"})
+            self.latest_tag = previous
+        else:
+            self.latest_tag = None
+
+    def add(self, tag, commit, assets, draft=False):
+        self.tags[tag] = commit
+        self.releases.append({"tag_name": tag, "draft": draft, "assets": [
+            {"name": name, "digest": digest} for name, digest in assets.items()]})
+        return self.releases[-1]
+
+    def find(self, tag):
+        return next((r for r in self.releases if r["tag_name"] == tag), None)
+
+    def files(self, args):
+        values = {args[i + 1] for i, a in enumerate(args[:-1]) if a.startswith("--")}  # --notes-file's file
+        paths = [Path(a) for a in args if not a.startswith("--") and a not in values and Path(a).is_file()]
+        return {p.name: ("sha256:" + __import__("hashlib").sha256(p.read_bytes()).hexdigest()
+                         if self.digests else None) for p in paths}
+
+    def __call__(self, *args):
+        self.calls.append(args)
+        if args[0] == "api":
+            path = args[1].split("/", 3)[3]
+            if path == "releases/latest":
+                release = self.find(self.latest_tag) if self.latest_tag else None
+                if self.lag:
+                    self.lag -= 1
+                    release = self.find("v1.4.3")
+                return (0, json_of(release), "") if release else (1, "", "gh: Not Found (HTTP 404)")
+            if path.startswith("releases?"):
+                return 0, json_of(self.releases), ""
+            if path.startswith("git/ref/tags/"):
+                tag = path.rsplit("/", 1)[1]
+                if tag in self.tags:
+                    return 0, json_of({"object": {"type": "commit", "sha": self.tags[tag]}}), ""
+                return 1, "", "gh: Not Found (HTTP 404)"
+        if args[:2] == ("release", "create"):
+            tag, commit = args[2], args[args.index("--target") + 1]
+            self.add(tag, commit, self.files(args))
+            self.latest_tag = tag
+            return 0, "", ""
+        if args[:2] == ("release", "upload"):
+            if "upload" in self.fail:
+                return 1, "", "upload failed"
+            release = self.find(args[2])
+            release["assets"] = [{"name": n, "digest": d} for n, d in self.files(args).items()]
+            return 0, "", ""
+        if args[:2] == ("release", "edit"):
+            release = self.find(args[2])
+            if "--draft=true" in args:
+                if args[2] == "v1.4.3" and "draft-previous" in self.fail:
+                    return 1, "", "HTTP 502"
+                release["draft"] = True
+                if self.latest_tag == args[2]:
+                    self.latest_tag = None
+            else:
+                release["draft"] = False
+                self.latest_tag = args[2]
+            return 0, "", ""
+        raise AssertionError(f"gh {args} isn't something publish-release.py should ask")
+
+
+def json_of(value):
+    import json
+    return json.dumps(value)
+
+
+@pytest.fixture
+def github(monkeypatch, tmp_path):
+    fake = FakeGitHub()
+    monkeypatch.setattr(publish_release, "gh", fake)
+    monkeypatch.setattr(publish_release, "sleep", lambda seconds: None)
+    folder = tmp_path / "release"
+    folder.mkdir()
+    for name in ("I-Need-A-Budget-1.5.0.dmg", "I-Need-A-Budget-1.5.0-Setup.exe", "I-Need-A-Budget-1.5.0-Setup.exe.sig"):
+        (folder / name).write_bytes(f"made-up {name}".encode())
+    notes = tmp_path / "notes.md"
+    notes.write_text("Made-up notes.\n")
+    fake.publish = lambda: publish_release.main(
+        ["--version", "1.5.0", "--previous", "v1.4.3", "--commit", OURS, "--notes", str(notes), str(folder)])
+    fake.folder = folder
+    return fake
+
+
+def published(github):
+    release = github.find("v1.5.0")
+    return (release is not None and not release["draft"] and github.latest_tag == "v1.5.0"
+            and github.tags["v1.5.0"] == OURS and len(release["assets"]) == 3)
+
+
+def test_a_release_is_published_checked_and_the_previous_one_drafted(github):
+    assert github.publish() == 0
+    assert published(github) and github.find("v1.4.3")["draft"]
+
+
+def test_github_lagging_behind_is_waited_for(github):
+    github.lag = 2
+    assert github.publish() == 0 and published(github)
+
+
+def test_a_release_github_shows_without_digests_goes_back_to_a_draft(github, capsys):
+    github.digests = False
+    assert github.publish() == 1
+    assert github.find("v1.5.0")["draft"] and not github.find("v1.4.3")["draft"]  # installed copies keep 1.4.3
+    assert "no digest" in capsys.readouterr().out
+
+
+def test_a_rerun_finishes_a_draft_an_earlier_try_left_half_uploaded(github):
+    github.add("v1.5.0", OURS, {"I-Need-A-Budget-1.5.0.dmg": "sha256:partial"}, draft=True)
+    assert github.publish() == 0
+    assert published(github) and github.find("v1.4.3")["draft"]
+    assert not any(call[:2] == ("release", "create") for call in github.calls)
+
+
+def test_a_rerun_after_the_previous_one_wasnt_drafted_only_drafts_it(github):
+    github.fail = {"draft-previous"}
+    assert github.publish() == 1 and published(github) and not github.find("v1.4.3")["draft"]
+    github.fail = set()
+    assert github.publish() == 0 and github.find("v1.4.3")["draft"]
+    assert sum(call[:2] == ("release", "create") for call in github.calls) == 1
+
+
+def test_a_tag_at_another_commit_or_a_moved_latest_release_stops_it_before_anything(github, capsys):
+    github.tags["v1.5.0"] = OTHER
+    assert github.publish() == 1 and "already a tag v1.5.0" in capsys.readouterr().out
+    del github.tags["v1.5.0"]
+    github.add("v1.4.4", OTHER, {"x.dmg": "sha256:x"})
+    github.latest_tag = "v1.4.4"
+    assert github.publish() == 1 and "latest release changed" in capsys.readouterr().out
+    assert github.find("v1.5.0") is None
+
+
+def test_a_published_release_with_other_files_is_left_alone(github, capsys):
+    github.add("v1.5.0", OURS, {"I-Need-A-Budget-1.5.0.dmg": "sha256:someone-elses"})
+    assert github.publish() == 1 and "published already, with other files" in capsys.readouterr().out
+    assert not any(call[:2] in (("release", "edit"), ("release", "upload")) for call in github.calls)
+
+
 # ── the workflow: the secrets stay in one job, and nothing reaches the log ──
 
 def jobs(text):
@@ -303,9 +474,12 @@ def test_secrets_are_only_given_to_the_steps_that_sign():
                     "MAC_CERTIFICATE_PASSWORD: ${{ secrets.MAC_CERTIFICATE_PASSWORD }}",
                     "RELEASE_KEY: ${{ secrets.RELEASE_KEY }}"]
     assert all(line.split("${{", 1)[0].strip().endswith(":") for line in uses)  # env values, never in a run script
-    sign = "\n".join(jobs(text)["sign"])
+    sign, dry = "\n".join(jobs(text)["sign"]), "\n".join(jobs(text)["sign-dry"])
     assert all(use in sign for use in uses)
-    assert "Delete the keychain and the key\n        if: always()" in sign
+    assert "secrets" not in dry and "environment" not in dry  # not even through an anchor
+    # each clean-up a step of its own, so one failing can't skip the other, in both jobs
+    for name, alias in (("Delete the keychain", "*sign-clean-keychain"), ("Delete the key", "*sign-clean-key")):
+        assert f"name: {name}\n        if: always()" in sign and f"- {alias}" in dry
 
 
 def test_nothing_echoes_commands_or_puts_notes_into_a_script():
@@ -313,8 +487,11 @@ def test_nothing_echoes_commands_or_puts_notes_into_a_script():
         text = path.read_text(encoding="utf-8")
         assert not re.search(r"set -[a-wyz]*x|set -o xtrace|bash -x", text), f"{path.name} echoes its commands"
     text = WORKFLOW.read_text(encoding="utf-8")
+    # The notes are read from the run's event file: in a step's env the log would print them, and
+    # in a script as ${{ }} they'd be run as code.
     notes = [line.strip() for line in text.splitlines() if "inputs.notes" in line]
-    assert notes and all(line == "NOTES: ${{ inputs.notes }}" for line in notes)  # env only: never run as code
+    assert notes == ['jq -r \'.inputs.notes // ""\' "$GITHUB_EVENT_PATH" > "$notes"'] * 2
+    assert "${{ inputs.notes" not in text
 
 
 def test_a_release_from_github_checks_its_notes_for_private_details_without_logging_them():

@@ -153,14 +153,17 @@ Go through all of it for every release. Installed copies update themselves from 
 release, so a mistake reaches every copy. Merging a pull request doesn't release anything.
 
 **Who does what.** The maintainer only merges PRs (`VERSION` already says the next release's
-version) and approves the release run. Claude starts the run, from the Mac or the PC, only when
-the maintainer says it's ready (one release for everything merged since the last). GitHub's
+version) and approves the release run. Claude starts the run only when the maintainer says it's
+ready (one release for everything merged since the last), from a computer that has the
+maintainer's `.git-denylist` (the Mac: the PC has none), because only there can the notes be
+checked for private words before they go to GitHub. GitHub's
 machines build, sign, check and publish both apps (`.github/workflows/release.yml`,
 [ADR 0009](adr/0009-both-apps-are-built-and-signed-on-github.md)); nobody builds a release on
 their own computer.
 
 **What the run does**, stopping at the first problem. Publish needs every job before it to have
-passed, on both systems, so a failure anywhere publishes nothing.
+passed, on both systems, so a failure in any of them publishes nothing. Only Publish itself can
+stop half-way (*If publishing stops half-way*).
 
 1. **What's going out** (Ubuntu): started on `main`; `VERSION` newer than the latest release (the
    one installed copies see); no tag `v<version>` yet; the notes without card numbers.
@@ -179,29 +182,44 @@ passed, on both systems, so a failure anywhere publishes nothing.
      `XT4LT7MS6Y`, Apple's chain); the certificate must have 30 or more days left.
    - `scripts/sign-windows.sh`: the installer signed with `RELEASE_KEY`, once its public half is
      known to be `release-key.pub`; the `.sig` then passes the app's own check.
-   - The keychain and the key are deleted before the job ends (an `always()` step too). The log
+   - The keychain and the key are deleted before the job ends (two `always()` steps too). The log
      shows the certificate's team, fingerprint and end date, never its owner's name.
+   - The tests and builds must pass within 7 days of the Approve being asked for: the builds wait
+     for Sign that long (otherwise start again).
 4. **The disk image** (macOS), made without Finder (`scripts/make-dmg.py`, with dmgbuild): the
    app and Applications with the arrow, on the background, with the app's icon as the disk's, in
    the window 1.4.3 had. `hdiutil verify`, then `make-dmg.py --check` reads it back: the window,
    what's in it, the app's version and its signature.
-5. **Updates.** The previous release is installed on GitHub's Mac, and `scripts/check-update.py`
+5. **Updates.** The previous release is installed on GitHub's Mac. The new app must be built for
+   every processor its app is (`check-mac-app.py --previous`: an Intel Mac must never get an app it
+   can't start; 1.4.3's is arm64 only, and so are GitHub's builds). Then `scripts/check-update.py`
    runs that version's own updater, from its tag, on the new disk image, as if it had just
    downloaded it: it must pick it out of the release's three files and accept it. On Windows the
    same, once a release has a Windows installer to install first (1.5.0 is the first). And the
    new installer is installed quietly, as a person would: that copy must have the release key
    and be able to update itself.
-6. **Publish** (Ubuntu): `v<version>`, from the exact commit the run built, with the `.dmg`, the
-   `Setup.exe` and its `.sig`. Then the API installed copies read must show that tag, at that
-   commit, with exactly those three files, byte for byte (if not, the release goes back to a
-   draft and the run fails), and the previous release becomes a draft.
+6. **Publish** (Ubuntu, `scripts/publish-release.py`): `v<version>`, from the exact commit the run
+   built, with the `.dmg`, the `Setup.exe` and its `.sig`. Then the API installed copies read must
+   show that tag, at that commit, with exactly those three files, byte for byte (each asset's
+   digest; it asks a few times, as GitHub can lag just after). If it never does, the release goes
+   back to a draft and the run fails. Then the previous release becomes a draft.
 
 **A dry run** does all of it but publish. Started on `main` (`-f dry_run=true`) it signs with the
-real secrets, after the Approve, which proves them without releasing; anywhere else it signs with
-throwaway identities made in the run (a self-signed certificate standing in for the team, a
-throwaway key for the release key) and never reaches the `release` environment. A dry run whose
-`VERSION` isn't newer than the latest release builds as the next version, so the update checks
-have something newer to check. Its files are in the run's Summary for 7 days.
+real secrets, after the Approve, which proves them without releasing, and like a release it needs
+a `VERSION` newer than the latest release. Anywhere else it signs with throwaway identities made in
+the run, through the same scripts and the same steps as the real ones, and never reaches the
+`release` environment. Only these differ: nobody trusts the self-signed certificate, so it isn't a
+"valid" identity; its own team (`DRYRUN0000`) and fingerprint stand in for Apple's chain and
+`XT4LT7MS6Y`; and a throwaway key's public half stands in for `release-key.pub`. Such a dry run
+whose `VERSION` isn't newer than the latest release builds as the next version (1.4.4 for 1.4.3),
+so the update checks have something newer to check. A dry run's files are in the run's Summary for
+7 days.
+
+**Before the first real release**, once `VERSION` is raised in `main`, Claude runs
+`gh workflow run release.yml --ref main -f dry_run=true` and the maintainer approves it. Throwaway
+identities can't prove what only the real secrets go through: the certificate's chain to Apple
+(the intermediate on GitHub's Mac), the real certificate's subject as macOS's LibreSSL prints it,
+its validity in the keychain, and `RELEASE_KEY` matching `release-key.pub`.
 
 `gh workflow run` only works for a workflow that's on `main`, so until 1.5.0 is merged the dry
 runs come from pull requests and pushes (*Checks on GitHub*).
@@ -225,10 +243,13 @@ runs come from pull requests and pushes (*Checks on GitHub*).
   scratchpad), not as a file in it, and check them on the computer you start from, before they
   reach GitHub (a run's inputs are public):
   ```bash
-  python3 scripts/hooks/privacy_check.py --what "In the release notes" NOTES.md
+  python3 scripts/hooks/privacy_check.py --need-denylist --what "In the release notes" NOTES.md
   ```
-  It checks `.git-denylist` where there is one (the Mac). GitHub's machines have none: the run
-  checks the notes again there, for card numbers only.
+  A release needs `.git-denylist` on the computer it's started from: without one (the PC, today)
+  this says the private words can't be checked there and fails, so start the release from the
+  Mac. Never add a denylist to the repository. GitHub's machines have none either: the run checks
+  the notes again there, for card numbers only, and reads them from its event, so they never show
+  in its log.
 
 ### Start it
 
@@ -242,8 +263,34 @@ stops at Sign until the maintainer approves it: tell them it's waiting. To try i
 `gh workflow run release.yml --ref main -f dry_run=true`. A run waiting for the Approve can be
 cancelled (`gh run cancel <id>`), and nothing is published.
 
-If a job fails, nothing was published: fix it in a pull request, merge it, and start again.
-If GitHub took the release but showed it wrong, Publish says so and makes it a draft again.
+If a job before Publish fails, nothing was published: fix it in a pull request, merge it, and
+start again.
+
+### If publishing stops half-way
+
+Publish says what it did and what's left. Re-run just that job, which keeps the run's checked files
+for 7 days and needs no second Approve:
+
+```bash
+gh run rerun <run id> --repo DigitalN/I-Need-A-Budget --failed
+```
+
+`publish-release.py` picks up from what it finds: a draft `v<version>` an earlier try left at the
+run's commit is given the run's files and published, a release it already published is checked
+again, and the previous release is made a draft. It never makes a second release. It stops, changing
+nothing, if `v<version>` is a tag at another commit, or a published release with other files. To
+do it by hand instead:
+
+- `v<version>` is out and the previous release isn't a draft yet:
+  `gh release edit v<previous> --repo DigitalN/I-Need-A-Budget --draft=true`.
+- `v<version>` is a draft (GitHub never showed it right, or the run stopped while uploading), and
+  you'd rather start again: `gh release delete v<version> --repo DigitalN/I-Need-A-Budget --cleanup-tag --yes`,
+  then start a new run. Installed copies see only published releases, so they're still on the
+  previous one.
+- A tag `v<version>` left over with no release: `gh api -X DELETE repos/DigitalN/I-Need-A-Budget/git/refs/tags/v<version>`.
+
+A new run after `v<version>` went out stops at once (`VERSION` isn't newer than the latest
+release): only the previous release's draft can be left to do, by hand as above.
 
 ### After publishing
 

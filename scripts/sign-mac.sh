@@ -7,11 +7,14 @@
 #
 #   MAC_CERTIFICATE=… MAC_CERTIFICATE_PASSWORD=… scripts/sign-mac.sh APP    the release's certificate
 #   scripts/sign-mac.sh --throwaway FOLDER APP     a dry run's: a certificate made here and forgotten, whose
-#                                                  SHA-1 goes in FOLDER/test-identity (it has no team)
+#                                                  SHA-1 goes in FOLDER/test-identity
 #   scripts/sign-mac.sh --clean                    deletes the temporary keychain (the run's always() step)
 #
-# The .p12 goes into a temporary keychain with a password made up here (not a secret), then is
-# deleted; the keychain is deleted on the way out. Nothing is printed that names the certificate's
+# A throwaway .p12 goes the same way as the real one, from base64 in MAC_CERTIFICATE on: only who trusts
+# it differs (no one: find-identity never calls it valid), its team (DRYRUN0000), and the requirement
+# it's checked with (its own fingerprint, for Apple's chain and the team). The .p12 goes into a
+# temporary keychain with a password made up here (not a secret), then is deleted; the keychain is
+# deleted as soon as the app is signed, and again on the way out if anything stopped it. Nothing is printed that names the certificate's
 # owner: only its team, its fingerprint and when it expires. Signs as scripts/build.sh does
 # (codesign --force --deep), so installed copies see what they always have.
 
@@ -19,6 +22,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 TEAM="XT4LT7MS6Y"
+TEAM_WANTED="$TEAM"   # the certificate's: a throwaway one's own stands in
 BUNDLE_ID="com.digitaln.ineedabudget"
 DAYS_LEFT=30
 PYTHON="${PYTHON:-python3}"
@@ -46,7 +50,6 @@ clean
 trap clean EXIT
 (umask 077 && mkdir -p "$WORK")
 P12="$WORK/identity.p12"
-P12_PASSWORD=""
 
 if [[ -n "$THROWAWAY" ]]; then
     echo "Signing with a throwaway identity (a dry run): installed copies wouldn't take this app." >&2
@@ -57,8 +60,11 @@ distinguished_name = subject
 prompt = no
 x509_extensions = signing
 [subject]
+UID = DRYRUN0000
 CN = I Need A Budget dry run (throwaway)
 OU = DRYRUN0000
+O = I Need A Budget dry run
+C = CA
 [signing]
 basicConstraints = critical, CA:false
 keyUsage = critical, digitalSignature
@@ -66,26 +72,27 @@ extendedKeyUsage = critical, codeSigning
 CNF
     /usr/bin/openssl req -x509 -newkey rsa:2048 -nodes -days 90 -config "$WORK/openssl.cnf" \
         -keyout "$WORK/key.pem" -out "$WORK/certificate.pem" 2>/dev/null || fail "Couldn't make the throwaway certificate."
-    P12_PASSWORD=$(/usr/bin/openssl rand -hex 16)
+    MAC_CERTIFICATE_PASSWORD=$(/usr/bin/openssl rand -hex 16)
     /usr/bin/openssl pkcs12 -export -inkey "$WORK/key.pem" -in "$WORK/certificate.pem" -out "$P12" \
-        -passout "pass:$P12_PASSWORD" || fail "Couldn't make the throwaway .p12."
-    rm -f "$WORK/key.pem"
-else
-    [[ -n "${MAC_CERTIFICATE:-}" ]] || fail "MAC_CERTIFICATE isn't set: it's in the release environment (scripts/release-secrets.sh certificate)."
-    [[ -n "${MAC_CERTIFICATE_PASSWORD:-}" ]] || fail "MAC_CERTIFICATE_PASSWORD isn't set (scripts/release-secrets.sh certificate)."
-    printf '%s' "$MAC_CERTIFICATE" | base64 --decode > "$P12" 2>/dev/null || fail "MAC_CERTIFICATE isn't base64."
-    P12_PASSWORD="$MAC_CERTIFICATE_PASSWORD"
+        -passout "pass:$MAC_CERTIFICATE_PASSWORD" || fail "Couldn't make the throwaway .p12."
+    MAC_CERTIFICATE=$(base64 < "$P12" | tr -d '\n')  # one line, as release-secrets.sh stores the real one
+    rm -f "$WORK/key.pem" "$WORK/certificate.pem" "$P12"
+    TEAM_WANTED="DRYRUN0000"
 fi
+
+# From here the same for both.
+[[ -n "${MAC_CERTIFICATE:-}" ]] || fail "MAC_CERTIFICATE isn't set: it's in the release environment (scripts/release-secrets.sh certificate)."
+[[ -n "${MAC_CERTIFICATE_PASSWORD:-}" ]] || fail "MAC_CERTIFICATE_PASSWORD isn't set (scripts/release-secrets.sh certificate)."
+printf '%s' "$MAC_CERTIFICATE" | base64 --decode > "$P12" 2>/dev/null || fail "MAC_CERTIFICATE isn't base64."
 
 KEYCHAIN_PASSWORD=$(/usr/bin/openssl rand -hex 24)  # this keychain's own, made up here: not a secret
 security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
 security set-keychain-settings -lut 3600 "$KEYCHAIN"
 security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
 # -x: the private key can't be exported from the keychain; -T: only codesign may use it.
-security import "$P12" -k "$KEYCHAIN" -f pkcs12 -P "$P12_PASSWORD" -x -T /usr/bin/codesign >/dev/null 2>&1 ||
+security import "$P12" -k "$KEYCHAIN" -f pkcs12 -P "$MAC_CERTIFICATE_PASSWORD" -x -T /usr/bin/codesign >/dev/null 2>&1 ||
     fail "The keychain wouldn't take the certificate: is MAC_CERTIFICATE_PASSWORD the .p12's password?"
 rm -f "$P12"
-P12_PASSWORD=""
 security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null 2>&1
 security list-keychains -d user > "$SEARCH_LIST"
 # shellcheck disable=SC2046
@@ -106,10 +113,9 @@ IDENTITY="$IDENTITIES"
 CERTIFICATE=$(security find-certificate -a -Z -p "$KEYCHAIN" |
     awk -v want="$IDENTITY" '/^SHA-1 hash:/ {hash=$3} /BEGIN CERT/ {if (hash == want) keep=1} keep {print} /END CERT/ {if (keep) exit}')
 [[ -n "$CERTIFICATE" ]] || fail "Couldn't read the certificate back from the keychain."
-if [[ -z "$THROWAWAY" ]]; then
-    /usr/bin/openssl x509 -noout -subject <<< "$CERTIFICATE" | grep -Eq "OU *= *$TEAM(/|,|$)" ||
-        fail "The certificate isn't team $TEAM's: installed copies refuse updates from any other team."
-fi
+# LibreSSL writes "subject= /UID=…/CN=…/OU=XT4LT7MS6Y/O=…/C=…", OpenSSL 3 "subject=UID=…, OU=XT4LT7MS6Y, …".
+/usr/bin/openssl x509 -noout -subject <<< "$CERTIFICATE" | grep -Eq "(^subject=|/|, ) *OU *= *$TEAM_WANTED(/|,|$)" ||
+    fail "The certificate isn't team $TEAM_WANTED's: installed copies refuse updates from any other team."
 EXPIRES=$(/usr/bin/openssl x509 -noout -enddate <<< "$CERTIFICATE" | sed 's/^notAfter=//')
 /usr/bin/openssl x509 -noout -checkend $((DAYS_LEFT * 86400)) <<< "$CERTIFICATE" >/dev/null ||
     fail "The certificate expires within $DAYS_LEFT days ($EXPIRES): renew it (docs/DEVELOPMENT.md → Release secrets)."
@@ -144,5 +150,5 @@ if [[ -z "$THROWAWAY" ]]; then
     [[ "$SIGNED_TEAM" == "$TEAM" ]] || fail "codesign says the app's team is ${SIGNED_TEAM:-none}, not $TEAM."
     echo "Signed by team $TEAM: it passes the check installed copies make." >&2
 else
-    echo "Signed with the throwaway identity: it passes the check installed copies make, with that identity standing in for team $TEAM." >&2
+    echo "Signed with the throwaway identity (team $TEAM_WANTED): it passes the check installed copies make, with that identity standing in for Apple's chain and team $TEAM." >&2
 fi

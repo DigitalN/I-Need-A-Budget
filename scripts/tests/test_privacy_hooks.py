@@ -117,6 +117,22 @@ def test_the_release_notes_are_checked_with_the_same_rules(repo):
     assert "privacy_check.py" in (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
 
 
+def test_release_notes_checked_where_there_is_no_denylist_say_so_and_fail(repo):
+    """The PC (and GitHub's machines) have no .git-denylist: --need-denylist, which the release
+    checklist uses before notes go to GitHub, fails there rather than pass unchecked notes."""
+    notes = repo.path.parent / f"{repo.path.name}-notes.md"
+    notes.write_text("Fixes the way amounts are read.\n")
+    nowhere = str(repo.path.parent / "no-such-denylist")
+    plain = [sys.executable, str(HOOKS / "privacy_check.py"), "--denylist", nowhere, str(notes)]
+    assert subprocess.run(plain, capture_output=True, text=True).returncode == 0  # as the hooks have it
+    needed = subprocess.run([*plain[:2], "--need-denylist", *plain[2:]], capture_output=True, text=True)
+    assert needed.returncode == 1 and "can't be checked on this computer" in needed.stderr
+    found = [*plain[:2], "--need-denylist", "--denylist", str(repo / ".git-denylist"), str(notes)]
+    assert subprocess.run(found, capture_output=True, text=True).returncode == 0
+    guide = (ROOT / "docs" / "DEVELOPMENT.md").read_text(encoding="utf-8")
+    assert 'privacy_check.py --need-denylist --what "In the release notes" NOTES.md' in guide
+
+
 def test_luhn_and_the_shapes_it_looks_at():
     number = card_number("2468")
     assert privacy_check.card_numbers(f"a {number} b") == [number]

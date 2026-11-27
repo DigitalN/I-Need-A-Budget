@@ -147,15 +147,16 @@ jobs:
 
       # The same checks as a commit's (scripts/hooks/privacy_check.py). GitHub's machines have no
       # .git-denylist, so the private words were checked on the computer the run was started from.
+      # The notes are read from the run's event, never put in a step's env: the log prints that.
       - name: The release notes have nothing private in them
         env:
-          NOTES: ${{ inputs.notes }}
           PUBLISH: ${{ steps.what.outputs.publish }}
         run: |
           set -euo pipefail
           notes="$RUNNER_TEMP/notes.md"
-          if [[ -n "$NOTES" ]]; then
-            printf '%s\n' "$NOTES" > "$notes"
+          jq -r '.inputs.notes // ""' "$GITHUB_EVENT_PATH" > "$notes"
+          if [[ -n "$(tr -d '[:space:]' < "$notes")" ]]; then
+            :
           elif [[ "$PUBLISH" == true ]]; then
             echo "::error::A release needs its notes: gh workflow run release.yml --ref main -F notes=@NOTES.md"; exit 1
           else
@@ -259,7 +260,7 @@ jobs:
         with:
           name: mac-app
           path: ${{ runner.temp }}/out/mac-app.zip
-          retention-days: 1
+          retention-days: 7  # the Sign job may wait days for the Approve
           if-no-files-found: error
 
   build-windows:
@@ -305,13 +306,14 @@ jobs:
         with:
           name: windows-installer
           path: ${{ runner.temp }}/out/I-Need-A-Budget-${{ needs.check.outputs.version }}-Setup.exe
-          retention-days: 1
+          retention-days: 7  # the Sign job may wait days for the Approve
           if-no-files-found: error
 
   # The only job that can reach the release secrets: it runs only for a run started on main, after the
   # maintainer's Approve, and only once the tests and both builds have passed. It runs nothing but the
   # repository's own scripts, Apple's tools and OpenSSL (no package from PyPI), and deletes the keychain
-  # and the key before it ends. sign-dry has the same steps, with throwaway identities and no environment.
+  # and the key before it ends. sign-dry shares its other steps (YAML anchors) and signs with throwaway
+  # identities through the same scripts; it has no environment, and no step of it names a secret.
   sign:
     name: Sign (release secrets)
     needs: [check, tests, build-mac, build-windows]
@@ -320,69 +322,59 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 20
     env:
-      SIGN_WITH: release-secrets
       VERSION: ${{ needs.check.outputs.version }}
-    steps: &sign-steps
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5.1.0
+    steps:
+      - &sign-checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5.1.0
         with:
           persist-credentials: false
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6.3.0
+      - &sign-python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6.3.0
         with:
           python-version: "3.13"  # for windows_update.py's check, which needs nothing but the standard library
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+      - &sign-get-app
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
           name: mac-app
           path: ${{ runner.temp }}/in
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+      - &sign-get-installer
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
           name: windows-installer
           path: ${{ runner.temp }}/in
-      - name: Unpack the app
+      - &sign-unpack
+        name: Unpack the app
         run: ditto -x -k "$RUNNER_TEMP/in/mac-app.zip" "$RUNNER_TEMP/app"
       - name: Sign the Mac app
         env:
           MAC_CERTIFICATE: ${{ secrets.MAC_CERTIFICATE }}
           MAC_CERTIFICATE_PASSWORD: ${{ secrets.MAC_CERTIFICATE_PASSWORD }}
-        run: |
-          if [[ "$SIGN_WITH" == release-secrets ]]; then
-            scripts/sign-mac.sh "$RUNNER_TEMP/app/I Need A Budget.app"
-          else
-            scripts/sign-mac.sh --throwaway "$RUNNER_TEMP/identities" "$RUNNER_TEMP/app/I Need A Budget.app"
-          fi
+        run: scripts/sign-mac.sh "$RUNNER_TEMP/app/I Need A Budget.app"
       - name: Sign the Windows installer
         env:
           RELEASE_KEY: ${{ secrets.RELEASE_KEY }}
-        run: |
-          installer="$RUNNER_TEMP/in/I-Need-A-Budget-$VERSION-Setup.exe"
-          if [[ "$SIGN_WITH" == release-secrets ]]; then
-            scripts/sign-windows.sh "$installer"
-          else
-            scripts/sign-windows.sh --throwaway "$RUNNER_TEMP/identities" "$installer"
-          fi
-      - name: Delete the keychain and the key
+        run: scripts/sign-windows.sh "$RUNNER_TEMP/in/I-Need-A-Budget-$VERSION-Setup.exe"
+      - &sign-clean-keychain
+        name: Delete the keychain
         if: always()
-        run: |
-          scripts/sign-mac.sh --clean
-          scripts/sign-windows.sh --clean
-      - name: The signed files
+        run: scripts/sign-mac.sh --clean
+      - &sign-clean-key
+        name: Delete the key
+        if: always()
+        run: scripts/sign-windows.sh --clean
+      - &sign-gather
+        name: The signed files
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/signed"
           ditto -c -k --keepParent "$RUNNER_TEMP/app/I Need A Budget.app" "$RUNNER_TEMP/signed/mac-app.zip"
           mv "$RUNNER_TEMP/in/I-Need-A-Budget-$VERSION-Setup.exe" "$RUNNER_TEMP/in/I-Need-A-Budget-$VERSION-Setup.exe.sig" "$RUNNER_TEMP/signed/"
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+      - &sign-upload
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: signed
           path: ${{ runner.temp }}/signed
-          retention-days: 1
-          if-no-files-found: error
-      # The throwaway identities' public halves, which the update checks need in place of the real ones.
-      - if: env.SIGN_WITH != 'release-secrets'
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
-        with:
-          name: test-identities
-          path: ${{ runner.temp }}/identities
-          retention-days: 1
+          retention-days: 7  # for re-running a later job
           if-no-files-found: error
 
   sign-dry:
@@ -392,9 +384,28 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 20
     env:
-      SIGN_WITH: throwaway
       VERSION: ${{ needs.check.outputs.version }}
-    steps: *sign-steps
+    steps:
+      - *sign-checkout
+      - *sign-python
+      - *sign-get-app
+      - *sign-get-installer
+      - *sign-unpack
+      - name: Sign the Mac app with a throwaway identity
+        run: scripts/sign-mac.sh --throwaway "$RUNNER_TEMP/identities" "$RUNNER_TEMP/app/I Need A Budget.app"
+      - name: Sign the Windows installer with a throwaway key
+        run: scripts/sign-windows.sh --throwaway "$RUNNER_TEMP/identities" "$RUNNER_TEMP/in/I-Need-A-Budget-$VERSION-Setup.exe"
+      - *sign-clean-keychain
+      - *sign-clean-key
+      - *sign-gather
+      - *sign-upload
+      # The throwaway identities' public halves, which the update checks need in place of the real ones.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: test-identities
+          path: ${{ runner.temp }}/identities
+          retention-days: 7  # for re-running a later job
+          if-no-files-found: error
 
   # The disk image, made from the signed app without Finder, and what Mac copies will check: the
   # previous release, installed here, takes it with its own version's updater.
@@ -454,6 +465,10 @@ jobs:
           mkdir -p "$HOME/Applications"
           ditto "$mount/I Need A Budget.app" "$HOME/Applications/I Need A Budget.app"
           hdiutil detach "$mount" -quiet
+          # Every Mac that runs the previous release must be able to start this one (its processors:
+          # 1.4.3's app is arm64 only, and an Intel Mac must never get an app it can't start).
+          echo "The previous release's app is built for: $(lipo -archs "$HOME/Applications/I Need A Budget.app/Contents/MacOS/I Need A Budget")"
+          python scripts/check-mac-app.py "$RUNNER_TEMP/app/I Need A Budget.app" --previous "$HOME/Applications/I Need A Budget.app"
           args=("$RUNNER_TEMP/release/I-Need-A-Budget-$VERSION.dmg" "$HOME/Applications/I Need A Budget.app")
           [[ "$REAL" == true ]] || args+=(--test-identity "$(cat "$RUNNER_TEMP/identities/test-identity")")
           python scripts/check-update.py "${args[@]}"
@@ -575,58 +590,18 @@ jobs:
         with:
           name: release-${{ needs.check.outputs.version }}
           path: ${{ runner.temp }}/release
+      # Re-running this job alone (gh run rerun <id> --failed) finishes a publish an earlier try left
+      # half-way: publish-release.py picks up from what it finds. The notes come from the run's event, as
+      # in the first job: never from a step's env, which the log prints.
       - name: Publish v${{ needs.check.outputs.version }}
-        env:
-          NOTES: ${{ inputs.notes }}
         run: |
           set -euo pipefail
-          fail() { echo "::error::$*"; exit 1; }
-          latest() { gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name 2>/dev/null || true; }
-          tag="v$VERSION"
-          cd "$RUNNER_TEMP/release"
-          files=("I-Need-A-Budget-$VERSION.dmg" "I-Need-A-Budget-$VERSION-Setup.exe" "I-Need-A-Budget-$VERSION-Setup.exe.sig")
-          [[ "$(ls | sort)" == "$(printf '%s\n' "${files[@]}" | sort)" ]] || fail "The release's files aren't the three it should have: $(ls | tr '\n' ' ')"
-
-          printf '%s\n' "$NOTES" > "$RUNNER_TEMP/notes.md"
-          python3 "$GITHUB_WORKSPACE/scripts/hooks/privacy_check.py" --what "In the release notes" "$RUNNER_TEMP/notes.md" >/dev/null 2>&1 ||
-            fail "The release notes have a card number in them."
-          # The update checks ran against the latest release as it was: it must still be that one.
-          [[ "$(latest)" == "$PREVIOUS" ]] || fail "The latest release changed while this ran ($PREVIOUS, now $(latest)): run it again."
-          # gh would put the release on a tag that's already there, wherever it points.
-          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" >/dev/null 2>&1; then fail "There's already a tag $tag."; fi
-
-          gh release create "$tag" "${files[@]}" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
-            --title "I Need A Budget $VERSION" --notes-file "$RUNNER_TEMP/notes.md" --latest
-
-          # What installed copies see: this tag, at this commit, with exactly these three files, byte for byte.
-          gh api "repos/$GITHUB_REPOSITORY/releases/latest" > "$RUNNER_TEMP/latest.json"
-          python3 - "$RUNNER_TEMP/latest.json" "$tag" "${files[@]}" <<'PY' || { gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --draft=true; fail "GitHub doesn't show the release as it should, so it's a draft again: installed copies still see $PREVIOUS."; }
-          import hashlib, json, sys
-          answer, tag, files = sys.argv[1], sys.argv[2], sys.argv[3:]
-          with open(answer, encoding="utf-8") as f:
-              release = json.load(f)
-          assets = {a["name"]: a.get("digest") for a in release.get("assets", [])}
-          problems = []
-          if release.get("tag_name") != tag:
-              problems.append(f"The latest release is {release.get('tag_name')}, not {tag}.")
-          if sorted(assets) != sorted(files):
-              problems.append(f"It has {sorted(assets)}, not {sorted(files)}.")
-          for name in files:
-              digest = assets.get(name)
-              with open(name, "rb") as f:
-                  mine = "sha256:" + hashlib.sha256(f.read()).hexdigest()
-              if digest and digest != mine:
-                  problems.append(f"GitHub's {name} isn't the file this run checked.")
-          for why in problems:
-              print(f"::error::{why}")
-          sys.exit(1 if problems else 0)
-          PY
-          tagged=$(gh api "repos/$GITHUB_REPOSITORY/commits/$tag" --jq .sha)
-          [[ "$tagged" == "$GITHUB_SHA" ]] || fail "$tag points at $tagged, not $GITHUB_SHA."
-
-          # The release page lists only the current one.
-          if [[ -n "$PREVIOUS" && "$PREVIOUS" != "$tag" ]]; then
-            gh release edit "$PREVIOUS" --repo "$GITHUB_REPOSITORY" --draft=true >/dev/null
-          fi
-          echo "### Published $tag" >> "$GITHUB_STEP_SUMMARY"
+          notes="$RUNNER_TEMP/notes.md"
+          jq -r '.inputs.notes // ""' "$GITHUB_EVENT_PATH" > "$notes"
+          [[ -n "$(tr -d '[:space:]' < "$notes")" ]] || { echo "::error::A release needs its notes."; exit 1; }
+          python3 scripts/hooks/privacy_check.py --what "In the release notes" "$notes" >/dev/null 2>&1 ||
+            { echo "::error::The release notes have a card number in them."; exit 1; }
+          python3 scripts/publish-release.py --version "$VERSION" --previous "$PREVIOUS" --commit "$GITHUB_SHA" --notes "$notes" \
+            "$RUNNER_TEMP/release"
+          echo "### Published v$VERSION" >> "$GITHUB_STEP_SUMMARY"
           echo "Installed copies update within a day, or now with Settings → Check now (then quit)." >> "$GITHUB_STEP_SUMMARY"

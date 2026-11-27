@@ -7,14 +7,19 @@ oldest macOS it runs on, and which processors it's built for. The release run (i
 whatever macOS, Python and PyInstaller GitHub's Macs have, so it checks that:
   - none needs a macOS newer than the app's LSMinimumSystemVersion (12.0: macOS 12 still starts it);
   - each is built for every processor the main program is (one built for Intel only would stop the
-    app on an Apple Silicon Mac the moment Python loaded it).
+    app on an Apple Silicon Mac the moment Python loaded it);
+  - with --previous, the main program is built for every processor the previous release's was: a
+    Mac that runs the copy it has must be able to start the update (1.4.3's is arm64 only).
+A minimum it can't read, the app's or a file's, is a problem too: what can't be checked doesn't pass.
 
-    python3 scripts/check-mac-app.py "I Need A Budget.app"
+    python3 scripts/check-mac-app.py "I Need A Budget.app" [--previous "the previous release's app"]
 
 Reads the files only, in Python, so it runs and is tested on any computer. Prints why not, if not.
 """
 
+import argparse
 import plistlib
+import re
 import struct
 import sys
 from pathlib import Path
@@ -97,30 +102,51 @@ def read_head(path, size=1 << 16):
     return head
 
 
-def problems(app):
-    """[why] for every file in `app` that wouldn't run everywhere the app says it does."""
-    app = Path(app)
+def main_program(app):
+    """(Info.plist, the main program's slices), or (None, why not)."""
     try:
-        with open(app / "Contents" / "Info.plist", "rb") as f:
+        with open(Path(app) / "Contents" / "Info.plist", "rb") as f:
             info = plistlib.load(f)
     except (OSError, plistlib.InvalidFileException):
-        return [f"{app} has no Info.plist."]
-    wanted = tuple(int(n) for n in str(info.get("LSMinimumSystemVersion", "")).split(".")[:2] if n.isdigit())
-    if len(wanted) < 1:
-        return ["Info.plist has no LSMinimumSystemVersion."]
-    wanted = (wanted + (0,))[:2]
-    main = app / "Contents" / "MacOS" / str(info.get("CFBundleExecutable", ""))
-    if not main.is_file() or not slices(read_head(main)):
-        return [f"The main program, {main.name}, isn't a Mac program."]
-    processors = {cpu for cpu, _ in slices(read_head(main))}
+        return None, f"{app} has no Info.plist."
+    main = Path(app) / "Contents" / "MacOS" / str(info.get("CFBundleExecutable", ""))
+    parts = slices(read_head(main)) if main.is_file() else []
+    if not parts:
+        return None, f"The main program, {main.name}, isn't a Mac program."
+    return info, parts
+
+
+def problems(app, previous=None):
+    """[why] for every file in `app` that wouldn't run everywhere the app says it does, or where
+    `previous` (the app it updates) runs."""
+    app = Path(app)
+    info, parts = main_program(app)
+    if info is None:
+        return [parts]
+    said = str(info.get("LSMinimumSystemVersion", ""))
+    if not re.fullmatch(r"\d+(\.\d+){0,2}", said):
+        return [f"Info.plist's LSMinimumSystemVersion ({said or 'none'}) isn't a macOS version."]
+    wanted = (tuple(int(n) for n in said.split(".")[:2]) + (0,))[:2]
+    processors = {cpu for cpu, _ in parts}
     found = []
+    if previous is not None:
+        old_info, old_parts = main_program(previous)
+        if old_info is None:
+            return [f"The previous release's app: {old_parts}"]
+        lost = {cpu for cpu, _ in old_parts} - processors
+        if lost:
+            names = ", ".join(sorted(CPU_NAMES.get(c, str(c)) for c in lost))
+            found.append(f"The previous release runs on {names} Macs, and this one isn't built for them:"
+                         f" they couldn't start the update.")
     for path in sorted(p for p in app.rglob("*") if p.is_file() and not p.is_symlink()):
         parts = slices(read_head(path))
         if not parts:
             continue
         name = path.relative_to(app)
         for cpu, oldest in parts:
-            if oldest and oldest > wanted:
+            if oldest is None:
+                found.append(f"{name} ({CPU_NAMES.get(cpu, cpu)}) doesn't say which macOS it needs.")
+            elif oldest > wanted:
                 found.append(f"{name} ({CPU_NAMES.get(cpu, cpu)}) needs macOS {shown(oldest)}, "
                              f"but the app says it runs on {shown(wanted)}.")
         missing = processors - {cpu for cpu, _ in parts}
@@ -145,14 +171,18 @@ def summary(app):
     return f"{count} programs and libraries, for {', '.join(sorted(processors))}: {needs}"
 
 
-def main():
-    if len(sys.argv) != 2:
-        sys.exit(__doc__)
-    found = problems(sys.argv[1])
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("app")
+    parser.add_argument("--previous", help="the previous release's app, which this one updates")
+    args = parser.parse_args(argv)
+    found = problems(args.app, args.previous)
     for why in found:
         print(f"✗ {why}", file=sys.stderr)
     if not found:
-        print(f"OK: {summary(sys.argv[1])}.")
+        print(f"OK: {summary(args.app)}.")
+        if args.previous:
+            print(f"The previous release's app: {summary(args.previous)}.")
     return 1 if found else 0
 
 
