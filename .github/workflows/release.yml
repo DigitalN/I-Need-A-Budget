@@ -161,8 +161,9 @@ jobs:
           else
             echo "A dry run's notes, made up." > "$notes"
           fi
-          python scripts/hooks/privacy_check.py --what "In the release notes" "$notes" ||
-            { echo "::error::The release notes have something private in them."; exit 1; }
+          # Its findings stay out of the log, which anyone can read: they'd be the private line itself.
+          python scripts/hooks/privacy_check.py --what "In the release notes" "$notes" >/dev/null 2>&1 ||
+            { echo "::error::The release notes have a card number in them: check them with scripts/hooks/privacy_check.py on your own computer."; exit 1; }
 
   # The whole suite on both systems, as .github/workflows/tests.yml runs it.
   tests:
@@ -587,8 +588,8 @@ jobs:
           [[ "$(ls | sort)" == "$(printf '%s\n' "${files[@]}" | sort)" ]] || fail "The release's files aren't the three it should have: $(ls | tr '\n' ' ')"
 
           printf '%s\n' "$NOTES" > "$RUNNER_TEMP/notes.md"
-          python3 "$GITHUB_WORKSPACE/scripts/hooks/privacy_check.py" --what "In the release notes" "$RUNNER_TEMP/notes.md" ||
-            fail "The release notes have something private in them."
+          python3 "$GITHUB_WORKSPACE/scripts/hooks/privacy_check.py" --what "In the release notes" "$RUNNER_TEMP/notes.md" >/dev/null 2>&1 ||
+            fail "The release notes have a card number in them."
           # The update checks ran against the latest release as it was: it must still be that one.
           [[ "$(latest)" == "$PREVIOUS" ]] || fail "The latest release changed while this ran ($PREVIOUS, now $(latest)): run it again."
           # gh would put the release on a tag that's already there, wherever it points.

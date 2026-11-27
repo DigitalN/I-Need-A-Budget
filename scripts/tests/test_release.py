@@ -275,6 +275,27 @@ def test_only_the_sign_job_reaches_the_release_environment_and_only_from_main():
     assert text.count("contents: write") == 1
 
 
+def test_a_failure_anywhere_stops_everything_after_it_publishing_included():
+    """Each job needs the ones before it; the three that also run after a skipped one (sign-dry is
+    skipped in a release, sign in a dry run) go on only when nothing before them failed."""
+    found = jobs(WORKFLOW.read_text(encoding="utf-8"))
+
+    def needs(name):
+        line = next(line for line in found[name] if line.strip().startswith("needs:"))
+        return set(re.findall(r"[a-z][a-z-]*", line.split(":", 1)[1]))
+
+    assert needs("build-mac") == needs("build-windows") == {"check"}
+    assert needs("sign") == needs("sign-dry") == {"check", "tests", "build-mac", "build-windows"}
+    assert needs("package") == {"check", "sign", "sign-dry"}
+    assert needs("check-windows") == {"check", "package"}
+    assert needs("publish") == {"check", "sign", "package", "check-windows"}
+    for name in ("package", "check-windows", "publish"):
+        condition = "\n".join(found[name])
+        assert "!cancelled() && !failure()" in condition, name
+    assert "needs.package.result == 'success'" in "\n".join(found["check-windows"])
+    assert "needs.check-windows.result == 'success'" in "\n".join(found["publish"])
+
+
 def test_secrets_are_only_given_to_the_steps_that_sign():
     text = WORKFLOW.read_text(encoding="utf-8")
     uses = [line.strip() for line in text.splitlines() if "secrets." in line]
@@ -296,7 +317,9 @@ def test_nothing_echoes_commands_or_puts_notes_into_a_script():
     assert notes and all(line == "NOTES: ${{ inputs.notes }}" for line in notes)  # env only: never run as code
 
 
-def test_a_release_from_github_checks_its_notes_for_private_details():
+def test_a_release_from_github_checks_its_notes_for_private_details_without_logging_them():
     text = WORKFLOW.read_text(encoding="utf-8")
-    assert text.count('privacy_check.py" --what "In the release notes"') + text.count(
-        'privacy_check.py --what "In the release notes"') == 2  # when the run starts, and just before publishing
+    checks = [line for line in text.splitlines() if 'privacy_check.py' in line and '--what "In the release notes"' in line]
+    assert len(checks) == 2  # when the run starts, and just before publishing
+    # what it finds is the private line itself, and the log is public
+    assert all(line.rstrip().endswith(">/dev/null 2>&1 ||") for line in checks)
