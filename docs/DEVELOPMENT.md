@@ -40,6 +40,19 @@ cd "Application Files" && INAB_DATA_DIR=/tmp/inab-test python3 main.py
 the real Documents); `INAB_TODAY=YYYY-MM-DD` pins today's
 date; `INAB_DEBUG=1` turns on the web inspector. Tests (`scripts/tests/`): `python3 -m pytest`.
 
+### Checks on GitHub
+
+Every pull request into `main` or `claude/cross-platform`, and every push to them, runs the
+whole suite on macOS and on Windows (`.github/workflows/tests.yml`): Python 3.13, the pinned
+packages (Windows skips pyobjc), node for the page tests, the privacy hooks switched on. The
+pull request shows both checks, and its Checks tab has each test's output. Windows' check is
+shown but doesn't fail the run until the platform piece (#182) has made the suite pass there;
+then remove `experimental` from the workflow. The tests use only made-up data and nothing needs
+a secret, so a pull request from someone else's copy runs the same way. GitHub's machines have
+no `.git-denylist`, so there the privacy test and the hooks check card numbers, bank files and
+databases, not your private words: those are only checked on your own computer. Making the
+checks required for merging into `main` is the maintainer's setting (Settings → Branches).
+
 The app icon is drawn by `scripts/make-icon.swift`. To redraw it:
 
 ```bash
@@ -118,7 +131,8 @@ is up to date (1.0.0 and 1.0.1 also said that when the token couldn't see the re
 - [ ] `VERSION` in `Application Files/main.py` is higher than the latest release (the
   first PR after a release raises it: by 0.0.1, or 0.1 for a big change). The build
   copies it into the app's `Info.plist`; installed copies only update to a higher version.
-- [ ] `python3 -m pytest` passes (including `test_privacy.py`).
+- [ ] `python3 -m pytest` passes (including `test_privacy.py`), and so did `main`'s Tests
+  checks on GitHub.
 - [ ] The signing certificate is valid and not about to expire:
   `security find-identity -v -p codesigning` lists an *Apple Development* identity from
   team `XT4LT7MS6Y`. Installed copies refuse updates signed by any other team.
