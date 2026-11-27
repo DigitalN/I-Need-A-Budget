@@ -113,7 +113,7 @@ swift scripts/make-icon.swift /tmp/INeedABudget.iconset && iconutil -c icns /tmp
 ## The dev preview
 
 ```bash
-python3 scripts/preview.py [--data FOLDER] [--today 2026-10-12]
+python3 scripts/preview.py [--data FOLDER] [--today 2026-10-12] [--platform windows]
 ```
 
 Serves `index.html` on http://127.0.0.1:8765 with a stand-in for pywebview's bridge, so
@@ -124,6 +124,9 @@ and it refuses to use the app's real data folder. The default data folder is
 `~/Library/Caches/I Need A Budget-preview`, and its Downloads folder is `downloads` inside
 it (created empty; the preview never uses your real `~/Downloads` and refuses to start if its
 `settings.json` points there). Put copies of bank files in it to try onboarding.
+`--platform mac` or `--platform windows` pretends to be that system (it's this computer's by
+default): the page's wording and keys follow it. A browser draws it with this computer's fonts,
+and Chromium (Chrome, Edge, Claude's browser pane) is the engine the Windows app uses.
 
 ## README screenshots
 
