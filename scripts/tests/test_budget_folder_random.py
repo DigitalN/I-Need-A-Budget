@@ -20,9 +20,10 @@ is a version with none. The rule is checked on those versions, never on what a c
 - after every step, every version that nothing was made on since (a leaf) is still somewhere the
   app keeps it: a computer's budget, a budget file in the folder, or Backups/ (a lagging
   computer's copy of the folder, Saves/ and the person's own backups don't count), unless a
-  person dropped it (a question's answer, or a restore copied over it);
+  person dropped it (a question's answer, a restore copied over it, or what a computer had when it
+  took a restore, which must then be in Backups/);
 - a question ("changed on two computers", "older") comes up only when neither side has everything
-  the other has;
+  the other has (or for the same backup restored again);
 - at the end, once everything has synced and every question is answered, every computer has the
   same budget, every version is in its history or was dropped by a person, and every version an
   answer dropped is in Backups/: so a change both sides made was asked about.
@@ -55,6 +56,12 @@ FOUND = [(seed, 40) for seed in (66, 172, 582, 1053, 1193, 1236, 1558, 1559, 244
 STEPS = int(os.environ.get("INAB_STEPS", "40"))
 SEEDS = [(seed, STEPS) for seed in range(int(os.environ.get("INAB_SEEDS", "100")))]
 SEEDS += [found for found in FOUND if found not in SEEDS]
+# The same, with backups restored by hand: 3, 45 and 54 following a move after a restore counted nothing
+# known; 145 a change on top of a restore's very contents forgot what it was built on; 401 a computer that
+# missed the restore of its very contents was asked; 49, 60, 216 and 763 this test's own mistakes.
+FOUND_WITH_RESTORES = [(seed, 40) for seed in (3, 45, 49, 54, 60, 145, 216, 401, 763)]
+RESTORE_SEEDS = [(seed, STEPS) for seed in range(int(os.environ.get("INAB_SEEDS", "100")))]
+RESTORE_SEEDS += [found for found in FOUND_WITH_RESTORES if found not in RESTORE_SEEDS]
 START = datetime(2026, 11, 27, 9, 0, tzinfo=timezone(timedelta(hours=-7)))
 
 
@@ -69,7 +76,7 @@ def categories(db):
 
 class World:
     def __init__(self, tmp, seed, restores=True):
-        self.restores = restores  # backups restored by hand: their handling waits on the maintainer's choice
+        self.restores = restores  # backups restored by hand (copied in as Budget.inab)
         self.r, self.tmp, self.seed = random.Random(seed), tmp, seed
         self.t, self.n, self.log = START, 0, []
         self.skew = {name: timedelta(minutes=self.r.randint(-30, 30)) for name in NAMES}
@@ -149,10 +156,18 @@ class World:
             self.base[name] = taken
         if taken is not None and self.versions[taken][0] == d:
             cur = self.cur[name]
-            if cur != taken and self.versions[cur][0] == d and taken not in self._ancestry([cur]) and                     cur not in self._ancestry([taken]):
-                # Its own change came to the very contents of another's save: the two are joined
-                self.versions[taken][1].append(cur)
-                self.children.setdefault(cur, set()).add(taken)
+            restore = started.id.startswith(budget_folder.RESTORED)
+            if cur != taken and cur not in self._ancestry([taken]) and taken not in self._ancestry([cur]):
+                if restore:
+                    # It took a restore, whose history is its own from now (nothing it had is joined in): what it had,
+                    # the person restored a backup over, kept in Backups/ first unless it's the very same contents
+                    self.dropped.add(cur)
+                    if self.versions[cur][0] != d:
+                        self.answered.add(cur)
+                elif self.versions[cur][0] == d:
+                    # Its own change came to the very contents of another's save: the two are joined
+                    self.versions[taken][1].append(cur)
+                    self.children.setdefault(cur, set()).add(taken)
             self.cur[name] = taken  # its budget is that save exactly (taken, or the same contents adopted)
         elif d != self.versions[self.cur[name]][0]:
             assert d in self.by_digest, f"seed {self.seed}: {name}'s budget is contents nobody made\n" + self._trail()
@@ -160,10 +175,12 @@ class World:
         if started is not None and started.digest == self.versions[self.cur[name]][0]:
             cur = self.cur[name]
             if started.id not in self.saved:  # a save it just made: on what it started from, and on any save with
-                # those very contents that it adopted on the way (another's Move…), which its counts come after
-                for other, (v, kept) in self.made.items():
+                # those very contents that it adopted on the way (another's Move…, a restore), which its counts come after
+                restores = [(v, {f"{budget_folder.RESTORE}{rid[len(budget_folder.RESTORED):]}": 1})
+                            for rid, v in self.saved.items() if rid.startswith(budget_folder.RESTORED)]
+                for v, counts in [(v, kept.counts) for v, kept in self.made.values()] + restores:
                     if v not in (before, cur) and self.versions[v][0] == self.versions[before][0] and \
-                            budget_folder._covers(started.counts, kept.counts) and \
+                            budget_folder._covers(started.counts, counts) and \
                             v not in self.versions[cur][1]:
                         self.versions[cur][1].append(v)
                         self.children.setdefault(v, set()).add(cur)
@@ -436,8 +453,8 @@ class World:
             state = c.state()["state"]
             if state in ("two_computers", "older") and c._other is not None:
                 other = self._of_save(c._other)
-                if other is None:
-                    continue
+                if other is None or (state == "older" and budget_folder.a_restore(c._other)):
+                    continue  # the same backup restored again, older by now: asked (decided on #196's review)
                 mine = self.cur[name]
                 assert other not in self._ancestry([mine]) and mine not in self._ancestry([other]), \
                     f"seed {self.seed}: {name} asked ({state}) though one side has everything: it's v{mine}, " \
@@ -543,8 +560,8 @@ def test_no_change_is_lost_and_nobody_is_asked_needlessly(tmp_path, seed, steps)
     run(tmp_path, seed, steps, restores=False)
 
 
-@pytest.mark.xfail(reason="restoring a backup by hand: waiting on the maintainer's choice (the fifth review of #196, "
-                          "option A or B); a restore's line comes after the whole of another line", strict=False)
-@pytest.mark.parametrize("seed, steps", SEEDS[:20])
-def test_restores_too(tmp_path, seed, steps):
+@pytest.mark.parametrize("seed, steps", RESTORE_SEEDS)
+def test_backups_restored_by_copying_them_in_too(tmp_path, seed, steps):
+    """Everything, backups restored by hand included (copied in as Budget.inab: the maintainer's
+    choice on #196's fifth review)."""
     run(tmp_path, seed, steps, restores=True)

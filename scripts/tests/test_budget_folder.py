@@ -1667,3 +1667,65 @@ def test_moving_an_unchanged_budget_is_the_same_save_and_a_changed_one_a_new_sav
     moved = save_in(tmp_path / "Moved again" / FILE_NAME)
     assert moved["id"] != first.id and moved["counts"] != first.counts
     assert categories_in(tmp_path / "Moved again" / FILE_NAME) == ["Groceries", "Rent"]
+
+
+def test_keep_this_over_a_restore_is_taken_by_a_computer_that_only_took_the_restore(tmp_path):
+    """Restoring by copying a backup in (the maintainer's choice on #196). PC-B changed nothing and
+    takes the restore: its budget goes into Backups/ first, and its counts are the restore's alone.
+    PC-A had a change not saved yet, so it's asked; Keep this counts the restore too, so PC-B takes
+    it without a question."""
+    folder = tmp_path / "Budget"
+    a = computer(tmp_path, "PC-A")
+    add_category(a.db, "Groceries")
+    a.move_to(folder)
+    b = computer(tmp_path, "PC-B")
+    b.open_from(folder)
+    made = shutil.copyfile(backups.make(a.db), tmp_path / "the backup.db")
+    add_category(a.db, "Rent")
+    a.check(wait=False)
+    assert b.check(wait=False)["took"]
+    add_category(a.db, "Bills")                          # not saved yet
+    shutil.copyfile(made, folder / FILE_NAME)            # the person restores the backup
+    assert b.check(wait=False)["took"] and categories(b.db) == ["Groceries"]
+    assert b._mine().counts == {budget_folder.restore_key(backups.digest(b.db)): 1}
+    assert [categories_in(p) for p in not_kept(folder)] == [["Groceries", "Rent"]]
+    assert a.check(wait=False)["state"] == "two_computers"
+    a.keep_this()
+    state = b.check(wait=False)
+    assert state["state"] == "saved" and state["took"] and categories(b.db) == ["Groceries", "Rent", "Bills"]
+
+
+def test_two_computers_taking_one_restore_keep_one_copy_of_what_they_had(tmp_path):
+    folder = tmp_path / "Budget"
+    a = computer(tmp_path, "PC-A")
+    add_category(a.db, "Groceries")
+    a.move_to(folder)
+    b, c = computer(tmp_path, "PC-B"), computer(tmp_path, "PC-C")
+    b.open_from(folder)
+    c.open_from(folder)
+    made = shutil.copyfile(backups.make(a.db), tmp_path / "the backup.db")
+    add_category(a.db, "Rent")
+    a.check(wait=False)
+    assert b.check(wait=False)["took"] and c.check(wait=False)["took"]
+    shutil.copyfile(made, folder / FILE_NAME)
+    for each in (a, b, c):
+        assert each.check(wait=False)["state"] == "saved" and categories(each.db) == ["Groceries"]
+    assert [categories_in(p) for p in not_kept(folder)] == [["Groceries", "Rent"]]  # once, by its contents
+
+
+def test_a_computer_that_missed_the_restore_of_its_very_contents_takes_what_came_after(tmp_path):
+    """PC-A doesn't look while a backup with exactly its budget is restored and PC-B saves on top
+    of it (random seed 401). Nothing PC-A has is missing from PC-B's save: it's taken, unasked."""
+    folder = tmp_path / "Budget"
+    a = computer(tmp_path, "PC-A")
+    add_category(a.db, "Groceries")
+    a.move_to(folder)
+    b = computer(tmp_path, "PC-B")
+    b.open_from(folder)
+    made = shutil.copyfile(backups.make(a.db), tmp_path / "the backup.db")
+    shutil.copyfile(made, folder / FILE_NAME)            # the very contents PC-A and PC-B have
+    assert b.check(wait=False)["state"] == "saved"       # PC-B: the restore itself, saved back as itself
+    add_category(b.db, "Bills")
+    b.check(wait=False)
+    state = a.check(wait=False)
+    assert state["state"] == "saved" and state["took"] and categories(a.db) == ["Groceries", "Bills"]

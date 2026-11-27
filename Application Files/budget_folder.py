@@ -294,12 +294,22 @@ def a_restore(save):
     return save.raw or save.id.startswith(RESTORED)
 
 
+def restore_key(digest):
+    """The key a restore of a budget with these contents has in counts."""
+    return f"{RESTORE}{digest[:24]}"
+
+
 def arriving(save, mine):
     """`relation`, for a save found in the folder: a restore as Budget.inab comes after whatever
     doesn't count it already, so every computer takes it; as a sync tool's conflict copy it's apart
-    from the save it conflicts with."""
+    from the save it conflicts with. A save that counts a restore of the very contents of this
+    computer's save came after them too (a computer that missed the restore of what it has)."""
     kind = relation(save, mine)
-    return NEWER if kind == APART and a_restore(save) and save.name == FILE_NAME else kind
+    if kind == APART and a_restore(save) and save.name == FILE_NAME:
+        return NEWER
+    if kind == APART and mine is not None and mine.digest and restore_key(mine.digest) in save.counts:
+        return NEWER
+    return kind
 
 
 def read_save(path):
@@ -325,7 +335,7 @@ def read_save(path):
             save.schema_version = schema_version  # the file's own: what decides whether it can be opened
             save.digest = digest
             return save
-    return Save(id=f"{RESTORED}{digest[:24]}", counts={f"{RESTORE}{digest[:24]}": 1}, raw=True, digest=digest,
+    return Save(id=f"{RESTORED}{digest[:24]}", counts={restore_key(digest): 1}, raw=True, digest=digest,
                 schema_version=schema_version)
 
 
@@ -491,7 +501,9 @@ class BudgetFolder:
                 # (another computer's Move…, its own save after a crash, the same change made on two). The same save,
                 # its counts joined with this computer's, and any change this computer made since is saved on top of it.
                 # Not one this computer came after: a change back to an older save's contents is still a change.
-                mine, kind = self._adopt(save, mine, restore=kind == NEWER and a_restore(save)), SAME
+                # A restore that's this computer's budget as it is now is the restore (its counts alone, saved back as
+                # itself, so every computer takes it); with a change on top, the change comes after both.
+                mine, kind = self._adopt(save, mine, restore=kind == NEWER and a_restore(save) and save.digest == current), SAME
             if kind == SAME and save.name == FILE_NAME:
                 self._landed(save.id)
                 publish = publish or self._differs(save)
