@@ -224,3 +224,43 @@ def test_the_copy_holding_the_lock_tells_the_installer_its_running(tmp_path):
     kernel32.CloseHandle(ctypes.c_void_p(found))
     held.close()
 
+
+
+def test_a_windows_windows_smallest_size_fits_its_screen():
+    """The page's smallest size, with the frame around it, unless the screen is smaller: a 1920×1080
+    laptop at 150% leaves about 672 of the page's pixels' height without the taskbar."""
+    from computer_windows import keep_on_a_screen, screen_for, smallest_window
+
+    big, laptop = (0, 0, 2560, 1392), (0, 0, 1280, 672)
+    assert smallest_window((1000, 660), (16, 39), big) == (1016, 699)
+    assert smallest_window((1000, 660), (16, 39), laptop) == (1016, 672)
+    left = (-1920, 0, 1920, 1032)
+    assert screen_for((-1800, 50, 1600, 900), [big, left], big) == left
+    assert screen_for((-1800, 50, 1600, 900), [big], big) == big  # that screen's gone
+    frame = keep_on_a_screen((100, 200, 1016, 699), [laptop], laptop)
+    assert frame == (100, 0, 1016, 672) and frame[3] >= smallest_window((1000, 660), (16, 39), laptop)[1]
+
+
+def test_without_webview2_windows_says_what_is_missing_instead_of_failing(monkeypatch):
+    """pywebview's fallback, Internet Explorer's engine, isn't in the build: importing its Windows side
+    fails without WebView2. The app says so, offers Microsoft's page, and stops before the window."""
+    import webview.platforms
+
+    import computer_windows
+
+    asked, opened = [], []
+    monkeypatch.delattr(webview.platforms, "winforms", raising=False)
+    monkeypatch.setitem(sys.modules, "webview.platforms.winforms", None)  # importing it fails
+    monkeypatch.setattr(computer_windows, "_ask", lambda text: asked.append(text) or True)
+    windows = Windows()
+    monkeypatch.setattr(windows, "open_web_page", opened.append)
+    assert windows.can_draw_the_page() is False
+    assert "needs Microsoft Edge WebView2" in asked[0]
+    assert opened == ["https://developer.microsoft.com/microsoft-edge/webview2/"]
+
+    monkeypatch.setattr(computer_windows, "_ask", lambda text: False)  # No: nothing opens
+    assert windows.can_draw_the_page() is False and len(opened) == 1
+
+
+def test_a_mac_can_always_draw_the_page():
+    assert Mac().can_draw_the_page() is True

@@ -1,5 +1,6 @@
 ; SPDX-License-Identifier: GPL-3.0-only
-; The Windows installer, I-Need-A-Budget-<version>-Setup.exe (Inno Setup 6). scripts/build-windows.sh
+; The Windows installer, I-Need-A-Budget-<version>-Setup.exe (Inno Setup 6.3 or later: x64compatible, and
+; this file is UTF-8 without a BOM). scripts/build-windows.sh
 ; compiles it from the PyInstaller folder:
 ;
 ;   iscc /DVersion=1.5.0 /DDist=<dist\I Need A Budget> /DOutput=<folder> scripts\installer.iss

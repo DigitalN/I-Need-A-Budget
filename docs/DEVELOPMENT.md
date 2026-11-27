@@ -44,7 +44,7 @@ date; `INAB_DEBUG=1` turns on the web inspector. Tests (`scripts/tests/`): `pyth
 
 Python 3.13, the pinned packages (`python -m pip install -r "Application Files/requirements.txt"`,
 in a virtual environment if you like: on Windows they include pythonnet, which pywebview draws its
-window with) and, for the installer, [Inno Setup 6](https://jrsoftware.org/isinfo.php). Run from
+window with) and, for the installer, [Inno Setup](https://jrsoftware.org/isinfo.php) 6.3 or later. Run from
 source as on a Mac (`INAB_DATA_DIR` keeps it off your real data). In Git for Windows' bash:
 
 ```bash
@@ -87,9 +87,9 @@ On a Windows 10 or 11 PC:
    `I-Need-A-Budget-<version>-Setup.exe` under Artifacts.
 2. Open it. It's unsigned, so Windows says "Windows protected your PC": More info → Run anyway.
    It shouldn't ask for an administrator. Leave Open I Need A Budget ticked and finish.
-3. The app opens on onboarding. Put a made-up bank file in Downloads (a Quicken file from
-   `scripts/demo_data.py`, or one you make up), then Look again: it's listed. Go through the
-   steps to the Dashboard.
+3. The app opens on onboarding. Put made-up bank files in Downloads
+   (`python scripts/demo_data.py --files-only` writes two Quicken files there), then Look again:
+   they're listed. Go through the steps to the Dashboard.
 4. Start → I Need A Budget is there. With the app open, open it again from Start: the window
    comes forward, and nothing else opens. Minimize it first and try again.
 5. Settings: Light, Dark and System change the title bar too. Each Open button opens File

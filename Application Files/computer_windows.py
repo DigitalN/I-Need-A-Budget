@@ -9,7 +9,9 @@ The window is pywebview's WinForms form drawing the page with WebView2 (Microsof
 engine). ✕ and Alt+F4 come to the app as the Mac's close button does (pywebview's closing
 event, which asks the page first); logging off, shutting down, restarting, Task Manager and
 an installer closing the app (Windows' Restart Manager) quit straight away: Windows is
-waiting, and would show the app as "preventing shutdown". Its size and place are kept in
+waiting, and would show the app as "preventing shutdown". A log-off another app stops is
+called off, and the app carries on. Without WebView2 the app says so and where to get it,
+rather than failing with Windows' own error box. Its size and place are kept in
 this computer's settings in the registry (HKEY_CURRENT_USER\\Software\\I Need A Budget), as
 a Mac keeps them in its defaults.
 
@@ -44,6 +46,8 @@ RUNNING_MUTEX = f"{APP_NAME} is running"  # the installer's AppMutex: it waits f
 SETTINGS_KEY = rf"Software\{APP_NAME}"     # this computer's settings for the app, under HKEY_CURRENT_USER
 WINDOW_CLASS = "WindowsForms10.Window."    # what every WinForms window's class name starts with
 APPS_THEME = r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
+WEBVIEW2_PAGE = "https://developer.microsoft.com/microsoft-edge/webview2/"  # Microsoft's, where the runtime is
+WM_ENDSESSION = 0x0016
 
 
 def known_folder(folder_id):
@@ -92,21 +96,32 @@ def read_frame(text):
     return ((x, y, width, height), maximized) if width > 0 and height > 0 else None
 
 
-def keep_on_a_screen(frame, areas, primary):
-    """The frame moved and shrunk onto the screen it overlaps most (each screen's area
-    without the taskbar), or onto the primary one when it's on none: a laptop without its
-    monitor. Rectangles are (x, y, width, height)."""
+def screen_for(frame, areas, primary):
+    """The area (a screen without its taskbar) the frame overlaps most, or the primary one
+    when it's on none: a laptop without its monitor. Rectangles are (x, y, width, height)."""
     def overlap(area):
         width = min(frame[0] + frame[2], area[0] + area[2]) - max(frame[0], area[0])
         height = min(frame[1] + frame[3], area[1] + area[3]) - max(frame[1], area[1])
         return max(width, 0) * max(height, 0)
 
     best = max(areas, key=overlap, default=primary)
-    area = best if overlap(best) else primary
+    return best if overlap(best) else primary
+
+
+def keep_on_a_screen(frame, areas, primary):
+    """The frame moved and shrunk onto its screen (screen_for)."""
+    area = screen_for(frame, areas, primary)
     width, height = min(frame[2], area[2]), min(frame[3], area[3])
     x = min(max(frame[0], area[0]), area[0] + area[2] - width)
     y = min(max(frame[1], area[1]), area[1] + area[3] - height)
     return x, y, width, height
+
+
+def smallest_window(page, frame, area):
+    """The window's smallest size: the page's smallest, with the frame and title bar around it,
+    but never bigger than the screen's area without the taskbar (a laptop at 150% has about
+    670 of the page's pixels' height)."""
+    return min(page[0] + frame[0], area[2]), min(page[1] + frame[1], area[3])
 
 
 def centred(width, height, area):
@@ -173,6 +188,49 @@ def _app_windows(other_than_pid):
 
     user32.EnumWindows(each, 0)
     return found
+
+
+def _ask(text):
+    """A Yes / No message box of Windows' own, before there's a window. True for Yes."""
+    import ctypes
+
+    MB_YESNO, MB_ICONWARNING, MB_SETFOREGROUND, IDYES = 0x4, 0x30, 0x10000, 6
+    return ctypes.windll.user32.MessageBoxW(None, text, APP_NAME, MB_YESNO | MB_ICONWARNING | MB_SETFOREGROUND) == IDYES
+
+
+class _EndOfSession:
+    """Whether a log-off or shutdown the app said yes to really happens. After answering
+    WM_QUERYENDSESSION, Windows sends WM_ENDSESSION: false when another app stopped it and the
+    person cancelled. WinForms keeps that to itself, so the window is subclassed (comctl32)
+    until it comes, then `called_off()` when it's false."""
+
+    def __init__(self, called_off):
+        import ctypes
+        from ctypes import wintypes
+
+        self._comctl32 = comctl32 = ctypes.windll.comctl32
+        procedure = ctypes.WINFUNCTYPE(ctypes.c_ssize_t, wintypes.HWND, wintypes.UINT, wintypes.WPARAM,
+                                       wintypes.LPARAM, ctypes.c_size_t, ctypes.c_size_t)
+        comctl32.SetWindowSubclass.argtypes = [wintypes.HWND, procedure, ctypes.c_size_t, ctypes.c_size_t]
+        comctl32.RemoveWindowSubclass.argtypes = [wintypes.HWND, procedure, ctypes.c_size_t]
+        comctl32.DefSubclassProc.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+        comctl32.DefSubclassProc.restype = ctypes.c_ssize_t
+
+        @procedure
+        def watching(hwnd, message, wparam, lparam, ident, _):
+            if message == WM_ENDSESSION:
+                comctl32.RemoveWindowSubclass(hwnd, watching, ident)
+                if not wparam:
+                    try:
+                        called_off()
+                    except Exception:
+                        log.exception("Carrying on after a called-off log-off failed")
+            return comctl32.DefSubclassProc(hwnd, message, wparam, lparam)
+
+        self._watching = watching  # kept: Windows calls it until it's removed
+
+    def watch(self, hwnd):
+        self._comctl32.SetWindowSubclass(hwnd, self._watching, 1, 0)  # once, however often it's asked
 
 
 def _form():
@@ -282,13 +340,13 @@ class Windows(Computer):
         """The window as it was left (kept in this computer's settings in the registry, under
         `name`, saved whenever it's moved, resized, maximized or closed), moved and shrunk onto
         a screen if it no longer fits one, and maximized again if it was; the first time, in the
-        middle of the main screen. Its smallest size is the page's: pywebview's minimum is the
-        whole window, frame and title bar included."""
+        middle of the main screen. Its smallest size is the page's (pywebview's minimum is the
+        whole window, frame and title bar included), unless the screen is smaller."""
         import System.Windows.Forms as WinForms
         from System.Drawing import Rectangle, Size
 
-        native.MinimumSize = Size(native.MinimumSize.Width + native.Width - native.ClientSize.Width,
-                                  native.MinimumSize.Height + native.Height - native.ClientSize.Height)
+        page = (native.MinimumSize.Width, native.MinimumSize.Height)
+        frame = (native.Width - native.ClientSize.Width, native.Height - native.ClientSize.Height)
         self._keep_frame(native, name)
 
         primary = WinForms.Screen.PrimaryScreen.WorkingArea
@@ -299,6 +357,7 @@ class Windows(Computer):
         (x, y, width, height), maximized = saved
         areas = [(s.WorkingArea.X, s.WorkingArea.Y, s.WorkingArea.Width, s.WorkingArea.Height)
                  for s in WinForms.Screen.AllScreens]
+        native.MinimumSize = Size(*smallest_window(page, frame, screen_for((x, y, width, height), areas, primary)))
         x, y, width, height = keep_on_a_screen((x, y, width, height), areas, primary)
         native.StartPosition = WinForms.FormStartPosition.Manual
         native.Bounds = Rectangle(x, y, width, height)
@@ -360,26 +419,47 @@ class Windows(Computer):
             user32.SendMessageW(hwnd, 0x0086, not active, 0)  # WM_NCACTIVATE
             user32.SendMessageW(hwnd, 0x0086, active, 0)
 
-    def when_asked_to_quit(self, should_quit):
-        """Windows closes the window with a reason: ✕, Alt+F4 and the taskbar's Close window are
-        the person's, and go the close button's way (pywebview's closing event, through the
-        page). Logging off, shutting down or restarting, Task Manager and Windows' Restart
-        Manager (an installer) quit straight away: the backup is made before Windows is told
-        it may go on. pywebview's handler is replaced before the window is made, as its
-        FormClosing is bound when it is."""
+    def can_draw_the_page(self):
+        """pywebview needs Microsoft's WebView2 Runtime (the installer checks for it, but it can be
+        removed later). Without it pywebview falls back on Internet Explorer's engine, which the
+        build leaves out, and the app would stop with Windows' own error box."""
+        try:
+            from webview.platforms import winforms
+
+            if winforms.is_chromium:
+                return True
+        except ImportError:
+            pass
+        log.error("Microsoft Edge WebView2 isn't installed: the page can't be drawn")
+        if _ask(f"{APP_NAME} needs Microsoft Edge WebView2, which this PC doesn't have.\n\n"
+                f"Open Microsoft's download page? Install the Evergreen Runtime from there, then open "
+                f"{APP_NAME} again."):
+            self.open_web_page(WEBVIEW2_PAGE)
+        return False
+
+    def when_asked_to_quit(self, should_quit, called_off):
+        """Windows closes the window with a reason (WinForms' CloseReason): ✕, Alt+F4 and the
+        taskbar's Close window (SC_CLOSE) are the person's, and go the close button's way
+        (pywebview's closing event, through the page). Logging off, shutting down or restarting
+        (WM_QUERYENDSESSION, also an installer's Restart Manager) and Task Manager (a bare
+        WM_CLOSE) quit straight away: the backup is made before Windows is told it may go on. A
+        log-off that doesn't happen after all is called off (_EndOfSession). pywebview's handler
+        is replaced before the window is made, as its FormClosing is bound when it is."""
         from webview.platforms import winforms  # first: it loads .NET's WinForms
 
         import System.Windows.Forms as WinForms
 
         form = winforms.BrowserView.BrowserForm
         pywebviews = getattr(form, "_pywebview_on_closing", None) or form.on_closing
-        straight_away = (WinForms.CloseReason.WindowsShutDown, WinForms.CloseReason.TaskManagerClosing)
+        reasons = WinForms.CloseReason
+        session = _EndOfSession(called_off)
 
-        def on_closing(self, sender, args):
-            if args.CloseReason in straight_away:
+        def on_closing(window, sender, args):
+            if args.CloseReason in (reasons.WindowsShutDown, reasons.TaskManagerClosing):
                 log.info("Windows is closing the app (%s)", args.CloseReason)
-                should_quit(True)  # backs up; the closing event then lets it close
-            pywebviews(self, sender, args)
+                if should_quit(True) and args.CloseReason == reasons.WindowsShutDown:  # backs up
+                    session.watch(sender.Handle.ToInt64())
+            pywebviews(window, sender, args)  # the closing event: it lets it close, the app quitting
 
         form._pywebview_on_closing = pywebviews
         form.on_closing = on_closing

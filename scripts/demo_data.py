@@ -3,7 +3,7 @@
 """A made-up budget for screenshots and demos: nothing in it is anyone's real data.
 
     python3 scripts/demo_data.py [FOLDER] [--today 2026-10-14]
-    python3 scripts/demo_data.py --files-only FOLDER    # only the made-up bank files, into FOLDER
+    python3 scripts/demo_data.py --files-only [FOLDER]  # only the made-up bank files: into FOLDER, or Downloads
 
 then the `demo` entry in .claude/launch.json (the preview on that folder, port 8766), and
 scripts/screenshots.py for the README's pictures. FOLDER defaults to
@@ -147,19 +147,22 @@ def bank_files(today):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("folder", nargs="?", default=str(Path.home() / "Library" / "Caches" / "I Need A Budget-demo"))
+    parser.add_argument("folder", nargs="?")
     parser.add_argument("--today", default="2026-10-14")
     parser.add_argument("--files-only", action="store_true",
-                        help="only write the made-up bank files into FOLDER (Downloads, to try onboarding); "
-                             "nothing else there is touched")
+                        help="only write the made-up bank files, into FOLDER or this computer's Downloads (to try "
+                             "onboarding); nothing else there is touched")
     args = parser.parse_args()
     if args.files_only:
-        folder = Path(args.folder).expanduser()
+        sys.path.insert(0, str(ROOT / "Application Files"))
+        import computer
+
+        folder = Path(args.folder).expanduser() if args.folder else computer.this().downloads_dir()
         for name, text in bank_files(date.fromisoformat(args.today)):
             (folder / name).write_text(text, encoding="utf-8")
             print(folder / name)
         return
-    data = Path(args.folder).expanduser().resolve()
+    data = Path(args.folder or Path.home() / "Library" / "Caches" / "I Need A Budget-demo").expanduser().resolve()
     if data == REAL_DATA.resolve() or data in REAL_DATA.resolve().parents:
         sys.exit("Never the app's real data folder. Pass a throwaway folder.")
     if data.exists():

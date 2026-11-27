@@ -75,7 +75,9 @@ All in `Application Files/`:
   looks at `sys.platform`. Its methods: this computer's data, log, Documents and Downloads
   folders (Windows asks for its Known Folders: a Documents OneDrive moved isn't `~/Documents`);
   the one-copy lock and what a second launch does; the window's first size, remembered frame,
-  Dark mode and theme; `when_asked_to_quit(should_quit)` (⌘Q, the Dock, logging out), `quit`,
+  Dark mode and theme; whether it can draw the page (`can_draw_the_page`: Windows without WebView2
+  says so and stops); `when_asked_to_quit(should_quit, called_off)` (⌘Q, the Dock, logging out;
+  `called_off` when Windows doesn't log off after all), `quit`,
   `bring_forward`, `on_main_thread`; opening a folder, file or web page; where the app is
   installed, moving it there and relaunching; the update token's keeper, `curl`, `gh`, and the
   update's steps (`why_updates_off`, `folder_for_update`, `take_update`: on a Mac the disk image
@@ -85,14 +87,15 @@ All in `Application Files/`:
   parts are tested on either. On Windows (#187) the window is pywebview's WinForms form drawing
   the page with WebView2 (Edge's engine, through pythonnet); `when_asked_to_quit` replaces
   pywebview's FormClosing handler before the window is made, to tell the person's closes from
-  Windows' own; the window's frame is kept in the registry (`HKCU\Software\I Need A Budget`); the
+  Windows' own by their CloseReason, and watches WM_ENDSESSION (a comctl32 subclass) for a log-off
+  called off; the window's frame is kept in the registry (`HKCU\Software\I Need A Budget`); the
   copy holding the lock keeps the mutex (`RUNNING_MUTEX`) the installer's AppMutex waits for. The
   token and the update's steps are #188's.
   `scripts/tests/test_computer.py` checks each keeps to its own file.
 - `INeedABudget.spec`: the PyInstaller build on either system, each with its own side of pywebview
   and computer.py only. A Mac makes `I Need A Budget.app` (`scripts/build.sh`); Windows a folder
   with `I Need A Budget.exe` (its `.ico` from `scripts/make-ico.py`, a version resource with the
-  copyright), which `scripts/installer.iss` (Inno Setup 6) installs: `scripts/build-windows.sh`
+  copyright), which `scripts/installer.iss` (Inno Setup 6.3 or later) installs: `scripts/build-windows.sh`
   makes `I-Need-A-Budget-<version>-Setup.exe`. Per-user, no administrator, into
   `%LOCALAPPDATA%\Programs\I Need A Budget`, a Start menu entry, an uninstaller that leaves the
   data, a check for WebView2, unsigned (ADR 0009). Never change its `AppId`: an update installs
@@ -817,7 +820,10 @@ Don't undo these without asking:
   which would suggest the rest might not be saved. Logging out or shutting down quits
   straight away. On Windows ✕ and Alt+F4 are the close button (there's no ⌘Q); logging off,
   shutting down, Task Manager and an installer's Restart Manager quit straight away, the
-  backup made before Windows is told it may go on. A downloaded update installs on quit.
+  backup made before Windows is told it may go on. When another app stops the log-off and the
+  person cancels, Windows says the session isn't ending: the app carries on as it was
+  (`main._quit_called_off`: not quitting, Downloads watched; the next ✕ asks the page again).
+  A downloaded update installs on quit.
 - **A backup at a quit after a change, into Documents** (issues #21 and #133,
   [ADR 0004](../docs/adr/0004-live-budget-stays-out-of-synced-folders.md)):
   `~/Documents/I Need A Budget Backups`, which iCloud Drive can back up; the live budget

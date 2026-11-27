@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-only
 # Builds the Windows installer, I-Need-A-Budget-<version>-Setup.exe, on a Windows PC (in Git for
 # Windows' bash), and prints its path. Needs the pinned packages (Application Files/requirements.txt)
-# and Inno Setup 6. GitHub's Windows machines run it for every pull request (.github/workflows/tests.yml).
+# and Inno Setup 6.3 or later. GitHub's Windows machines run it for every pull request (.github/workflows/tests.yml).
 #
 #   scripts/build-windows.sh [folder for the installer]
 #
@@ -24,7 +24,7 @@ for candidate in "/c/Program Files (x86)/Inno Setup 6/ISCC.exe" "${LOCALAPPDATA:
     [[ -z "$ISCC" && -x "$candidate" ]] && ISCC="$candidate"
 done
 if [[ -z "$ISCC" ]]; then
-    echo "Inno Setup 6 isn't installed (https://jrsoftware.org/isinfo.php): it makes the installer." >&2
+    echo "Inno Setup 6.3 or later isn't installed (https://jrsoftware.org/isinfo.php): it makes the installer." >&2
     exit 1
 fi
 

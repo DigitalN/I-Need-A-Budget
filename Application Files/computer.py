@@ -79,10 +79,18 @@ class Computer:
         """The window in "light", "dark" or the system's ("system")."""
         raise NotImplementedError
 
-    def when_asked_to_quit(self, should_quit):
+    def can_draw_the_page(self):
+        """Before the window: whether this computer can draw the page. When it can't (Windows
+        without Microsoft's WebView2), it has told the person what's missing and where to get it,
+        and the app stops."""
+        raise NotImplementedError
+
+    def when_asked_to_quit(self, should_quit, called_off):
         """Every way the system asks the app to quit, besides the close button (⌘Q, Quit in
         the Dock, logging out, shutting down), calls `should_quit(logging_out)`: True quits
-        now, False keeps the app open (the page is asking first)."""
+        now, False keeps the app open (the page is asking first). When the app said it may and
+        the system then doesn't quit after all (Windows: another app stopped the log-off),
+        `called_off()`."""
         raise NotImplementedError
 
     def quit(self):

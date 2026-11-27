@@ -235,13 +235,14 @@ class BudgetApp:
     # ── Downloads watcher ──
 
     def _watch(self):
-        while not self._quitting:
-            try:
-                outcome = self._service.watch_downloads()
-                if outcome:
-                    self._send("imported", outcome)
-            except Exception:
-                log.exception("Watching Downloads failed")
+        while True:
+            if not self._quitting:  # a log-off Windows calls off carries on watching (_quit_called_off)
+                try:
+                    outcome = self._service.watch_downloads()
+                    if outcome:
+                        self._send("imported", outcome)
+                except Exception:
+                    log.exception("Watching Downloads failed")
             time.sleep(WATCH_EVERY)
 
     def _on_drop(self, event):
@@ -360,19 +361,32 @@ class BudgetApp:
             return True
         return False
 
+    def _quit_called_off(self):
+        """Windows asked to quit for a log-off or shutdown, the app said it may (backed up and
+        quitting), then another app stopped it and the person cancelled: the app carries on as it
+        was. The backup stays; the next quit makes another only after a change."""
+        if not self._quitting:
+            return
+        log.info("The log-off or shutdown was called off: carrying on")
+        self._quitting = False
+        self._quit_asked = None
+
     def run(self):
         import webview
 
         if self._app_path and self._computer.moved_to_install_folder(self._app_path):
             return  # it's relaunching from there
-        self._computer.when_asked_to_quit(self._should_quit)
+        if not self._computer.can_draw_the_page():
+            return  # it has said what's missing
+        self._computer.when_asked_to_quit(self._should_quit, self._quit_called_off)
         html = (_app_files_dir() / "index.html").read_text(encoding="utf-8")
         width, height = self._computer.first_window_size(MIN_SIZE, WINDOW_SHARE)
         self._window = webview.create_window(
             APP_NAME, html=html, js_api=Api(self), width=width, height=height,
             min_size=MIN_SIZE, background_color=self._background_color(), text_select=True)
         self._window.events.before_show += self._restore_frame
-        self._window.events.before_show += lambda: self._apply_theme(self._settings.get()["theme"])  # the title bar
+        if self._computer.name == "windows":  # its title bar is drawn before the page: in the chosen Appearance
+            self._window.events.before_show += lambda: self._apply_theme(self._settings.get()["theme"])
         self._window.events.closing += self._on_closing
         self._window.events.loaded += self._on_loaded
         threading.Thread(target=self._watch, name="downloads-watcher", daemon=True).start()
