@@ -24,7 +24,7 @@ select your **Personal Team** → Manage Certificates… → **+** → **Apple D
 Builds go to `~/Library/Caches/I Need A Budget-build`, not the repository: folders synced
 by iCloud Drive (such as `~/Documents`) add Finder metadata to app bundles, and codesign
 rejects bundles that have it. Every checkout and worktree shares that folder, so
-`build.sh`, `package.sh`, `install.sh` and `release.sh` take one lock
+`build.sh` and `install.sh` take one lock
 (`scripts/build-lock.sh`): a second build waits, saying so. PyInstaller's binary cache is
 the build's own (`PYINSTALLER_CONFIG_DIR` inside that folder), because another project's
 `--clean` build empties the shared one in `~/Library/Application Support/pyinstaller`,
@@ -78,6 +78,11 @@ The same run builds both apps, unsigned, to try: Build (Windows) makes the insta
 (macOS) the Mac app, signed ad hoc and zipped (it can't update itself). Both are in the run's
 Summary, under Artifacts, for 30 days. The Mac's disk image and the signed builds are the
 release's.
+
+A pull request or push that changes how a release is built or checked (the workflow, the build,
+signing and checking scripts, the spec, the updater: the paths in `.github/workflows/release.yml`)
+also runs a dry run of the release, Release in its Checks: everything a release does but publish,
+signed with throwaway identities made in the run (*Release checklist*).
 
 ### Trying a pull request's Windows installer
 
@@ -144,107 +149,133 @@ then `python3 scripts/screenshots.py` draws them off screen with WebKit (the lis
 
 ## Release checklist
 
-Go through all of it for every release. Installed copies update themselves from the
-latest release, so a mistake reaches every copy. Merging a pull request doesn't release
-anything.
+Go through all of it for every release. Installed copies update themselves from the latest
+release, so a mistake reaches every copy. Merging a pull request doesn't release anything.
 
-**Who does what.** The maintainer only merges PRs (`VERSION` already says the next
-release's version). Claude releases from this Mac, where the signing certificate is, only
-when the maintainer says it's ready (one release for everything merged since the last),
-with **`scripts/release.sh NOTES.md`** (notes written outside the repo).
-It does every step below that a script can: main matches GitHub, version newer than the
-latest release, tests, certificate valid 30+ days, build, `hdiutil verify`,
-`scripts/check-update.py` (the installed copy's own updater code, from its tag, accepts
-the image), publish from the exact commit, check what installed copies see, draft the
-previous release. `scripts/release.sh --dry-run` runs all of it except publishing, on any
-branch. The maintainer never builds anything.
+**Who does what.** The maintainer only merges PRs (`VERSION` already says the next release's
+version) and approves the release run. Claude starts the run, from the Mac or the PC, only when
+the maintainer says it's ready (one release for everything merged since the last). GitHub's
+machines build, sign, check and publish both apps (`.github/workflows/release.yml`,
+[ADR 0009](adr/0009-both-apps-are-built-and-signed-on-github.md)); nobody builds a release on
+their own computer.
 
-**History.** 1.0.0 was installed from a local build and never published. 1.0.1
-(2026-10-13) was the first release, and 1.0.0 → 1.0.1 the first update installed through
-the updater: `Downloading`, `ready to install`, `Installed 1.0.1; relaunching`, then the
-schema upgrade with its backup. Until a release is published, Check now just says the app
-is up to date (1.0.0 and 1.0.1 also said that when the token couldn't see the repository;
-1.0.2 reports that as an error).
+**What the run does**, stopping at the first problem. Publish needs every job before it to have
+passed, on both systems, so a failure anywhere publishes nothing.
 
-**Lessons from 1.0.1:**
-- Merging isn't releasing. No release on GitHub means nothing to update to.
-- Several Apple Development certificates can be in the keychain; an expired one is
-  harmless. What matters is the one `security find-identity -v -p codesigning` lists
-  (team `XT4LT7MS6Y`, valid until 2027-10-05 as of 1.0.1). Renew it before then.
-- To launch a built copy for a test: it must be in an Applications folder (elsewhere it
-  offers to move itself), so ditto it into `~/Applications/<test folder>/`, start its
-  binary directly with `INAB_DATA_DIR=<throwaway>` (not `open`: the same bundle identifier
-  can hand off to the maintainer's running copy), kill only that PID, delete the folder.
-- The installed copy runs its own version's updater, which is why `check-update.py`
-  checks with the code at the installed version's tag.
+1. **What's going out** (Ubuntu): started on `main`; `VERSION` newer than the latest release (the
+   one installed copies see); no tag `v<version>` yet; the notes without card numbers.
+2. **Tests and builds**, on macOS and Windows, with no secret in reach: the whole suite; the Mac
+   app (`scripts/build.sh --adhoc`), which `scripts/check-mac-app.py` checks will start on every
+   Mac it says it does: no program or library in it needs a macOS newer than 12
+   (`LSMinimumSystemVersion`), whatever macOS, Python and PyInstaller GitHub's Macs have, and each
+   is built for the main program's processors; the Windows installer (`scripts/build-windows.sh`),
+   with `release-key.pub` in it.
+3. **Sign**, after the **Approve**. This is the only job with the `release` environment, so it
+   waits until the maintainer approves it (GitHub emails them: the run → Review deployments →
+   Approve), and it's the only one whose steps get the secrets (*Release secrets*). It runs only
+   the repository's own scripts, Apple's tools and OpenSSL:
+   - `scripts/sign-mac.sh`: the certificate into a temporary keychain, the app signed as
+     `build.sh` signs, then checked with the requirement installed copies use (team
+     `XT4LT7MS6Y`, Apple's chain); the certificate must have 30 or more days left.
+   - `scripts/sign-windows.sh`: the installer signed with `RELEASE_KEY`, once its public half is
+     known to be `release-key.pub`; the `.sig` then passes the app's own check.
+   - The keychain and the key are deleted before the job ends (an `always()` step too). The log
+     shows the certificate's team, fingerprint and end date, never its owner's name.
+4. **The disk image** (macOS), made without Finder (`scripts/make-dmg.py`, with dmgbuild): the
+   app and Applications with the arrow, on the background, with the app's icon as the disk's, in
+   the window 1.4.3 had. `hdiutil verify`, then `make-dmg.py --check` reads it back: the window,
+   what's in it, the app's version and its signature.
+5. **Updates.** The previous release is installed on GitHub's Mac, and `scripts/check-update.py`
+   runs that version's own updater, from its tag, on the new disk image, as if it had just
+   downloaded it: it must pick it out of the release's three files and accept it. On Windows the
+   same, once a release has a Windows installer to install first (1.5.0 is the first). And the
+   new installer is installed quietly, as a person would: that copy must have the release key
+   and be able to update itself.
+6. **Publish** (Ubuntu): `v<version>`, from the exact commit the run built, with the `.dmg`, the
+   `Setup.exe` and its `.sig`. Then the API installed copies read must show that tag, at that
+   commit, with exactly those three files, byte for byte (if not, the release goes back to a
+   draft and the run fails), and the previous release becomes a draft.
 
-### Before building
+**A dry run** does all of it but publish. Started on `main` (`-f dry_run=true`) it signs with the
+real secrets, after the Approve, which proves them without releasing; anywhere else it signs with
+throwaway identities made in the run (a self-signed certificate standing in for the team, a
+throwaway key for the release key) and never reaches the `release` environment. A dry run whose
+`VERSION` isn't newer than the latest release builds as the next version, so the update checks
+have something newer to check. Its files are in the run's Summary for 7 days.
 
-- [ ] Everything going out is merged into `main`, and the local `main` matches GitHub
-  (`git pull`).
+`gh workflow run` only works for a workflow that's on `main`, so until 1.5.0 is merged the dry
+runs come from pull requests and pushes (*Checks on GitHub*).
+
+### Before starting
+
+- [ ] Everything going out is merged into `main`: the run builds `main` as GitHub has it.
 - [ ] `VERSION` in `Application Files/main.py` is higher than the latest release (the
   first PR after a release raises it: by 0.0.1, or 0.1 for a big change). The build
-  copies it into the app's `Info.plist`; installed copies only update to a higher version.
-- [ ] `python3 -m pytest` passes (including `test_privacy.py`), and so did `main`'s Tests
-  checks on GitHub.
-- [ ] The signing certificate is valid and not about to expire:
-  `security find-identity -v -p codesigning` lists an *Apple Development* identity from
-  team `XT4LT7MS6Y`. Installed copies refuse updates signed by any other team.
+  copies it into the app's `Info.plist` and the installer; installed copies only update to a
+  higher version.
+- [ ] `main`'s Tests checks passed on GitHub (the run runs them again).
 - [ ] If the database schema changed: `SCHEMA_VERSION` is raised and `db._migrate` upgrades
   an existing database (test it on a copy of a real one in a throwaway folder).
-
-### Build and check the disk image
-
-- [ ] `scripts/package.sh` makes `~/Library/Caches/I Need A Budget-dmg/I-Need-A-Budget-<version>.dmg`
-  (outside the repository, and only the newest). That's the only file a release has. The
-  first time, macOS asks to let Terminal control Finder (it lays out the disk image
-  window): allow it.
-- [ ] Open the DMG: the app and Applications with the arrow between them.
-- [ ] The app inside has the new version, a valid signature, and the right team:
-  ```bash
-  M=$(hdiutil attach -nobrowse -readonly -noautoopen ~/Library/Caches/"I Need A Budget-dmg"/I-Need-A-Budget-1.0.0.dmg | grep -o '/Volumes/.*$')
-  defaults read "$M/I Need A Budget.app/Contents/Info" CFBundleShortVersionString
-  codesign --verify --deep --strict "$M/I Need A Budget.app" && codesign -dvv "$M/I Need A Budget.app" 2>&1 | grep TeamIdentifier
-  hdiutil detach "$M"
-  ```
-
-### Test updating, if the updater, packaging or signing changed
-
-- [ ] A test copy updates to a higher-version build from a stand-in release (see
-  *Testing the updater* below).
-- [ ] It refuses a build changed after signing, one signed ad hoc or by another team, and
-  a release whose tag is newer than the app inside it.
-- [ ] Afterwards, the test copy, its data folder and the test disk images are deleted.
-
-### Publish
-
+- [ ] If the updater, packaging or signing changed: a test copy updates to a higher-version
+  build and refuses bad ones (*Testing the updater*), and a dry run passed.
 - [ ] Release notes: what's new since the last release (every PR merged since), in
   plain words. **No private details**:
   no amounts, payee or people's names, categories or account digits from the
   maintainer's data, even as examples. Write them outside the repository (e.g. the
-  scratchpad), not as a file in it.
-- [ ] Publish it, tagged `v<version>`, from the commit it was built from:
+  scratchpad), not as a file in it, and check them on the computer you start from, before they
+  reach GitHub (a run's inputs are public):
   ```bash
-  gh release create v1.0.0 ~/Library/Caches/"I Need A Budget-dmg"/I-Need-A-Budget-1.0.0.dmg --title "I Need A Budget 1.0.0" --notes-file notes.md
+  python3 scripts/hooks/privacy_check.py --what "In the release notes" NOTES.md
   ```
-  Drafts and pre-releases are skipped by the updater.
-- [ ] Turn the previous release into a draft so the page lists only the current one:
-  `gh release edit v0.9.0 --draft=true`.
+  It checks `.git-denylist` where there is one (the Mac). GitHub's machines have none: the run
+  checks the notes again there, for card numbers only.
+
+### Start it
+
+```bash
+gh workflow run release.yml --repo DigitalN/I-Need-A-Budget --ref main -F notes=@NOTES.md
+gh run watch --repo DigitalN/I-Need-A-Budget "$(gh run list --repo DigitalN/I-Need-A-Budget --workflow release.yml --limit 1 --json databaseId --jq '.[0].databaseId')"
+```
+
+`-F notes=@NOTES.md` reads the file (in PowerShell, quote it: `-F "notes=@NOTES.md"`). The run
+stops at Sign until the maintainer approves it: tell them it's waiting. To try it first:
+`gh workflow run release.yml --ref main -f dry_run=true`. A run waiting for the Approve can be
+cancelled (`gh run cancel <id>`), and nothing is published.
+
+If a job fails, nothing was published: fix it in a pull request, merge it, and start again.
+If GitHub took the release but showed it wrong, Publish says so and makes it a draft again.
 
 ### After publishing
 
-- [ ] The API the updater reads shows the new tag with only the `.dmg`:
-  ```bash
-  gh api repos/DigitalN/I-Need-A-Budget/releases/latest --jq '.tag_name, [.assets[].name]'
-  ```
+- [ ] The run's Summary says Published v<version>, and the release page lists only it, with
+  the `.dmg`, the `Setup.exe` and the `.sig`.
 - [ ] An older installed copy picks it up: Settings → Check now. `app.log` shows
-  `Downloading`, `ready to install`, and on quit `Installed <version>`.
+  `Downloading`, `ready to install`, and on quit `Installed <version>` (on Windows,
+  `Installing <version> after quitting`, then `Installed <version>`).
 - [ ] The maintainer's own copy updates the same way (within a day, or Settings → Check
   now, then quit). Its log shows `Backed up the budget to …/Documents/I Need A Budget
   Backups/…` on quit (`No backup made: …` if nothing changed since the newest one). If
   the release raised the schema, it also shows `Upgraded the database`, and that folder
   has the pre-upgrade copy.
 - [ ] CLAUDE.md and the README describe what's shipping (new features, decisions, gaps).
+
+**History.** 1.0.0 was installed from a local build and never published. 1.0.1
+(2026-10-13) was the first release, and 1.0.0 → 1.0.1 the first update installed through
+the updater. Until 1.4.3 releases were built and published from the maintainer's Mac by a
+script (`scripts/release.sh`); 1.5.0 is the first from the release run. Until a release is
+published, Check now just says the app is up to date.
+
+**Lessons:**
+- Merging isn't releasing. No release on GitHub means nothing to update to.
+- What matters on a Mac is the team (`XT4LT7MS6Y`), not the certificate: a renewed
+  certificate from the same Apple account goes on updating every copy (*Release secrets*
+  says how to replace it, before it expires on 2027-10-05).
+- To launch a built copy for a test: it must be in an Applications folder (elsewhere it
+  offers to move itself), so ditto it into `~/Applications/<test folder>/`, start its
+  binary directly with `INAB_DATA_DIR=<throwaway>` (not `open`: the same bundle identifier
+  can hand off to the maintainer's running copy), kill only that PID, delete the folder.
+- The installed copy runs its own version's updater, which is why `check-update.py`
+  checks with the code at the installed version's tag.
 
 ## How updates work
 
@@ -272,6 +303,10 @@ release key, the installer, Credential Manager) in `computer_windows.py` and
   release, so a release keeps one), Windows `I-Need-A-Budget-<version>-Setup.exe` and its
   signature `I-Need-A-Budget-<version>-Setup.exe.sig`. A release whose installer has no
   signature is refused before anything is downloaded.
+- **Where releases come from:** the release run (*Release checklist*), which builds and signs
+  the three files on GitHub's machines and, before publishing them, makes every check below
+  itself, with the previous release's own updater code (`scripts/check-update.py`), so a
+  release installed copies would refuse never goes out.
 - **Checks on a Mac:** the app is copied out of the disk image and `codesign --verify --deep
   --strict` must pass with the requirement
   `identifier "com.digitaln.ineedabudget" and anchor apple generic and certificate leaf[subject.OU] = "<this copy's team>"`.

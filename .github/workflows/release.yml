@@ -68,8 +68,8 @@ defaults:
     shell: bash  # Git for Windows' bash on Windows: the same commands everywhere
 
 jobs:
-  # What release.sh checked before building: from main, a version newer than the latest release, no such
-  # tag yet, and notes with nothing private in them. Works out what the rest of the run does.
+  # What scripts/release.sh (before 1.5.0) checked first: from main, a version newer than the latest
+  # release, no such tag yet, and notes with nothing private in them. Works out what the rest does.
   check:
     name: What's going out
     runs-on: ubuntu-latest

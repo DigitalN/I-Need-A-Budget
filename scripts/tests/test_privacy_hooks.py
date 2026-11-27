@@ -105,7 +105,7 @@ def test_the_release_notes_are_checked_with_the_same_rules(repo):
     assert subprocess.run(check, capture_output=True, text=True).returncode == 1
     notes.write_text(f"Card {card_number('9999')} was charged twice.\n")
     assert subprocess.run(check, capture_output=True, text=True).returncode == 1
-    assert "privacy_check.py" in (ROOT / "scripts" / "release.sh").read_text()
+    assert "privacy_check.py" in (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
 
 
 def test_luhn_and_the_shapes_it_looks_at():
