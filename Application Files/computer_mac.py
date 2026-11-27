@@ -51,6 +51,9 @@ class Mac(Computer):
     curl = "/usr/bin/curl"
     gh = ("/opt/homebrew/bin/gh", "/usr/local/bin/gh", "/usr/bin/gh")
 
+    def __init__(self):
+        self._signatures = {}  # installed app → (team, bundle identifier), as it was at launch
+
     # ── folders ──
 
     def data_dir(self):
@@ -222,18 +225,30 @@ class Mac(Computer):
         return result.stdout.strip() if result.returncode == 0 else None
 
     def save_token(self, token):
-        from updater import UpdateError
+        """The token goes inside quotes on `security`'s command line, so only a token's shape gets
+        that far."""
+        from updater import UpdateError, valid_token
 
         if not token:
             _run(["/usr/bin/security", "delete-generic-password", "-s", KEYCHAIN_SERVICE, "-a", KEYCHAIN_ACCOUNT])
             return
+        if not valid_token(token):
+            raise UpdateError("That doesn't look like a GitHub token.")
         command = f'add-generic-password -U -s "{KEYCHAIN_SERVICE}" -a "{KEYCHAIN_ACCOUNT}" -w "{token}"\n'
         result = _run(["/usr/bin/security", "-i"], input=command, text=True)
         if result.returncode != 0 or self.saved_token() != token:
             raise UpdateError("Couldn't save the token in the Keychain.")
 
+    def _signed(self, app):
+        """(team, bundle identifier) the installed app is signed with, read the first time they're
+        asked for, at launch (why_updates_off): what every update downloaded later must match,
+        whatever is put in the app's place meanwhile."""
+        if app not in self._signatures:
+            self._signatures[app] = (own_team(app), info_value(app, "CFBundleIdentifier"))
+        return self._signatures[app]
+
     def why_updates_off(self, app):
-        if own_team(app) is None:
+        if self._signed(app)[0] is None:
             return "this copy isn't signed by a developer team, so updates can't be verified"
         if not in_applications_folder(app):
             return f"{APP_NAME} isn't in the Applications folder"
@@ -257,11 +272,11 @@ class Mac(Computer):
         return Path(folder_url.path())
 
     def take_update(self, download, app, folder):
-        bundle_id = info_value(app, "CFBundleIdentifier")
+        team, bundle_id = self._signed(app)
         update = folder / app.name
         copy_app_from_image(download, update, bundle_id)
         download.unlink(missing_ok=True)
-        return verify(update, own_team(app), bundle_id), update
+        return verify(update, team, bundle_id), update
 
     def swap_in(self, app, update):
         """Swaps the two folders in one step, so there's never a moment without an app."""

@@ -214,3 +214,38 @@ def test_the_token_is_kept_where_the_computer_keeps_it(tmp_path):
     assert computer.token is None
     computer.token = "not a token"  # whatever's saved, only a token's shape is sent
     assert updater.saved_token(computer) is None
+
+
+# ── the Mac's own steps (computer_mac.py), with its tools stood in for ──
+
+def test_a_mac_checks_every_update_against_the_app_as_it_was_at_launch(tmp_path, monkeypatch):
+    """The team and bundle identifier are read once, at launch (why_updates_off): an unsigned build
+    put in the app's place while it runs changes nothing about what an update must match."""
+    import computer_mac
+
+    app = tmp_path / "I Need A Budget.app"
+    app.mkdir()
+    signed, reads, verified = {"team": "ABCDE12345"}, [], []
+    monkeypatch.setattr(computer_mac, "own_team", lambda a: reads.append("codesign") or signed["team"])
+    monkeypatch.setattr(computer_mac, "info_value", lambda a, key: "com.example.sample")
+    monkeypatch.setattr(computer_mac, "in_applications_folder", lambda a: True)
+    monkeypatch.setattr(computer_mac, "copy_app_from_image", lambda image, destination, bundle_id: None)
+    monkeypatch.setattr(computer_mac, "verify", lambda update, team, bundle_id: verified.append((team, bundle_id)) or "9.9")
+    mac = Mac()
+    assert mac.why_updates_off(app) is None
+    signed["team"] = None  # an ad-hoc build dragged into Applications meanwhile
+    download = tmp_path / "update.dmg"
+    download.write_bytes(b"sample")
+    assert mac.take_update(download, app, tmp_path) == ("9.9", tmp_path / app.name)
+    assert verified == [("ABCDE12345", "com.example.sample")] and reads == ["codesign"]
+    assert not download.exists()
+
+
+def test_a_mac_puts_only_a_tokens_shape_on_securitys_command_line(monkeypatch):
+    import computer_mac
+
+    ran = []
+    monkeypatch.setattr(computer_mac, "_run", lambda arguments, **k: ran.append(arguments))
+    with pytest.raises(UpdateError, match="doesn't look like a GitHub token"):
+        Mac().save_token('abc" ; rm -rf ~ "' + "a" * 30)
+    assert ran == []

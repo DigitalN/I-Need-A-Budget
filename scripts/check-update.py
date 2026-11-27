@@ -5,7 +5,9 @@
 Runs the installed version's own updater code (taken from its git tag, v<version>)
 against the image, exactly as it would after downloading it: the app inside must have
 the installed copy's bundle identifier, pass `codesign --verify --deep --strict` signed by
-the same team, and be a newer version. Prints why not, if not.
+the same team, and be a newer version. From 1.5.0 that's computer_mac's `why_updates_off` and
+`take_update`, so a copy that wouldn't update at all (outside Applications) says so too.
+Prints why not, if not.
 
     python3 scripts/check-update.py ~/Library/Caches/"I Need A Budget-dmg"/I-Need-A-Budget-1.0.2.dmg [installed app]
 
@@ -66,10 +68,18 @@ def main():
             return 1
         downloaded = tmp / "update.dmg"
         shutil.copy2(image, downloaded)  # where the updater would have downloaded it
-        app = tmp / installed.name
         try:
-            mac.copy_app_from_image(downloaded, app, bundle_id)
-            version = mac.verify(app, team, bundle_id)
+            if hasattr(mac, "Mac"):  # 1.5.0 and later: the steps the app takes, but the download's folder
+                this = mac.Mac()     # (folder_for_update needs PyObjC: the temporary folder stands in for it)
+                off = this.why_updates_off(installed)
+                if off:
+                    print(f"The installed copy ({current}) doesn't update itself: {off}.")
+                    return 1
+                version, _ = this.take_update(downloaded, installed, tmp)
+            else:
+                app = tmp / installed.name
+                mac.copy_app_from_image(downloaded, app, bundle_id)
+                version = mac.verify(app, team, bundle_id)
         except updater.UpdateError as e:
             print(f"The installed copy ({current}) would refuse it: {e}")
             return 1
