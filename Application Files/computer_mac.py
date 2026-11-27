@@ -45,6 +45,12 @@ def _run(arguments, **kwargs):
     return subprocess.run(arguments, capture_output=True, **kwargs)
 
 
+def platform_uuid(text):
+    """The IOPlatformUUID in what `ioreg -rd1 -c IOPlatformExpertDevice` prints, or None."""
+    match = re.search(r'"IOPlatformUUID"\s*=\s*"([^"]+)"', text or "")
+    return match[1] if match else None
+
+
 class Mac(Computer):
     name = "mac"
     update_file = (".dmg", "disk image")
@@ -67,6 +73,14 @@ class Mac(Computer):
 
     def downloads_dir(self):
         return Path.home() / "Downloads"
+
+    def machine_id(self):
+        """The Mac's IOPlatformUUID: its own, whatever was copied onto it."""
+        try:
+            result = _run(["/usr/sbin/ioreg", "-rd1", "-c", "IOPlatformExpertDevice"], text=True, timeout=10)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        return platform_uuid(result.stdout) if result.returncode == 0 else None
 
     # ── one copy at a time ──
 

@@ -43,6 +43,12 @@ class Computer:
         """The person's Downloads folder, as the system has it (Settings' default)."""
         raise NotImplementedError
 
+    def machine_id(self):
+        """This machine's own id, which a data folder copied to another machine (Migration
+        Assistant, a restored disk) doesn't carry: budget_folder.py makes this computer a new id in
+        saves when it no longer matches. None when the system won't say."""
+        raise NotImplementedError
+
     # ── one copy at a time ──
 
     def lock(self, path):

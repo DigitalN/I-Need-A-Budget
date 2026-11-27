@@ -40,7 +40,8 @@ class Clock:
 def computer(tmp_path, name, folder=None, clock=None, sleep=lambda s: None):
     """One computer: its own data folder and working copy, and the budget folder it uses."""
     data = tmp_path / name
-    return BudgetFolder(Database(data / "budget.db"), data, folder, computer=name, app_version="1.5.0",
+    return BudgetFolder(Database(data / "budget.db"), data, folder, computer_name=name, app_version="1.5.0",
+                        machine_id=f"machine-{name}",
                         clock=clock or Clock(), now=lambda: NOW, sleep=sleep)
 
 
@@ -292,7 +293,7 @@ def test_another_computers_note_is_read_back(tmp_path):
     assert a.others_open() == [{"computer": "PC-B", "since": "2026-11-27T09:14:05-07:00"}]
     b.at_quit()
     assert a.others_open() == []
-    relaunched = BudgetFolder(b.db, b.data_dir, folder, computer="PC-B", now=lambda: NOW)
+    relaunched = BudgetFolder(b.db, b.data_dir, folder, computer_name="PC-B", now=lambda: NOW)
     assert relaunched.at_launch()["open_elsewhere"] == [{"computer": "PC-A", "since": "2026-11-27T09:14:05-07:00"}]
 
 
@@ -311,7 +312,7 @@ def test_a_folder_that_goes_away_and_comes_back(tmp_path):
     assert a.imports_dir() == a.data_dir / "Imported Files"
     write_kept(a.data_dir / "Imported Files" / "2026-11", "2026-11-26 101500 statement.ofx")
     assert not folder.exists()  # the app never makes the folder again
-    relaunched = BudgetFolder(a.db, a.data_dir, folder, computer="PC-A", now=lambda: NOW)
+    relaunched = BudgetFolder(a.db, a.data_dir, folder, computer_name="PC-A", now=lambda: NOW)
     assert relaunched.at_launch()["state"] == "unreachable" and not folder.exists()
 
     away.rename(folder)
@@ -511,7 +512,7 @@ def service(tmp_path, name):
     downloads.mkdir(parents=True, exist_ok=True)
     settings = Settings(data / "settings.json")
     settings.update({"downloads_dir": str(downloads)})
-    app = BudgetService(Database(data / "budget.db"), settings, data, computer=name)
+    app = BudgetService(Database(data / "budget.db"), settings, data, computer_name=name)
     app.test_downloads = downloads
     return app
 
@@ -536,7 +537,7 @@ def test_the_window_chooses_moves_and_opens_the_budget_folder(tmp_path):
     assert b.watch_budget_folder()["took"]["computer"] == "PC-A"
     assert [g["name"] for g in call(b, "categories")] == ["Everyday"]
 
-    relaunched = BudgetService(a.db, a.settings, a.data_dir, computer="PC-A")
+    relaunched = BudgetService(a.db, a.settings, a.data_dir, computer_name="PC-A")
     assert relaunched.folder.folder == folder
     assert relaunched.budget_folder_at_launch()["state"] == "saved"
 
@@ -704,8 +705,11 @@ def test_restoring_a_backup_into_the_folder_is_taken_by_every_computer(tmp_path)
     add_category(a.db, "Gifts")
     a.check(wait=False)
     assert b.check()["took"]["computer"] == "PC-A" and categories(b.db) == ["Groceries", "Gifts"]
-    shutil.copyfile(made, folder / "Budget 2.inab")  # a sync tool's copy of the restored one: old now
-    assert a.check()["state"] == "saved" and "Budget 2.inab" not in names(folder)
+    shutil.copyfile(made, folder / "Budget 2.inab")  # restored again (however many times: a file no computer saved)
+    state = a.check()
+    assert state["took"]["computer"] is None and categories(a.db) == ["Groceries"]
+    assert "Budget 2.inab" not in names(folder) and categories_in(folder / FILE_NAME) == ["Groceries"]
+    assert b.check()["took"] and categories(b.db) == ["Groceries"]
 
 
 def test_restoring_a_backup_asks_a_computer_with_changes_not_saved_yet(tmp_path):
@@ -738,7 +742,7 @@ def test_a_backup_restored_as_the_working_copy_asks_instead_of_being_replaced(tm
         (a.data_dir / side).unlink(missing_ok=True)
     shutil.copyfile(made, a.data_dir / "budget.db")
     saved = (folder / FILE_NAME).read_bytes()
-    relaunched = BudgetFolder(Database(a.data_dir / "budget.db"), a.data_dir, folder, computer="PC-A", now=lambda: NOW)
+    relaunched = BudgetFolder(Database(a.data_dir / "budget.db"), a.data_dir, folder, computer_name="PC-A", now=lambda: NOW)
     assert relaunched.at_launch()["state"] == "two_computers"
     assert categories(relaunched.db) == ["Groceries"] and (folder / FILE_NAME).read_bytes() == saved
 

@@ -8,7 +8,8 @@ What's where:
   in WAL mode, three files, never in the budget folder: a sync tool could catch it halfway),
   `Saves/` (the save it started from, never pruned while it is, the other computer's while it
   was changed on two computers, and the few before, `<save id>.inab`), and `computer.json`
-  (this computer's id in saves). Its settings and logs are there too.
+  (this computer's id in saves: new for each budget, and when the machine isn't the one it was
+  made on, `computer.machine_id`, so a copied data folder makes its own). Settings and logs too.
 - The budget folder keeps `Budget.inab` (the budget, whole), `Backups/` (every computer's,
   backups.py's rules) and `Imported Files/`, and a note from each computer the budget is open on
   (`.Budget open on <computer>.json`), removed at quit: a heads-up, not a lock.
@@ -27,6 +28,8 @@ about saves and backups: they aren't a change), a few seconds after changes stop
 **Which save came from which** (`relation`): each save counts how many saves each computer has
 made in the line it's on (a version vector: `counts`, computer id → count). A save is built on
 another when each of its counts is at least the other's: exact however many saves there were.
+Taking a restored backup starts a new line (a `restored:` count of its own, the same on every
+computer, and no computer's counts), which comes after every save before it.
 Every budget in the folder is a save: Budget.inab, and a sync tool's conflict copy (OneDrive's
 `Budget-<computer>.inab`, iCloud's `Budget 2.inab`, Dropbox's `Budget (… conflicted copy
 …).inab`) the same way. Watching (`check`, every few seconds, the Downloads watcher's rhythm):
@@ -36,9 +39,14 @@ Every budget in the folder is a save: Budget.inab, and a sync tool's conflict co
   otherwise the budget was **changed on two computers**;
 - neither (each computer saved on top of the save they both started from, before seeing the
   other's): changed on two computers;
-- one no computer saved (a backup copied in as Budget.inab to restore it): a new save, taken by
-  every computer that changed nothing, the other side of the question on one that did.
+- one no computer saved (a backup copied in as Budget.inab to restore it, however many times): a
+  new save, taken by every computer that changed nothing, the other side of the question on one
+  that did;
+- an older one than this computer's, other than its own last save in the folder (a sync tool's
+  "restore previous version"): never saved over and never gone back to without asking (`older`).
 A save with the same contents as this computer's budget is the same save, whatever its counts.
+Whenever what this computer records differs from the folder's save (after Keep the other, or such
+a save), it saves, so the other computers see it counted.
 Changed on two computers, nothing is saved or taken until you choose: `two_computers()` gives the
 three budgets the window shows each side's changes from (the save both started from, when this
 computer still has it; this computer's working copy; the other computer's save), and
@@ -66,6 +74,10 @@ this computer's budget, unless it's new and empty, goes into that folder's Backu
 the budget folder as `Budget.inab`. Backups keep nothing about saves, so it's one no computer
 saved: each takes it when it next looks.
 
+**A Budget.inab that's gone** once this computer's save was in the folder (`save_landed`) is never
+made again without asking (`missing`): the window offers to save it again (`save_again`) or to
+choose where the budget is now.
+
 Locks, in this order: this module's, then `Turns` (a take waits for the page's requests, which
 share the budget, so it never lands between a request's read and its write), then the
 database's. A request never takes this module's lock (service.FOLDER_REQUESTS don't share).
@@ -90,6 +102,7 @@ from datetime import datetime
 from pathlib import Path
 
 import backups
+import computer
 from db import SCHEMA_VERSION
 from errors import UserError
 from util import short_day
@@ -107,6 +120,8 @@ SAVE_AFTER = 5                # seconds without a change before saving
 REPLACE_TRIES = 40            # × REPLACE_WAIT: how long a file Windows or a sync tool holds is waited for
 REPLACE_WAIT = 0.25
 SAVE_KEY = backups.SAVE_KEY   # meta: the save this budget is, or started from
+LANDED_KEY = backups.LANDED_KEY  # meta: the newest of this computer's saves known to be in the folder
+RESTORED = "restored:"        # a count's key for a restored backup's line
 MOVED_NOTE = ".Budget moved.json"
 _OPEN_NOTE = re.compile(r"\.Budget open on (.+)\.json")
 _PLACEHOLDER = re.compile(r"\.(.+\.inab)\.icloud", re.IGNORECASE)  # iCloud: in the cloud, not downloaded yet
@@ -147,11 +162,6 @@ class Save:
         return cls(id=raw["id"], counts=counts, computer=raw.get("computer"), saved_at=raw.get("saved_at"),
                    app_version=raw.get("app_version"), schema_version=int(raw.get("schema_version") or SCHEMA_VERSION),
                    digest=raw.get("digest"))
-
-    def line(self):
-        """Its counts, or for one no computer saved (a backup restored by hand) a count of its own,
-        so the saves made from it count it too."""
-        return self.counts or {f"restored:{self.id}": 1}
 
     def about(self):
         """Who saved it and when, for the window."""
@@ -243,23 +253,50 @@ def _merge(*counts):
     return merged
 
 
+def _restores(counts):
+    return {k: n for k, n in counts.items() if k.startswith(RESTORED)}
+
+
+def _combine(*counts):
+    """The counts of a save built on all of these: the latest restore's line only (counts from
+    before a restore don't carry into the line it started)."""
+    restores = _merge(*(_restores(c) for c in counts))
+    return _merge(restores, *(c for c in counts if _restores(c) == restores))
+
+
+def _after_restore(save, mine):
+    """The counts of a restored backup once it's taken: a new line, the same on every computer that
+    takes it (the restores before it, and its own, one more if it was restored before)."""
+    restores = _restores(mine.counts) if mine else {}
+    key = f"{RESTORED}{save.id}"
+    return {**restores, key: restores.get(key, 0) + 1}
+
+
+def _counts_of(save, mine):
+    return save.counts if save.counts else _after_restore(save, mine)
+
+
 def relation(save, mine):
     """How `save`, in the folder, stands to `mine`, the save this computer's budget is or started
-    from: SAME, OLDER (one this computer's was built on), NEWER (built on this computer's: one no
-    computer saved, a backup restored, is that until it's taken) or APART (neither, or two
-    different saves counting the same: a data folder copied to another computer)."""
+    from: SAME, OLDER (one this computer's was built on), NEWER (built on this computer's; one no
+    computer saved, a backup restored, always is, however many times it's restored; one in a later
+    restore's line is too) or APART (neither, or two different saves counting the same)."""
     if mine is None:
         return APART
     if save.id == mine.id:
         return SAME
-    theirs = save.line()
-    if theirs == mine.counts:
-        return APART
-    if _covers(mine.counts, theirs):
-        return OLDER
-    if not save.counts or _covers(theirs, mine.counts):
+    if not save.counts:
         return NEWER
-    return APART
+    theirs, ours = save.counts, mine.counts
+    if _restores(theirs) != _restores(ours):
+        if _covers(_restores(theirs), _restores(ours)):
+            return NEWER
+        return OLDER if _covers(_restores(ours), _restores(theirs)) else APART
+    if theirs == ours:
+        return APART
+    if _covers(ours, theirs):
+        return OLDER
+    return NEWER if _covers(theirs, ours) else APART
 
 
 def read_save(path):
@@ -322,14 +359,16 @@ def when(stamp):
 class BudgetFolder:
     """The budget folder of one computer: `db` is its working copy, `data_dir` its data folder
     (Imported Files waits there while the folder can't be reached), `folder` the budget folder
-    (None until one is chosen). `computer` names this computer in saves and notes; `turns` is
-    shared with the service's requests; `clock`, `now` and `sleep` are for the tests."""
+    (None until one is chosen). `computer_name` names this computer in saves and notes (a name,
+    not computer.this()); `machine_id` is the machine's own (computer.machine_id by default);
+    `turns` is shared with the service's requests; `clock`, `now` and `sleep` are for the tests."""
 
-    def __init__(self, db, data_dir, folder=None, computer=None, app_version="dev", turns=None,
-                 save_after=SAVE_AFTER, clock=time.monotonic, now=None, sleep=time.sleep):
+    def __init__(self, db, data_dir, folder=None, computer_name=None, app_version="dev", turns=None,
+                 machine_id=None, save_after=SAVE_AFTER, clock=time.monotonic, now=None, sleep=time.sleep):
         self.db = db
         self.data_dir = Path(data_dir)
-        self.computer = computer or this_computer()
+        self.computer = computer_name or this_computer()
+        self._machine = machine_id
         self.app_version = app_version
         self.turns = turns or Turns()
         self._save_after = save_after
@@ -360,9 +399,12 @@ class BudgetFolder:
         itself: `check` does): {'folder', 'state', 'unsaved', 'saved', ...}. 'state' is one of: none
         (no budget folder yet), unreachable (working on this computer's copy), waiting (Budget.inab
         can't be read yet: still syncing, or not looked at yet), saved, unsaved (changes not saved
-        yet), two_computers ('other': who saved the other one, when), newer ('other': saved by a
-        newer version, 'message'), moved ('moved': which computer moved it, when). 'saved': the save
-        this computer's budget is or started from; 'open_elsewhere': the other computers it's open on."""
+        yet), two_computers ('other': who saved the other one, when), older ('other': an older save
+        put back in the folder; the window asks Use it / Keep the newer one, keep_other / keep_this),
+        newer ('other': saved by a newer version, 'message'), moved ('moved': which computer moved it,
+        when), missing (Budget.inab is gone from the folder: save_again, or choose where it is now).
+        'saved': the save this computer's budget is or started from; 'open_elsewhere': the other
+        computers it's open on."""
         state = self._state
         return dict(state) if state else self._set("none" if self.folder is None else "waiting")
 
@@ -416,22 +458,25 @@ class BudgetFolder:
         main = next((s for s in saves if s.name == FILE_NAME), None)
         if main is None and (FILE_NAME in unreadable or _placeholders(folder)):
             return self._set("waiting")  # still syncing, or iCloud hasn't downloaded it
-        if not saves and (moved := _read_json(folder / MOVED_NOTE)):
+        if moved := _read_json(folder / MOVED_NOTE):  # whatever else is there: the budget isn't saved here
+            self._other = None
             return self._set("moved", moved={"computer": moved.get("computer"), "moved_at": moved.get("moved_at")})
         newer = next((s for s in saves if s.schema_version > SCHEMA_VERSION), None)
         if newer is not None:
             self._other = None
             return self._set("newer", other=newer.about(), message=newer_message(newer))
-        mine = self._mine()
-        others = []
+        mine, landed = self._mine(), self.db.get_meta(LANDED_KEY)
+        others, publish = [], False
         for save in saves:  # Budget.inab first
             kind = relation(save, mine)
             if kind in (NEWER, APART) and self._same_budget(save):
                 mine, kind = self._adopt(save, mine), SAME
-            if kind in (SAME, OLDER):
-                if save.name != FILE_NAME:
-                    self._put_away(folder, save, "a sync tool's copy of a save this computer has")
-            else:
+                publish = publish or mine.counts != save.counts
+            if kind == SAME and save.name == FILE_NAME:
+                self._landed(save.id)
+            elif kind in (SAME, OLDER) and save.name != FILE_NAME:
+                self._put_away(folder, save, "a sync tool's copy of a save this computer has")
+            elif kind in (NEWER, APART):
                 others.append(save)
         if others:
             other = others[0]
@@ -439,18 +484,27 @@ class BudgetFolder:
                 if other.name != FILE_NAME:  # a conflict copy built on this computer's: the folder holds it from now
                     self._put_away(folder, other, "a sync tool's copy, taken")
                     self._save(folder)
+                elif other.counts and self._mine().counts != other.counts:
+                    self._save(folder)  # what this computer records, counted in the folder too
                 return self._set("saved", took=other.about())
             self._other = other
             self._prune_saves()
             return self._set("two_computers", other=other.about())
-        self._other = None
         if FILE_NAME in unreadable:
+            self._other = None
             return self._set("waiting")
-        behind = main is None or relation(main, mine) == OLDER  # not there, or a save of ours didn't land
+        if main is not None and relation(main, mine) == OLDER and main.id != landed:
+            self._other = main  # an older one put back: never saved over, nor gone back to, without asking
+            self._prune_saves()
+            return self._set("older", other=main.about())
+        self._other = None
+        if main is None and landed:
+            return self._set("missing")  # once this computer's save was there: never made again without asking
+        behind = main is None or relation(main, mine) == OLDER  # not there yet, or this computer's save didn't land
         self._behind = behind and mine is not None
-        if behind or (self._changed() and (not wait or self._quiet())):
+        if behind or publish or (self._changed() and (not wait or self._quiet())):
             self._save(folder)
-        return self._set("unsaved" if self._changed() else "saved")
+        return self._set("unsaved" if self._behind or self._changed() else "saved")
 
     def _same_budget(self, save):
         """A save with the very contents of this computer's budget (its own save after a crash, or
@@ -461,8 +515,10 @@ class BudgetFolder:
         return save.digest == self._digest
 
     def _adopt(self, save, mine):
-        adopted = replace(save, counts=_merge(mine.counts if mine else {}, save.counts), name=None, path=None)
+        adopted = replace(save, counts=_combine(mine.counts if mine else {}, save.counts), name=None, path=None)
         self._set_mine(adopted)
+        if save.name == FILE_NAME:
+            self._landed(save.id)
         log.info("The budget saved on %s at %s is the same as this computer's", save.computer, save.saved_at)
         return adopted
 
@@ -496,17 +552,35 @@ class BudgetFolder:
     def _set_mine(self, save):
         self.db.set_meta(SAVE_KEY, replace(save, name=None, path=None).kept())
 
+    def _landed(self, save_id):
+        if self.db.get_meta(LANDED_KEY) != save_id:
+            self.db.set_meta(LANDED_KEY, save_id)
+
+    def machine_id(self):
+        if self._machine is None:
+            try:
+                self._machine = computer.this().machine_id() or ""
+            except Exception:  # a system that won't say: the id isn't tied to the machine
+                self._machine = ""
+        return self._machine or None
+
     def computer_id(self):
-        """This computer's id in saves' counts: made once, kept in the data folder (outside the
-        budget, which another computer's save replaces)."""
+        """This computer's id in saves' counts, kept in the data folder (outside the budget, which
+        another computer's save replaces) with the machine's own id: a data folder copied to another
+        machine makes a new one there, so two computers never count as one."""
         if self._id is None:
-            path = self.db.path.parent / COMPUTER_FILE
-            kept = _read_json(path) or {}
-            self._id = kept.get("id") if isinstance(kept.get("id"), str) else None
-            if not self._id:
-                self._id = uuid.uuid4().hex
-                _write_json(path, {"id": self._id}, self._sleep)
+            kept = _read_json(self.db.path.parent / COMPUTER_FILE) or {}
+            if isinstance(kept.get("id"), str) and kept["id"] and kept.get("machine") == self.machine_id():
+                self._id = kept["id"]
+            else:
+                self._new_id()
         return self._id
+
+    def _new_id(self):
+        """A new id for this computer, for a budget it starts (no save yet) or opens from scratch: a
+        budget started again never counts as the old one's saves."""
+        self._id = uuid.uuid4().hex
+        _write_json(self.db.path.parent / COMPUTER_FILE, {"id": self._id, "machine": self.machine_id()}, self._sleep)
 
     # ── reading the folder ──
 
@@ -590,12 +664,14 @@ class BudgetFolder:
         local = saves / f".saving-{uuid.uuid4().hex}.partial"
         partial = folder / f".{FILE_NAME}.{_slug(self.computer)}.partial"
         try:
-            with self.db.lock:  # nothing changes between the copy and its digest
+            with self.turns.alone(), self.db.lock:  # nothing changes between the copy and its digest, nor mid-request
                 digest = backups.digest(self.db)
                 self.db.conn.execute("VACUUM INTO ?", (str(local),))
             mine = self._mine()
-            counts = _merge(mine.counts if mine else {}, *also)
-            counts[self.computer_id()] = counts.get(self.computer_id(), 0) + 1
+            if mine is None:
+                self._new_id()  # a budget's first save: a new line
+            counts, me = _combine(mine.counts if mine else {}, *also), self.computer_id()
+            counts[me] = counts.get(me, 0) + 1
             save_id = uuid.uuid4().hex
             save = Save(id=save_id, counts=counts, computer=self.computer,
                         saved_at=self._now().isoformat(timespec="seconds"), app_version=self.app_version,
@@ -612,6 +688,7 @@ class BudgetFolder:
             _replace(partial, folder / FILE_NAME, self._sleep)
         finally:
             _discard(partial)
+        self._landed(save.id)
         self._behind = False
         self._seen[str(folder / FILE_NAME)] = (_stat_key(folder / FILE_NAME), save)
         self._prune_saves()
@@ -637,8 +714,10 @@ class BudgetFolder:
             mine = self._mine()
             self.db.replace_with(save.path)
             self._mark = None
-            self._set_mine(replace(save, counts=_merge(mine.counts if mine else {}, save.line()),
-                                   digest=backups.digest(self.db)))
+            counts = _combine(mine.counts if mine else {}, save.counts) if save.counts else _after_restore(save, mine)
+            self._set_mine(replace(save, counts=counts, digest=backups.digest(self.db)))
+            if save.name == FILE_NAME:
+                self._landed(save.id)
         log.info("Took the budget saved on %s at %s (%s)", save.computer or "no computer: restored",
                  save.saved_at, save.name)
         return True
@@ -668,22 +747,27 @@ class BudgetFolder:
         mine = self._mine()
         if mine is None:
             return None
-        if relation(other, mine) == NEWER:
+        kind = relation(other, mine)
+        if kind == OLDER:  # an older one put back: what this computer changed since
+            return other.path if other.path and other.path.is_file() else None
+        if kind == NEWER:
             path = self._saves_dir() / f"{mine.id}{EXTENSION}"
             return path if path.is_file() else None
+        theirs = replace(other, counts=_counts_of(other, mine))
         best = None  # the newest save kept here that both were built on
         for path in self._saves_dir().glob(f"*{EXTENSION}"):
             save = _kept_about(path)
-            if save and save.id != other.id and _covers(mine.counts, save.line()) and \
-                    _covers(other.line(), save.line()):
-                if best is None or sum(save.line().values()) > sum(best[0].line().values()):
+            if save and save.id != other.id and save.counts and relation(save, mine) in (SAME, OLDER) and \
+                    relation(save, theirs) in (SAME, OLDER):
+                if best is None or sum(save.counts.values()) > sum(best[0].counts.values()):
                     best = (save, path)
         return best[1] if best else None
 
     def keep_this(self):
-        """Changed on two computers: keeps this computer's budget. The folder is looked at again
-        first: the other one, and whatever else would be overwritten, goes into Backups/, and this
-        one is saved over them, counting them all. Returns the state."""
+        """Changed on two computers (or an older one put back: Keep the newer one): keeps this
+        computer's budget. The folder is looked at again first: the other one, and whatever else
+        would be overwritten, goes into Backups/, and this one is saved over them, counting them
+        all. Returns the state."""
         with self._lock:
             other = self._decision()
             folder = self.folder
@@ -705,14 +789,16 @@ class BudgetFolder:
             for save in over:
                 if save.name != FILE_NAME:
                     _remove(folder / save.name, self._sleep)
-            self._save(folder, also=[s.line() for s in over])
+            self._save(folder, also=[_counts_of(s, mine) for s in over])
             self._other = None
             log.info("Kept this computer's budget; the one saved on %s is in Backups", other.computer)
             return self.check(wait=False)
 
     def keep_other(self):
-        """Changed on two computers: keeps the other computer's budget. This computer's goes into
-        Backups/ first, then the other replaces it (⌘Z cleared). Returns the state."""
+        """Changed on two computers (or an older one put back: Use it): keeps the other budget.
+        This computer's goes into Backups/ first, then the other replaces it (⌘Z cleared), and
+        it's saved again when what this computer records differs from the folder's (so the other
+        computers see this one counted, and take it). Returns the state."""
         with self._lock:
             other = self._decision()
             folder = self.folder
@@ -727,6 +813,8 @@ class BudgetFolder:
                 raise UserError("The other computer's budget can't be read just now: try again in a moment.") from None
             if other.name != FILE_NAME:  # a conflict copy: the folder holds it from now
                 _remove(folder / other.name, self._sleep)
+                self._save(folder)
+            elif other.counts and self._mine().counts != other.counts:
                 self._save(folder)
             self._other = None
             log.info("Kept the budget saved on %s; this computer's is in %s", other.computer, kept)
@@ -792,6 +880,7 @@ class BudgetFolder:
                 raise UserError(f"That folder can't be used: {e.strerror or e}.") from None
             old_backups = Path(self.db.backup_dir)
             self._save(target)
+            _remove(target / MOVED_NOTE, self._sleep)  # one an earlier move out of it left
             self._use(target)
             for leftovers in (old_backups, self.db.path.parent / backups.OLD_FOLDER_NAME):
                 _try(f"Moving the backups from {leftovers}", lambda: backups.move_old(leftovers, target / BACKUPS))
@@ -804,16 +893,18 @@ class BudgetFolder:
             return self.check(wait=False)
 
     def _leave(self, old):
-        """The folder the budget moved out of keeps a note saying so, not the budget."""
-        _remove(old / self._note_name(), self._sleep)
+        """The folder the budget moved out of keeps a note saying so, not the budget. The note
+        first: a computer that sees Budget.inab go before the note arrives doesn't put it back
+        (`missing`), and once the note is there, it never saves there."""
+        _write_json(old / MOVED_NOTE, {"computer": self.computer,
+                                       "moved_at": self._now().isoformat(timespec="seconds")}, self._sleep)
         main = old / FILE_NAME
         if main.is_file():
             save = self._read(main)[0]
             if relation(save, self._mine()) not in (SAME, OLDER):  # not this computer's: kept, not lost
                 self._back_up_file(save.path)
             _remove(main, self._sleep)
-        _write_json(old / MOVED_NOTE, {"computer": self.computer,
-                                       "moved_at": self._now().isoformat(timespec="seconds")}, self._sleep)
+        _remove(old / self._note_name(), self._sleep)
 
     def open_from(self, path):
         """Opens the budget in the folder at `path` on this computer (a new computer, or one coming
@@ -836,7 +927,7 @@ class BudgetFolder:
             if save.schema_version > SCHEMA_VERSION:
                 raise UserError(newer_message(save))
             mine = self._mine()  # the same budget as this computer's, or another?
-            shared = mine is not None and (relation(save, mine) != APART or bool(set(save.line()) & set(mine.counts)))
+            shared = mine is not None and (relation(save, mine) != APART or bool(set(save.counts) & set(mine.counts)))
             old = self.folder
             if old is not None and not _same(old, target):
                 _try(f"Leaving {old}", lambda: _remove(old / self._note_name(), self._sleep))
@@ -846,7 +937,17 @@ class BudgetFolder:
                     if not self._empty():
                         backups.save(self.db, self._not_kept_name())
                     self._take(save)
+                self._new_id()  # another budget: this computer's saves in it start a line of their own
             log.info("Opened the budget in %s", target)
+            return self.check(wait=False)
+
+    def save_again(self):
+        """Budget.inab is gone from the folder (`missing`): saves this computer's budget there again."""
+        with self._lock:
+            if self.folder is None or not _is_dir(self.folder):
+                raise UserError("The budget folder can't be reached right now.")
+            if not (self.folder / FILE_NAME).exists() and not _read_json(self.folder / MOVED_NOTE):
+                self._save(self.folder)
             return self.check(wait=False)
 
     def _empty(self):
@@ -977,7 +1078,7 @@ class BudgetFolder:
             return
         spare = []
         for path in files:
-            if path.name.endswith(".partial"):
+            if ".partial" in path.name:  # a copy left half made, or the journal SQLite left beside one
                 _discard(path)
             elif path.suffix == EXTENSION and path.name not in kept:
                 spare.append(path)
@@ -1055,6 +1156,7 @@ def _finish(path, save):
         c.execute("DELETE FROM undo_log")
         c.execute("DELETE FROM undo_groups")
         c.execute("UPDATE undo_state SET active = 0, grp = NULL")
+        c.execute("DELETE FROM meta WHERE key = ?", (LANDED_KEY,))  # this computer's own
         c.execute("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                   (SAVE_KEY, replace(save, name=None, path=None).kept()))
         c.execute("COMMIT")

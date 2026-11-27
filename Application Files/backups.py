@@ -76,14 +76,16 @@ DIGEST_KEY = "backed_up"      # meta: `digest` of the budget when the last backu
 FILE_KEY = "backed_up_to"     # meta: the name of the file that backup made
 BACKUP_META = (DIGEST_KEY, FILE_KEY)  # what `make` keeps in meta: not the budget, so not in `digest`
 SAVE_KEY = "save"             # meta: the save in the budget folder this budget is, or started from (budget_folder.py)
-NOT_A_CHANGE = BACKUP_META + (SAVE_KEY,)  # what's kept about backups and saves isn't a change to the budget
+LANDED_KEY = "save_landed"    # meta: the newest of this computer's saves known to be in the budget folder
+SAVE_META = (SAVE_KEY, LANDED_KEY)  # what budget_folder.py keeps: not in backups, nor in a save
+NOT_A_CHANGE = BACKUP_META + SAVE_META  # what's kept about backups and saves isn't a change to the budget
 NOT_THE_BUDGET = ("undo_log", "undo_groups", "undo_state")  # this session's undo, cleared at launch
 SIDE_FILES = ("-wal", "-shm", "-journal")  # what SQLite leaves beside a database someone opened
 
 _STAMP = "%Y-%m-%d-%H-%M-%S"
 _MADE_AT = re.compile(
-    r"budget-(?:before-upgrade-v\d+-to-v\d+-|not-kept-)?(\d{4}-\d{2}-\d{2})((?:-\d{2}){3})?(?: on [^\\/]+?)?"
-    r"(?: \(\d+\))?\.db")
+    r"budget-(?:before-upgrade-v\d+-to-v\d+-|not-kept-)?(\d{4}-\d{2}-\d{2})((?:-\d{2}){3})?(?: \(\d+\))?"
+    r"(?: on [^\\/]+?)?(?: \(\d+\))?\.db")
 HALF_MADE_AFTER = 24 * 3600  # seconds: another computer's copy left half made this long is dropped
 _HALF_MADE = re.compile(r"budget-(\d{4}-\d{2}-\d{2})\.tmp")  # by the daily backup, until 1.3.1
 
@@ -103,8 +105,9 @@ def upgrade_name(old_version, new_version, now, tag=None):
 
 def not_kept_name(now, n=None, tag=None):
     """The budget you didn't keep when it was changed on two computers (budget_folder.py), or a sync
-    tool's copy it put away; `n` for a second one made the same second."""
-    return f"budget-not-kept-{now.strftime(_STAMP)}{_on(tag)}{f' ({n})' if n else ''}.db"
+    tool's copy it put away; `n` for a second one made the same second (before the computer's name,
+    so a computer called "PC (2)" is never taken for PC's second)."""
+    return f"budget-not-kept-{now.strftime(_STAMP)}{f' ({n})' if n else ''}{_on(tag)}.db"
 
 
 def made_at(filename):
@@ -182,7 +185,7 @@ def _copy_into(db, folder, filename, source=None):
 
 
 def _keep_no_save(path):
-    """Takes what's kept about a save (budget_folder.py) out of a backup's copy: restored into the
+    """Takes what's kept about saves (budget_folder.py) out of a backup's copy: restored into the
     budget folder, it's a budget no computer saved, taken by every computer as a new save."""
     with closing(sqlite3.connect(str(path), isolation_level=None)) as c:
         tables = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
@@ -190,7 +193,7 @@ def _keep_no_save(path):
             return
         if "undo_state" in tables:  # no undo trigger records this
             c.execute("UPDATE undo_state SET active = 0")
-        c.execute("DELETE FROM meta WHERE key = ?", (SAVE_KEY,))
+        c.execute(f"DELETE FROM meta WHERE key IN ({', '.join('?' * len(SAVE_META))})", SAVE_META)
 
 
 def make(db, now=None):
@@ -279,7 +282,9 @@ def prune(folder, today, tag=None):
 
 
 def _ours_or_old(path, tag):
-    if tag is None or f"{_on(tag)}." in path.name or f"{_on(tag)} (" in path.name:
+    """A copy left half made that this computer may delete: its own (its name ends with this
+    computer's), or another's left a day."""
+    if tag is None or (_main_of(path) or path).name.endswith(f"{_on(tag)}.db.partial"):
         return True
     try:
         return time.time() - path.stat().st_mtime > HALF_MADE_AFTER

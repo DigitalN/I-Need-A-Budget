@@ -42,7 +42,7 @@ EXPOSED = {}
 # The budget folder's requests: they don't share the budget with the others (budget_folder.Turns), since
 # they take its lock and may take another computer's save themselves.
 FOLDER_REQUESTS = {"budget_folder", "look_in_budget_folder", "move_budget_folder", "open_budget_folder",
-                   "keep_this_budget", "keep_other_budget"}
+                   "keep_this_budget", "keep_other_budget", "save_budget_again"}
 
 
 def exposed(fn):
@@ -140,16 +140,16 @@ def _existing(c, table, row_id, columns="id"):
 
 
 class BudgetService:
-    def __init__(self, db, settings, data_dir, hooks=None, computer=None):
-        """`computer`: this computer's name in saves and notes in the budget folder (by default the
-        system's: budget_folder.this_computer)."""
+    def __init__(self, db, settings, data_dir, hooks=None, computer_name=None):
+        """`computer_name`: this computer's name in saves and notes in the budget folder, a string (by
+        default the system's: budget_folder.this_computer), not main.py's computer.this()."""
         self.db = db
         self.settings = settings
         self.data_dir = Path(data_dir)
         self.hooks = hooks or {}          # window features: choose_files, reveal, updates, app_info
         self.turns = budget_folder.Turns()  # requests share the budget; taking another computer's save waits for them
         self.folder = budget_folder.BudgetFolder(db, self.data_dir, settings.get()["budget_folder"] or None,
-                                                 computer=computer, app_version=self._app_info().get("version"),
+                                                 computer_name=computer_name, app_version=self._app_info().get("version"),
                                                  turns=self.turns)
         self._seen_files = {}             # Downloads watcher: path → (mtime, size) already looked at
         self._file_status = {}            # path → ((mtime, size), what it needs or None): see _needs()
@@ -2302,15 +2302,22 @@ class BudgetService:
 
     @exposed
     def keep_this_budget(self):
-        """Changed on two computers: keeps this computer's budget; the other goes into Backups."""
+        """Changed on two computers: keeps this computer's budget; the other goes into Backups. For an older
+        budget put back in the folder (state 'older'): Keep the newer one."""
         return self.folder.keep_this()
 
     @exposed
     def keep_other_budget(self):
-        """Changed on two computers: keeps the other computer's budget; this computer's goes into Backups."""
+        """Changed on two computers: keeps the other computer's budget; this computer's goes into Backups. For
+        an older budget put back in the folder (state 'older'): Use it."""
         state = self.folder.keep_other()
         self._took_another_budget()
         return state
+
+    @exposed
+    def save_budget_again(self):
+        """The budget's file is gone from its folder (state 'missing'): saves this computer's budget there again."""
+        return self.folder.save_again()
 
     def watch_budget_folder(self):
         """The budget folder watcher's round (main.py, every few seconds): the state, with 'took' when another
