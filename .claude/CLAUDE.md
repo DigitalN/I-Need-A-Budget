@@ -120,8 +120,11 @@ All in `Application Files/`:
   the page's requests under way: `Turns`), or finds it changed on two computers
   (`two_computers()` for `changes.compare`; `keep_this`, `keep_other`; the other goes into
   `Backups/`). Sync tools' conflict copies count the same, and a `Budget.inab` no computer saved
-  (a backup: backups keep no meta `save`) is a new save; a newer budget format is refused; a
-  folder that can't be reached is waited for; `move_to`, `open_from`, notes of where it's open.
+  (a backup: backups keep no meta `save`) is a new save; an older save put back, or a
+  `Budget.inab` gone once this computer's save was there, asks (`older`, `missing`); a newer
+  budget format is refused; a folder that can't be reached is waited for; `move_to`,
+  `open_from`, notes of where it's open. This computer's id in saves is new for each budget and
+  machine (`computer.json`, `computer.machine_id`).
   `INAB_COMPUTER` names this computer (two previews on one folder).
   `scripts/tests/test_budget_folder.py` covers it with two data folders sharing one folder.
 - `importer.py`: detects and parses OFX/QFX/QBO from any bank, Tangerine card and bank
