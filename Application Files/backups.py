@@ -167,7 +167,9 @@ def save(db, filename, source=None):
 
 
 def _copy_into(db, folder, filename, source=None):
-    folder.mkdir(parents=True, exist_ok=True)
+    # A budget folder's Backups/ (budget_folder.py) is made only inside a budget folder that's there: one
+    # that can't be reached is never made again by a backup (the backup goes to the data folder instead).
+    folder.mkdir(parents=not getattr(db, "backups_in_budget_folder", False), exist_ok=True)
     target, partial = folder / filename, folder / f".{filename}.partial"
     partial.unlink(missing_ok=True)
     try:

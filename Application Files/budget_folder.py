@@ -25,34 +25,42 @@ budget changed since the save it started from (`backups.digest`, which leaves ou
 about saves and backups: they aren't a change), a few seconds after changes stop
 (`SAVE_AFTER`), and at quit.
 
-**Which save came from which** (`relation`): each save counts how many saves each computer has
-made in the line it's on (a version vector: `counts`, computer id → count). A save is built on
-another when each of its counts is at least the other's: exact however many saves there were.
-Taking a restored backup starts a new line (a `restored:` count of its own, the same on every
-computer, and no computer's counts), which comes after every save before it.
+**Which save came from which** (`relation`): a save is on a line, the original or a restore's,
+and counts how many saves each computer has made in that line (a version vector: `counts`,
+computer id → count). In one line, a save came after another when each of its counts is at least
+the other's: exact however many saves there were. A restored backup (a Budget.inab no computer
+saved) starts a line named after its contents (`restore:<digest>`), and its id and counts come from
+its contents too, so every computer that takes it makes the same of it, whatever it had seen; it
+comes after any line it isn't in. Across lines: by the lines a save says it came after
+(`supersedes`), then the original before any restore's, then by when each line began.
 Every budget in the folder is a save: Budget.inab, and a sync tool's conflict copy (OneDrive's
 `Budget-<computer>.inab`, iCloud's `Budget 2.inab`, Dropbox's `Budget (… conflicted copy
 …).inab`) the same way. Watching (`check`, every few seconds, the Downloads watcher's rhythm):
-- this computer's save, or one it was built on: nothing new (a conflict copy goes into Backups/);
-- built on this computer's: taken straight away when this computer has changed nothing since
-  the save it started from (the working copy becomes it, ⌘Z is cleared, as an import does);
-  otherwise the budget was **changed on two computers**;
-- neither (each computer saved on top of the save they both started from, before seeing the
-  other's): changed on two computers;
-- one no computer saved (a backup copied in as Budget.inab to restore it, however many times): a
-  new save, taken by every computer that changed nothing, the other side of the question on one
-  that did;
-- an older one than this computer's, other than its own last save in the folder (a sync tool's
-  "restore previous version"): never saved over and never gone back to without asking (`older`).
-A save with the same contents as this computer's budget is the same save, whatever its counts.
-Whenever what this computer records differs from the folder's save (after Keep the other, or such
-a save), it saves, so the other computers see it counted.
+- this computer's save, or one it came after: nothing new (a conflict copy goes into Backups/);
+- one that came after this computer's: taken straight away when this computer has changed
+  nothing since the save it started from (the working copy becomes it, ⌘Z is cleared, as an
+  import does); otherwise the budget was **changed on two computers**;
+- neither (each computer saved on top of the same save, before seeing the other's): changed on
+  two computers;
+- an older one than this computer's in the folder, other than its own last save (a sync tool's
+  "restore previous version", the same backup restored again): never saved over and never gone
+  back to without asking (`older`).
+A save with the very contents of this computer's budget is the same save, whatever its counts
+(it's recorded as coming after both). Whenever what this computer records differs from the
+folder's save (a restore taken, Keep the other one, the same contents adopted), it saves, so the
+other computers see it counted; a restore taken is saved as itself, not as one more save.
+
+**The rule, whatever the counts say** (`_look`, `_replacing`, `keep_this`, `_leave`): a save whose
+contents this computer's budget has never had (`_had`, by digest) is never put away, saved over
+or removed from the folder without the person choosing or a copy going into Backups/, and one that
+reads as older is a question. scripts/tests/test_budget_folder_random.py checks it on random
+histories of three computers.
 Changed on two computers, nothing is saved or taken until you choose: `two_computers()` gives the
 three budgets the window shows each side's changes from (the save both started from, when this
 computer still has it; this computer's working copy; the other computer's save), and
-`keep_this` / `keep_other` decide. The one not kept goes into Backups/ (with whatever else it
-would overwrite), and the save kept counts both sides, so each computer sees it was built on its
-own and takes it.
+`keep_this` / `keep_other` decide, each looking at the folder again first. The one not kept goes
+into Backups/ (with whatever else it would overwrite), and the save kept comes after both sides,
+so each computer sees it came after its own and takes it.
 
 A budget saved by a newer version of the budget's format is never taken, nor saved over
 (`newer`): this copy needs the update. An older one is upgraded as at launch, its
@@ -72,7 +80,8 @@ this computer's budget, unless it's new and empty, goes into that folder's Backu
 
 **Restoring a backup** (backups.py): quit the app on every computer, then copy the backup into
 the budget folder as `Budget.inab`. Backups keep nothing about saves, so it's one no computer
-saved: each takes it when it next looks.
+saved: each takes it when it next looks (one with changes not saved yet asks). The same backup
+restored again is the same save, older by then than the line it started: `older` asks.
 
 **A Budget.inab that's gone** once this computer's save was in the folder (`save_landed`) is never
 made again without asking (`missing`): the window offers to save it again (`save_again`) or to
@@ -505,13 +514,16 @@ class BudgetFolder:
         others, publish = [], False
         for save in saves:  # Budget.inab first
             kind = relation(save, mine)
-            if kind != SAME and save.digest == current and save.schema_version == SCHEMA_VERSION:
-                mine, kind = self._adopt(save, mine), SAME  # the very contents of this computer's budget
+            if kind != SAME and save.schema_version == SCHEMA_VERSION and save.digest in (current, mine and mine.digest):
+                # The very contents of this computer's budget, or of the save it started from: nothing in it is new
+                # here (another computer's Move… or Open…, its own save after a crash). The same save, and any change
+                # this computer made since is saved on top of it.
+                mine, kind = self._adopt(save, mine), SAME
             if kind == SAME and save.name == FILE_NAME:
                 self._landed(save.id)
                 publish = publish or self._differs(save)
-            elif kind == SAME or (kind == OLDER and save.name != FILE_NAME and self._had(save.digest)):
-                self._put_away(folder, save, "a sync tool's copy of a save this computer has had")
+            elif kind == SAME or (kind == OLDER and save.name != FILE_NAME and self._surely_older(save, mine)):
+                self._put_away(folder, save, "a sync tool's copy of a save this computer came after")
             elif not (kind == OLDER and save.name == FILE_NAME):
                 others.append(save)  # newer, apart, or an older copy with contents new to this computer
         if others:
@@ -532,9 +544,9 @@ class BudgetFolder:
         if main is not None and relation(main, mine) == OLDER and main.id != landed:
             self._other = main  # an older one put back: never saved over, nor gone back to, without asking
             self._prune_saves()
-            if self._had(main.digest):
+            if self._surely_older(main, mine):
                 return self._set("older", other=main.about())
-            return self._set("two_computers", other=main.about())  # contents new here: whatever its counts say
+            return self._set("two_computers", other=main.about())  # contents new here: whatever the times say
         self._other = None
         if main is None and landed:
             return self._set("missing")  # once this computer's save was there: never made again without asking
@@ -543,6 +555,13 @@ class BudgetFolder:
         if behind or publish or (self._changed() and (not wait or self._quiet())):
             self._save(folder, as_is=publish and main is not None and self._as_is(main) and not self._changed())
         return self._set("unsaved" if self._behind or self._changed() else "saved")
+
+    def _surely_older(self, save, mine):
+        """Whether a save that reads as older surely holds nothing this computer's budget doesn't
+        come after: in its line, where the counts say exactly what came after what, or one whose
+        contents this computer has had. Across lines the order may rest on when each began, so one
+        with contents new here is a question (changed on two computers), never put away quietly."""
+        return save.line == mine.line or self._had(save.digest)
 
     def _differs(self, save):
         """Whether the folder's `save` doesn't say what this computer records about it (a restored
@@ -1131,6 +1150,7 @@ class BudgetFolder:
         self._reachable = None
         self._noted = None
         self.db.backup_tag = computer_tag(self.computer)  # two computers' backups in one folder never share a name
+        self.db.backups_in_budget_folder = True  # a backup never makes the budget folder again (backups._copy_into)
         self._point_backups()
 
     # ── launch and quit ──

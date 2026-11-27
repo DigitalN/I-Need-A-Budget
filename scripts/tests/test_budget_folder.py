@@ -19,7 +19,7 @@ import pytest
 
 import backups
 import budget_folder
-from budget_folder import FILE_NAME, BudgetFolder
+from budget_folder import FILE_NAME, BudgetFolder, NotABudget
 from db import SCHEMA_VERSION, Database
 from errors import UserError
 from helpers import bank_csv, call, write
@@ -1264,3 +1264,125 @@ def test_what_each_computer_changed_is_shown_from_what_two_computers_gives(tmp_p
     assert shown["this"]["changed"] and shown["other"]["changed"]
     assert "Rent" in json.dumps(shown["this"]) and "Groceries" not in json.dumps(shown["this"])
     assert "Groceries" in json.dumps(shown["other"]) and "Rent" not in json.dumps(shown["other"])
+
+
+# ── the fourth review of #196 ──
+
+def _view(c, folder):
+    """`c`'s sync tool falls behind: it works in a copy of the folder until it's synced again."""
+    shutil.copytree(folder, folder.parent / f"{c.computer} sees" / folder.name, dirs_exist_ok=True)
+    c.folder, c._reachable, c._seen = folder.parent / f"{c.computer} sees" / folder.name, None, {}
+    return c.folder
+
+
+def test_keeping_the_other_one_keeps_what_it_saved_since(tmp_path):
+    """PC-A is asked; while it is, PC-B saves again. Keep the other one keeps PC-B's newest."""
+    folder = tmp_path / "Budget"
+    a = computer(tmp_path, "PC-A")
+    add_category(a.db, "Groceries")
+    a.move_to(folder)
+    b = computer(tmp_path, "PC-B")
+    b.open_from(folder)
+    seen_on_b = _view(b, folder)
+    add_category(a.db, "Rent")
+    a.check(wait=False)
+    add_category(b.db, "Gifts")
+    b.check(wait=False)
+    shutil.copyfile(seen_on_b / FILE_NAME, folder / FILE_NAME)  # PC-B's wins in the folder
+    assert a.check(wait=False)["state"] == "two_computers"
+    add_category(b.db, "Bills")
+    b.check(wait=False)
+    shutil.copyfile(seen_on_b / FILE_NAME, folder / FILE_NAME)
+    assert a.keep_other()["state"] == "saved"
+    assert categories(a.db) == ["Groceries", "Gifts", "Bills"]
+    assert [categories_in(p) for p in not_kept(folder)] == [["Groceries", "Rent"]]
+    shutil.copyfile(folder / FILE_NAME, seen_on_b / FILE_NAME)
+    b._seen = {}
+    assert b.check(wait=False)["state"] == "saved" and categories(b.db) == ["Groceries", "Gifts", "Bills"]
+
+
+def _restored_twice(tmp_path):
+    """PC-B was off for one restore; then another restore that both take, PC-B's save landing last."""
+    folder = tmp_path / "Budget"
+    a = computer(tmp_path, "PC-A")
+    add_category(a.db, "Groceries")
+    a.move_to(folder)
+    b = computer(tmp_path, "PC-B")
+    b.open_from(folder)
+    first = shutil.copyfile(backups.make(a.db), tmp_path / "first.db")
+    add_category(a.db, "Rent")
+    a.check(wait=False)
+    b.check(wait=False)
+    second = shutil.copyfile(backups.make(a.db), tmp_path / "second.db")
+    shutil.copyfile(first, folder / FILE_NAME)
+    a.check(wait=False)
+    add_category(a.db, "Gifts")
+    a.check(wait=False)
+    shutil.copyfile(second, folder / FILE_NAME)
+    seen_on_b = _view(b, folder)
+    a.check(wait=False)
+    b.check(wait=False)
+    shutil.copyfile(seen_on_b / FILE_NAME, folder / FILE_NAME)
+    return folder, seen_on_b, a, b
+
+
+def test_a_change_made_after_a_restore_is_taken_whatever_each_computer_saw(tmp_path):
+    folder, seen_on_b, a, b = _restored_twice(tmp_path)
+    assert a.check(wait=False)["state"] == "saved" and categories(a.db) == ["Groceries", "Rent"]
+    add_category(b.db, "Bills")
+    b.check(wait=False)
+    shutil.copyfile(seen_on_b / FILE_NAME, folder / FILE_NAME)
+    state = a.check(wait=False)
+    assert state["took"]["computer"] == "PC-B" and categories(a.db) == ["Groceries", "Rent", "Bills"]
+
+
+def test_a_change_after_a_restore_arriving_as_a_copy_is_taken_never_put_away(tmp_path):
+    folder, seen_on_b, a, b = _restored_twice(tmp_path)
+    a.check(wait=False)
+    add_category(b.db, "Bills")
+    b.check(wait=False)
+    shutil.copyfile(seen_on_b / FILE_NAME, folder / "Budget-PC-B.inab")
+    state = a.check(wait=False)
+    assert state["took"]["computer"] == "PC-B" and "Bills" in categories(a.db)
+
+
+def test_moving_is_refused_while_an_older_one_is_put_back(tmp_path):
+    folder = tmp_path / "Budget"
+    a = computer(tmp_path, "PC-A")
+    add_category(a.db, "Groceries")
+    a.move_to(folder)
+    earlier = shutil.copyfile(folder / FILE_NAME, tmp_path / "earlier.inab")
+    add_category(a.db, "Rent")
+    a.check(wait=False)
+    shutil.copyfile(earlier, folder / FILE_NAME)
+    assert a.check(wait=False)["state"] == "older"
+    with pytest.raises(UserError, match="older one was put back"):
+        a.move_to(tmp_path / "Elsewhere")
+    assert categories_in(folder / FILE_NAME) == ["Groceries"] and not (tmp_path / "Elsewhere" / FILE_NAME).exists()
+
+
+def test_settings_learn_of_a_folder_before_anything_is_done_in_it(tmp_path, monkeypatch):
+    """A crash part way through Open… relaunches on the folder being opened, not the old one."""
+    old, other = tmp_path / "Budget", tmp_path / "Other"
+    a = service(tmp_path, "PC-A")
+    call(a, "move_budget_folder", str(old))
+    c = computer(tmp_path, "PC-C")
+    add_category(c.db, "Gifts")
+    c.move_to(other)
+    said = []
+    take = BudgetFolder._take
+
+    def taking(self, *args, **kwargs):
+        said.append(a.settings.get()["budget_folder"])
+        return take(self, *args, **kwargs)
+
+    monkeypatch.setattr(BudgetFolder, "_take", taking)
+    call(a, "open_budget_folder", str(other))
+    assert said == [str(other)]
+
+    def failing(self, *args, **kwargs):
+        raise NotABudget("gone")
+
+    monkeypatch.setattr(BudgetFolder, "_take", failing)
+    assert not a.dispatch("open_budget_folder", [str(old)])["ok"]
+    assert a.settings.get()["budget_folder"] == str(other)  # a step that failed puts it back
