@@ -66,9 +66,9 @@ def test_an_upgrade_leaves_every_saved_setting_alone(tmp_path):
     (tmp_path / "settings.json").write_text(json.dumps(OLD_FILE))
     _old_budget(tmp_path)
     app = _launch(tmp_path)
-    mine = {k: v for k, v in OLD_FILE.items() if k in DEFAULTS}
+    mine = {**{k: v for k, v in OLD_FILE.items() if k in DEFAULTS}, "budget_folder": ""}  # 1.5.0's: none yet, it asks
     assert app.settings.get() == mine
-    assert _file(tmp_path) == OLD_FILE  # the two stay where 1.4.0 reads them
+    assert _file(tmp_path) == {**OLD_FILE, "budget_folder": ""}  # the two stay where 1.4.0 reads them
     assert call(app, "get_settings") == {**mine, "overspending": "carry_over", "average_months": 6}
     assert call(app, "month", "2026-10")["overspending"] == "carry_over"
     # The next launch changes nothing: it's the budget's now, and this Mac's file stays as it is.
