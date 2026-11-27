@@ -3,9 +3,12 @@
 in a throwaway HOME."""
 
 import importlib.util
+import json
 from pathlib import Path
 
 import pytest
+
+import computer
 
 SCRIPT = Path(__file__).resolve().parents[1] / "preview.py"
 
@@ -23,6 +26,8 @@ def home(tmp_path, monkeypatch):
     (home / "Downloads").mkdir(parents=True)
     (home / "Downloads" / "SAMPLE statement.csv").write_text("Date,Description,Amount\n2026-10-01,SAMPLE,-1.00\n")
     monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))  # Windows' home folder
+    monkeypatch.setattr(computer.this(), "downloads_dir", lambda: home / "Downloads")  # where Windows says it is
     return home
 
 
@@ -45,7 +50,7 @@ def test_a_folder_chosen_in_the_preview_settings_is_kept(home, tmp_path):
     data.mkdir()
     mine = tmp_path / "copies of bank files"
     mine.mkdir()
-    (data / "settings.json").write_text('{"downloads_dir": "%s"}' % mine)
+    (data / "settings.json").write_text(json.dumps({"downloads_dir": str(mine)}))
     assert preview.prepare(data).downloads_dir() == mine
 
 
@@ -54,6 +59,6 @@ def test_the_preview_refuses_the_real_downloads_folder(home, tmp_path):
     for chosen in (str(home / "Downloads"), "~/Downloads", str(home / "Downloads") + "/"):
         data = tmp_path / ("data" + str(abs(hash(chosen))))
         data.mkdir()
-        (data / "settings.json").write_text('{"downloads_dir": "%s"}' % chosen)
+        (data / "settings.json").write_text(json.dumps({"downloads_dir": chosen}))
         with pytest.raises(SystemExit, match="Downloads"):
             preview.prepare(data)

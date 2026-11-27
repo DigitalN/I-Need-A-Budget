@@ -26,7 +26,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 APP_FILES = ROOT / "Application Files"
-REAL_DATA = Path.home() / "Library" / "Application Support" / "I Need A Budget"
+sys.path.insert(0, str(APP_FILES))
+import computer  # noqa: E402
+
+REAL_DATA = computer.this().data_dir()
 SHIM = ("<script>window.pywebview = {api: {"
         "call: (name, args) => fetch('/api', {method: 'POST', headers: {'Content-Type': 'application/json'}, "
         "body: JSON.stringify({name, args})}).then(r => r.json()),"
@@ -36,9 +39,8 @@ SHIM = ("<script>window.pywebview = {api: {"
 
 def prepare(data):
     """The preview's settings, with a Downloads folder that isn't the real one: when the data folder's
-    settings.json has none, `<data>/downloads` (created empty); refuses ~/Downloads. Onboarding
+    settings.json has none, `<data>/downloads` (created empty); refuses the real Downloads. Onboarding
     imports the bank files in that folder and moves them into the preview's Imported Files/."""
-    sys.path.insert(0, str(APP_FILES))
     from settings import Settings
 
     data = Path(data)
@@ -47,7 +49,7 @@ def prepare(data):
     if not settings.get()["downloads_dir"]:
         settings.update({"downloads_dir": str(data / "downloads")})
     downloads = settings.downloads_dir().expanduser()
-    if downloads.resolve() == (Path.home() / "Downloads").resolve():
+    if downloads.resolve() in {computer.this().downloads_dir().resolve(), (Path.home() / "Downloads").resolve()}:
         sys.exit("The preview never uses your real Downloads folder: onboarding would move the bank files in it. "
                  "Set downloads_dir in the preview's settings.json to a folder of copies.")
     downloads.mkdir(parents=True, exist_ok=True)
@@ -59,7 +61,7 @@ def main():
     parser.add_argument("--data", default=str(Path.home() / "Library" / "Caches" / "I Need A Budget-preview"))
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--today", help="pretend it's this date (YYYY-MM-DD)")
-    parser.add_argument("--platform", choices=("mac", "windows"), default="windows" if sys.platform == "win32" else "mac",
+    parser.add_argument("--platform", choices=("mac", "windows"), default=computer.this().name,
                         help="the system the page thinks it's on (default: this one)")
     args = parser.parse_args()
     data = Path(args.data).expanduser().resolve()
