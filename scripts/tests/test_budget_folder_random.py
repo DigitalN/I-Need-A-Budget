@@ -82,6 +82,8 @@ class World:
         self.dropped = set()               # versions a person dropped: answered against, or copied over
         self.answered = set()              # versions an answer dropped: they must be in Backups/
         self.saved = {}                    # a save's id → the version it was made from
+        self.made = {}                     # a save's id → (its version, the save)
+        self.choices = set()               # versions that are an answer: no contents of their own, only an order
         self.cur = {}                      # computer → the version its budget is
         self.base = {}                     # computer → the version its budget started from (taken, or saved)
         self.computers = {}
@@ -131,14 +133,33 @@ class World:
         d = backups.digest(self.computers[name].db)
         started = self.computers[name]._mine()  # the save its budget started from, and its contents
         taken = self.saved.get(started.id) if started is not None else None
+        before = self.base[name]
+        if taken is not None and taken != before and self.versions[taken][0] != d and \
+                self.versions[taken][0] == self.versions[before][0]:
+            # It adopted a save with the very contents it started from, its own change going on top of it.
+            cur = self.cur[name]
+            if taken not in self.versions[cur][1]:
+                self.versions[cur][1].append(taken)
+                self.children.setdefault(taken, set()).add(cur)
+            self.base[name] = taken
         if taken is not None and self.versions[taken][0] == d:
             self.cur[name] = taken  # its budget is that save exactly (taken, or the same contents adopted)
         elif d != self.versions[self.cur[name]][0]:
             assert d in self.by_digest, f"seed {self.seed}: {name}'s budget is contents nobody made\n" + self._trail()
             self.cur[name] = self.by_digest[d][-1]
         if started is not None and started.digest == self.versions[self.cur[name]][0]:
-            self.base[name] = self.cur[name]
-            self.saved.setdefault(started.id, self.cur[name])
+            cur = self.cur[name]
+            if started.id not in self.saved:  # a save it just made: on what it started from, and on any save with
+                # those very contents that it adopted on the way (another's Move…), which its counts come after
+                for other, (v, kept) in self.made.items():
+                    if v not in (before, cur) and self.versions[v][0] == self.versions[before][0] and \
+                            kept.line == started.line and budget_folder._covers(started.counts, kept.counts) and \
+                            v not in self.versions[cur][1]:
+                        self.versions[cur][1].append(v)
+                        self.children.setdefault(v, set()).add(cur)
+                self.made[started.id] = (cur, started)
+            self.base[name] = cur
+            self.saved.setdefault(started.id, cur)
 
     def _of_file(self, path):
         """The version a budget file in the folder is: the one its save was made from (its save id),
@@ -284,6 +305,10 @@ class World:
                 return
             self.dropped |= dropping
             self.answered |= dropping
+            # The choice is a step of its own, after both sides (its contents may be older than what it dropped)
+            kept = self.cur[name]
+            self.cur[name] = self._version(self.versions[kept][0], (kept, *dropping))
+            self.choices.add(self.cur[name])
         else:
             before = self.cur[name]
             try:
@@ -294,6 +319,9 @@ class World:
             if self.cur[name] != before:
                 self.dropped.add(before)
                 self.answered.add(before)
+                taken = self.cur[name]
+                self.cur[name] = self._version(self.versions[taken][0], (taken, before))
+                self.choices.add(self.cur[name])
 
     def crash(self, c, name):
         real = budget_folder._replace
@@ -365,7 +393,7 @@ class World:
         found now; another's may be from before a change it made since, gone at its next look)."""
         kept = self._kept()
         for v, (digest, _) in enumerate(self.versions):
-            if v not in self.children and v not in self.dropped and not self._same_as(v, self.children):
+            if v not in self.children and v not in self.dropped and v not in self.choices and                     not self._same_as(v, self.children):
                 assert digest in kept, f"seed {self.seed}: version {v} lost\n" + self._trail()
         for name, c in self.computers.items():
             if name != asked:
@@ -412,7 +440,8 @@ class World:
         history = self._ancestry(self.by_digest[final.pop()])
         dropped = self._ancestry(self.dropped)
         for v in range(len(self.versions)):
-            assert v in history or v in dropped or self._same_as(v, history) or self._same_as(v, dropped), \
+            assert v in history or v in dropped or v in self.choices or self._same_as(v, history) or \
+                self._same_as(v, dropped), \
                 f"seed {self.seed}: version {v} is in no budget and nobody chose to drop it\n" + self._trail()
         kept = self._kept()
         for v in self.answered:

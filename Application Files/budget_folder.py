@@ -973,6 +973,10 @@ class BudgetFolder:
             raise UserError("There's only one budget now: nothing to choose.")
         if not _is_dir(self.folder):
             raise UserError("The budget folder can't be reached right now.")
+        if _read_json(self.folder / MOVED_NOTE):  # moved since the question: it's asked again where it is now
+            self._other = None
+            self.check(wait=False)
+            raise UserError("The budget was moved to another folder since: open it from there.")
         return self._other
 
     def _put_away(self, folder, save, why, main=None):

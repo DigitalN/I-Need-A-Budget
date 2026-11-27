@@ -170,7 +170,8 @@ def _copy_into(db, folder, filename, source=None):
     # A budget folder's Backups/ (budget_folder.py) is made only inside a budget folder that's there: one
     # that can't be reached is never made again by a backup (the backup goes to the data folder instead).
     folder.mkdir(parents=not getattr(db, "backups_in_budget_folder", False), exist_ok=True)
-    target, partial = folder / filename, folder / f".{filename}.partial"
+    target = _unused(folder, filename)  # two made in one second never share a name: one would replace the other
+    partial = folder / f".{target.name}.partial"
     partial.unlink(missing_ok=True)
     try:
         if source is not None:
@@ -183,6 +184,17 @@ def _copy_into(db, folder, filename, source=None):
     except BaseException:
         partial.unlink(missing_ok=True)
         raise
+    return target
+
+
+def _unused(folder, filename):
+    """`filename` in `folder`, or the same with " (2)", " (3)"… before the computer's name when it's taken."""
+    target = folder / filename
+    stem, n = filename[:-len(".db")], 2
+    head, on, tag = stem.partition(" on ")
+    while target.exists():
+        target = folder / (f"{head} ({n}){on}{tag}.db" if on else f"{stem} ({n}).db")
+        n += 1
     return target
 
 
