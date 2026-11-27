@@ -24,7 +24,7 @@ class Computer:
     name = None                  # "mac" or "windows"
     update_file = (None, None)   # what each release has for this system: (suffix, what it's called)
     update_signature = None      # what's added to that file's name to name its signature, when it has one beside it
-    installs_while_logging_out = False  # whether an update may go in while the system logs out or shuts down
+    installs_after_quitting = False  # an installer puts the update in once the app has gone (so never while logging out)
     curl = None                  # the curl the updater runs, which uses the system's certificates
     gh = ()                      # where the GitHub CLI may be: an app opened from Finder or Start lacks the shell's PATH
 

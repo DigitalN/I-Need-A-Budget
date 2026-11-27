@@ -363,6 +363,10 @@ class BudgetApp:
 
         if self._app_path and self._computer.moved_to_install_folder(self._app_path):
             return  # it's relaunching from there
+        if self._updater.take_kept():  # an update a log-off kept, checked again: in before the window opens
+            self._back_up()            # as Restart now does it
+            if self._updater.install(relaunch_after=True):
+                return                 # the app reopens once its installer is done
         self._computer.when_asked_to_quit(self._should_quit)
         html = (_app_files_dir() / "index.html").read_text(encoding="utf-8")
         width, height = self._computer.first_window_size(MIN_SIZE, WINDOW_SHARE)

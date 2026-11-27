@@ -135,6 +135,24 @@ def vector(name):
     return tuple(bytes.fromhex(part) for part in RFC_8032[name])
 
 
+def small_order_points():
+    """The curve's eight points of small order, written as keys are: [L] of a point whose
+    order is 8L generates them."""
+    found = set()
+    for y in range(2, 200):
+        point = windows_update._point(y.to_bytes(32, "little"))
+        if point is None:
+            continue
+        torsion = windows_update._multiply(windows_update.L, point)
+        multiple = windows_update._IDENTITY
+        for _ in range(8):
+            found.add(_encode(multiple))
+            multiple = windows_update._add(multiple, torsion)
+        if len(found) == 8:
+            return sorted(found)
+    raise AssertionError("no point of order 8L found")
+
+
 # ── Ed25519 ─────────────────────────────────────────────────
 
 @pytest.mark.parametrize("name", RFC_8032)
@@ -179,8 +197,33 @@ def test_a_signature_or_key_written_another_way_is_refused():
                 (1 | 1 << 255).to_bytes(32, "little"),            # (0, 1) with x's sign set
                 (2).to_bytes(32, "little")):                      # no point has y = 2
         assert windows_update._point(odd) is None
+        assert not windows_update.usable_key(odd)
         assert not windows_update.verify(odd, signature, message)
         assert not windows_update.verify(public, odd + signature[32:], message)
+
+
+def test_a_key_of_small_order_proves_nothing_and_turns_updates_off(tmp_path):
+    """Anyone can sign for one of the curve's eight small-order points without a private key: with
+    the identity as the key, R = the identity and S = 0 pass for any file, and 32 zero bytes (a
+    placeholder release-key.pub) is a point of order 4 whose forgeries pass a quarter of the time.
+    Such a key is refused outright, so a bad key always means updates off."""
+    keys = small_order_points()
+    zero, identity = bytes(32), (1).to_bytes(32, "little")
+    assert zero in keys and identity in keys
+    message = b"MZ any file at all"
+    for key in keys:
+        assert windows_update._point(key) is not None and not windows_update.usable_key(key)
+        for r in keys:  # R = a small-order point, S = 0: what a forger tries
+            assert not windows_update.verify(key, r + bytes(32), message)
+        (tmp_path / "release-key.pub").write_text(base64.b64encode(key).decode() + "\n", encoding="ascii")
+        assert windows_update.release_key(tmp_path / "release-key.pub") is None
+    for tries in range(64):  # the reviewer's forgery with the zero key: R = rB - jA for the j that passes
+        a, r = windows_update._point(zero), int.from_bytes(os.urandom(32), "little") % windows_update.L
+        for j in range(4):
+            negated = windows_update._multiply((4 - j) % 4, a)
+            forged = _encode(windows_update._add(windows_update._multiply(r, windows_update._BASE), negated))
+            assert not windows_update.verify(zero, forged + r.to_bytes(32, "little"), message + bytes([tries]))
+    assert windows_update.usable_key(vector("1")[1])
 
 
 def test_a_signature_made_by_openssl_verifies(tmp_path):
@@ -207,7 +250,7 @@ def test_a_signature_made_by_openssl_verifies(tmp_path):
 # ── the release key and an installer's signature ────────────
 
 def test_the_release_key_is_one_line_of_32_bytes_in_base64(tmp_path):
-    key, path = throwaway_key(), tmp_path / "release-key.pub"
+    key, path = public_key_of(throwaway_key()), tmp_path / "release-key.pub"
     line = base64.b64encode(key).decode()
     for text, read in ((line + "\n", key), (line, key), ("", None), (base64.b64encode(key[:31]).decode(), None),
                        ("not base64!", None), (line + "\n" + line, None)):
@@ -220,7 +263,7 @@ def signed_installer(folder, seed, name="I-Need-A-Budget-9.9-Setup.exe", content
     folder.mkdir(parents=True, exist_ok=True)
     installer = folder / name
     installer.write_bytes(content if content is not None else b"MZ made-up installer " + os.urandom(3000))
-    installer.with_name(name + ".sig").write_text(
+    windows_update.signature_of(installer).write_text(
         base64.b64encode(sign(seed, installer.read_bytes())).decode() + "\n", encoding="ascii")
     return installer
 
@@ -236,10 +279,10 @@ def test_an_installer_is_checked_with_the_release_key(tmp_path):
         f.write(b"\0")
     with pytest.raises(UpdateError, match="changed or isn't signed with the release key"):
         windows_update.check(installer, public_key_of(seed))  # changed after signing
-    installer.with_name(installer.name + ".sig").write_text("not a signature", encoding="ascii")
+    windows_update.signature_of(installer).write_text("not a signature", encoding="ascii")
     with pytest.raises(UpdateError, match="changed or isn't signed"):
         windows_update.check(installer, public_key_of(seed))
-    installer.with_name(installer.name + ".sig").unlink()
+    windows_update.signature_of(installer).unlink()
     with pytest.raises(UpdateError, match="isn't signed"):
         windows_update.check(installer, public_key_of(seed))
     with pytest.raises(UpdateError, match="no release key"):
@@ -251,9 +294,13 @@ def test_the_helper_gets_what_it_needs_and_the_app_keeps_its_environment(tmp_pat
         {"INAB_DATA_DIR": r"C:\made-up\data", "INAB_HELPER_INSTALLER": "left from before", "PATH": "x"},
         wait_for=4321, folder=tmp_path, app=tmp_path / "I Need A Budget", log_file=tmp_path / "app.log")
     assert environment == {"INAB_DATA_DIR": r"C:\made-up\data", "PATH": "x", "INAB_HELPER_WAIT_FOR": "4321",
-                           "INAB_HELPER_FOLDER": str(tmp_path),
+                           "INAB_HELPER_FOLDER": str(tmp_path), "INAB_HELPER_PATIENCE": "60",
                            "INAB_HELPER_APP": str(tmp_path / "I Need A Budget" / "I Need A Budget.exe"),
                            "INAB_HELPER_LOG": str(tmp_path / "app.log"), "PYINSTALLER_RESET_ENVIRONMENT": "1"}
+    with_installer = windows_update.helper_environment({}, wait_for=1, folder=tmp_path, app=tmp_path,
+                                                       installer=tmp_path / "update-setup.exe", version="9.9.0")
+    assert with_installer["INAB_HELPER_INSTALLER"] == str(tmp_path / "update-setup.exe")
+    assert with_installer["INAB_HELPER_VERSION"] == "9.9.0" and "INAB_HELPER_LOG" not in with_installer
     assert windows_update.app_exe(tmp_path / "I Need A Budget.exe") == tmp_path / "I Need A Budget.exe"
     # On powershell.exe's command line as it is: Windows' quoting would change a double quote.
     assert '"' not in windows_update.HELPER_SCRIPT
@@ -307,8 +354,9 @@ def test_a_release_without_a_signed_installer_is_refused_before_downloading():
 # ── an update on Windows, its tools stood in for ────────────
 
 class ThisPC(Windows):
-    """Windows' update steps with the test's own Programs folder; anywhere but Windows, the version
-    an installer says it is is the test's too (reading it is Windows' own API: tested below)."""
+    """Windows' update steps with the test's own Programs folder. Anywhere but Windows, the
+    version an installer says it is is the test's, and a file held unchangeable isn't held:
+    both are Windows' own APIs, tested on a PC below."""
 
     def __init__(self, programs, version=None):
         self.programs, self.version = programs, version
@@ -319,11 +367,18 @@ class ThisPC(Windows):
     def _installer_version(self, path):
         return self.version or super()._installer_version(path)
 
+    if sys.platform != "win32":
+        def _hold(self, path):
+            return "held"
+
+        def _let_go(self, handle):
+            pass
+
 
 def feed_of(installer, tag="v9.9", signed=True):
     assets = [{"name": installer.name, "url": installer.as_uri()}]
     if signed:
-        sig = installer.with_name(installer.name + ".sig")
+        sig = windows_update.signature_of(installer)
         assets.append({"name": sig.name, "url": sig.as_uri()})
     return {"tag_name": tag, "assets": assets}
 
@@ -351,29 +406,36 @@ def pc(tmp_path, monkeypatch):
         return 0, ""
 
     monkeypatch.setattr(updater, "_curl", fake_curl)
-    computer = ThisPC(tmp_path / "Programs", version="9.9.0")
-    app = tmp_path / "Programs" / "I Need A Budget"
-    app.mkdir(parents=True)
+    computers = []
 
     class Settings:
         def get(self):
             return {"update_automatically": True}
 
-    def start():
-        return updater.Updater(app, "1.5.0", settings=Settings(), data_dir=tmp_path, on_status=lambda state: None,
-                               computer=computer)
+    def start(version="1.5.0"):
+        """The app launching: a new copy of this computer, as each launch has."""
+        computers.append(ThisPC(tmp_path / "Programs", version=computers[-1].version if computers else "9.9.0"))
+        return updater.Updater(app, version, settings=Settings(), data_dir=tmp_path / "data",
+                               on_status=lambda state: None, computer=computers[-1])
 
     def publish(installer, **kwargs):
         feed.clear()
         feed.update(feed_of(installer, **kwargs))
-        for path in (installer, installer.with_name(installer.name + ".sig")):
+        for path in (installer, windows_update.signature_of(installer)):
             files[path.as_uri()] = path
 
+    app = tmp_path / "Programs" / "I Need A Budget"
+    app.mkdir(parents=True)
+    (tmp_path / "data").mkdir()
     started = []
-    monkeypatch.setattr(ThisPC, "_start_helper", lambda self, a, folder, installer: started.append((folder, installer)))
+    monkeypatch.setattr(ThisPC, "_start_helper", lambda self, a, folder, installer, version=None:
+                        started.append((folder, installer, version)))
     monkeypatch.setattr(ThisPC, "_session_ending", lambda self: False)
-    return {"seed": seed, "publish": publish, "fetched": fetched, "computer": computer, "app": app, "start": start,
-            "started": started, "temp": tmp_path / "temp", "tmp": tmp_path}
+    yield {"seed": seed, "publish": publish, "fetched": fetched, "computers": computers, "app": app, "start": start,
+           "started": started, "temp": tmp_path / "temp", "tmp": tmp_path, "kept": tmp_path / "data" / "Update waiting"}
+    for computer in computers:  # what swap_in holds until the app exits
+        if computer._holding is not None:
+            computer._let_go(computer._holding)
 
 
 def test_a_signed_newer_installer_is_downloaded_and_installed_once_the_app_has_quit(pc, caplog):
@@ -383,12 +445,15 @@ def test_a_signed_newer_installer_is_downloaded_and_installed_once_the_app_has_q
     assert u.unavailable_reason is None
     with caplog.at_level(logging.INFO, logger="inab"):
         u._check()
-    assert u.status == updater.READY and u.version == "9.9" and u._staged[0] == "9.9.0", caplog.text  # its tag, itself
-    assert pc["fetched"][1:] == [installer.as_uri(), installer.with_name(installer.name + ".sig").as_uri()]
-    assert u.install(relaunch_after=True)
-    [(folder, moved)] = pc["started"]
-    assert moved.read_bytes() == installer.read_bytes() and (folder / "relaunch").exists()
+        assert u.status == updater.READY and u.version == "9.9.0", caplog.text  # the installer's own, not the tag's
+        assert pc["fetched"][1:] == [installer.as_uri(), windows_update.signature_of(installer).as_uri()]
+        assert u.install(relaunch_after=True)
+    [(folder, moved, version)] = pc["started"]
+    assert moved.read_bytes() == installer.read_bytes() and windows_update.signature_of(moved).exists()
+    assert version == "9.9.0" and (folder / "relaunch").exists()
     assert [p.name for p in pc["temp"].iterdir()] == [folder.name]  # the download's own folder is gone
+    assert "Installing 9.9.0 after quitting; the app reopens then" in caplog.text
+    assert "Installed" not in caplog.text  # that's the installer's to say, once it has
 
 
 REFUSED = {
@@ -407,9 +472,9 @@ def test_an_installer_that_isnt_ours_and_newer_is_refused_and_logged(what, pc, c
         with installer.open("ab") as f:
             f.write(b"\0")
     pc["publish"](installer, tag="v1.5.0" if what == "not newer" else "v9.9", signed=what != "unsigned")
-    if what == "older inside":
-        pc["computer"].version = "1.4.3"  # the release's tag says 9.9; the installer itself, 1.4.3
     u = pc["start"]()
+    if what == "older inside":
+        pc["computers"][-1].version = "1.4.3"  # the release's tag says 9.9; the installer itself, 1.4.3
     with caplog.at_level(logging.INFO, logger="inab"):
         u._check()
     assert REFUSED[what] in caplog.text
@@ -419,35 +484,119 @@ def test_an_installer_that_isnt_ours_and_newer_is_refused_and_logged(what, pc, c
         assert len(pc["fetched"]) == 1  # refused from the release alone: nothing downloaded
 
 
-def test_updates_are_off_without_the_release_key_or_outside_the_programs_folder(pc, tmp_path, monkeypatch):
-    assert pc["computer"].why_updates_off(pc["app"]) is None
-    elsewhere = "I Need A Budget isn't installed in your Programs folder"
-    assert ThisPC(tmp_path / "Programs").why_updates_off(tmp_path / "Downloads" / "I Need A Budget") == elsewhere
-    assert ThisPC(tmp_path / "Programs").why_updates_off(tmp_path / "Programs") == elsewhere
-    monkeypatch.setattr(windows_update, "RELEASE_KEY_FILE", tmp_path / "none.pub")
-    assert ThisPC(tmp_path / "Programs").why_updates_off(pc["app"]) == "this copy has no release key to check updates with"
-    assert pc["computer"].why_updates_off(pc["app"]) is None  # read at launch: what changes later changes nothing
-
-
-def test_nothing_is_installed_on_windows_while_it_logs_off(pc, caplog):
+@pytest.mark.parametrize("what", ["changed", "another version", "signature gone"])
+def test_the_installer_is_checked_again_just_before_it_runs(what, pc, caplog):
+    """Downloaded and checked at launch, run at quit, maybe hours later: anything changed in
+    between and it isn't run."""
     pc["publish"](signed_installer(pc["tmp"] / "release", pc["seed"]))
     u = pc["start"]()
     u._check()
+    _, (download, _), _ = u._staged
+    if what == "changed":
+        with download.open("ab") as f:
+            f.write(b"\0")
+    elif what == "another version":
+        pc["computers"][-1].version = "9.8.0"
+    else:
+        windows_update.signature_of(download).unlink()
     with caplog.at_level(logging.INFO, logger="inab"):
-        assert not u.install(logging_out=True)
+        assert not u.install(relaunch_after=True)
+    if what == "signature gone":
+        assert u.last_error.startswith("Couldn't start the installer for 9.9.0 (")
+    else:
+        assert u.last_error == "The installer for 9.9.0 changed after it was checked, so it wasn't run."
+    assert "Couldn't install 9.9.0: " + u.last_error in caplog.text
     assert not pc["started"] and list(pc["temp"].iterdir()) == []
-    assert "Not installing 9.9.0 while logging out" in caplog.text
-    assert not u.install()  # and it's gone: the next launch downloads it again
 
 
-def test_nor_when_windows_says_its_session_is_ending(pc, monkeypatch):
-    """In case a way of quitting while Windows logs off didn't say so."""
+def test_an_installer_that_cant_be_started_says_so(pc, monkeypatch):
     pc["publish"](signed_installer(pc["tmp"] / "release", pc["seed"]))
     u = pc["start"]()
     u._check()
-    monkeypatch.setattr(ThisPC, "_session_ending", lambda self: True)
-    assert not u.install(relaunch_after=True)
+
+    def refused(self, app, folder, installer, version=None):
+        raise PermissionError("made-up: access is denied")
+
+    monkeypatch.setattr(ThisPC, "_start_helper", refused)
+    assert not u.install()
+    assert u.last_error == "Couldn't start the installer for 9.9.0 (made-up: access is denied)."
+    assert list(pc["temp"].iterdir()) == []
+
+
+def test_updates_are_off_without_the_release_key_or_where_the_installer_doesnt_install(pc, tmp_path, monkeypatch):
+    programs = tmp_path / "Programs"
+    assert pc["start"]().unavailable_reason is None
+    assert ThisPC(programs).why_updates_off(programs / "I Need A Budget" / "I Need A Budget.exe") is None
+    elsewhere = "I Need A Budget isn't installed in your Programs folder"
+    for folder in (tmp_path / "Downloads" / "I Need A Budget", programs, programs / "Other" / "I Need A Budget",
+                   programs / "I Need A Budget" / "Inside"):
+        assert ThisPC(programs).why_updates_off(folder) == elsewhere, folder
+    monkeypatch.setattr(windows_update, "RELEASE_KEY_FILE", tmp_path / "none.pub")
+    assert ThisPC(programs).why_updates_off(pc["app"]) == "this copy has no release key to check updates with"
+    assert pc["computers"][-1].why_updates_off(pc["app"]) is None  # read at launch: what changes later changes nothing
+
+
+def test_a_copy_that_cant_tell_whether_it_can_update_still_opens(pc, monkeypatch):
+    def unknown(self):
+        raise OSError("Windows didn't say where the folder is (made-up)")
+
+    monkeypatch.setattr(ThisPC, "_programs_folder", unknown)
+    u = pc["start"]()
+    assert u.unavailable_reason == ("couldn't tell whether this copy can update itself "
+                                    "(Windows didn't say where the folder is (made-up))")
+    with pytest.raises(UpdateError, match="Automatic updates are off: couldn't tell"):
+        u.check_now()
+
+
+@pytest.mark.parametrize("how", ["said so", "Windows said so"])
+def test_an_update_waits_through_a_log_off_and_goes_in_at_the_next_launch(how, pc, caplog, monkeypatch):
+    """Never installed while Windows logs off or shuts down: a PC that's always shut down with the
+    app open would otherwise never update. It's checked again at the next launch, as a download
+    is, and goes in before the window opens."""
+    pc["publish"](signed_installer(pc["tmp"] / "release", pc["seed"]))
+    u = pc["start"]()
+    u._check()
+    if how == "Windows said so":  # a way of quitting that didn't say: swap_in asks Windows
+        monkeypatch.setattr(ThisPC, "_session_ending", lambda self: True)
+    with caplog.at_level(logging.INFO, logger="inab"):
+        assert not u.install(logging_out=how == "said so")
     assert not pc["started"] and list(pc["temp"].iterdir()) == []
+    assert "Not installing 9.9.0 while logging out: it's checked again and installed at the next launch" in caplog.text
+    assert sorted(p.name for p in pc["kept"].iterdir()) == ["update-setup.exe", "update-setup.exe.sig"]
+    assert not u.install()  # it's been put aside
+
+    monkeypatch.setattr(ThisPC, "_session_ending", lambda self: False)
+    later = pc["start"]()  # the next launch
+    with caplog.at_level(logging.INFO, logger="inab"):
+        assert later.take_kept() and later.install(relaunch_after=True)
+    [(folder, moved, version)] = pc["started"]
+    assert version == "9.9.0" and (folder / "relaunch").exists() and moved.exists()
+    assert "Installing 9.9.0, kept from logging out, before the window opens" in caplog.text
+    assert not pc["kept"].exists()
+
+
+@pytest.mark.parametrize("what", ["changed", "not newer", "updates off"])
+def test_an_update_kept_from_a_log_off_that_doesnt_pass_again_is_dropped(what, pc, caplog, monkeypatch):
+    pc["publish"](signed_installer(pc["tmp"] / "release", pc["seed"]))
+    u = pc["start"]()
+    u._check()
+    u.install(logging_out=True)
+    if what == "changed":
+        with (pc["kept"] / "update-setup.exe").open("ab") as f:
+            f.write(b"\0")
+    if what == "updates off":
+        monkeypatch.setattr(windows_update, "RELEASE_KEY_FILE", pc["tmp"] / "none.pub")
+    later = pc["start"]("9.9.0" if what == "not newer" else "1.5.0")  # 9.9.0 installed by hand meanwhile
+    with caplog.at_level(logging.INFO, logger="inab"):
+        assert not later.take_kept()
+    assert not pc["started"]
+    if what == "updates off":
+        assert pc["kept"].exists()  # a copy that can't update leaves it be
+        return
+    assert not pc["kept"].exists()
+    assert "Not installing the update kept from logging out: " + {
+        "changed": "The downloaded installer was changed or isn't signed with the release key.",
+        "not newer": "its version, 9.9.0, isn't newer than this one"}[what] in caplog.text
 
 
 def test_a_mac_still_swaps_its_update_in_while_logging_out(tmp_path):
@@ -465,9 +614,10 @@ def test_a_mac_still_swaps_its_update_in_while_logging_out(tmp_path):
 
 
 def test_restart_now_without_an_update_still_reopens_the_app(pc):
-    pc["computer"].relaunch(pc["app"])
-    [(folder, installer)] = pc["started"]
-    assert installer is None and (folder / "relaunch").exists()
+    pc["start"]()
+    pc["computers"][-1].relaunch(pc["app"])
+    [(folder, installer, version)] = pc["started"]
+    assert installer is None and version is None and (folder / "relaunch").exists()
 
 
 # ── on a PC: Windows' own programs ──────────────────────────
@@ -520,6 +670,25 @@ def test_an_installers_version_is_read_from_its_version_resource(stand_in, tmp_p
 
 
 @WINDOWS
+def test_a_held_installer_can_be_read_but_not_changed_moved_or_deleted(tmp_path):
+    installer = tmp_path / "update-setup.exe"
+    installer.write_bytes(b"MZ made-up installer")
+    pc = Windows()
+    handle = pc._hold(installer)
+    try:
+        assert installer.read_bytes() == b"MZ made-up installer"
+        for change in (lambda: installer.open("ab"), installer.unlink, lambda: installer.rename(tmp_path / "other.exe")):
+            with pytest.raises(PermissionError):
+                change()
+    finally:
+        pc._let_go(handle)
+    with installer.open("ab") as f:  # let go: anything goes again
+        f.write(b"\0")
+    with pytest.raises(OSError):
+        pc._hold(tmp_path / "none.exe")
+
+
+@WINDOWS
 def test_a_token_is_kept_in_credential_manager():
     import ctypes
 
@@ -544,10 +713,13 @@ def test_a_token_is_kept_in_credential_manager():
 
 
 # The app, as far as updating goes: the real updater and Windows' real steps (curl, the release key,
-# the helper), with the test's Programs folder and release key. It checks the feed, installs the way
-# its way of quitting says, and exits, as the app does once it has quit.
+# the helper), with the test's Programs folder and release key. Each run is one launch, which then
+# quits the way it's told: "quit", "Restart now", "log off" (Windows ending the session), "launch"
+# (installing what a log-off kept, as main.py does before the window), "reopen only" (Restart now
+# with no update) or "linger" (Restart now, but the app doesn't exit until well after the helper
+# stops waiting). Then it exits, as the app does once it has quit.
 APP = r"""
-import logging, os, sys
+import logging, os, sys, time
 from pathlib import Path
 sys.path.insert(0, sys.argv[1])
 import updater, windows_update
@@ -559,6 +731,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)-8s  %(
                     handlers=[logging.FileHandler(data / "Logs" / "app.log", encoding="utf-8")])
 windows_update.RELEASE_KEY_FILE = Path(os.environ["TEST_RELEASE_KEY"])
 programs = Path(os.environ["TEST_PROGRAMS"])
+how = sys.argv[2]
 
 class ThisPC(Windows):
     def _programs_folder(self):
@@ -568,17 +741,28 @@ class Settings:
     def get(self):
         return {"update_automatically": True}
 
-u = updater.Updater(programs / "I Need A Budget", "1.5.0", settings=Settings(), data_dir=data,
-                    on_status=lambda state: None, computer=ThisPC())
+app = programs / "I Need A Budget"
+u = updater.Updater(app, "1.5.0", settings=Settings(), data_dir=data, on_status=lambda state: None,
+                    computer=ThisPC())
 assert u.unavailable_reason is None, u.unavailable_reason
-u._check()
-u.install(relaunch_after=sys.argv[2] == "Restart now")
+if how == "reopen only":
+    u._computer.relaunch(app)
+elif how == "launch":
+    assert u.take_kept() and u.install(relaunch_after=True)
+else:
+    u._check()
+    if how == "linger":
+        windows_update.PATIENCE = 2
+    u.install(relaunch_after=how in ("Restart now", "linger"), logging_out=how == "log off")
+    if how == "linger":
+        time.sleep(8)
 """
+REOPENS = ("Restart now", "launch", "reopen only")
 
 
-def update_on_this_pc(tmp_path, stand_in, how, change=None, exit_code=0):
-    """Runs the app's update with a stand-in feed and installer; returns what the stand-ins noted
-    and the app's log, once the helper has finished."""
+def update_on_this_pc(tmp_path, stand_in, *hows, change=None, exit_code=0):
+    """Launches the app's update once for each of `hows`, with a stand-in feed and installer, and
+    waits for each run's helper; returns what the stand-ins noted and the app's log."""
     seed = throwaway_key()
     key, data, temp = tmp_path / "release-key.pub", tmp_path / "data folder", tmp_path / "temp"
     key.write_text(base64.b64encode(public_key_of(seed)).decode() + "\n", encoding="ascii")
@@ -598,21 +782,24 @@ def update_on_this_pc(tmp_path, stand_in, how, change=None, exit_code=0):
                        STANDIN_EXIT=str(exit_code))
     script = tmp_path / "app.py"
     script.write_text(APP, encoding="utf-8")
-    subprocess.run([sys.executable, str(script), str(ROOT / "Application Files"), how], env=environment,
-                   check=True, timeout=120)
 
     def noted():
         return note.read_text(encoding="utf-8").splitlines() if note.exists() else []
 
-    deadline = time.monotonic() + 120
-    while any(temp.iterdir()) and time.monotonic() < deadline:  # the helper deletes its folder last
-        time.sleep(0.2)
-    assert not any(temp.iterdir()), "the helper didn't finish"
-    if how == "Restart now":
-        while time.monotonic() < deadline and not any(line.startswith("I Need A Budget.exe|") for line in noted()):
+    for how in hows:
+        reopened = sum(line.startswith("I Need A Budget.exe|") for line in noted())
+        subprocess.run([sys.executable, str(script), str(ROOT / "Application Files"), how], env=environment,
+                       check=True, timeout=120)
+        deadline = time.monotonic() + 120
+        while any(temp.iterdir()) and time.monotonic() < deadline:  # the helper deletes its folder last
             time.sleep(0.2)
-    else:
-        time.sleep(2)  # long enough for an app the helper shouldn't have opened to note itself
+        assert not any(temp.iterdir()), "the helper didn't finish"
+        if how in REOPENS:
+            while time.monotonic() < deadline and sum(line.startswith("I Need A Budget.exe|")
+                                                      for line in noted()) == reopened:
+                time.sleep(0.2)
+        else:
+            time.sleep(2)  # long enough for an app the helper shouldn't have opened to note itself
     return noted(), (data / "Logs" / "app.log").read_text(encoding="utf-8")
 
 
@@ -627,16 +814,41 @@ def test_on_a_pc_an_update_installs_once_the_app_has_quit(how, tmp_path, stand_i
     data = str(tmp_path / "data folder")
     installed = f"update-setup.exe|/VERYSILENT /SUPPRESSMSGBOXES /NORESTART|{data}"
     assert noted == ([installed, f"I Need A Budget.exe||{data}"] if how == "Restart now" else [installed])
-    assert messages(log) == ["Downloading 9.9", "9.9 is ready to install",
-                             "Installed 9.9.0" + ("; relaunching" if how == "Restart now" else ""),
-                             "The update installer finished"], log
+    assert messages(log) == ["Downloading 9.9", "9.9.0 is ready to install",
+                             "Installing 9.9.0 after quitting" + ("; the app reopens then" if how == "Restart now" else ""),
+                             "Installed 9.9.0"], log
+
+
+@WINDOWS
+def test_on_a_pc_an_update_waits_through_a_log_off_and_goes_in_at_the_next_launch(tmp_path, stand_in):
+    noted, log = update_on_this_pc(tmp_path, stand_in, "log off", "launch")
+    data = str(tmp_path / "data folder")
+    assert noted == [f"update-setup.exe|/VERYSILENT /SUPPRESSMSGBOXES /NORESTART|{data}", f"I Need A Budget.exe||{data}"]
+    assert messages(log) == ["Downloading 9.9", "9.9.0 is ready to install",
+                             "Not installing 9.9.0 while logging out: it's checked again and installed at the next launch",
+                             "Installing 9.9.0, kept from logging out, before the window opens",
+                             "Installing 9.9.0 after quitting; the app reopens then", "Installed 9.9.0"], log
 
 
 @WINDOWS
 def test_on_a_pc_an_installer_that_fails_is_logged_and_the_app_still_reopens(tmp_path, stand_in):
     noted, log = update_on_this_pc(tmp_path, stand_in, "Restart now", exit_code=3)
     assert [line.split("|")[0] for line in noted] == ["update-setup.exe", "I Need A Budget.exe"]
-    assert messages(log)[-1] == "The update installer failed (exit code 3)", log
+    assert messages(log)[-1] == "Couldn't install 9.9.0: its installer failed (exit code 3)", log
+
+
+@WINDOWS
+def test_on_a_pc_an_app_that_doesnt_exit_gets_no_installer_and_no_second_copy(tmp_path, stand_in):
+    noted, log = update_on_this_pc(tmp_path, stand_in, "linger")
+    assert noted == []
+    assert messages(log)[-1] == "Couldn't install 9.9.0: the app was still running 2 seconds after quitting", log
+
+
+@WINDOWS
+def test_on_a_pc_restart_now_without_an_update_only_reopens_the_app(tmp_path, stand_in):
+    noted, log = update_on_this_pc(tmp_path, stand_in, "reopen only")
+    assert noted == [f"I Need A Budget.exe||{tmp_path / 'data folder'}"]
+    assert log == ""  # the helper had nothing to install, and says nothing
 
 
 @WINDOWS

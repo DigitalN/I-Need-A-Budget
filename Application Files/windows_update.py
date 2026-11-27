@@ -90,16 +90,30 @@ _BASE_X = _x_for(_BASE_Y, 0)
 _BASE = (_BASE_X, _BASE_Y, 1, _BASE_X * _BASE_Y % P)
 
 
+def _small_order(point):
+    """Whether eight times the point is the identity: one of the curve's eight points of small
+    order, for which anyone can make a signature that passes, without any private key."""
+    return _same(_multiply(8, point), _IDENTITY)
+
+
+def usable_key(public_key):
+    """Whether `public_key` is a key a signature proves anything for: 32 bytes that are a point,
+    written the one way RFC 8032 writes it (`_point` refuses a y of p or more, and x = 0 with
+    x's sign set), and not of small order (a placeholder of 32 zero bytes is one)."""
+    point = _point(public_key) if isinstance(public_key, bytes) else None
+    return point is not None and not _small_order(point)
+
+
 def verify(public_key, signature, message):
     """Whether `signature` (64 bytes) is `public_key`'s (32 bytes) over `message`: bytes, or an
     iterable of bytes (a file read in pieces)."""
     if not isinstance(public_key, bytes) or not isinstance(signature, bytes):
         return False
-    if len(public_key) != 32 or len(signature) != 64:
+    if len(public_key) != 32 or len(signature) != 64 or not usable_key(public_key):
         return False
     a, r = _point(public_key), _point(signature[:32])
     s = int.from_bytes(signature[32:], "little")
-    if a is None or r is None or s >= L:
+    if r is None or s >= L:
         return False
     digest = hashlib.sha512(signature[:32] + public_key)
     for piece in [message] if isinstance(message, (bytes, bytearray)) else message:
@@ -128,12 +142,14 @@ def read_key(text, size):
 
 
 def release_key(path=None):
-    """The release key's public half built into this copy, or None when it has none (a copy
-    built before the maintainer made the key, or the file damaged)."""
+    """The release key's public half built into this copy, or None when it has none: a copy
+    built before the maintainer made the key, the file damaged, or a key no signature proves
+    anything for (`usable_key`). Updates are then off."""
     try:
-        return read_key((path or RELEASE_KEY_FILE).read_text(encoding="ascii"), 32)
+        key = read_key((path or RELEASE_KEY_FILE).read_text(encoding="ascii"), 32)
     except (OSError, UnicodeDecodeError):
         return None
+    return key if key is not None and usable_key(key) else None
 
 
 def _pieces(path, size=1 << 20):
@@ -142,16 +158,22 @@ def _pieces(path, size=1 << 20):
             yield piece
 
 
+def signature_of(installer):
+    """Where an installer's signature is: beside it, its name with SIGNATURE added."""
+    installer = Path(installer)
+    return installer.with_name(installer.name + SIGNATURE)
+
+
 def check(installer, public_key):
-    """Refuses an installer our release key didn't sign: `installer`'s signature is the file
-    beside it named with SIGNATURE added. Raises updater.UpdateError, or returns."""
+    """Refuses an installer our release key didn't sign (its signature: signature_of). Raises
+    updater.UpdateError, or returns."""
     from updater import UpdateError
 
     installer = Path(installer)
     if public_key is None:
         raise UpdateError("This copy has no release key to check updates with.")
     try:
-        text = installer.with_name(installer.name + SIGNATURE).read_text(encoding="ascii")
+        text = signature_of(installer).read_text(encoding="ascii")
     except (OSError, UnicodeDecodeError):
         raise UpdateError("The latest release's installer isn't signed.") from None
     signature = read_key(text, 64)
@@ -159,16 +181,22 @@ def check(installer, public_key):
         raise UpdateError("The downloaded installer was changed or isn't signed with the release key.")
 
 
-def inside(path, folder):
-    """Whether `path` is in `folder` or a folder inside it (Windows compares paths without case)."""
-    path, folder = Path(path).resolve(), Path(folder).resolve()
-    return path != folder and folder in path.parents
+def app_folder(app):
+    """The folder the app is installed in: `app` is that folder, or the .exe in it."""
+    app = Path(app)
+    return app.parent if app.suffix.lower() == ".exe" else app
 
 
 def app_exe(app):
-    """The program to reopen: `app` is the folder the app is installed in, or its .exe."""
-    app = Path(app)
-    return app if app.suffix.lower() == ".exe" else app / f"{APP_NAME}.exe"
+    """The program to reopen."""
+    return app_folder(app) / f"{APP_NAME}.exe"
+
+
+def where_the_installer_installs(app, programs):
+    """Whether the app is in `programs`' folder for it, `I Need A Budget`, the one the installer
+    always installs into (it doesn't ask where): an update installed anywhere else wouldn't
+    replace this copy. Windows compares paths without case."""
+    return app_folder(app).resolve() == (Path(programs) / APP_NAME).resolve()
 
 
 # ── installing once the app has quit ────────────────────────
@@ -176,58 +204,68 @@ def app_exe(app):
 # PowerShell, given on its command line: no double quotes in it, so Windows' quoting leaves it be,
 # and nothing that varies, which comes in INAB_HELPER_* (helper_environment). Run by powershell.exe
 # with -NoProfile -NonInteractive -Command, no window. It waits for the app to exit (a minute at
-# most: the installer can't replace a running app's files), runs the installer quietly, notes how
-# that went in the app's log, reopens the app when Restart now left the `relaunch` file in its
-# folder, and deletes its folder. The app it opens has the same environment: INAB_DATA_DIR stays.
+# most: the installer can't replace a running app's files), runs the installer quietly and notes in
+# the app's log how that went, reopens the app when Restart now left the `relaunch` file in its
+# folder, and deletes its folder. An app still running after that minute gets neither: no installer,
+# and no second copy (the helper only waits on, ten minutes at most, to delete its folder). The app it opens has the same environment: INAB_DATA_DIR stays. A helper with
+# no installer (Restart now without an update) only reopens the app, and notes nothing.
 HELPER_SCRIPT = r"""
 $ErrorActionPreference = 'Stop'
 function Note([string]$level, [string]$text) {
   if ($env:INAB_HELPER_LOG) {
     $line = '{0}  {1,-8}  {2}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss,fff'), $level, $text
-    try { [IO.File]::AppendAllText($env:INAB_HELPER_LOG, $line + [Environment]::NewLine) } catch {}
+    $bytes = [Text.Encoding]::UTF8.GetBytes($line + [Environment]::NewLine)
+    try {  # shared, as an app that hasn't exited still has the log open
+      $log = [IO.File]::Open($env:INAB_HELPER_LOG, [IO.FileMode]::Append, [IO.FileAccess]::Write, [IO.FileShare]::ReadWrite)
+      try { $log.Write($bytes, 0, $bytes.Length) } finally { $log.Dispose() }
+    } catch {}
   }
 }
 $folder = $env:INAB_HELPER_FOLDER
 $exe = $env:INAB_HELPER_APP
 $installer = $env:INAB_HELPER_INSTALLER
+$version = $env:INAB_HELPER_VERSION
+$patience = [int]$env:INAB_HELPER_PATIENCE
+$gone = $false
 try {
   $app = Get-Process -Id ([int]$env:INAB_HELPER_WAIT_FOR) -ErrorAction SilentlyContinue
-  if ($app -and -not $app.WaitForExit(60000)) {
-    Note 'ERROR' 'Update not installed: the app was still running a minute after quitting'
-    $installer = $null
-  }
-  if ($installer) {
+  $gone = (-not $app) -or $app.WaitForExit($patience * 1000)
+  if (-not $gone) {
+    if ($installer) { Note 'ERROR' ('Couldn''t install {0}: the app was still running {1} seconds after quitting' -f $version, $patience) }
+    $null = $app.WaitForExit($patience * 10000)  # only to delete the folder: the app holds what's in it until then
+  } elseif ($installer) {
     $run = Start-Process -FilePath $installer -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -PassThru
     $null = $run.Handle
     $run.WaitForExit()
-    if ($run.ExitCode -eq 0) { Note 'INFO' 'The update installer finished' }
-    else { Note 'ERROR' ('The update installer failed (exit code {0})' -f $run.ExitCode) }
+    if ($run.ExitCode -eq 0) { Note 'INFO' ('Installed {0}' -f $version) }
+    else { Note 'ERROR' ('Couldn''t install {0}: its installer failed (exit code {1})' -f $version, $run.ExitCode) }
   }
 } catch {
-  Note 'ERROR' ('The update installer could not run: ' + $_.Exception.Message)
+  if ($installer) { Note 'ERROR' ('Couldn''t install {0}: {1}' -f $version, $_.Exception.Message) }
 }
 try {
-  if ($folder -and (Test-Path -LiteralPath (Join-Path $folder 'relaunch'))) {
+  if ($gone -and $folder -and (Test-Path -LiteralPath (Join-Path $folder 'relaunch'))) {
     Get-ChildItem Env:INAB_HELPER_* | ForEach-Object { Remove-Item -LiteralPath ('Env:' + $_.Name) }
     Start-Process -FilePath $exe -WorkingDirectory (Split-Path -Parent $exe)
   }
 } catch {
-  Note 'ERROR' ('Could not reopen the app: ' + $_.Exception.Message)
+  Note 'ERROR' ('Couldn''t reopen the app: ' + $_.Exception.Message)
 } finally {
   if ($folder) { Remove-Item -LiteralPath $folder -Recurse -Force -ErrorAction SilentlyContinue }
 }
 """
+PATIENCE = 60  # seconds the helper waits for the app to exit
 
 
-def helper_environment(environment, *, wait_for, folder, app, installer=None, log_file=None):
+def helper_environment(environment, *, wait_for, folder, app, installer=None, version=None, log_file=None):
     """The helper's environment: this process's (which the installer and the reopened app keep),
     and what HELPER_SCRIPT needs to know. PYINSTALLER_RESET_ENVIRONMENT makes the reopened app
     start afresh rather than as a child of this one's launcher."""
     values = {key: value for key, value in environment.items() if not key.upper().startswith("INAB_HELPER_")}
-    values.update(INAB_HELPER_WAIT_FOR=str(wait_for), INAB_HELPER_FOLDER=str(folder),
+    values.update(INAB_HELPER_WAIT_FOR=str(wait_for), INAB_HELPER_FOLDER=str(folder), INAB_HELPER_PATIENCE=str(PATIENCE),
                   INAB_HELPER_APP=str(app_exe(app)), PYINSTALLER_RESET_ENVIRONMENT="1")
     if installer is not None:
-        values["INAB_HELPER_INSTALLER"] = str(installer)
+        values.update(INAB_HELPER_INSTALLER=str(installer), INAB_HELPER_VERSION=str(version))
     if log_file:
         values["INAB_HELPER_LOG"] = str(log_file)
     return values

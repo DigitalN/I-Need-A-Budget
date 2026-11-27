@@ -223,26 +223,34 @@ release key, the installer, Credential Manager) in `computer_windows.py` and
   The version inside must also be newer.
 - **Checks on Windows:** the installer's signature must be our release key's (Ed25519 over
   its exact bytes: the formats are in *Release secrets*), checked with the public half built
-  into the app, `release-key.pub` (read at launch). The check is our own short Ed25519
+  into the app, `release-key.pub` (read at launch; a key of small order, such as a
+  placeholder of zeros, is no key, and updates are off). The check is our own short Ed25519
   verify (`windows_update.py`, tested against RFC 8032's vectors), so there's no dependency
   to pin or license to bundle. Nothing in the installer runs before that. Its version is the
   one in its version resource (the signature covers it), not the release's tag, and it must
-  be newer.
+  be newer; the banner shows that version. Both are read while the file is held so nobody
+  can change it, and again just before it runs, on the file that runs.
 - **Installing on a Mac:** when the user quits (close button or ⌘Q), with one
   `replaceItemAtURL` swap, or straight away with "Restart now" in the banner. Logging out
   installs it too.
 - **Installing on Windows:** at the same moments, but the installer can't replace a running
-  app's files: the app starts a small PowerShell script (`windows_update.HELPER_SCRIPT`, no
-  window) and quits. The script waits for it to exit (a minute at most), runs the installer
-  with `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART`, adds `The update installer finished` (or
-  `failed (exit code N)`) to `app.log`, and for Restart now opens the app again with the same
-  environment, `INAB_DATA_DIR` included. Never while Windows logs off or shuts down, which
-  could stop the installer half-way: the download is dropped and the next launch fetches it
-  again. The installer itself must not open the app when run quietly.
+  app's files: the app logs `Installing 9.9.0 after quitting`, starts a small PowerShell
+  script (`windows_update.HELPER_SCRIPT`, no window) and quits. The script waits for it to
+  exit (a minute at most), runs the installer with `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART`,
+  adds `Installed 9.9.0` (or `Couldn't install 9.9.0: its installer failed (exit code N)`) to
+  `app.log`, and for Restart now opens the app again with the same environment,
+  `INAB_DATA_DIR` included. An app still running after that minute gets no installer and no
+  second copy. The installer itself must not open the app when run quietly.
+- **Logging off on Windows:** the installer never starts while Windows logs off or shuts
+  down, which could stop it half-way. The checked download waits in the data folder's
+  `Update waiting` instead. At the next launch it's checked again (its signature, a version
+  newer than the app's) and, before the window opens, installed the way quitting installs it,
+  and the app reopens. One that doesn't pass is deleted.
 - **Off** for copies run from source; on a Mac, not team-signed, not in an Applications
-  folder, or unable to replace themselves; on Windows, without a release key, or not
-  installed in the person's own Programs folder (`%LOCALAPPDATA%\Programs`, where the
-  installer puts it). Settings says why.
+  folder, or unable to replace themselves; on Windows, without a usable release key, or not
+  in `%LOCALAPPDATA%\Programs\I Need A Budget`, where the installer always installs it. A
+  copy that can't tell (Windows didn't say where its Programs folder is) is off too, and
+  still opens. Settings says why.
 
 ## Testing the updater
 
@@ -330,9 +338,11 @@ where nobody uses the app for real: the test installs over the copy in your Prog
    INAB_DATA_DIR="$T/data" INAB_UPDATE_FEED="file:///$T/feed/latest.json" "$APP/I Need A Budget.exe" &
    ```
    Settings → Check now. `$T/data/Logs/app.log` shows `Downloading 9.9` and
-   `9.9 is ready to install`. Quit: it shows `Installed 9.9.0`, then `The update installer
-   finished`, and Settings → Apps lists 9.9. Do it again from 1.0 with Restart now: the app
-   comes back by itself, on `$T/data`.
+   `9.9.0 is ready to install`. Quit: it shows `Installing 9.9.0 after quitting`, then
+   `Installed 9.9.0`, and Settings → Apps lists 9.9. Do it again from 1.0 with Restart now:
+   the app comes back by itself, on `$T/data`. And once more, signing out of Windows with the
+   app open: the log says `Not installing 9.9.0 while logging out`, and the next launch
+   installs it before the window opens, then reopens.
 6. To check bad updates are refused: change the installer after signing (`printf x >>
    "$T/feed/I-Need-A-Budget-9.9-Setup.exe"`), sign it with another throwaway key, leave its
    `.sig` out of `latest.json`, or give the feed a newer tag than the installer's own version.

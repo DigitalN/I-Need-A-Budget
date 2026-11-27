@@ -106,11 +106,12 @@ class Windows(Computer):
 
     update_file = ("-setup.exe", "installer")  # I-Need-A-Budget-<version>-Setup.exe
     update_signature = ".sig"                  # beside it: our release key's signature (windows_update.py)
-    installs_while_logging_out = False         # its installer runs once the app has gone: Windows could stop it half-way
+    installs_after_quitting = True             # its installer: never while logging off, when Windows could stop it half-way
     _CREDENTIAL = APP_NAME                     # the token's name in Credential Manager
     _PROGRAMS = uuid.UUID("{5CD7AEE2-2219-4A67-B85D-6C9CE15660CB}")  # FOLDERID_UserProgramFiles: %LOCALAPPDATA%\Programs
     _key = None                                # the release key as this copy had it at launch (b"": none)
     _waiting = None                            # the folder of the helper that installs an update once the app has quit
+    _holding = None                            # the installer it runs, held unchangeable until this process exits
 
     def saved_token(self):
         import ctypes
@@ -158,13 +159,13 @@ class Windows(Computer):
         return known_folder(self._PROGRAMS)
 
     def why_updates_off(self, app):
-        """The installer installs for this user only, into their own Programs folder: a copy
-        anywhere else isn't the one an update would replace."""
+        """The installer installs for this user only, always into their own Programs folder's
+        `I Need A Budget`: a copy anywhere else isn't the one an update would replace."""
         import windows_update
 
         if self._release_key() is None:
             return "this copy has no release key to check updates with"
-        if not windows_update.inside(app, self._programs_folder()):
+        if not windows_update.where_the_installer_installs(app, self._programs_folder()):
             return f"{APP_NAME} isn't installed in your Programs folder"
         return None
 
@@ -180,15 +181,24 @@ class Windows(Computer):
     def take_update(self, download, app, folder):
         """Nothing in an installer is run or unpacked before the release key's signature on it
         is checked. Its version is the one it says it is (its version resource, which the
-        signature covers), not the release's tag."""
+        signature covers), not the release's tag: both are read while nobody can change the file
+        (_hold). swap_in is given (the installer, that version), and checks both again."""
+        handle = self._hold(download)
+        try:
+            version = self._checked_version(download)
+        finally:
+            self._let_go(handle)
+        return version, (download, version)
+
+    def _checked_version(self, installer):
         import windows_update
         from updater import UpdateError
 
-        windows_update.check(download, self._release_key())
-        version = self._installer_version(download)
+        windows_update.check(installer, self._release_key())
+        version = self._installer_version(installer)
         if not version:
             raise UpdateError("The latest release's installer doesn't say which version it is.")
-        return version, download
+        return version
 
     def _installer_version(self, path):
         """The product version in a program's version resource, as the app writes its versions
@@ -224,22 +234,68 @@ class Windows(Computer):
 
     def swap_in(self, app, update):
         """Starts the helper that runs the installer once this process has exited
-        (windows_update.HELPER_SCRIPT). The installer moves into the helper's own folder first:
-        the download's is deleted straight after. Never while Windows is logging off or shutting
-        down (Updater.install doesn't ask then; this is in case a way of quitting didn't say)."""
+        (windows_update.HELPER_SCRIPT). The installer and its signature move into the helper's
+        own folder first (the download's is deleted straight after), where the installer is
+        checked again as it was when downloaded, maybe hours ago, on the bytes the helper runs:
+        held from then until this process exits, so nothing can change them in between. Never
+        while Windows is logging off or shutting down (Updater.install doesn't ask then; this is
+        in case a way of quitting didn't say)."""
         import shutil
         import tempfile
 
+        import windows_update
+        from updater import InstallError, LoggingOff, UpdateError
+
+        installer, version = update
         if self._session_ending():
-            raise OSError("Windows is logging off or shutting down")
+            raise LoggingOff("Windows is logging off or shutting down.")
         folder = Path(tempfile.mkdtemp(prefix=f"{APP_NAME} installing "))
+        handle = None
         try:
-            installer = Path(shutil.move(str(update), str(folder / Path(update).name)))
-            self._start_helper(app, folder, installer)
-        except OSError:
+            moved = folder / Path(installer).name
+            for source, target in ((installer, moved), (windows_update.signature_of(installer),
+                                                        windows_update.signature_of(moved))):
+                shutil.move(str(source), str(target))
+            handle = self._hold(moved)
+            try:
+                again = self._checked_version(moved)
+            except UpdateError:
+                again = None
+            if again != version:
+                raise InstallError(f"The installer for {version} changed after it was checked, so it wasn't run.")
+            self._start_helper(app, folder, moved, version)
+        except OSError as e:
+            if handle is not None:
+                self._let_go(handle)
             shutil.rmtree(folder, ignore_errors=True)
-            raise
-        self._waiting = folder
+            if isinstance(e, InstallError):
+                raise
+            raise InstallError(f"Couldn't start the installer for {version} ({e}).") from e
+        self._waiting, self._holding = folder, handle
+
+    def _hold(self, path):
+        """Opens `path` so that until _let_go, or this process exits, nobody can write to it,
+        rename it or delete it. Reading it, and so checking it, still works."""
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
+                                         wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+        kernel32.CreateFileW.restype = wintypes.HANDLE
+        handle = kernel32.CreateFileW(str(path), GENERIC_READ, FILE_SHARE_READ, None, OPEN_EXISTING, 0, None)
+        if handle is None or handle == ctypes.c_void_p(-1).value:  # INVALID_HANDLE_VALUE
+            raise ctypes.WinError(ctypes.get_last_error())
+        return handle
+
+    def _let_go(self, handle):
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        kernel32.CloseHandle(handle)
 
     def relaunch(self, app):
         """With an update waiting, its helper reopens the app once the installer is done (the
@@ -254,7 +310,7 @@ class Windows(Computer):
         (folder / "relaunch").touch()
         self._start_helper(app, folder, None)
 
-    def _start_helper(self, app, folder, installer):
+    def _start_helper(self, app, folder, installer, version=None):
         """powershell.exe, with no window, out of any job that would end it with the app, in
         Windows' own folder (not one the installer replaces), with the DLL search path as Windows
         has it: PyInstaller's launcher points it at the app's own folder, and processes started
@@ -266,7 +322,8 @@ class Windows(Computer):
         system = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32"
         powershell = system / "WindowsPowerShell" / "v1.0" / "powershell.exe"
         environment = windows_update.helper_environment(os.environ, wait_for=os.getpid(), folder=folder, app=app,
-                                                        installer=installer, log_file=windows_update.log_file())
+                                                        installer=installer, version=version,
+                                                        log_file=windows_update.log_file())
         command = [str(powershell), "-NoProfile", "-NonInteractive", "-Command", windows_update.HELPER_SCRIPT]
         flags = subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
         with _dll_search_as_windows_has_it():
@@ -290,6 +347,7 @@ class Windows(Computer):
 CRED_TYPE_GENERIC = 1
 CRED_PERSIST_LOCAL_MACHINE = 2  # this user, this PC: not copied with a roaming profile
 SM_SHUTTINGDOWN = 0x2000
+GENERIC_READ, FILE_SHARE_READ, OPEN_EXISTING = 0x80000000, 0x1, 3
 
 
 def _credential_api():

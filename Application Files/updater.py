@@ -23,7 +23,9 @@ Mac, `codesign --verify`: signed by the same team as this copy, for the same bun
 identifier; on Windows, our own release key's signature: windows_update.py) and newer. Then
 it waits: it's installed when you quit (the window's close button or ⌘Q), or straight away
 with "Restart now". How each of those steps is done is computer.py's. Windows' installer runs
-once the app has gone, so it's never started while Windows is logging off or shutting down.
+once the app has gone, so it's never started while Windows is logging off or shutting down:
+the checked download is kept instead, checked again at the next launch and installed then,
+before the window opens.
 
 This and nothing else talks to the network. It goes through the system's curl, which uses
 the system's certificates (the bundled Python has none of its own).
@@ -53,6 +55,14 @@ TOKEN_PATTERN = re.compile(r"^[A-Za-z0-9_]{20,255}$")
 
 class UpdateError(Exception):
     pass
+
+
+class InstallError(OSError):
+    """swap_in couldn't put the update in, and its message says what failed (Settings shows it)."""
+
+
+class LoggingOff(InstallError):
+    """swap_in found the computer logging off or shutting down: the update waits for the next launch."""
 
 
 # ── pure helpers (unit-tested) ──────────────────────────────
@@ -169,6 +179,7 @@ class Updater:
         self._current = (computer.installed_version(app) if app else None) or version
         self._settings = settings
         self._last_check_file = Path(data_dir) / "last-update-check"
+        self._kept = Path(data_dir) / "Update waiting"  # a checked download a log-off kept for the next launch
         self._on_status = on_status
         # For testing, INAB_UPDATE_FEED can point somewhere else (a file:// URL works);
         # the signature check still applies to whatever it finds there.
@@ -179,9 +190,14 @@ class Updater:
         self.unavailable_reason = self._why_unavailable()
 
     def _why_unavailable(self):
+        """Never stops the app launching: anything that goes wrong finding out turns updates off."""
         if self._app is None:
             return "running from source"
-        return self._computer.why_updates_off(self._app)
+        try:
+            return self._computer.why_updates_off(self._app)
+        except Exception as e:
+            log.warning("Couldn't tell whether this copy can update itself", exc_info=True)
+            return f"couldn't tell whether this copy can update itself ({e})"
 
     def state(self):
         token, source = (None, None) if self._feed.startswith("file:") else find_token(self._computer)
@@ -242,6 +258,7 @@ class Updater:
                 log.info("Downloading %s", version)
                 self._set_status(DOWNLOADING, version)
                 self._staged = self._download(url, token, signature_url)
+                version = self._staged[0]  # as the checked download says, not the release's tag
                 log.info("%s is ready to install", version)
                 self._set_status(READY, version)
             except Exception as e:
@@ -301,31 +318,66 @@ class Updater:
             raise
 
     def install(self, relaunch_after=False, logging_out=False):
-        """Swaps the downloaded app in. Called when quitting, or by "Restart now".
-        Returns True if it installed. While the computer is logging out or shutting down, only
-        where the swap is one step (a Mac's): Windows could stop its installer half-way, so the
-        download goes, and the next launch fetches it again."""
+        """Swaps the downloaded app in, or where an installer does that once the app has quit
+        (Windows), starts it. Called when quitting, or by "Restart now". Returns True if it's
+        in, or going in. While the computer is logging out or shutting down, only where the swap
+        is one step (a Mac's): Windows could stop its installer half-way, so the download is kept
+        for the next launch (take_kept)."""
         if self._staged is None:
             return False
         (version, update, folder), self._staged = self._staged, None
-        if logging_out and not self._computer.installs_while_logging_out:
-            shutil.rmtree(folder, ignore_errors=True)
-            log.info("Not installing %s while logging out: it's downloaded again at the next launch", version)
-            return False
+        if logging_out and self._computer.installs_after_quitting:
+            return self._keep(version, folder)
         try:
             self._computer.swap_in(self._app, update)
             error = None
+        except LoggingOff:
+            return self._keep(version, folder)
         except OSError as e:
             error = e
         shutil.rmtree(folder, ignore_errors=True)
         if error is not None:
             log.error("Couldn't install %s: %s", version, error)
-            self.last_error = f"Couldn't replace the app in {self._app.parent}."
+            self.last_error = str(error) if isinstance(error, InstallError) else f"Couldn't replace the app in {self._app.parent}."
             self._set_status(IDLE)
             return False
-        log.info("Installed %s%s", version, "; relaunching" if relaunch_after else "")
+        if self._computer.installs_after_quitting:  # its installer says how it went, in the log, afterwards
+            log.info("Installing %s after quitting%s", version, "; the app reopens then" if relaunch_after else "")
+        else:
+            log.info("Installed %s%s", version, "; relaunching" if relaunch_after else "")
         if relaunch_after:
             self._computer.relaunch(self._app)
+        return True
+
+    def _keep(self, version, folder):
+        shutil.rmtree(self._kept, ignore_errors=True)
+        try:
+            shutil.move(str(folder), str(self._kept))
+        except OSError as e:
+            shutil.rmtree(folder, ignore_errors=True)
+            log.warning("Not installing %s while logging out, and couldn't keep it for the next launch: %s", version, e)
+            return False
+        log.info("Not installing %s while logging out: it's checked again and installed at the next launch", version)
+        return False
+
+    def take_kept(self):
+        """At launch, before the window opens: an update a log-off kept (install) is checked again,
+        as a download is, and has to be newer than this copy. True when it passed: it's ready to
+        install now, the way quitting installs it, and to reopen the app. One that doesn't pass
+        is deleted."""
+        if self.unavailable_reason or not self._kept.is_dir():
+            return False
+        try:
+            download = self._kept / f"update{self._computer.update_file[0]}"
+            version, update = self._computer.take_update(download, self._app, self._kept)
+            if not is_newer(version, self._current):
+                raise UpdateError(f"its version, {version}, isn't newer than this one")
+        except Exception as e:
+            log.warning("Not installing the update kept from logging out: %s", e)
+            shutil.rmtree(self._kept, ignore_errors=True)
+            return False
+        log.info("Installing %s, kept from logging out, before the window opens", version)
+        self._staged = (version, update, self._kept)
         return True
 
     def save_token(self, token):
