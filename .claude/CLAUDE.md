@@ -564,9 +564,10 @@ late with only recent transactions counts as new (the accepted cost).
 - **A release happens only when the maintainer says it's ready** (their rule since
   2026-11-09, as bugs kept turning up). A merge, a finished list or every session being
   done is never the go-ahead. Then Claude starts the Release workflow
-  (`.github/workflows/release.yml`, issue #190) from either computer: `gh workflow run
-  release.yml --ref main -F notes=@NOTES.md`, the notes written outside the repo and checked
-  with `scripts/hooks/privacy_check.py` first, covering every PR merged since the last release.
+  (`.github/workflows/release.yml`, issue #190) from a computer that has `.git-denylist` (today
+  the Mac): `gh workflow run release.yml --ref main -F notes=@NOTES.md`, the notes written
+  outside the repo and checked with `scripts/hooks/privacy_check.py --need-denylist` first
+  (GitHub's machines can't check private words), covering every PR merged since the last release.
   It builds, signs and checks both apps on GitHub's machines and publishes only once the
   maintainer approves its `release` environment and every check passed. The maintainer never
   builds. Installed copies only update when a release is published on GitHub.
@@ -919,8 +920,9 @@ Don't undo these without asking:
   pictures), `scripts/` (tools, `First Time Setup.command`, `tests/`, `hooks/`),
   `.gitignore`, `LICENSE`, `README.md`. Nothing else goes there (CITATION.cff, a Build
   .command, `.gitattributes` and `pytest.ini` were removed). `scripts/` keeps its name:
-  every copy's privacy hook is `core.hooksPath scripts/hooks`. Disk images are made in
-  `~/Library/Caches/I Need A Budget-dmg`, never in the repository (iCloud syncs it).
+  every copy's privacy hook is `core.hooksPath scripts/hooks`. Disk images are made by the
+  Release workflow on GitHub's Mac (`scripts/make-dmg.py`), never in the repository (iCloud
+  syncs it).
 
 ## Roadmap (future chats)
 
