@@ -640,6 +640,8 @@ class FakeUpdater:
 
     def __init__(self, folder):
         self.folder, self.installs, self.logging_out = folder, [], []
+        self.saved = None    # the budget folder's Budget.inab, when there is one
+        self.in_folder = []  # what it held as each update went in
 
     def take_kept(self):
         return self.kept
@@ -647,6 +649,8 @@ class FakeUpdater:
     def install(self, relaunch_after=False, logging_out=False):
         self.installs.append((relaunch_after, names(self.folder)))  # what was backed up by then
         self.logging_out.append(logging_out)  # Windows installs nothing then: test_windows_update.py
+        if self.saved is not None:
+            self.in_folder.append(categories_in(self.saved) if self.saved.exists() else None)
         return True
 
 
@@ -697,14 +701,28 @@ def the_mac_asks_to_quit(monkeypatch, app, event):
     return cocoa.BrowserView.AppDelegate.alloc().init().applicationShouldTerminate_(None)
 
 
-def start_app(monkeypatch, tmp_path):
-    """The app as main.py builds it, without its window: a budget in a throwaway folder."""
+def start_app(monkeypatch, tmp_path, budget_folder=None):
+    """The app as main.py builds it, without its window: a budget in a throwaway folder, kept in
+    `budget_folder` when there's one (moved there as the window's first pop-up does it)."""
+    import threading
+
+    from helpers import call
+    from service import BudgetService
+    from settings import Settings
+
     main = load_main(monkeypatch, tmp_path / "home", tmp_path / "data")
     app = main.BudgetApp.__new__(main.BudgetApp)
     app._computer = FakeComputer()
+    app._computer_name = "PC-A"
     app._db = Database(main.DATA_DIR / "budget.db", backup_dir=main.BACKUP_DIR)
     app._updater = FakeUpdater(main.BACKUP_DIR)
+    app._settings = Settings(main.DATA_DIR / "settings.json")
+    app._service = BudgetService(app._db, app._settings, main.DATA_DIR, computer_name="PC-A")
     app._window, app._quitting, app._quit_asked = None, False, None
+    app._folder_round, app._folder_watching = threading.Lock(), True
+    if budget_folder is not None:
+        call(app._service, "move_budget_folder", str(budget_folder))
+        app._updater.folder, app._updater.saved = budget_folder / "Backups", budget_folder / "Budget.inab"
     return main, app, app._computer
 
 
@@ -789,6 +807,113 @@ def test_every_way_of_quitting_with_nothing_changed_makes_no_backup_and_the_upda
     relaunch = route == "Restart now"
     assert app._updater.installs[0] == (relaunch, [earlier.name])
     assert not (tmp_path / "home").exists()  # nothing near the real Documents
+
+
+@pytest.mark.parametrize("route", ROUTES)
+def test_every_way_of_quitting_saves_the_budget_into_its_folder(route, tmp_path, monkeypatch):
+    """Issue #189: with a budget folder, every quit backs up into the folder's Backups/ (named for this
+    computer) and saves the budget there with the latest changes, both before an update goes in, and takes
+    this computer's note out of the folder. The watcher looks no more."""
+    folder = tmp_path / "Budget folder"
+    main, app, this_computer = start_app(monkeypatch, tmp_path, folder)
+    assert categories_in(folder / "Budget.inab") == []
+    add_category(app._db, "Groceries")
+    assert categories_in(folder / "Budget.inab") == []  # not saved yet: changes hadn't stopped
+    quit_by(route, main, app, this_computer, monkeypatch)
+
+    assert categories_in(folder / "Budget.inab") == ["Groceries"]
+    made = names(folder / "Backups")
+    assert len(made) == 1 and made[0].endswith(" on PC-A.db") and categories_in(folder / "Backups" / made[0]) == ["Groceries"]
+    assert app._updater.installs[0] == (route == "Restart now", made)  # after the backup
+    assert app._updater.in_folder[0] == ["Groceries"]                  # and after the save
+    assert not [n for n in names(folder) if n.startswith(".Budget open on")]
+    assert not app._folder_watching
+    assert not (tmp_path / "home").exists()  # nothing near the real Documents
+
+
+def _another_computer(tmp_path, folder, name="PC-B"):
+    """A second computer on the same budget folder, as test_budget_folder.py's are."""
+    from helpers import call
+    from service import BudgetService
+    from settings import Settings
+
+    data = tmp_path / name
+    service = BudgetService(Database(data / "budget.db"), Settings(data / "settings.json"), data, computer_name=name)
+    call(service, "open_budget_folder", str(folder))
+    return service
+
+
+def _add(db, group, name):
+    with db.write("Add category") as c:
+        found = c.execute("SELECT id FROM category_groups WHERE name = ?", (group,)).fetchone()
+        gid = found[0] if found else c.execute("INSERT INTO category_groups (name) VALUES (?)", (group,)).lastrowid
+        c.execute("INSERT INTO categories (group_id, name) VALUES (?, ?)", (gid, name))
+
+
+def test_quitting_saves_first_and_asks_when_it_was_changed_on_two_computers(tmp_path, monkeypatch):
+    """The page's last look as it quits (Api.look_before_quit): the budget is saved straight away, whether
+    or not changes have stopped. Changed on two computers it can't be, so the page asks which to keep
+    before quitting, with each side's changes ready (budget_folder_question)."""
+    import json
+
+    from helpers import call
+
+    folder = tmp_path / "Budget folder"
+    main, app, _ = start_app(monkeypatch, tmp_path, folder)
+    _add(app._db, "Everyday", "Groceries")
+    assert main.Api(app).look_before_quit()["state"] == "saved"
+    assert categories_in(folder / "Budget.inab") == ["Groceries"]
+
+    other = _another_computer(tmp_path, folder)
+    _add(other.db, "Everyday", "Rent")
+    assert other.budget_folder_look(now=True)["state"] == "saved"
+    _add(app._db, "Everyday", "Fuel")
+    state = main.Api(app).look_before_quit()
+    assert state["state"] == "two_computers" and state["other"]["computer"] == "PC-B"
+    assert categories_in(folder / "Budget.inab") == ["Groceries", "Rent"]  # nothing saved over
+    question = call(app._service, "budget_folder_question")
+    assert question["state"] == "two_computers" and question["can_show_changes"]
+    assert "Fuel" in json.dumps(question["this"]) and "Rent" not in json.dumps(question["this"])
+    assert "Rent" in json.dumps(question["theirs"]) and "Fuel" not in json.dumps(question["theirs"])
+
+    call(app._service, "keep_this_budget")  # what the page's Keep this PC's does
+    assert categories_in(folder / "Budget.inab") == ["Groceries", "Fuel"]
+    assert call(app._service, "budget_folder_question") is None
+
+
+class _Stop(Exception):
+    pass
+
+
+def test_the_budget_folder_watcher_tells_the_page_and_stops_looking_at_quit(tmp_path, monkeypatch):
+    """Its round takes another computer's save and tells the page (`took`: who saved it). Once a quit has
+    saved and taken this computer's note out of the folder, a round doesn't look again (it would leave the
+    note there after the app had gone)."""
+    import types
+
+    folder = tmp_path / "Budget folder"
+    main, app, _ = start_app(monkeypatch, tmp_path, folder)
+    other = _another_computer(tmp_path, folder)
+    _add(other.db, "Everyday", "Rent")
+    other.budget_folder_look(now=True)
+
+    sent, rounds = [], []
+    monkeypatch.setattr(app, "_send", lambda event, payload: sent.append((event, payload)))
+
+    def sleep(seconds):
+        rounds.append(seconds)
+        if len(rounds) == 1:
+            app._back_up()  # quitting
+        elif len(rounds) == 3:
+            raise _Stop
+
+    monkeypatch.setattr(main, "time", types.SimpleNamespace(sleep=sleep, monotonic=lambda: 0.0))
+    with pytest.raises(_Stop):
+        app._watch_folder()
+    assert [event for event, _ in sent] == ["budget_folder"]  # one look, none after the quit's
+    assert sent[0][1]["took"]["computer"] == "PC-B" and categories_in(main.DATA_DIR / "budget.db") == ["Rent"]
+    assert not [n for n in names(folder) if n == ".Budget open on PC-A.json"]
+    assert rounds == [main.WATCH_EVERY] * 3
 
 
 def test_a_backup_restored_on_another_mac_keeps_the_overspending_choice(app, tmp_path):
