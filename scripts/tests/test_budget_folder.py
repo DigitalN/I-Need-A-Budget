@@ -706,11 +706,10 @@ def test_restoring_a_backup_into_the_folder_is_taken_by_every_computer(tmp_path)
     add_category(a.db, "Gifts")
     a.check(wait=False)
     assert b.check()["took"]["computer"] == "PC-A" and categories(b.db) == ["Groceries", "Gifts"]
-    shutil.copyfile(made, folder / "Budget 2.inab")  # restored again (however many times: a file no computer saved)
-    state = a.check()
-    assert state["took"]["computer"] is None and categories(a.db) == ["Groceries"]
-    assert "Budget 2.inab" not in names(folder) and categories_in(folder / FILE_NAME) == ["Groceries"]
-    assert b.check()["took"] and categories(b.db) == ["Groceries"]
+    shutil.copyfile(made, folder / FILE_NAME)  # the same backup again: the same save, older than the line now
+    assert a.check()["state"] == "older" and b.check()["state"] == "older"
+    assert a.keep_other()["state"] == "saved" and categories(a.db) == ["Groceries"]  # Use it
+    assert b.check()["took"]["computer"] == "PC-A" and categories(b.db) == ["Groceries"]
 
 
 def test_restoring_a_backup_asks_a_computer_with_changes_not_saved_yet(tmp_path):
@@ -939,8 +938,9 @@ def test_a_restore_is_taken_whatever_each_computer_had_seen(tmp_path):
     add_category(b.db, "Rent")
     b.check(wait=False)
     shutil.copyfile(made, folder / FILE_NAME)
-    assert a.check(wait=False)["took"] and b.check(wait=False)["took"]
-    assert categories(a.db) == categories(b.db) == ["Groceries"]
+    state = a.check(wait=False)  # PC-A's budget has the backup's very contents: the same save, nothing to take
+    assert state["state"] == "saved" and "took" not in state
+    assert b.check(wait=False)["took"] and categories(a.db) == categories(b.db) == ["Groceries"]
     add_category(a.db, "Gifts")
     a.check(wait=False)
     state = b.check(wait=False)
@@ -1048,7 +1048,7 @@ def test_an_older_version_put_back_is_asked_about_never_saved_over(tmp_path):
     saved = (folder / FILE_NAME).read_bytes()
     state = a.check(wait=False)
     assert state["state"] == "older" and state["other"]["computer"] == "PC-A"
-    assert b.check(wait=False)["state"] == "older"
+    assert b.check(wait=False)["state"] == "two_computers"  # PC-B never had those contents: a question all the same
     add_category(a.db, "Gifts")
     assert a.check(wait=False)["state"] == "older" and (folder / FILE_NAME).read_bytes() == saved
     assert categories(a.db) == ["Groceries", "Rent", "Gifts"]  # nor gone back to
@@ -1136,6 +1136,8 @@ def _restored_once(tmp_path, name="PC-A", folder_name="Budget"):
     add_category(a.db, "Groceries")
     a.move_to(folder)
     made = shutil.copyfile(backups.make(a.db), tmp_path / f"{name} backup.db")
+    add_category(a.db, "Bills")
+    a.check(wait=False)
     shutil.copyfile(made, folder / FILE_NAME)
     assert a.check(wait=False)["took"]
     add_category(a.db, "Rent")
@@ -1239,9 +1241,10 @@ def test_the_same_backup_restored_twice_while_a_computer_missed_the_first(tmp_pa
     assert a.check(wait=False)["took"]
     add_category(a.db, "Bills")
     a.check(wait=False)
-    shutil.copyfile(made, folder / FILE_NAME)  # the same backup again
-    assert a.check(wait=False)["took"] and categories(a.db) == ["Groceries"]
-    state = b.check(wait=False)  # PC-B's budget is that backup's already: the same save, counted
+    shutil.copyfile(made, folder / FILE_NAME)  # the same backup again: one identity, so it's older than the line now
+    assert a.check(wait=False)["state"] == "older"
+    assert a.keep_other()["state"] == "saved" and categories(a.db) == ["Groceries"]  # Use it
+    state = b.check(wait=False)  # PC-B missed the first and has those very contents: the same save, counted
     assert state["state"] == "saved" and categories(b.db) == ["Groceries"]
     assert b._mine().id == save_in(folder / FILE_NAME)["id"]
     add_category(b.db, "Gifts")

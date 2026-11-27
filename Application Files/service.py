@@ -148,9 +148,11 @@ class BudgetService:
         self.data_dir = Path(data_dir)
         self.hooks = hooks or {}          # window features: choose_files, reveal, updates, app_info
         self.turns = budget_folder.Turns()  # requests share the budget; taking another computer's save waits for them
+        # The budget folder is written to settings.json before anything is done in a new one (on_folder): a
+        # crash part way through Move… or Open… relaunches on the folder being moved to or opened.
         self.folder = budget_folder.BudgetFolder(db, self.data_dir, settings.get()["budget_folder"] or None,
                                                  computer_name=computer_name, app_version=self._app_info().get("version"),
-                                                 turns=self.turns)
+                                                 turns=self.turns, on_folder=self._keep_folder)
         self._seen_files = {}             # Downloads watcher: path → (mtime, size) already looked at
         self._file_status = {}            # path → ((mtime, size), what it needs or None): see _needs()
         self._status_round = 0            # bumped whenever _file_status is cleared: a need worked out before isn't kept
@@ -2339,6 +2341,9 @@ class BudgetService:
     def budget_folder_at_quit(self):
         """At every quit, instead of backups.at_quit: a backup if needed, then a save if needed."""
         self.folder.at_quit()
+
+    def _keep_folder(self, folder):
+        self.settings.update({"budget_folder": str(folder) if folder else ""})
 
     def _took_another_budget(self):
         """The budget was replaced by another computer's: what was worked out about files in Downloads goes."""

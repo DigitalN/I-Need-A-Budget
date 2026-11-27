@@ -212,19 +212,24 @@ def digest(db):
     """A fingerprint of everything in the budget: every table and its rows, but not this
     session's undo (cleared at each launch) or what `make` keeps in meta about the last backup
     and budget_folder.py about the last save."""
-    h = hashlib.sha256()
     with db.read() as c:
-        tables = [r[0] for r in c.execute(
-            "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite%' ORDER BY name")]
-        for table in tables:
-            if table in NOT_THE_BUDGET:
+        return digest_of(c)
+
+
+def digest_of(conn):
+    """`digest` of the budget on an open connection: a budget file's, the same as its working copy's."""
+    h = hashlib.sha256()
+    tables = [r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite%' ORDER BY name")]
+    for table in tables:
+        if table in NOT_THE_BUDGET:
+            continue
+        rows = conn.execute(f'SELECT * FROM "{table}" ORDER BY rowid')
+        h.update(repr((table, [d[0] for d in rows.description])).encode())
+        for row in rows:
+            if table == "meta" and row[0] in NOT_A_CHANGE:
                 continue
-            rows = c.execute(f'SELECT * FROM "{table}" ORDER BY rowid')
-            h.update(repr((table, [d[0] for d in rows.description])).encode())
-            for row in rows:
-                if table == "meta" and row[0] in NOT_A_CHANGE:
-                    continue
-                h.update(repr(tuple(row)).encode())
+            h.update(repr(tuple(row)).encode())
     return h.hexdigest()
 
 
