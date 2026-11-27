@@ -26,7 +26,7 @@ def test_private_release_uses_the_assets_api_url():
         {"name": "I-Need-A-Budget-1.2.0.dmg", "url": "https://api.github.com/x/assets/2",
          "browser_download_url": "https://github.com/x/download/I-Need-A-Budget-1.2.0.dmg"},
     ]}
-    assert parse_release(release, DMG) == ("1.2.0", "https://api.github.com/x/assets/2")
+    assert parse_release(release, DMG) == ("1.2.0", "https://api.github.com/x/assets/2", None)
 
 
 def test_release_without_disk_image_or_tag_is_refused():
@@ -115,7 +115,7 @@ def test_without_a_token_it_asks_anonymously_and_says_when_it_needs_one(monkeypa
     u = updater.Updater.__new__(updater.Updater)
     u._feed, u.needs_access, u._computer = updater.FEED_URL, False, Mac()
     answers[updater.FEED_URL] = 200
-    assert u._latest_release(None) == ("9.0.0", "https://x/1") and sent == [None] and not u.needs_access
+    assert u._latest_release(None) == ("9.0.0", "https://x/1", None) and sent == [None] and not u.needs_access
     answers[updater.FEED_URL], answers[updater.REPOSITORY_URL] = 404, 404
     with pytest.raises(UpdateError, match="private"):
         u._latest_release(None)
@@ -129,7 +129,7 @@ def test_without_a_token_it_asks_anonymously_and_says_when_it_needs_one(monkeypa
 
 class Computer:
     """A computer whose steps are noted, standing in for the Mac's (computer_mac.py)."""
-    update_file, curl, gh = DMG, "curl", ()
+    update_file, update_signature, installs_after_quitting, curl, gh, no_window = DMG, None, False, "curl", (), {}
 
     def __init__(self, folder, version="9.9"):
         self.folder, self.version, self.steps, self.token, self.refuse = folder, version, [], None, None
