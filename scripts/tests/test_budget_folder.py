@@ -759,8 +759,8 @@ def test_a_take_waits_for_a_request_under_way(tmp_path):
         watcher.join(0.5)
         assert watcher.is_alive()  # the take waits
         call(b, "add_group", "Bills")  # the request's write
-    watcher.join(5)
-    assert found["state"] == "two_computers"  # not taken over PC-B's change: asked
+    watcher.join(60)  # however slow the machine (an antivirus scanning each new file)
+    assert not watcher.is_alive() and found["state"] == "two_computers"  # not taken over PC-B's change: asked
     assert [g["name"] for g in call(b, "categories")] == ["Bills"]
 
 
