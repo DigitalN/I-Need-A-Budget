@@ -39,6 +39,8 @@ jobs:
         shell: bash  # Git for Windows' bash on Windows: the same commands on both
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0  # the tags too: test_windows_update.py runs 1.4.3's own parse_release from its tag
 
       # The app's own Python (the minor version the app is built with: 3.13) and the pinned packages.
       - uses: actions/setup-python@v6

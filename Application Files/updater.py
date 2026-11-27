@@ -3,9 +3,9 @@
 
 GitHub only shows a private repository's releases to someone with access, so the updater
 uses a token when it finds one, in order:
-1. a token saved from Settings (on a Mac, in the Keychain: computer_mac.py): a fine-grained
-   token with read access to this repository's contents is enough. This is how a second
-   Mac (or a second person) gets updates;
+1. a token saved from Settings (on a Mac, in the Keychain: computer_mac.py; on Windows, in
+   Credential Manager): a fine-grained token with read access to this repository's contents
+   is enough. This is how a second computer (or a second person) gets updates;
 2. the GitHub CLI's login on this computer (`gh auth token`).
 Without one it asks GitHub anonymously, which works once the repository is public. When
 GitHub won't show the releases to this copy, `needs_access` is set and Settings offers
@@ -16,11 +16,14 @@ When: once, a few seconds after each launch (unless "Check for updates at launch
 in Settings), and when you press Check now. Never in between: the maintainer's choice.
 
 What: the repository's latest release (not drafts or pre-releases), tagged `v<version>`,
-with this computer's file attached (a Mac's .dmg from scripts/package.sh). It's downloaded,
-and this computer checks it's this app, intact, from the same developer (on a Mac,
-`codesign --verify`: signed by the same team as this copy, for the same bundle identifier)
-and newer. Then it waits: it's installed when you quit (the window's close button or ⌘Q),
-or straight away with "Restart now". How each of those steps is done is computer.py's.
+with this computer's file attached: a Mac's .dmg from scripts/package.sh, Windows'
+`I-Need-A-Budget-<version>-Setup.exe` with its signature beside it (`….exe.sig`). It's
+downloaded, and this computer checks it's this app, intact, from the same developer (on a
+Mac, `codesign --verify`: signed by the same team as this copy, for the same bundle
+identifier; on Windows, our own release key's signature: windows_update.py) and newer. Then
+it waits: it's installed when you quit (the window's close button or ⌘Q), or straight away
+with "Restart now". How each of those steps is done is computer.py's. Windows' installer runs
+once the app has gone, so it's never started while Windows is logging off or shutting down.
 
 This and nothing else talks to the network. It goes through the system's curl, which uses
 the system's certificates (the bundled Python has none of its own).
@@ -66,20 +69,32 @@ def is_newer(version, other):
     return version_key(version) > version_key(other)
 
 
-def parse_release(data, update_file):
-    """(version, URL to download this computer's file) from GitHub's latest-release response;
-    `update_file` is the computer's (suffix, what it's called), (".dmg", "disk image") on a
-    Mac. The API URL of the asset, which works for a private repository with a token."""
+def parse_release(data, update_file, signature=None):
+    """(version, URL to download this computer's file, URL of its signature or None) from
+    GitHub's latest-release response. `update_file` is the computer's (suffix, what it's
+    called): (".dmg", "disk image") on a Mac, ("-setup.exe", "installer") on Windows.
+    `signature` is what's added to the file's name to name its signature (".sig" on Windows;
+    None on a Mac, whose app is signed inside): a release without one is refused before
+    anything is downloaded. The API URL of each asset, which works for a private repository
+    with a token."""
     suffix, kind = update_file
     if not isinstance(data, dict) or not isinstance(data.get("tag_name"), str):
         raise UpdateError("GitHub's answer didn't describe a release.")
     tag = data["tag_name"]
     version = tag[1:] if tag.startswith("v") else tag
-    for asset in data.get("assets") or []:
-        if str(asset.get("name", "")).lower().endswith(suffix):
+    assets = data.get("assets") or []
+    for asset in assets:
+        name = str(asset.get("name", ""))
+        if name.lower().endswith(suffix):
             url = asset.get("url") or asset.get("browser_download_url")
             if url:
-                return version, url
+                if not signature:
+                    return version, url, None
+                for other in assets:
+                    signed = other.get("url") or other.get("browser_download_url")
+                    if str(other.get("name", "")).lower() == (name + signature).lower() and signed:
+                        return version, url, signed
+                raise UpdateError(f"The latest release's {kind} isn't signed.")
     raise UpdateError(f"The latest release has no {kind} attached.")
 
 
@@ -223,10 +238,10 @@ class Updater:
                     log.info("Up to date at %s", self._current)
                     self._set_status(IDLE)
                     return
-                version, url = release
+                version, url, signature_url = release
                 log.info("Downloading %s", version)
                 self._set_status(DOWNLOADING, version)
-                self._staged = self._download(url, token)
+                self._staged = self._download(url, token, signature_url)
                 log.info("%s is ready to install", version)
                 self._set_status(READY, version)
             except Exception as e:
@@ -258,11 +273,11 @@ class Updater:
             raise UpdateError(f"GitHub answered with an error ({code}).")
         self.needs_access = False
         try:
-            return parse_release(json.loads(body), self._computer.update_file)
+            return parse_release(json.loads(body), self._computer.update_file, self._computer.update_signature)
         except ValueError:
             raise UpdateError("GitHub's answer didn't describe a release.") from None
 
-    def _download(self, url, token):
+    def _download(self, url, token, signature_url=None):
         folder = self._computer.folder_for_update(self._app)
         try:
             download = folder / f"update{self._computer.update_file[0]}"
@@ -271,6 +286,12 @@ class Updater:
                             curl=self._computer.curl)
             if code not in (200, 0):
                 raise UpdateError(f"GitHub answered with an error ({code}).")
+            if signature_url and self._computer.update_signature:  # beside it, where take_update looks
+                signature = download.with_name(download.name + self._computer.update_signature)
+                code, _ = _curl(signature_url, signature, max_time=60, token=token,
+                                accept="application/octet-stream", curl=self._computer.curl)
+                if code not in (200, 0):
+                    raise UpdateError(f"GitHub answered with an error ({code}).")
             version, update = self._computer.take_update(download, self._app, folder)
             if not is_newer(version, self._current):
                 raise UpdateError(f"The latest release contains version {version}, which isn't newer than this one.")
@@ -279,12 +300,18 @@ class Updater:
             shutil.rmtree(folder, ignore_errors=True)
             raise
 
-    def install(self, relaunch_after=False):
+    def install(self, relaunch_after=False, logging_out=False):
         """Swaps the downloaded app in. Called when quitting, or by "Restart now".
-        Returns True if it installed."""
+        Returns True if it installed. While the computer is logging out or shutting down, only
+        where the swap is one step (a Mac's): Windows could stop its installer half-way, so the
+        download goes, and the next launch fetches it again."""
         if self._staged is None:
             return False
         (version, update, folder), self._staged = self._staged, None
+        if logging_out and not self._computer.installs_while_logging_out:
+            shutil.rmtree(folder, ignore_errors=True)
+            log.info("Not installing %s while logging out: it's downloaded again at the next launch", version)
+            return False
         try:
             self._computer.swap_in(self._app, update)
             error = None

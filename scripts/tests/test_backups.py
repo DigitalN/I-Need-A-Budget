@@ -637,10 +637,11 @@ def test_with_inab_data_dir_backups_stay_inside_that_folder(tmp_path, monkeypatc
 
 class FakeUpdater:
     def __init__(self, folder):
-        self.folder, self.installs = folder, []
+        self.folder, self.installs, self.logging_out = folder, [], []
 
-    def install(self, relaunch_after=False):
+    def install(self, relaunch_after=False, logging_out=False):
         self.installs.append((relaunch_after, names(self.folder)))  # what was backed up by then
+        self.logging_out.append(logging_out)  # Windows installs nothing then: test_windows_update.py
         return True
 
 
@@ -748,6 +749,7 @@ def test_every_way_of_quitting_leaves_a_backup_with_the_latest_changes(route, tm
     assert len(made) == 1 and categories_in(main.BACKUP_DIR / made[0]) == ["Groceries"]
     relaunch = route == "Restart now"
     assert app._updater.installs[0] == (relaunch, made)  # the update goes in after the backup
+    assert any(app._updater.logging_out) == (route == "logging out or shutting down")  # the updater is told
     assert not (tmp_path / "home").exists()  # nothing near the real Documents
 
 

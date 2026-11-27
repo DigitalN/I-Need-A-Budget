@@ -195,10 +195,13 @@ is up to date (1.0.0 and 1.0.1 also said that when the token couldn't see the re
 
 `Application Files/updater.py`, ported from Pythonflow's, changed for a windowed app
 and for a repository that was private at first. The Mac's own steps (the Keychain, the disk
-image, `codesign`, swapping the app in, relaunching) are in `computer_mac.py`:
+image, `codesign`, swapping the app in, relaunching) are in `computer_mac.py`; Windows' (the
+release key, the installer, Credential Manager) in `computer_windows.py` and
+`windows_update.py`:
 
-- **Access:** a request carries a token when there is one: the one saved in the Keychain
-  from Settings (service "I Need A Budget", account "GitHub"), else the GitHub CLI's
+- **Access:** a request carries a token when there is one: the one saved from Settings (on a
+  Mac in the Keychain, service "I Need A Budget", account "GitHub"; on Windows in Credential
+  Manager, a generic credential "I Need A Budget", user name "GitHub"), else the GitHub CLI's
   (`gh auth token`). Without one it asks anonymously, which is all a public repository
   needs. If GitHub refuses a copy (the repository made private again), it gets "the app's
   repository is private" and Settings shows the GitHub access row (hidden otherwise). A
@@ -208,19 +211,47 @@ image, `codesign`, swapping the app in, relaunching) are in `computer_mac.py`:
 - **When:** once, a few seconds after each launch (Settings → "Check for updates at
   launch" turns that off), and when you press Check now. Never on a timer while the app
   is open: the maintainer's choice.
-- **What:** the latest release (not drafts or pre-releases) via the GitHub API; its `.dmg`
-  is downloaded through the asset's API URL (curl drops the token when GitHub redirects
-  to storage).
-- **Checks:** the app is copied out of the disk image and `codesign --verify --deep
+- **What:** the latest release (not drafts or pre-releases) via the GitHub API. Each system
+  picks its own file, downloaded through the asset's API URL (curl drops the token when
+  GitHub redirects to storage): a Mac the `.dmg` (copies on 1.4.x take the first `.dmg` in a
+  release, so a release keeps one), Windows `I-Need-A-Budget-<version>-Setup.exe` and its
+  signature `I-Need-A-Budget-<version>-Setup.exe.sig`. A release whose installer has no
+  signature is refused before anything is downloaded.
+- **Checks on a Mac:** the app is copied out of the disk image and `codesign --verify --deep
   --strict` must pass with the requirement
   `identifier "com.digitaln.ineedabudget" and anchor apple generic and certificate leaf[subject.OU] = "<this copy's team>"`.
   The version inside must also be newer.
-- **Installing:** when the user quits (close button or ⌘Q), with one `replaceItemAtURL`
-  swap, or straight away with "Restart now" in the banner.
-- **Off** for copies run from source, not team-signed, not in an Applications folder, or
-  unable to replace themselves. Settings says why.
+- **Checks on Windows:** the installer's signature must be our release key's (Ed25519 over
+  its exact bytes: the formats are in *Release secrets*), checked with the public half built
+  into the app, `release-key.pub` (read at launch). The check is our own short Ed25519
+  verify (`windows_update.py`, tested against RFC 8032's vectors), so there's no dependency
+  to pin or license to bundle. Nothing in the installer runs before that. Its version is the
+  one in its version resource (the signature covers it), not the release's tag, and it must
+  be newer.
+- **Installing on a Mac:** when the user quits (close button or ⌘Q), with one
+  `replaceItemAtURL` swap, or straight away with "Restart now" in the banner. Logging out
+  installs it too.
+- **Installing on Windows:** at the same moments, but the installer can't replace a running
+  app's files: the app starts a small PowerShell script (`windows_update.HELPER_SCRIPT`, no
+  window) and quits. The script waits for it to exit (a minute at most), runs the installer
+  with `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART`, adds `The update installer finished` (or
+  `failed (exit code N)`) to `app.log`, and for Restart now opens the app again with the same
+  environment, `INAB_DATA_DIR` included. Never while Windows logs off or shuts down, which
+  could stop the installer half-way: the download is dropped and the next launch fetches it
+  again. The installer itself must not open the app when run quietly.
+- **Off** for copies run from source; on a Mac, not team-signed, not in an Applications
+  folder, or unable to replace themselves; on Windows, without a release key, or not
+  installed in the person's own Programs folder (`%LOCALAPPDATA%\Programs`, where the
+  installer puts it). Settings says why.
 
 ## Testing the updater
+
+`python -m pytest scripts/tests/test_updater.py scripts/tests/test_windows_update.py` runs the
+checks with stand-ins on any system, and on Windows the whole update too: a stand-in installer
+(made with Windows' own C# compiler, so it has a version resource) signed with a throwaway key,
+a stand-in feed, and the real helper, at quit and with Restart now. To try it with the real app:
+
+### On a Mac
 
 Use a separate copy with its own bundle identifier, so it can't touch the installed app.
 
@@ -258,3 +289,52 @@ Use a separate copy with its own bundle identifier, so it can't touch the instal
    identifier. Each should log `Update check failed` and leave the test copy alone.
 5. Clean up: quit the test copy, then delete it, `/tmp/inab-data`, `/tmp/inab-update`
    and `/tmp/inab-feed`.
+
+### On Windows
+
+A throwaway test key stands in for the release key, so nothing needs the real one. Use a PC
+where nobody uses the app for real: the test installs over the copy in your Programs folder
+(the data stays apart, in `INAB_DATA_DIR`). In Git Bash, which has OpenSSL 3:
+
+1. A throwaway key, outside the repository, and its public half as the app reads it:
+   ```bash
+   T="$(cygpath -m "$TEMP")/inab-test"; mkdir -p "$T/feed" "$T/data/empty"
+   openssl genpkey -algorithm ed25519 -out "$T/test-key.pem"
+   openssl pkey -in "$T/test-key.pem" -pubout -outform DER | tail -c 32 | base64 > "$T/test-key.pub"
+   ```
+2. Build a low version (1.0, say: the version is `VERSION` in `main.py`), install it with its
+   installer, then give that copy the throwaway key in place of its own:
+   ```bash
+   APP="$(cygpath -m "$LOCALAPPDATA")/Programs/I Need A Budget"
+   cp "$T/test-key.pub" "$(find "$APP" -name release-key.pub)"
+   ```
+3. Build a higher version's installer (9.9) and sign it with the throwaway key, as the release
+   run signs with the real one:
+   ```bash
+   cp <the 9.9 installer> "$T/feed/I-Need-A-Budget-9.9-Setup.exe"
+   openssl pkeyutl -sign -rawin -inkey "$T/test-key.pem" -in "$T/feed/I-Need-A-Budget-9.9-Setup.exe" \
+     | base64 -w0 > "$T/feed/I-Need-A-Budget-9.9-Setup.exe.sig"
+   ```
+4. A stand-in for GitHub's answer, `$T/feed/latest.json`:
+   ```bash
+   cat > "$T/feed/latest.json" <<EOF
+   {"tag_name": "v9.9", "assets": [
+     {"name": "I-Need-A-Budget-9.9-Setup.exe", "url": "file:///$T/feed/I-Need-A-Budget-9.9-Setup.exe"},
+     {"name": "I-Need-A-Budget-9.9-Setup.exe.sig", "url": "file:///$T/feed/I-Need-A-Budget-9.9-Setup.exe.sig"}]}
+   EOF
+   ```
+5. Run the test copy on its own data folder (`downloads_dir` somewhere harmless) and the
+   stand-in feed:
+   ```bash
+   echo "{\"downloads_dir\": \"$T/data/empty\"}" > "$T/data/settings.json"
+   INAB_DATA_DIR="$T/data" INAB_UPDATE_FEED="file:///$T/feed/latest.json" "$APP/I Need A Budget.exe" &
+   ```
+   Settings → Check now. `$T/data/Logs/app.log` shows `Downloading 9.9` and
+   `9.9 is ready to install`. Quit: it shows `Installed 9.9.0`, then `The update installer
+   finished`, and Settings → Apps lists 9.9. Do it again from 1.0 with Restart now: the app
+   comes back by itself, on `$T/data`.
+6. To check bad updates are refused: change the installer after signing (`printf x >>
+   "$T/feed/I-Need-A-Budget-9.9-Setup.exe"`), sign it with another throwaway key, leave its
+   `.sig` out of `latest.json`, or give the feed a newer tag than the installer's own version.
+   Each logs `Update check failed: …`, and nothing is installed.
+7. Clean up: uninstall the test copy (Settings → Apps), then delete `$T`.

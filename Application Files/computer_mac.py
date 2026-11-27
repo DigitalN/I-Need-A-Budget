@@ -48,6 +48,8 @@ def _run(arguments, **kwargs):
 class Mac(Computer):
     name = "mac"
     update_file = (".dmg", "disk image")
+    update_signature = None             # the app in it is signed: codesign checks it
+    installs_while_logging_out = True   # the swap is one step
     curl = "/usr/bin/curl"
     gh = ("/opt/homebrew/bin/gh", "/usr/local/bin/gh", "/usr/bin/gh")
 

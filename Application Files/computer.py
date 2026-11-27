@@ -10,7 +10,7 @@ pure parts are tested on either.
 Everything that's the same on both (when to back up, asking the page before quitting, when
 to check for updates, GitHub's answers, the token's shape) stays where it was: main.py,
 updater.py, settings.py. A Windows method that raises NotImplementedError belongs to the
-Windows app (#187) or Windows updates (#188).
+Windows app (#187).
 """
 
 import sys
@@ -23,6 +23,8 @@ class Computer:
 
     name = None                  # "mac" or "windows"
     update_file = (None, None)   # what each release has for this system: (suffix, what it's called)
+    update_signature = None      # what's added to that file's name to name its signature, when it has one beside it
+    installs_while_logging_out = False  # whether an update may go in while the system logs out or shuts down
     curl = None                  # the curl the updater runs, which uses the system's certificates
     gh = ()                      # where the GitHub CLI may be: an app opened from Finder or Start lacks the shell's PATH
 
@@ -113,7 +115,8 @@ class Computer:
         raise NotImplementedError
 
     def relaunch(self, app):
-        """Opens `app` once this process has exited. The caller quits right after."""
+        """Opens `app` once this process has exited (and an update swap_in started has gone in).
+        The caller quits right after."""
         raise NotImplementedError
 
     # ── updates ──
@@ -134,7 +137,8 @@ class Computer:
         raise NotImplementedError
 
     def folder_for_update(self, app):
-        """A new empty folder to download an update into, beside `app` so it can be swapped in."""
+        """A new empty folder to download an update into (on a Mac beside `app`, so it can be
+        swapped in)."""
         raise NotImplementedError
 
     def take_update(self, download, app, folder):
@@ -144,7 +148,8 @@ class Computer:
         raise NotImplementedError
 
     def swap_in(self, app, update):
-        """Puts the update where `app` is, in one step. Raises OSError when it can't."""
+        """Puts the update where `app` is: in one step on a Mac, and on Windows by its installer,
+        once this process has exited. Raises OSError when it can't."""
         raise NotImplementedError
 
 
