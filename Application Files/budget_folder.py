@@ -508,7 +508,7 @@ class BudgetFolder:
         if newer is not None:
             self._other = None
             return self._set("newer", other=newer.about(), message=newer_message(newer))
-        mine, landed, current = self._mine(), self.db.get_meta(LANDED_KEY), self._working_digest()
+        mine, current = self._mine(), self._working_digest()
         others, publish = [], False
         for save in saves:  # Budget.inab first
             kind = relation(save, mine)
@@ -539,6 +539,7 @@ class BudgetFolder:
         if FILE_NAME in unreadable:
             self._other = None
             return self._set("waiting")
+        landed = self.db.get_meta(LANDED_KEY)  # after the loop: Budget.inab adopted just now has landed
         if main is not None and relation(main, mine) == OLDER and main.id != landed:
             self._other = main  # an older one put back: never saved over, nor gone back to, without asking
             self._prune_saves()
@@ -589,6 +590,11 @@ class BudgetFolder:
             digest = self._digest
         mine = self._mine()
         return mine is None or mine.digest != digest
+
+    def _unchanged(self):
+        """Nothing changed since the save this computer started from: saving it again (Move…, Save
+        again) is that same save, never a change another computer's would be apart from."""
+        return self._mine() is not None and not self._changed()
 
     def _working_digest(self):
         self._changed()
@@ -717,8 +723,9 @@ class BudgetFolder:
         with what's kept about the save written into it, recorded as the save this computer started
         from, then copied into the folder under a hidden name and renamed over Budget.inab. `over`:
         the saves it overrides (the one not kept, changed on two computers), which it comes after.
-        `as_is`: a restored backup just taken, saved as itself (its own id and counts, which every
-        computer that takes it makes the same), so it isn't one more save to take."""
+        `as_is`: the save this computer started from, saved as itself (its own id and counts): a
+        restored backup just taken (every computer that takes it makes the same), or a budget that
+        hasn't changed since, so it isn't one more save to take."""
         saves = self._saves_dir()
         saves.mkdir(parents=True, exist_ok=True)
         local = saves / f".saving-{uuid.uuid4().hex}.partial"
@@ -1037,7 +1044,7 @@ class BudgetFolder:
             old_backups = Path(self.db.backup_dir)
             self._announce(target)  # first: a crash from here on relaunches on the new folder
             try:
-                self._save(target)
+                self._save(target, as_is=self._unchanged())
             except BaseException:
                 self._announce(self.folder)
                 raise
@@ -1101,6 +1108,10 @@ class BudgetFolder:
                 if old is not None and not _same(old, target):
                     _try(f"Leaving {old}", lambda: _remove(old / self._note_name(), self._sleep))
                 self._use(target)
+                if shared and not (old is not None and _same(old, target)):
+                    self._landed(save.id)  # what's there on arriving was never put back: older is saved over
+                    if old is not None and _read_json(old / MOVED_NOTE):
+                        self._bring_from(old, target)  # following the budget where it moved
                 if not shared:
                     with self.turns.alone(), self.db.lock:
                         if not self._empty():
@@ -1125,7 +1136,7 @@ class BudgetFolder:
             if self.folder is None or not _is_dir(self.folder):
                 raise UserError("The budget folder can't be reached right now.")
             if not (self.folder / FILE_NAME).exists() and not _read_json(self.folder / MOVED_NOTE):
-                self._save(self.folder)
+                self._save(self.folder, as_is=self._unchanged())
             return self.check(wait=False)
 
     def _empty(self):
@@ -1246,6 +1257,13 @@ class BudgetFolder:
             self.db.path.parent / backups.OLD_FOLDER_NAME, folder / BACKUPS))
         _try("Moving the imported files that waited", lambda: _move_tree(
             self.data_dir / IMPORTED_FILES, folder / IMPORTED_FILES))
+
+    def _bring_from(self, old, folder):
+        """What went into the folder the budget moved out of after the move, from a computer that
+        hadn't heard of it yet (a copy a question put away, a file it imported), follows the budget."""
+        _try(f"Moving the backups left in {old}", lambda: backups.move_old(old / BACKUPS, folder / BACKUPS))
+        _try(f"Moving the imported files left in {old}", lambda: _move_tree(
+            old / IMPORTED_FILES, folder / IMPORTED_FILES))
 
     def _saves_dir(self):
         return self.db.path.parent / SAVES

@@ -1598,3 +1598,51 @@ def test_opening_the_same_folder_after_a_restore(tmp_path):
     state = a.open_from(folder)                          # Settings' Open… on its own folder
     print("state:", state["state"], categories(a.db), [categories_in(p) for p in sorted((folder / "Backups").glob("*not-kept*"))])
     assert state["state"] == "two_computers", "same budget treated as another: no question"
+
+
+def test_the_same_change_saved_on_two_computers_is_joined_without_a_question(tmp_path):
+    """PC-A and PC-B make the very same change apart (random seed 4045): their saves' counts are
+    apart, their contents the same. Joining them leaves Budget.inab, which PC-B has just joined,
+    not an older one put back."""
+    folder = tmp_path / "Budget"
+    a = computer(tmp_path, "PC-A")
+    add_category(a.db, "Groceries")
+    a.move_to(folder)
+    b = computer(tmp_path, "PC-B")
+    b.open_from(folder)
+    seen_on_b = _view(b, folder)
+    add_category(a.db, "Gifts")
+    assert a.check(wait=False)["state"] == "saved"
+    add_category(b.db, "Gifts")                          # the same change, saved where PC-B's sync is behind
+    assert b.check(wait=False)["state"] == "saved"
+    assert backups.digest(a.db) == backups.digest(b.db)
+    shutil.copyfile(seen_on_b / FILE_NAME, folder / "Budget-PC-B.inab")  # the sync tool keeps PC-A's
+    b.folder, b._reachable, b._seen = folder, None, {}
+    b._point_backups()
+    assert b.check(wait=False)["state"] == "saved"
+    assert a.check(wait=False)["state"] == "saved"
+    assert names(folder).count(FILE_NAME) == 1 and "Budget-PC-B.inab" not in names(folder)
+    assert categories(a.db) == categories(b.db) == ["Groceries", "Gifts"]
+    assert not not_kept(folder)
+
+
+def test_following_a_moved_budget_brings_what_reached_the_old_folder_since(tmp_path):
+    """PC-B's sync is behind when PC-A moves the budget (random seed 582): a copy PC-B put in
+    Backups/ meanwhile (Keep this one) reaches the old folder after the move, and follows the budget."""
+    folder, moved = tmp_path / "Budget", tmp_path / "Moved"
+    a = computer(tmp_path, "PC-A")
+    add_category(a.db, "Groceries")
+    a.move_to(folder)
+    b = computer(tmp_path, "PC-B")
+    b.open_from(folder)
+    seen_on_b = _view(b, folder)
+    a.move_to(moved)
+    b._point_backups()
+    backups.save(b.db, b._not_kept_name())               # what a question on PC-B put away
+    shutil.copytree(seen_on_b / "Backups", folder / "Backups", dirs_exist_ok=True)  # synced after the move
+    b.folder, b._reachable, b._seen = folder, None, {}
+    b._point_backups()
+    assert b.check(wait=False)["state"] == "moved"
+    b.open_from(moved)
+    assert len(not_kept(moved)) == 1
+    assert not (folder / "Backups").exists()

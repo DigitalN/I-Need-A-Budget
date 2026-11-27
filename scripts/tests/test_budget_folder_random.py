@@ -143,6 +143,11 @@ class World:
                 self.children.setdefault(taken, set()).add(cur)
             self.base[name] = taken
         if taken is not None and self.versions[taken][0] == d:
+            cur = self.cur[name]
+            if cur != taken and self.versions[cur][0] == d and taken not in self._ancestry([cur]) and                     cur not in self._ancestry([taken]):
+                # Its own change came to the very contents of another's save: the two are joined
+                self.versions[taken][1].append(cur)
+                self.children.setdefault(cur, set()).add(taken)
             self.cur[name] = taken  # its budget is that save exactly (taken, or the same contents adopted)
         elif d != self.versions[self.cur[name]][0]:
             assert d in self.by_digest, f"seed {self.seed}: {name}'s budget is contents nobody made\n" + self._trail()
@@ -175,6 +180,14 @@ class World:
         d = self._digest_file(path)
         return self.by_digest[d][-1] if d in self.by_digest else None
 
+    def _of_save(self, save):
+        """The version a save is: by its id, else its file, else its contents."""
+        if save.id in self.saved:
+            return self.saved[save.id]
+        if save.path is not None and Path(save.path).exists():
+            return self._of_file(save.path)
+        return self.by_digest[save.digest][-1] if save.digest in self.by_digest else None
+
     def _same_as(self, v, among):
         """Whether another version with `v`'s very contents, one `v` didn't come from (two computers
         making the same change), is `among` these: then what `v` holds is there too. One it came from
@@ -202,10 +215,11 @@ class World:
             weights=[4, 2, 1, 9, 2, 3, 1, 1 if self.restores else 0, 3, 1, 1, 1, 2, 1])[0]
         name = self.r.choice(NAMES)
         self.log.append(f"{self.n} {op} {name}")
+        self.looked = None  # the computer the app looked for in this step (its question is what it found now)
         getattr(self, op)(self.computers[name], name)
         for each in NAMES:
             self._follow(each)
-        self.check_the_rule(asked=name if op in ("look", "answer", "crash", "reopen", "move", "follow") else None)
+        self.check_the_rule(asked=self.looked)
 
     def _change(self, c, name, change):
         """A change: a new version made on this computer's, unless it goes straight back to the very
@@ -236,6 +250,7 @@ class World:
             self._change(c, name, lambda db: add_category(db, back))
 
     def look(self, c, name):
+        self.looked = name
         c.check(wait=False)
 
     def _in_sync(self, name):
@@ -300,11 +315,14 @@ class World:
         self._follow(name)
         if keep_this:  # the other, and whatever else in the folder this one didn't come from, are dropped
             mine = self._ancestry([self.cur[name]])
-            dropping = {v for v in (self._of_file(p) for p in _budgets(c.folder)) if v is not None and v not in mine}
+            # What it was asked about (its file may be gone since: put away by the computer that has it)
+            asked = [self._of_save(c._other)] + [self._of_file(p) for p in _budgets(c.folder)]
+            dropping = {v for v in asked if v is not None and v not in mine}
             try:
                 c.keep_this()
-            except UserError:
+            except UserError:  # refused before it looked (the folder can't be reached), or it looked again
                 return
+            self.looked = name
             self.dropped |= dropping
             self.answered |= dropping
             # The choice is a step of its own, after both sides (its contents may be older than what it dropped)
@@ -312,18 +330,22 @@ class World:
             self.cur[name] = self._version(self.versions[kept][0], (kept, *dropping))
             self.choices.add(self.cur[name])
         else:
-            before = self.cur[name]
+            before, known = self.cur[name], set(self.saved)
             try:
                 c.keep_other()
             except UserError:
                 return
+            self.looked = name
             self._follow(name)
             if self.cur[name] != before:
                 self.dropped.add(before)
                 self.answered.add(before)
                 taken = self.cur[name]
-                self.cur[name] = self._version(self.versions[taken][0], (taken, before))
-                self.choices.add(self.cur[name])
+                self.cur[name] = choice = self._version(self.versions[taken][0], (taken, before))
+                self.choices.add(choice)
+                made = c._mine()
+                if made is not None and made.id not in known:  # the save the answer made is the choice, not what it took
+                    self.saved[made.id], self.made[made.id], self.base[name] = choice, (choice, made), choice
 
     def crash(self, c, name):
         real = budget_folder._replace
@@ -341,12 +363,14 @@ class World:
             pass
         finally:
             budget_folder._replace = real
+        self.looked = name
         self._computer(name, db=c.db, folder=c.folder).at_launch()  # launched again
 
     def reopen(self, c, name):
         if self._in_sync(name) and c.folder is not None and c.folder.is_dir():
             try:
                 c.open_from(c.folder)
+                self.looked = name  # only once it's opened: refused (no budget there), it didn't look
             except UserError:
                 pass
 
@@ -354,6 +378,7 @@ class World:
         if not self._in_sync(name) or not _same(c.folder, self.cloud) or c.state()["state"] != "saved":
             return
         target = self.tmp / f"Moved {self.n}"
+        self.looked = name
         try:
             c.move_to(target)
         except UserError:
@@ -364,6 +389,7 @@ class World:
         if self._in_sync(name) and c.state()["state"] == "moved":
             try:
                 c.open_from(self.cloud)
+                self.looked = name
                 self.home[name] = self.cloud
             except UserError:
                 pass
@@ -403,13 +429,14 @@ class World:
             if name != asked:
                 continue
             state = c.state()["state"]
-            if state in ("two_computers", "older") and c._other is not None and c._other.path is not None:
-                other = self._of_file(c._other.path)
+            if state in ("two_computers", "older") and c._other is not None:
+                other = self._of_save(c._other)
                 if other is None:
                     continue
                 mine = self.cur[name]
                 assert other not in self._ancestry([mine]) and mine not in self._ancestry([other]), \
-                    f"seed {self.seed}: {name} asked ({state}) though one side has everything\n" + self._trail()
+                    f"seed {self.seed}: {name} asked ({state}) though one side has everything: it's v{mine}, " \
+                    f"{c._other.name} v{other}\n" + self._trail()
 
     def settle(self):
         """Everything syncs, every computer looks until none is asked, and the person answers each
