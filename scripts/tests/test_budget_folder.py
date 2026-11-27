@@ -1248,3 +1248,16 @@ def test_the_same_backup_restored_twice_while_a_computer_missed_the_first(tmp_pa
     b.check(wait=False)
     state = a.check(wait=False)
     assert state["took"]["computer"] == "PC-B" and categories(a.db) == ["Groceries", "Gifts"]
+
+
+def test_what_each_computer_changed_is_shown_from_what_two_computers_gives(tmp_path):
+    """#184's changes.compare reads the three budgets as two_computers() hands them over."""
+    import changes
+
+    folder, a, b = _changed_on_both(tmp_path)
+    b.check(wait=False)
+    files = b.two_computers()
+    shown = changes.compare(files["started_from"], files["this"], files["other"])
+    assert shown["this"]["changed"] and shown["other"]["changed"]
+    assert "Rent" in json.dumps(shown["this"]) and "Groceries" not in json.dumps(shown["this"])
+    assert "Groceries" in json.dumps(shown["other"]) and "Rent" not in json.dumps(shown["other"])
