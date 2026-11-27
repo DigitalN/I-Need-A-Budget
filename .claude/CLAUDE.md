@@ -896,7 +896,8 @@ Don't undo these without asking:
   "windows" (`onWindows()`; the preview's `--platform` pretends). Keys are named the way it
   does: `undoKey()` (⌘Z / Ctrl+Z) and `returnKey()` (Return / Enter). On Windows nothing in the
   page mentions the Mac, Finder, the Keychain or ⌘; "on this computer" on both (`test_page.py`
-  checks). Windows' fonts come first, then the Mac's. A one-key shortcut ignores a key pressed
+  checks: a Mac word may only be the Mac's side of `onWindows() ? … : …`). Windows' fonts apply only on
+  Windows (`:root[data-platform="windows"]`), so the Mac's stay as they were. A one-key shortcut ignores a key pressed
   with Ctrl, Alt or ⌘ (`withModifier`; AltGr types a character, so it's the key). On Windows the
   browser's own keys (F5, Ctrl+R, Ctrl+P, Ctrl+F, zooming, Ctrl and the mouse wheel) never reach the
   window (`keepBrowserKeysOut`), and scrollbars are thin. WebView2 tabs to buttons where WebKit

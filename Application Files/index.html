@@ -55,10 +55,11 @@
 html, body { margin: 0; height: 100%; }
 body {
   background: var(--bg); color: var(--text); overflow: hidden;
-  /* Windows' own fonts first (11's, then 10's): a Mac has neither, and -apple-system is the Mac's */
-  font: 13px/1.45 "Segoe UI Variable Text", "Segoe UI", -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
+  font: 13px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
   -webkit-font-smoothing: antialiased;
 }
+/* Windows' own: 11's (by the name WebView2 finds it), then 10's. Only there, so a Mac with Segoe UI installed stays as it is. */
+:root[data-platform="windows"] body { font-family: "Segoe UI Variable Text", "Segoe UI", sans-serif; }
 button, input, select, textarea { font: inherit; color: inherit; }
 .num { font-variant-numeric: tabular-nums; }
 .muted { color: var(--muted); } .faint { color: var(--faint); }
@@ -832,11 +833,17 @@ const withModifier = e => (e.ctrlKey || e.altKey || e.metaKey) && !(e.getModifie
 const BROWSER_KEYS = ['F3', 'F5', 'BrowserBack', 'BrowserForward', 'BrowserRefresh', 'BrowserSearch'];
 const BROWSER_CTRL_KEYS = ['f', 'g', 'p', 'r', 's', '+', '=', '-', '0'];  // find, print, reload, save the page, zoom
 const BROWSER_CTRL_CODES = ['Equal', 'Minus', 'NumpadAdd', 'NumpadSubtract', 'Digit0', 'Numpad0'];  // zoom, any layout
+// The letter a Ctrl shortcut means: the key's own, or, on a layout that types no Latin letters
+// (Cyrillic, Greek), the letter at the key's place (Ctrl+к is Ctrl+R), as Windows reads it.
+function ctrlLetter(e) {
+  const key = String(e.key || '');
+  return /^[\x00-\x7f]*$/.test(key) || !/^Key[A-Z]$/.test(e.code || '') ? key.toLowerCase() : e.code.slice(3).toLowerCase();
+}
 function browserKey(e) {
   if (BROWSER_KEYS.includes(e.key)) return true;
   if (e.altKey && !e.ctrlKey && !e.metaKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) return true;  // back, forward
   return e.ctrlKey && !e.altKey && !e.metaKey &&
-    (BROWSER_CTRL_KEYS.includes(e.key.toLowerCase()) || BROWSER_CTRL_CODES.includes(e.code));
+    (BROWSER_CTRL_KEYS.includes(ctrlLetter(e)) || BROWSER_CTRL_CODES.includes(e.code));
 }
 function keepBrowserKeysOut() {
   window.addEventListener('keydown', e => { if (browserKey(e)) e.preventDefault(); }, true);

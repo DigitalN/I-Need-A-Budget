@@ -493,7 +493,8 @@ def _js(*names):
 def test_one_key_shortcuts_ignore_a_key_pressed_with_ctrl_alt_or_cmd():
     """The Inbox's one-key shortcuts are that key alone: Ctrl+S split the item, Ctrl+1 filed it.
     With Ctrl, Alt or ⌘ a key is another shortcut, but one typed with AltGr (which Windows reports
-    as Ctrl+Alt) is a character, so it's the key. Runs the page's own inboxKeys in Node."""
+    as Ctrl+Alt) is a character, so it's the key. Shift is part of the key too: some layouts type
+    / or the digits with it (French). Runs the page's own inboxKeys in Node."""
     assert "|| withModifier(e)) return;" in PAGE
     got = _run_node(_js("withModifier", "inboxKeys") + """
 const calls = [];
@@ -521,23 +522,27 @@ console.log(JSON.stringify({
   enter: press('Enter'), ctrlEnter: press('Enter', { ctrlKey: true }),
   j: press('j'), down: press('ArrowDown'), altDown: press('ArrowDown', { altKey: true }), cmdJ: press('j', { metaKey: true }),
   slash: press('/'), altGrSlash: press('/', { ctrlKey: true, altKey: true, altGraph: true }), ctrlAltSlash: press('/', { ctrlKey: true, altKey: true }),
+  shiftSlash: press('/', { shiftKey: true }), shiftOne: press('1', { shiftKey: true }), shiftDown: press('ArrowDown', { shiftKey: true }),
+  ctrlShiftSlash: press('/', { ctrlKey: true, shiftKey: true }),
 }));
 """)
-    for key in ("ctrlS", "cmdS", "altS", "ctrlT", "ctrlOne", "cmdTwo", "ctrlEnter", "altDown", "cmdJ", "ctrlAltSlash"):
+    for key in ("ctrlS", "cmdS", "altS", "ctrlT", "ctrlOne", "cmdTwo", "ctrlEnter", "altDown", "cmdJ", "ctrlAltSlash", "ctrlShiftSlash"):
         assert got[key] == ["", False], key  # nothing done, and left to the window
     assert got["s"] == ["split", True] and got["t"] == ["transfer", True]
     assert got["one"] == ["file 7", True] and got["enter"] == ["file 7", True]
     assert got["j"] == ["move", True] and got["down"] == ["move", True]
     assert got["slash"] == ["other", True] and got["altGrSlash"] == ["other", True]
+    assert got["shiftSlash"] == ["other", True] and got["shiftOne"] == ["file 7", True] and got["shiftDown"] == ["move", True]
 
 
 def test_the_browsers_own_keys_dont_reach_the_window_on_windows():
     """F5 and Ctrl+R reloaded the page, losing what you were doing; printing, finding and zooming
     the page aren't the app's. On Windows only: on the Mac the window has none of them, and Ctrl+F
-    and Ctrl+P move the cursor in a text box there. Editing keys and the app's own (Ctrl+Z) pass."""
+    and Ctrl+P move the cursor in a text box there. Editing keys and the app's own (Ctrl+Z) pass.
+    On a layout that types no Latin letters, a letter is the one at the key's place (Ctrl+к is Ctrl+R)."""
     assert "if (onWindows()) keepBrowserKeysOut();" in PAGE
     assert "window.addEventListener('wheel', e => { if (e.ctrlKey) e.preventDefault(); }, { passive: false });" in PAGE
-    got = _run_node(_js("BROWSER_KEYS", "BROWSER_CTRL_KEYS", "BROWSER_CTRL_CODES", "browserKey") + """
+    got = _run_node(_js("BROWSER_KEYS", "BROWSER_CTRL_KEYS", "BROWSER_CTRL_CODES", "ctrlLetter", "browserKey") + """
 const k = (key, code = '', mods = {}) => browserKey({ key, code, ctrlKey: false, altKey: false, metaKey: false, shiftKey: false, ...mods });
 const ctrl = { ctrlKey: true };
 console.log(JSON.stringify({
@@ -547,12 +552,16 @@ console.log(JSON.stringify({
     zoomIn: k('=', 'Equal', ctrl), zoomInPlus: k('+', 'Equal', { ctrlKey: true, shiftKey: true }), zoomInGerman: k('+', 'BracketRight', ctrl),
     zoomOut: k('-', 'Minus', ctrl), zoomOutPad: k('-', 'NumpadSubtract', ctrl), zoomReset: k('0', 'Digit0', ctrl), zoomResetFrench: k('à', 'Digit0', ctrl),
     back: k('ArrowLeft', 'ArrowLeft', { altKey: true }), forward: k('ArrowRight', 'ArrowRight', { altKey: true }), backKey: k('BrowserBack'),
+    cyrillicReload: k('к', 'KeyR', ctrl), cyrillicFind: k('а', 'KeyF', ctrl), cyrillicPrint: k('з', 'KeyP', ctrl), greekReload: k('ρ', 'KeyR', ctrl),
+    dvorakPrint: k('p', 'KeyR', ctrl), dvorakReload: k('r', 'KeyO', ctrl),  // a Latin layout goes by the letter, not its place
   },
   passed: {
     undo: k('z', 'KeyZ', ctrl), copy: k('c', 'KeyC', ctrl), paste: k('v', 'KeyV', ctrl), cut: k('x', 'KeyX', ctrl), all: k('a', 'KeyA', ctrl),
     r: k('r', 'KeyR'), zero: k('0', 'Digit0'), minus: k('-', 'Minus'), altGrBrace: k('}', 'Digit0', { ctrlKey: true, altKey: true }),
     ctrlAltR: k('r', 'KeyR', { ctrlKey: true, altKey: true }), cmdR: k('r', 'KeyR', { metaKey: true }), cmdF: k('f', 'KeyF', { metaKey: true }),
     left: k('ArrowLeft', 'ArrowLeft'), wordLeft: k('ArrowLeft', 'ArrowLeft', ctrl), tab: k('Tab', 'Tab'), enter: k('Enter', 'Enter'), escape: k('Escape', 'Escape'),
+    cyrillicCopy: k('с', 'KeyC', ctrl), cyrillicUndo: k('я', 'KeyZ', ctrl), cyrillicR: k('к', 'KeyR'), dvorakAtF: k('u', 'KeyF', ctrl),
+    noKey: browserKey({ code: '', ctrlKey: true, altKey: false, metaKey: false }),
   },
 }));
 """)
@@ -560,24 +569,51 @@ console.log(JSON.stringify({
     assert [key for key, kept in got["passed"].items() if kept] == []
 
 
+_MAC_WORDS = re.compile(r"⌘|\bReturn\b|\bMacs?\b|macOS|Finder|Keychain|TextEdit")
+_STRING = r"""('[^'\\]*(?:\\.[^'\\]*)*'|"[^"\\]*(?:\\.[^"\\]*)*"|`[^`\\]*(?:\\.[^`\\]*)*`)"""
+_MAC_BRANCH = re.compile(rf"onWindows\(\) \? {_STRING} : {_STRING}")
+
+
+def _mac_words_on_windows(page):
+    """Lines (outside comments) with a Mac word that Windows would show: the page as it is on Windows,
+    each `onWindows() ? '…' : '…'` read as its Windows branch."""
+    page = re.sub(r"<!--.*?-->|/\*.*?\*/", "", page, flags=re.S)
+    found = []
+    for line in page.splitlines():
+        code = _MAC_BRANCH.sub(lambda m: m.group(1), re.sub(r"(^|\s)//.*$", "", line))
+        if _MAC_WORDS.search(code):
+            found.append(line.strip())
+    return found
+
+
 def test_on_windows_the_page_never_mentions_the_mac():
     """Ctrl+Z and Enter on Windows, ⌘Z and Return on the Mac; never the Mac, Finder or the
-    Keychain there. "On your Mac" is "on this computer" on both. Any of those words outside a
-    comment is on a line that asks which system it's on."""
-    page = re.sub(r"<!--.*?-->|/\*.*?\*/", "", PAGE, flags=re.S)
-    words = re.compile(r"⌘|\bReturn\b|\bMacs?\b|macOS|Finder|Keychain|TextEdit")
-    for line in page.splitlines():
-        code = re.sub(r"(^|\s)//.*$", "", line)
-        if words.search(code):
-            assert "onWindows()" in code, code.strip()
+    Keychain there. "On your Mac" is "on this computer" on both. A Mac word outside a comment
+    is only ever the Mac's side of `onWindows() ? … : …`."""
+    assert _mac_words_on_windows(PAGE) == []
     assert "on your Mac" not in PAGE and "on this computer" in PAGE
     assert "const undoKey = () => onWindows() ? 'Ctrl+Z' : '⌘Z';" in PAGE
     assert "const returnKey = () => onWindows() ? 'Enter' : 'Return';" in PAGE
     assert "press ${returnKey()}" in PAGE and "${undoKey()} undo" in PAGE
-    # Windows' fonts: Segoe UI Variable (Windows 11, by the name WebView2 finds) and Segoe UI before the Mac's
-    assert 'font: 13px/1.45 "Segoe UI Variable Text", "Segoe UI", -apple-system,' in PAGE
+    # Windows' fonts only on Windows (Segoe UI Variable by the name WebView2 finds it); the Mac's as they were
+    assert 'font: 13px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;' in PAGE
+    assert ':root[data-platform="windows"] body { font-family: "Segoe UI Variable Text", "Segoe UI", sans-serif; }' in PAGE
+    assert PAGE.count('"Segoe') == 2  # nowhere else
     assert re.search(r'--mono: [^;]*"Cascadia Mono", Consolas', PAGE)
     assert PAGE.count("ui-monospace") == 1  # every monospace text uses --mono
+
+
+def test_the_mac_words_check_sees_what_it_should():
+    """The check above reads a line as Windows shows it: only the Mac's branch may say a Mac word."""
+    fine = ["const undoKey = () => onWindows() ? 'Ctrl+Z' : '⌘Z';",
+            "toast(onWindows() ? `Saved` : `Saved in the Keychain`);",
+            "// ⌘Z undoes it", "/* on the Mac */ x()", "<!-- the Mac's -->"]
+    caught = ["toast((onWindows() ? 'a' : 'b') + ' in Finder');",
+              "toast(onWindows() ? 'Open it in Finder' : 'Open it');",
+              "toast(onWindows() ? 'a' : 'b'); toast('Press Return');",
+              "x = 'on your Mac';", "help(`⌘Z undo`);", "x = onWindows() && 'Keychain';"]
+    assert _mac_words_on_windows("\n".join(fine)) == []
+    assert _mac_words_on_windows("\n".join(caught)) == caught
 
 
 def test_tab_goes_from_box_to_box_on_the_budget_page():
