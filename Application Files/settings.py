@@ -22,6 +22,7 @@ import os
 import threading
 from pathlib import Path
 
+import computer
 from budget import OVERSPENDING
 
 log = logging.getLogger("inab")
@@ -34,7 +35,7 @@ USUAL_MONTHS = (3, 6, 12)
 DEFAULTS = {
     "theme": "system",
     "auto_import": True,          # import bank files that land in Downloads
-    "downloads_dir": "",          # '' means ~/Downloads
+    "downloads_dir": "",          # '' means the system's Downloads folder
     "update_automatically": True,
     "dashboard_months": 6,        # the Dashboard's months: one of DASHBOARD_MONTHS
     "budget_folder": "",          # where the budget is kept (docs/adr/0008): '' until one is chosen
@@ -182,7 +183,7 @@ class Settings:
 
     def downloads_dir(self):
         custom = self.get()["downloads_dir"]
-        return Path(custom).expanduser() if custom else Path.home() / "Downloads"
+        return Path(custom).expanduser() if custom else computer.this().downloads_dir()
 
 
 # ── the budget's own ──

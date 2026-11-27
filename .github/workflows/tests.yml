@@ -1,0 +1,79 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# The whole test suite on macOS and Windows for every pull request into main or claude/cross-platform,
+# and every push to them (issue #186). The tests use only the repository's made-up data, and nothing
+# here needs a secret: a pull request from someone else's copy runs the same way.
+
+name: Tests
+
+on:
+  pull_request:
+    branches: [main, claude/cross-platform]
+  push:
+    branches: [main, claude/cross-platform]
+
+permissions:
+  contents: read
+
+concurrency:  # a newer push to the same pull request or branch stops the run it replaces
+  group: tests-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: Tests (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS
+            os: macos-latest
+          - name: Windows
+            os: windows-latest
+    env:
+      PYTHONUTF8: "1"  # node's output and the files the tests write are UTF-8, whatever Windows' code page
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+    defaults:
+      run:
+        shell: bash  # Git for Windows' bash on Windows: the same commands on both
+    steps:
+      - uses: actions/checkout@v5
+
+      # The app's own Python (the minor version the app is built with: 3.13) and the pinned packages.
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: Application Files/requirements.txt
+
+      # Several page tests run index.html's own functions in node; without it they'd only be skipped.
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+
+      - name: Install the pinned packages
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r "Application Files/requirements.txt"  # pyobjc's lines are the Mac's only
+          python -m pip list
+
+      # The privacy hooks are bash scripts that run `python3`, which setup-python doesn't provide on
+      # Windows: give its Python that name too, so the hooks' tests run the hooks for real.
+      - name: Make python3 the same Python
+        if: runner.os == 'Windows'
+        run: |
+          if ! python3 -c "import sys; assert sys.version_info[:2] == (3, 13)" 2>/dev/null; then
+            dir=$(python -c "import os, sys; print(os.path.dirname(sys.executable))")
+            cp "$dir/python.exe" "$dir/python3.exe"
+          fi
+          python3 --version
+
+      # As First Time Setup does: test_privacy.py checks the commit hook is switched on. There's no
+      # .git-denylist on GitHub's machines (it's a local, ignored file): the privacy checks still
+      # look for card numbers, bank files and databases, and the hooks say the denylist is missing.
+      - name: Switch on the privacy hooks
+        run: git config core.hooksPath scripts/hooks
+
+      - name: Run the tests
+        run: python -m pytest -ra

@@ -349,7 +349,7 @@ def test_amount_boxes_do_math():
     ]
     script = (source + f"\nconsole.log(JSON.stringify({json.dumps(cases)}.map(([text, base]) => "
               "parseMoney(text, base === null ? undefined : base)).map(v => Number.isNaN(v) ? 'NaN' : v)));")
-    got = json.loads(subprocess.run([node, "-e", script], capture_output=True, text=True, check=True).stdout)
+    got = json.loads(subprocess.run([node, "-e", script], capture_output=True, encoding="utf-8", check=True).stdout)
     assert [(text, base, value) for (text, base, _), value in zip(cases, got)] == cases
 
 
@@ -373,7 +373,7 @@ def _run_node(script):
     node = shutil.which("node")
     if not node:
         pytest.skip("needs Node")
-    return json.loads(subprocess.run([node, "-e", script], capture_output=True, text=True, check=True).stdout)
+    return json.loads(subprocess.run([node, "-e", script], capture_output=True, encoding="utf-8", check=True).stdout)
 
 
 def test_a_negative_assigned_amount_is_an_amount_until_you_type():
