@@ -15,6 +15,7 @@
 *.sqlite
 *.sqlite3
 *.sqlite-*
+*.inab
 *.zip
 Personal/
 private/
