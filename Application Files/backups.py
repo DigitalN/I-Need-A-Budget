@@ -38,8 +38,19 @@ is one line in the log each time, not a traceback.
 With INAB_DATA_DIR set, main.py puts the folder inside that folder, so tests, the dev
 preview and test copies never touch the real Documents. `Database` defaults to there too.
 
-To restore one: quit the app, delete `budget.db-wal` and `budget.db-shm` in the data
-folder if they're there, and copy the backup in as `budget.db`.
+A backup keeps nothing about saves (meta `save`, budget_folder.py, is taken out of every copy):
+restored, it's a budget no computer saved, so it never passes for an older save of one.
+
+To restore one with a budget folder (1.5.0): quit the app on every computer, then copy the backup
+into the budget folder as `Budget.inab`, replacing the one there. Each computer takes it when it
+next opens the budget; one that had changes it hadn't saved yet asks which to keep. Without one:
+quit the app, delete `budget.db-wal` and `budget.db-shm` in the data folder if they're there, and
+copy the backup in as `budget.db`.
+
+With a budget folder, backups from every computer share its `Backups/`: each computer's names
+end with its own name (`db.backup_tag`: `budget-2026-11-08-14-32-05 on Office PC.db`), so two
+made in the same second never share one, and `prune` only deletes the copies left half made that
+are its own, or a day old.
 """
 
 import calendar
@@ -51,6 +62,8 @@ import os
 import re
 import shutil
 import sqlite3
+import time
+from contextlib import closing
 from datetime import datetime
 from pathlib import Path
 
@@ -69,22 +82,29 @@ SIDE_FILES = ("-wal", "-shm", "-journal")  # what SQLite leaves beside a databas
 
 _STAMP = "%Y-%m-%d-%H-%M-%S"
 _MADE_AT = re.compile(
-    r"budget-(?:before-upgrade-v\d+-to-v\d+-|not-kept-)?(\d{4}-\d{2}-\d{2})((?:-\d{2}){3})?(?: \(\d+\))?\.db")
+    r"budget-(?:before-upgrade-v\d+-to-v\d+-|not-kept-)?(\d{4}-\d{2}-\d{2})((?:-\d{2}){3})?(?: on [^\\/]+?)?"
+    r"(?: \(\d+\))?\.db")
+HALF_MADE_AFTER = 24 * 3600  # seconds: another computer's copy left half made this long is dropped
 _HALF_MADE = re.compile(r"budget-(\d{4}-\d{2}-\d{2})\.tmp")  # by the daily backup, until 1.3.1
 
 
-def name(now):
-    return f"budget-{now.strftime(_STAMP)}.db"
+def _on(tag):
+    return f" on {tag}" if tag else ""
 
 
-def upgrade_name(old_version, new_version, now):
-    return f"budget-before-upgrade-v{old_version}-to-v{new_version}-{now.strftime(_STAMP)}.db"
+def name(now, tag=None):
+    """`tag`: the computer's (db.backup_tag), with a budget folder that every computer backs up into."""
+    return f"budget-{now.strftime(_STAMP)}{_on(tag)}.db"
 
 
-def not_kept_name(now, n=None):
+def upgrade_name(old_version, new_version, now, tag=None):
+    return f"budget-before-upgrade-v{old_version}-to-v{new_version}-{now.strftime(_STAMP)}{_on(tag)}.db"
+
+
+def not_kept_name(now, n=None, tag=None):
     """The budget you didn't keep when it was changed on two computers (budget_folder.py), or a sync
     tool's copy it put away; `n` for a second one made the same second."""
-    return f"budget-not-kept-{now.strftime(_STAMP)}{f' ({n})' if n else ''}.db"
+    return f"budget-not-kept-{now.strftime(_STAMP)}{_on(tag)}{f' ({n})' if n else ''}.db"
 
 
 def made_at(filename):
@@ -153,6 +173,7 @@ def _copy_into(db, folder, filename, source=None):
         else:
             with db.lock:
                 db.conn.execute("VACUUM INTO ?", (str(partial),))  # one file, no -wal beside it
+        _keep_no_save(partial)
         os.replace(partial, target)
     except BaseException:
         partial.unlink(missing_ok=True)
@@ -160,11 +181,23 @@ def _copy_into(db, folder, filename, source=None):
     return target
 
 
+def _keep_no_save(path):
+    """Takes what's kept about a save (budget_folder.py) out of a backup's copy: restored into the
+    budget folder, it's a budget no computer saved, taken by every computer as a new save."""
+    with closing(sqlite3.connect(str(path), isolation_level=None)) as c:
+        tables = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+        if "meta" not in tables:
+            return
+        if "undo_state" in tables:  # no undo trigger records this
+            c.execute("UPDATE undo_state SET active = 0")
+        c.execute("DELETE FROM meta WHERE key = ?", (SAVE_KEY,))
+
+
 def make(db, now=None):
     """A backup of the budget as it is now, remembering which file it is and what the budget
     looked like (`changed`)."""
     with db.lock:  # nothing changes between the copy and remembering it
-        target = save(db, name(now or datetime.now()))
+        target = save(db, name(now or datetime.now(), getattr(db, "backup_tag", None)))
         # the file first: if this stops between the two, the worst is one more backup
         db.set_meta(FILE_KEY, target.name)
         db.set_meta(DIGEST_KEY, digest(db))
@@ -213,10 +246,11 @@ def months_before(day, months):
     return day.replace(year=year, month=month, day=min(day.day, calendar.monthrange(year, month)[1]))
 
 
-def prune(folder, today):
+def prune(folder, today, tag=None):
     """Deletes the backups in `folder` from before the last four months, except the newest one
-    from before `today`; the side files of any backup that's gone; and copies left half made.
-    Returns the backups it deleted."""
+    from before `today`; the side files of any backup that's gone; and copies left half made: with
+    a `tag` (a budget folder every computer backs up into), only this computer's, or another's
+    left a day. Returns the backups it deleted."""
     folder = Path(folder)
     try:
         files = [path for path in folder.iterdir() if path.is_file()]
@@ -225,7 +259,7 @@ def prune(folder, today):
     cutoff = months_before(today, KEPT_MONTHS)
     for path in files:  # only one copy of the app runs: no copy is being made now
         old_daily = _HALF_MADE.fullmatch(path.name)
-        if _partial(path) or (old_daily and old_daily[1] < cutoff.isoformat()):
+        if (_partial(path) and _ours_or_old(path, tag)) or (old_daily and old_daily[1] < cutoff.isoformat()):
             path.unlink(missing_ok=True)
     backups = found(folder)
     before_today = [path for when, path in backups if when.date() < today]
@@ -242,6 +276,15 @@ def prune(folder, today):
     if gone:
         log.info("Deleted %d backup%s from before %s", len(gone), "" if len(gone) == 1 else "s", cutoff)
     return gone
+
+
+def _ours_or_old(path, tag):
+    if tag is None or f"{_on(tag)}." in path.name or f"{_on(tag)} (" in path.name:
+        return True
+    try:
+        return time.time() - path.stat().st_mtime > HALF_MADE_AFTER
+    except OSError:
+        return False
 
 
 def move_old(old, new):
@@ -379,7 +422,7 @@ def _back_up_at_quit(db, now):
 
 def _prune_all(db, now):
     for folder in _folders(db):
-        _try("Deleting old backups", lambda: prune(folder, now.date()))
+        _try("Deleting old backups", lambda: prune(folder, now.date(), getattr(db, "backup_tag", None)))
 
 
 def _try(what, step):

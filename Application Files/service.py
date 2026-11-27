@@ -16,6 +16,7 @@ import os
 import re
 import shutil
 from collections import Counter
+from contextlib import nullcontext
 from datetime import date, datetime
 from pathlib import Path
 
@@ -37,6 +38,11 @@ from util import add_months, first_day, last_day, money, month_name, month_of, m
 log = logging.getLogger("inab")
 
 EXPOSED = {}
+
+# The budget folder's requests: they don't share the budget with the others (budget_folder.Turns), since
+# they take its lock and may take another computer's save themselves.
+FOLDER_REQUESTS = {"budget_folder", "look_in_budget_folder", "move_budget_folder", "open_budget_folder",
+                   "keep_this_budget", "keep_other_budget"}
 
 
 def exposed(fn):
@@ -141,8 +147,10 @@ class BudgetService:
         self.settings = settings
         self.data_dir = Path(data_dir)
         self.hooks = hooks or {}          # window features: choose_files, reveal, updates, app_info
+        self.turns = budget_folder.Turns()  # requests share the budget; taking another computer's save waits for them
         self.folder = budget_folder.BudgetFolder(db, self.data_dir, settings.get()["budget_folder"] or None,
-                                                 computer=computer, app_version=self._app_info().get("version"))
+                                                 computer=computer, app_version=self._app_info().get("version"),
+                                                 turns=self.turns)
         self._seen_files = {}             # Downloads watcher: path → (mtime, size) already looked at
         self._file_status = {}            # path → ((mtime, size), what it needs or None): see _needs()
         self._status_round = 0            # bumped whenever _file_status is cleared: a need worked out before isn't kept
@@ -156,10 +164,16 @@ class BudgetService:
         it made, so the Undo in its toast reverses exactly that step; None when it made none (it
         changed nothing, it was an undo, or an import cleared undo), so its toast has no Undo (issue
         #139: the step ⌘Z would undo next was then something else you did). A read, or a change
-        that isn't an undo step (a note saved as it's typed), has no `step`."""
+        that isn't an undo step (a note saved as it's typed), has no `step`. Every request but the
+        budget folder's shares the budget (self.turns): another computer's save is never taken between
+        one's read and its write."""
         fn = EXPOSED.get(name)
         if fn is None:
             return {"ok": False, "error": f"Unknown request: {name}"}
+        with nullcontext() if name in FOLDER_REQUESTS else self.turns.shared():
+            return self._run(name, fn, args)
+
+    def _run(self, name, fn, args):
         try:
             self.db.begin_request()
             if isinstance(args, dict):
@@ -627,7 +641,11 @@ class BudgetService:
     def watch_downloads(self):
         """Called every few seconds by the watcher: imports new bank files from Downloads
         (a CSV that needs setting up waits in the Inbox instead). Returns what
-        import_files() did, or None if there was nothing new."""
+        import_files() did, or None if there was nothing new. It shares the budget as a request does."""
+        with self.turns.shared():
+            return self._watch_downloads()
+
+    def _watch_downloads(self):
         s = self.settings.get()
         if not s["auto_import"] or self.db.get_meta("onboarded") != "1":
             return None
@@ -2264,11 +2282,12 @@ class BudgetService:
         return self.folder.look_in(_folder_path(path))
 
     @exposed
-    def move_budget_folder(self, path):
+    def move_budget_folder(self, path, old_folder_gone=False):
         """Puts this computer's budget into the folder at `path` (the first time, and Move… later), with its
-        backups and imported files. Refuses a folder that already has a budget."""
+        backups and imported files. Refuses a folder that already has a budget, and leaves a budget folder
+        that can't be reached only with `old_folder_gone` (the person says it's gone for good)."""
         path = _folder_path(path)
-        state = self.folder.move_to(path)
+        state = self.folder.move_to(path, old_folder_gone=old_folder_gone is True)
         self.settings.update({"budget_folder": str(self.folder.folder)})
         return state
 
@@ -2295,7 +2314,8 @@ class BudgetService:
 
     def watch_budget_folder(self):
         """The budget folder watcher's round (main.py, every few seconds): the state, with 'took' when another
-        computer's save replaced the budget, so the window draws it again."""
+        computer's save replaced the budget, so the window draws it again. Never from inside a request: a take
+        waits for the requests under way (self.turns)."""
         state = self.folder.check()
         if state.get("took"):
             self._took_another_budget()

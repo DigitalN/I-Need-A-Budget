@@ -302,11 +302,13 @@ UNDO_TABLES = ("meta", "accounts", "account_sources", "category_groups", "catego
 
 
 class Database:
-    def __init__(self, path, backup_dir=None):
+    def __init__(self, path, backup_dir=None, backup_tag=None):
         """`backup_dir`: where backups go (main.py's BACKUP_DIR); by default a folder beside the
-        database, so tests and the dev preview keep theirs in their own folder."""
+        database, so tests and the dev preview keep theirs in their own folder. `backup_tag`: this
+        computer's name in backups' names, with a budget folder every computer backs up into."""
         self.path = Path(path)
         self.backup_dir = Path(backup_dir) if backup_dir else self.path.parent / backups.FOLDER_NAME
+        self.backup_tag = backup_tag
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.lock = threading.RLock()
         self._depth = 0
@@ -335,7 +337,8 @@ class Database:
         with self.lock:
             if self._depth:
                 raise RuntimeError("replace_with() inside a write()")
-            source = sqlite3.connect(str(path))
+            # read-only: a file that isn't there is an error, never an empty budget made in its place
+            source = sqlite3.connect(f"{Path(path).resolve().as_uri()}?mode=ro", uri=True)
             try:
                 source.backup(self.conn)
             finally:
@@ -498,7 +501,7 @@ class Database:
             "WHERE anchor_date IS NOT NULL")
 
     def _backup_before_upgrade(self, version):
-        target = backups.save(self, backups.upgrade_name(version, SCHEMA_VERSION, datetime.now()))
+        target = backups.save(self, backups.upgrade_name(version, SCHEMA_VERSION, datetime.now(), self.backup_tag))
         log.info("Saved a copy of the database before upgrading it: %s", target)
 
     def _install_undo_triggers(self):
