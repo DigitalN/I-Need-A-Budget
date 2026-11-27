@@ -19,7 +19,7 @@ set -uo pipefail
 fail=0
 
 blocked=$(git diff --cached --name-only --diff-filter=ACMR \
-    | grep -Ei '\.(csv|ofx|qfx|qbo|db|db-wal|db-shm|db-journal|sqlite3?|inab|zip|tmp|log)$|(^|/)(Backups|Imported Files|Personal|private|data|Logs)/' || true)
+    | grep -Ei '\.(csv|ofx|qfx|qbo|db|db-wal|db-shm|db-journal|sqlite3?|inab|inab-wal|inab-shm|inab-journal|partial|zip|tmp|log)$|(^|/)(Backups|Imported Files|Personal|private|data|Logs)/' || true)
 if [[ -n "$blocked" ]]; then
     echo "✗ These files look like bank data or a database and can't be committed:" >&2
     echo "$blocked" | sed 's/^/    /' >&2
