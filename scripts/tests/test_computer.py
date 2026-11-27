@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 import computer
+import computer_mac
 from computer_mac import Mac
 from computer_windows import Windows
 
@@ -129,3 +130,14 @@ def test_settings_default_to_the_systems_downloads_folder(tmp_path, monkeypatch)
 
     monkeypatch.setattr(computer.this(), "downloads_dir", lambda: tmp_path / "Downloads from the system")
     assert Settings(tmp_path / "settings.json").downloads_dir() == tmp_path / "Downloads from the system"
+
+
+def test_the_machines_own_id():
+    """budget_folder.py makes this computer a new id in saves when the machine's isn't the one its
+    data folder was made on (a copied data folder)."""
+    printed = '  |   "IOPlatformUUID" = "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"\n'
+    assert computer_mac.platform_uuid(printed) == "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"
+    assert computer_mac.platform_uuid("") is None
+    found = computer.this().machine_id()
+    assert found is None or (isinstance(found, str) and found)
+    assert computer.this().machine_id() == found  # the same every time

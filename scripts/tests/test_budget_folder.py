@@ -882,3 +882,245 @@ def test_pruning_leaves_another_computers_backup_being_made(tmp_path):
     os.utime(stale, (two_days_ago, two_days_ago))
     backups.prune(folder, datetime(2026, 11, 27).date(), tag="PC-A")
     assert names(folder) == [theirs.name]
+
+
+# ── the second review of #196 ──
+
+def _sync(source, target):
+    """The sync tool brings one computer's view of the folder to another's: the budgets in it."""
+    for name in names(target):
+        if name.endswith(".inab") and not (source / name).exists():
+            (target / name).unlink()
+    for name in names(source):
+        if name.endswith(".inab"):
+            shutil.copyfile(source / name, target / name)
+
+
+def test_keeping_the_other_one_is_counted_in_the_folder(tmp_path):
+    """PC-A's save became the sync tool's copy, PC-B's Budget.inab; PC-A keeps PC-B's. PC-B's later
+    saves are then built on what PC-A has: taken, never asked again."""
+    folder, seen_on_a = tmp_path / "Budget", tmp_path / "PC-A sees" / "Budget"
+    a = computer(tmp_path, "PC-A")
+    a.move_to(folder)
+    b = computer(tmp_path, "PC-B")
+    b.open_from(folder)
+    shutil.copytree(folder, seen_on_a)
+    a.open_from(seen_on_a)
+    add_category(a.db, "Groceries")
+    a.check(wait=False)
+    add_category(b.db, "Rent")
+    b.check(wait=False)
+    shutil.copyfile(seen_on_a / FILE_NAME, folder / "Budget-PC-A.inab")
+    shutil.copyfile(folder / FILE_NAME, seen_on_a / FILE_NAME)
+    shutil.copyfile(folder / "Budget-PC-A.inab", seen_on_a / "Budget-PC-A.inab")
+    assert a.check(wait=False)["state"] == "two_computers"
+    assert a.keep_other()["state"] == "saved" and categories(a.db) == ["Rent"]
+    _sync(seen_on_a, folder)
+    for i in range(3):
+        b.check()
+        add_category(b.db, f"Sample {i}")
+        b.check(wait=False)
+        _sync(folder, seen_on_a)
+        state = a.check(wait=False)
+        assert state["state"] == "saved" and state["took"]["computer"] == "PC-B"
+
+
+def test_a_restore_is_taken_whatever_each_computer_had_seen(tmp_path):
+    """PC-B saved last and PC-A never saw it; then a backup is restored. Both take it, and what
+    either saves after it, the other takes."""
+    folder = tmp_path / "Budget"
+    a = computer(tmp_path, "PC-A")
+    add_category(a.db, "Groceries")
+    a.move_to(folder)
+    b = computer(tmp_path, "PC-B")
+    b.open_from(folder)
+    made = shutil.copyfile(backups.make(a.db), tmp_path / "the backup.db")
+    add_category(b.db, "Rent")
+    b.check(wait=False)
+    shutil.copyfile(made, folder / FILE_NAME)
+    assert a.check(wait=False)["took"] and b.check(wait=False)["took"]
+    assert categories(a.db) == categories(b.db) == ["Groceries"]
+    add_category(a.db, "Gifts")
+    a.check(wait=False)
+    state = b.check(wait=False)
+    assert state["took"]["computer"] == "PC-A" and categories(b.db) == ["Groceries", "Gifts"]
+    add_category(b.db, "Bills")
+    b.check(wait=False)
+    assert a.check(wait=False)["took"]["computer"] == "PC-B"
+
+
+def test_a_data_folder_copied_to_another_machine_counts_as_another_computer(tmp_path):
+    """Migration Assistant: the same computer.json on a new machine. Its id there is new, so its
+    change is asked about, never put away as an older save of the first one's."""
+    folder, seen_on_b = tmp_path / "Budget", tmp_path / "PC-B sees" / "Budget"
+    a = computer(tmp_path, "PC-A")
+    add_category(a.db, "Groceries")
+    a.move_to(folder)
+    a.db.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    shutil.copytree(tmp_path / "PC-A", tmp_path / "PC-B")
+    b = computer(tmp_path, "PC-B", folder=folder)
+    assert b.computer_id() != a.computer_id()
+    shutil.copytree(folder, seen_on_b)
+    b.open_from(seen_on_b)
+    for name in ("Sample 1", "Sample 2"):
+        add_category(a.db, name)
+        a.check(wait=False)
+    add_category(b.db, "Rent")
+    b.check(wait=False)
+    shutil.copyfile(seen_on_b / FILE_NAME, folder / "Budget-PC-B.inab")
+    state = a.check(wait=False)
+    assert state["state"] == "two_computers" and state["other"]["computer"] == "PC-B"
+
+
+def test_a_budget_started_again_is_never_taken_for_the_old_one(tmp_path):
+    """PC-A starts its budget again (its data folder's computer.json kept) and moves the new one to
+    another folder. PC-B opening it gets the new budget, its own old one in that folder's Backups/."""
+    old_folder, new_folder = tmp_path / "Budget", tmp_path / "New Budget"
+    a = computer(tmp_path, "PC-A")
+    add_category(a.db, "Groceries")
+    a.move_to(old_folder)
+    b = computer(tmp_path, "PC-B")
+    b.open_from(old_folder)
+    for i in range(3):
+        add_category(b.db, f"Sample {i}")
+        b.check(wait=False)
+        a.check()
+    a.at_quit()
+    a.db.close()
+    for side in ("", "-wal", "-shm"):
+        (tmp_path / "PC-A" / f"budget.db{side}").unlink(missing_ok=True)
+    a = computer(tmp_path, "PC-A")
+    add_category(a.db, "Rent")
+    a.move_to(new_folder)
+    assert b.open_from(new_folder)["state"] == "saved"
+    assert categories(b.db) == ["Rent"] and categories_in(new_folder / FILE_NAME) == ["Rent"]
+    [kept] = not_kept(new_folder)
+    assert categories_in(kept) == ["Groceries", "Sample 0", "Sample 1", "Sample 2"]
+    assert a.check()["state"] == "saved" and categories(a.db) == ["Rent"]
+
+
+def test_a_moved_budget_is_never_put_back(tmp_path):
+    """The sync tool may bring the old folder's Budget.inab going before the note that it moved."""
+    old_folder, new_folder, seen_on_b = tmp_path / "Old", tmp_path / "New", tmp_path / "PC-B sees" / "Old"
+    a = computer(tmp_path, "PC-A")
+    add_category(a.db, "Groceries")
+    a.move_to(old_folder)
+    shutil.copytree(old_folder, seen_on_b)
+    b = computer(tmp_path, "PC-B")
+    b.open_from(seen_on_b)
+    a.move_to(new_folder)
+    (seen_on_b / FILE_NAME).unlink()  # the file's going arrives first
+    assert b.check(wait=False)["state"] == "missing" and FILE_NAME not in names(seen_on_b)
+    shutil.copyfile(old_folder / budget_folder.MOVED_NOTE, seen_on_b / budget_folder.MOVED_NOTE)
+    assert b.check(wait=False)["state"] == "moved"
+    assert b.save_again()["state"] == "moved" and FILE_NAME not in names(seen_on_b)  # not even when asked
+
+
+def test_a_budget_file_gone_from_the_folder_is_saved_again_only_when_asked(tmp_path):
+    folder = tmp_path / "Budget"
+    a = computer(tmp_path, "PC-A")
+    add_category(a.db, "Groceries")
+    a.move_to(folder)
+    (folder / FILE_NAME).unlink()
+    add_category(a.db, "Rent")
+    assert a.check(wait=False)["state"] == "missing" and FILE_NAME not in names(folder)
+    assert a.check(wait=False)["state"] == "missing"
+    assert a.save_again()["state"] == "saved" and categories_in(folder / FILE_NAME) == ["Groceries", "Rent"]
+
+
+def _older_put_back(tmp_path):
+    folder = tmp_path / "Budget"
+    a = computer(tmp_path, "PC-A")
+    add_category(a.db, "Groceries")
+    a.move_to(folder)
+    earlier = shutil.copyfile(folder / FILE_NAME, tmp_path / "earlier version.inab")
+    add_category(a.db, "Rent")
+    a.check(wait=False)
+    b = computer(tmp_path, "PC-B")
+    b.open_from(folder)
+    shutil.copyfile(earlier, folder / FILE_NAME)  # the sync tool's "restore previous version"
+    return folder, a, b
+
+
+def test_an_older_version_put_back_is_asked_about_never_saved_over(tmp_path):
+    folder, a, b = _older_put_back(tmp_path)
+    saved = (folder / FILE_NAME).read_bytes()
+    state = a.check(wait=False)
+    assert state["state"] == "older" and state["other"]["computer"] == "PC-A"
+    assert b.check(wait=False)["state"] == "older"
+    add_category(a.db, "Gifts")
+    assert a.check(wait=False)["state"] == "older" and (folder / FILE_NAME).read_bytes() == saved
+    assert categories(a.db) == ["Groceries", "Rent", "Gifts"]  # nor gone back to
+    files = a.two_computers()
+    assert categories_in(files["started_from"]) == ["Groceries"] and files["can_show_changes"]
+
+
+def test_using_the_older_version(tmp_path):
+    folder, a, b = _older_put_back(tmp_path)
+    a.check(wait=False)
+    assert a.keep_other()["state"] == "saved" and categories(a.db) == ["Groceries"]
+    assert [categories_in(p) for p in not_kept(folder)] == [["Groceries", "Rent"]]
+    state = b.check(wait=False)  # PC-B takes it, never asked
+    assert state["took"]["computer"] == "PC-A" and categories(b.db) == ["Groceries"]
+
+
+def test_keeping_the_newer_one(tmp_path):
+    folder, a, b = _older_put_back(tmp_path)
+    a.check(wait=False)
+    assert a.keep_this()["state"] == "saved" and categories_in(folder / FILE_NAME) == ["Groceries", "Rent"]
+    assert [categories_in(p) for p in not_kept(folder)] == [["Groceries"]]
+    state = b.check(wait=False)  # PC-B has the newer one already: the same save, nothing to take
+    assert state["state"] == "saved" and categories(b.db) == ["Groceries", "Rent"]
+    assert b._mine().id == save_in(folder / FILE_NAME)["id"]
+
+
+def test_a_journal_left_beside_a_half_made_copy_goes(tmp_path):
+    folder = tmp_path / "Budget"
+    a = computer(tmp_path, "PC-A")
+    a.move_to(folder)
+    saves = a.db.path.parent / "Saves"
+    for left in (".saving-1.partial", ".saving-1.partial-journal", ".reading-2.partial-wal"):
+        (saves / left).write_bytes(b"x")
+    add_category(a.db, "Groceries")
+    a.check(wait=False)
+    assert not [n for n in names(saves) if ".partial" in n]
+
+
+def test_a_save_waits_for_a_request_under_way(tmp_path):
+    folder = tmp_path / "Budget"
+    a = service(tmp_path, "PC-A")
+    call(a, "move_budget_folder", str(folder))
+    call(a, "add_group", "Everyday")
+    found = {}
+    with a.turns.shared():  # a request between two of its writes
+        saving = threading.Thread(target=lambda: found.update(a.folder.check(wait=False)))
+        saving.start()
+        saving.join(0.5)
+        assert saving.is_alive()
+        call(a, "add_group", "Bills")
+    saving.join(60)
+    assert not saving.is_alive() and found["state"] == "saved"
+    assert [r[0] for r in sqlite3.connect(folder / FILE_NAME).execute("SELECT name FROM category_groups")] == \
+        ["Everyday", "Bills"]
+
+
+def test_pruning_tells_a_computer_from_one_with_a_number_in_its_name(tmp_path):
+    folder = tmp_path / "Backups"
+    folder.mkdir()
+    second = backups.not_kept_name(datetime(2026, 11, 27, 9, 14, 5), 2, tag="PC")
+    assert second == "budget-not-kept-2026-11-27-09-14-05 (2) on PC.db" and backups.made_at(second)
+    ours, theirs = folder / f".{second}.partial", folder / ".budget-2026-11-27-09-14-05 on PC (2).db.partial"
+    for path in (ours, theirs):
+        path.write_bytes(b"x")
+    backups.prune(folder, datetime(2026, 11, 27).date(), tag="PC")
+    assert names(folder) == [theirs.name]
+
+
+def test_moving_into_a_folder_a_budget_moved_out_of(tmp_path):
+    old_folder, new_folder = tmp_path / "Old", tmp_path / "New"
+    a = computer(tmp_path, "PC-A")
+    a.move_to(old_folder)
+    a.move_to(new_folder)
+    assert a.look_in(old_folder)["moved"]["computer"] == "PC-A"
+    assert a.move_to(old_folder)["state"] == "saved"
+    assert budget_folder.MOVED_NOTE not in names(old_folder) and a.look_in(old_folder)["moved"] is None

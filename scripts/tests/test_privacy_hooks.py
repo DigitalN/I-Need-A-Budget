@@ -76,7 +76,8 @@ def test_a_full_card_number_is_refused(repo):
 def test_database_side_files_and_logs_are_refused(repo):
     for name in ("budget.db-wal", "budget.db-shm", "budget.db-journal", "Backups/budget-2026-10-12.tmp", "budget.tmp",
                  "app.log", "Logs/app.log", "budget.db", "Budget.inab", "Budget.inab-wal", "Budget.inab-shm",
-                 "Budget.inab-journal", ".Budget.inab.PC-A.partial", "Saves/.saving-0.partial"):
+                 "Budget.inab-journal", ".Budget.inab.PC-A.partial", "Saves/.saving-0.partial",
+                 "Saves/.saving-0.partial-journal", "Saves/.reading-0.partial-wal"):
         assert _refused(_commit(repo, name, "x", force=True)), name
         repo.git("reset", "-q")
 

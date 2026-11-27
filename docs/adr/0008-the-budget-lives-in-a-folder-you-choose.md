@@ -40,4 +40,7 @@ under a hidden name, then renamed) a few seconds after changes stop, and when it
 - Restoring a backup: quit the app on every computer and copy it into the folder as
   `Budget.inab`. Backups keep nothing about saves, so no computer saved it: each takes it as a
   new save, and one with changes not saved yet asks which to keep, the restored one being the other.
+- An older save put back in the folder (a sync tool's "restore previous version") is never saved
+  over, nor gone back to, without asking: Use it, or Keep the newer one; the other goes into
+  Backups/. Only this computer's own last save, when its newer one didn't land, is saved over.
 - Decided 2026-11-27, for 1.5.0.

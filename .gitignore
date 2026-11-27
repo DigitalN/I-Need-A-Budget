@@ -31,6 +31,7 @@ Imported Files/
 Logs/
 *.tmp
 *.partial
+*.partial-*
 
 # Build output, should any land here: scripts/build.sh and package.sh work in ~/Library/Caches
 Application Files/build/
