@@ -62,12 +62,14 @@ KEPT_MONTHS = 4
 DIGEST_KEY = "backed_up"      # meta: `digest` of the budget when the last backup was made
 FILE_KEY = "backed_up_to"     # meta: the name of the file that backup made
 BACKUP_META = (DIGEST_KEY, FILE_KEY)  # what `make` keeps in meta: not the budget, so not in `digest`
+SAVE_KEY = "save"             # meta: the save in the budget folder this budget is, or started from (budget_folder.py)
+NOT_A_CHANGE = BACKUP_META + (SAVE_KEY,)  # what's kept about backups and saves isn't a change to the budget
 NOT_THE_BUDGET = ("undo_log", "undo_groups", "undo_state")  # this session's undo, cleared at launch
 SIDE_FILES = ("-wal", "-shm", "-journal")  # what SQLite leaves beside a database someone opened
 
 _STAMP = "%Y-%m-%d-%H-%M-%S"
 _MADE_AT = re.compile(
-    r"budget-(?:before-upgrade-v\d+-to-v\d+-)?(\d{4}-\d{2}-\d{2})((?:-\d{2}){3})?(?: \(\d+\))?\.db")
+    r"budget-(?:before-upgrade-v\d+-to-v\d+-|not-kept-)?(\d{4}-\d{2}-\d{2})((?:-\d{2}){3})?(?: \(\d+\))?\.db")
 _HALF_MADE = re.compile(r"budget-(\d{4}-\d{2}-\d{2})\.tmp")  # by the daily backup, until 1.3.1
 
 
@@ -77,6 +79,12 @@ def name(now):
 
 def upgrade_name(old_version, new_version, now):
     return f"budget-before-upgrade-v{old_version}-to-v{new_version}-{now.strftime(_STAMP)}.db"
+
+
+def not_kept_name(now, n=None):
+    """The budget you didn't keep when it was changed on two computers (budget_folder.py), or a sync
+    tool's copy it put away; `n` for a second one made the same second."""
+    return f"budget-not-kept-{now.strftime(_STAMP)}{f' ({n})' if n else ''}.db"
 
 
 def made_at(filename):
@@ -120,27 +128,31 @@ def _folders(db):
 
 # ── making one ──
 
-def save(db, filename):
+def save(db, filename, source=None):
     """Copies the whole budget into a file called `filename` in the backups folder, complete or
     not at all, and returns its path. Falls back to the old folder in the data folder when the
-    backups folder can't be written."""
+    backups folder can't be written. `source`: a budget file that isn't open (another computer's
+    save that wasn't kept) to copy instead."""
     folders = _folders(db)
     for i, folder in enumerate(folders):
         try:
-            return _copy_into(db, folder, filename)
+            return _copy_into(db, folder, filename, source)
         except (OSError, sqlite3.Error) as e:
             if i == len(folders) - 1:
                 raise
             log.warning("Couldn't save a backup in %s (%s); saving it in %s", folder, e, folders[i + 1])
 
 
-def _copy_into(db, folder, filename):
+def _copy_into(db, folder, filename, source=None):
     folder.mkdir(parents=True, exist_ok=True)
     target, partial = folder / filename, folder / f".{filename}.partial"
     partial.unlink(missing_ok=True)
     try:
-        with db.lock:
-            db.conn.execute("VACUUM INTO ?", (str(partial),))  # one file, no -wal beside it
+        if source is not None:
+            shutil.copyfile(source, partial)
+        else:
+            with db.lock:
+                db.conn.execute("VACUUM INTO ?", (str(partial),))  # one file, no -wal beside it
         os.replace(partial, target)
     except BaseException:
         partial.unlink(missing_ok=True)
@@ -162,7 +174,8 @@ def make(db, now=None):
 
 def digest(db):
     """A fingerprint of everything in the budget: every table and its rows, but not this
-    session's undo (cleared at each launch) or what `make` keeps in meta about the last backup."""
+    session's undo (cleared at each launch) or what `make` keeps in meta about the last backup
+    and budget_folder.py about the last save."""
     h = hashlib.sha256()
     with db.read() as c:
         tables = [r[0] for r in c.execute(
@@ -173,7 +186,7 @@ def digest(db):
             rows = c.execute(f'SELECT * FROM "{table}" ORDER BY rowid')
             h.update(repr((table, [d[0] for d in rows.description])).encode())
             for row in rows:
-                if table == "meta" and row[0] in BACKUP_META:
+                if table == "meta" and row[0] in NOT_A_CHANGE:
                     continue
                 h.update(repr(tuple(row)).encode())
     return h.hexdigest()

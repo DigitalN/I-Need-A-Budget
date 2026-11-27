@@ -318,10 +318,32 @@ class Database:
         self.conn.execute("PRAGMA busy_timeout = 5000")
         self._migrate()
         self._install_undo_triggers()
+        self._start_undo()
+
+    def _start_undo(self):
         with self.lock:
             self.conn.execute("DELETE FROM undo_log")
             self.conn.execute("DELETE FROM undo_groups")
             self.conn.execute("UPDATE undo_state SET active = 0, grp = NULL")
+
+    def replace_with(self, path):
+        """Makes the budget the one in the budget file at `path` (another computer's save:
+        budget_folder.py), whole. It's copied in page by page (SQLite's backup), so this stays the
+        same database, in WAL mode, on the same connection. Upgraded as at launch when an older
+        version saved it (a copy goes to the backups folder first). Undo is cleared: its steps were
+        made on the budget it replaces, as for an import."""
+        with self.lock:
+            if self._depth:
+                raise RuntimeError("replace_with() inside a write()")
+            source = sqlite3.connect(str(path))
+            try:
+                source.backup(self.conn)
+            finally:
+                source.close()
+            self._migrate()
+            self._install_undo_triggers()
+            self._start_undo()
+            self._made.steps = []  # nothing this request made can be undone any more
 
     # ── schema ──
 

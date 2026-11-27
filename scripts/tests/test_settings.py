@@ -125,7 +125,7 @@ def test_what_copies_ran_on_never_changes():
     """A copy that skips versions keeps what it was using: these are frozen, whatever the defaults become."""
     assert set(RAN_ON) == set(DEFAULTS) and set(BUDGET_RAN_ON) == set(BUDGET_DEFAULTS)
     assert RAN_ON == {"theme": "system", "auto_import": True, "downloads_dir": "", "update_automatically": True,
-                      "dashboard_months": 6}
+                      "dashboard_months": 6, "budget_folder": ""}
     assert BUDGET_RAN_ON == {"overspending": "this_month", "average_months": 3}
 
 
