@@ -44,9 +44,11 @@ class Computer:
         raise NotImplementedError
 
     def machine_id(self):
-        """This machine's own id, which a data folder copied to another machine (Migration
-        Assistant, a restored disk) doesn't carry: budget_folder.py makes this computer a new id in
-        saves when it no longer matches. None when the system won't say."""
+        """This machine's own id, which a data folder copied to another machine doesn't carry:
+        budget_folder.py makes this computer a new id in saves when it no longer matches. A Mac's
+        (IOPlatformUUID) is the hardware's, so Migration Assistant or a restored disk is caught.
+        Windows' MachineGuid comes along with a cloned disk or a restored image: there only a data
+        folder copied onto another Windows installation is. None when the system won't say."""
         raise NotImplementedError
 
     # ── one copy at a time ──

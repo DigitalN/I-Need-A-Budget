@@ -700,7 +700,8 @@ def test_restoring_a_backup_into_the_folder_is_taken_by_every_computer(tmp_path)
     b.check()
     shutil.copyfile(made, folder / FILE_NAME)
     assert a.check()["took"]["computer"] is None and categories(a.db) == ["Groceries"]
-    assert b.check()["took"]["computer"] is None and categories(b.db) == ["Groceries"]
+    assert save_in(folder / FILE_NAME)["computer"] == "PC-A"  # saved back at once, counting the restore
+    assert b.check()["took"]["computer"] == "PC-A" and categories(b.db) == ["Groceries"]
     assert a.check()["state"] == b.check()["state"] == "saved"
     add_category(a.db, "Gifts")
     a.check(wait=False)

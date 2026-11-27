@@ -474,6 +474,7 @@ class BudgetFolder:
                 publish = publish or mine.counts != save.counts
             if kind == SAME and save.name == FILE_NAME:
                 self._landed(save.id)
+                publish = publish or save.counts != mine.counts  # a restore taken, Keep the other one
             elif kind in (SAME, OLDER) and save.name != FILE_NAME:
                 self._put_away(folder, save, "a sync tool's copy of a save this computer has")
             elif kind in (NEWER, APART):
@@ -484,8 +485,8 @@ class BudgetFolder:
                 if other.name != FILE_NAME:  # a conflict copy built on this computer's: the folder holds it from now
                     self._put_away(folder, other, "a sync tool's copy, taken")
                     self._save(folder)
-                elif other.counts and self._mine().counts != other.counts:
-                    self._save(folder)  # what this computer records, counted in the folder too
+                elif self._mine().counts != other.counts:
+                    self._save(folder)  # what this computer records (a restore's new line too), counted in the folder
                 return self._set("saved", took=other.about())
             self._other = other
             self._prune_saves()
@@ -682,6 +683,7 @@ class BudgetFolder:
         finally:
             _discard(local)
         self._set_mine(save)  # first: a crash after this leaves the folder behind, saved again next look
+        self._replacing(folder)
         self._behind = True
         try:
             _copy(save.path, partial)
@@ -695,12 +697,25 @@ class BudgetFolder:
         log.info("Saved the budget to %s", folder / FILE_NAME)
         return save
 
-    def _take(self, save, only_if_unchanged=False):
+    def _replacing(self, folder):
+        """Before a save goes into the folder: the save there now (as last read) is one this computer
+        chose to save over, so if writing fails it's simply tried again (never `older`: a choice made,
+        Keep this or Keep the other one, stays made)."""
+        target = folder / FILE_NAME
+        seen = self._seen.get(str(target))
+        try:
+            if seen and seen[0] == _stat_key(target):
+                self._landed(seen[1].id)
+        except OSError:
+            pass
+
+    def _take(self, save, only_if_unchanged=False, fresh=False):
         """Makes this computer's budget `save`, another computer's, whole (db.replace_with: upgraded
         if an older version saved it, ⌘Z cleared), once the page's requests under way are done. Its
         copy in Saves/ is checked to be that save first. The upgrade isn't a change to save. False,
         taking nothing, when `only_if_unchanged` and this computer changed its budget since its last
-        save. NotABudget when its copy isn't there or isn't it (it's read again next look)."""
+        save. NotABudget when its copy isn't there or isn't it (it's read again next look). `fresh`:
+        another budget (open_from), taken with its own counts, none of this one's."""
         with self.turns.alone(), self.db.lock:  # nothing you do slips in between looking and taking
             if only_if_unchanged and self._changed():
                 return False
@@ -711,13 +726,16 @@ class BudgetFolder:
             except NotABudget:
                 self._forget(save)
                 raise
-            mine = self._mine()
+            mine = None if fresh else self._mine()
+            landed = self.db.get_meta(LANDED_KEY)  # this computer's, not the budget's: kept across the take
             self.db.replace_with(save.path)
             self._mark = None
             counts = _combine(mine.counts if mine else {}, save.counts) if save.counts else _after_restore(save, mine)
             self._set_mine(replace(save, counts=counts, digest=backups.digest(self.db)))
             if save.name == FILE_NAME:
                 self._landed(save.id)
+            elif landed and not fresh:
+                self._landed(landed)
         log.info("Took the budget saved on %s at %s (%s)", save.computer or "no computer: restored",
                  save.saved_at, save.name)
         return True
@@ -814,7 +832,7 @@ class BudgetFolder:
             if other.name != FILE_NAME:  # a conflict copy: the folder holds it from now
                 _remove(folder / other.name, self._sleep)
                 self._save(folder)
-            elif other.counts and self._mine().counts != other.counts:
+            elif self._mine().counts != other.counts:
                 self._save(folder)
             self._other = None
             log.info("Kept the budget saved on %s; this computer's is in %s", other.computer, kept)
@@ -926,8 +944,11 @@ class BudgetFolder:
                                 "try again in a moment.") from None
             if save.schema_version > SCHEMA_VERSION:
                 raise UserError(newer_message(save))
-            mine = self._mine()  # the same budget as this computer's, or another?
-            shared = mine is not None and (relation(save, mine) != APART or bool(set(save.counts) & set(mine.counts)))
+            # The same budget as this computer's only when both count something they share: a computer's id
+            # (new for each budget) or a restore's own key. Never by which looks older: any line with a restore in it
+            # reads as later than one without.
+            mine = self._mine()
+            shared = mine is not None and bool(set(save.counts) & set(mine.counts))
             old = self.folder
             if old is not None and not _same(old, target):
                 _try(f"Leaving {old}", lambda: _remove(old / self._note_name(), self._sleep))
@@ -936,7 +957,7 @@ class BudgetFolder:
                 with self.turns.alone(), self.db.lock:
                     if not self._empty():
                         backups.save(self.db, self._not_kept_name())
-                    self._take(save)
+                    self._take(save, fresh=True)
                 self._new_id()  # another budget: this computer's saves in it start a line of their own
             log.info("Opened the budget in %s", target)
             return self.check(wait=False)
