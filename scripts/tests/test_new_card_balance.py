@@ -96,7 +96,7 @@ def test_a_card_in_your_favour_reads_as_in_your_favour():
     script = source + """
 console.log(JSON.stringify([owingText(11265), owingText(-11265), owingText(0), owingText(5000, m => `You owe ${m}`),
   owingText(-5000, m => `You owe ${m}`), owingText(-5000, m => `owe ${m}`)]));"""
-    got = json.loads(subprocess.run([node, "-e", script], capture_output=True, text=True, check=True).stdout)
+    got = json.loads(subprocess.run([node, "-e", script], capture_output=True, encoding="utf-8", check=True).stdout)
     assert got == ["$112.65 owing", "$112.65 in your favour", "$0.00 owing", "You owe $50.00", "$50.00 in your favour",
                    "$50.00 in your favour"]
     # ...and the places that printed a negative owing figure no longer do

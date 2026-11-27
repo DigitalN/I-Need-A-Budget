@@ -65,10 +65,21 @@ def test_mit_without_a_file_gets_the_mit_text(tmp_path):
     assert "Permission is hereby granted, free of charge" in text
 
 
+def needed_here(line):
+    """The package a line of requirements.txt names, when this system installs it."""
+    requirement, _, marker = line.partition(";")
+    if marker:
+        system = re.fullmatch(r'\s*sys_platform\s*==\s*"([^"]+)"\s*', marker)
+        assert system, f"A marker this test can't read: {line}"
+        if system.group(1) != sys.platform:
+            return None
+    return requirement.split("==")[0].strip()
+
+
 def test_every_package_the_app_needs_has_a_license():
     lines = (ROOT / "Application Files" / "requirements.txt").read_text().splitlines()
-    names = [line.split("==")[0] for line in lines if line and not line.startswith("#")]
-    runtime = [n for n in names if n not in ("pyinstaller", "pytest")]
+    names = [needed_here(line) for line in lines if line and not line.startswith("#")]
+    runtime = [n for n in names if n and n not in ("pyinstaller", "pytest")]
     text = third_party_licenses.notices(metadata.distribution(n) for n in runtime)
     for name in runtime:
         assert metadata.distribution(name).metadata["Name"] in text

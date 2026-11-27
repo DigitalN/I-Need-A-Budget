@@ -1,13 +1,14 @@
 # SPDX-License-Identifier: GPL-3.0-only
-"""I Need A Budget: envelope budgeting from your bank's downloads, as a Mac app.
+"""I Need A Budget: envelope budgeting from your bank's downloads, as a desktop app.
 
 Launcher: logging, the single-instance lock, the database, the Downloads watcher, the
 updater, and the pywebview window. The page talks to Python through pywebview's
 in-process bridge (`window.pywebview.api.call(name, args)` → service.BudgetService), so
 the app opens no network ports. Its only network access is the update check
 (updater.py); "Release notes" in Settings opens GitHub in your browser. All data stays in
-~/Library/Application Support/I Need A Budget, and quitting after a change backs the budget
-up into ~/Documents/I Need A Budget Backups (backups.py, docs/adr/0004).
+this computer's data folder (~/Library/Application Support/I Need A Budget on a Mac), and
+quitting after a change backs the budget up into Documents/I Need A Budget Backups
+(backups.py, docs/adr/0004). What a Mac or a Windows PC does differently is computer.py's.
 
 Closing the window quits the app entirely (it isn't meant to keep running in the
 background), and so does ⌘Q: the page saves what you're typing first, and asks only about
@@ -15,7 +16,6 @@ a pop-up with changes or an entry it can't save. A downloaded update is installe
 after the backup.
 """
 
-import fcntl
 import json
 import logging
 import os
@@ -25,16 +25,19 @@ import time
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
+import computer
+
 APP_NAME = "I Need A Budget"
 VERSION = "1.4.3"  # the build reads it from here; see the release checklist in docs/DEVELOPMENT.md
+THIS_COMPUTER = computer.this()  # the Mac's or Windows' side of everything below
 if os.environ.get("INAB_DATA_DIR"):  # for development/testing against a throwaway folder
     DATA_DIR = Path(os.environ["INAB_DATA_DIR"]).expanduser()
     LOG_DIR = DATA_DIR / "Logs"
     BACKUP_DIR = DATA_DIR / f"{APP_NAME} Backups"  # never the real Documents
 else:
-    DATA_DIR = Path.home() / "Library" / "Application Support" / APP_NAME
-    LOG_DIR = Path.home() / "Library" / "Logs" / APP_NAME
-    BACKUP_DIR = Path.home() / "Documents" / f"{APP_NAME} Backups"  # iCloud Drive can back it up
+    DATA_DIR = THIS_COMPUTER.data_dir()
+    LOG_DIR = THIS_COMPUTER.log_dir()
+    BACKUP_DIR = THIS_COMPUTER.documents_dir() / f"{APP_NAME} Backups"  # iCloud Drive can back it up
 LOG_PATH = LOG_DIR / "app.log"
 WATCH_EVERY = 4  # seconds between looks in Downloads
 MIN_SIZE = (1000, 660)
@@ -42,20 +45,6 @@ WINDOW_SHARE = 0.85            # the first time, the window takes this much of t
 WINDOW_FRAME_NAME = "Main window"  # macOS remembers the window's size and place under this name
 
 log = logging.getLogger("inab")
-
-
-def _first_window_size():
-    """How big the window opens the first time on a Mac: most of the space between the
-    menu bar and the Dock, and never below the minimum unless the screen is smaller. From
-    then on it opens the size and place it was left (BudgetApp._restore_frame)."""
-    import AppKit
-
-    screen = AppKit.NSScreen.mainScreen()
-    if screen is None:
-        return MIN_SIZE
-    area = screen.visibleFrame().size
-    return (int(min(area.width, max(MIN_SIZE[0], area.width * WINDOW_SHARE))),
-            int(min(area.height, max(MIN_SIZE[1], area.height * WINDOW_SHARE))))
 
 
 def _app_files_dir():
@@ -78,13 +67,7 @@ def _setup_logging():
 
 def _acquire_single_instance_lock():
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    handle = open(DATA_DIR / ".lock", "w")
-    try:
-        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
-        handle.close()
-        return None
-    return handle  # held open (and locked) for the life of the process
+    return THIS_COMPUTER.lock(DATA_DIR / ".lock")  # held open (and locked) for the life of the process
 
 
 class Api:
@@ -108,35 +91,29 @@ class Api:
 
     def quit(self):
         """The page has saved what you were typing (or you chose to quit without it)."""
-        from PyObjCTools import AppHelper
-
-        AppHelper.callAfter(self._app._quit_now)
+        self._app._computer.on_main_thread(self._app._quit_now)
 
     def asking_before_quit(self):
         """The page is asking about a pop-up with changes or an entry it can't save."""
-        from PyObjCTools import AppHelper
-
-        import launch
-
         log.info("Quit waits: the page is asking about unsaved changes")
-        AppHelper.callAfter(launch.activate_app)
+        self._app._computer.on_main_thread(self._app._computer.bring_forward)
 
 
 class BudgetApp:
     def __init__(self):
         import backups
-        import launch
         from db import Database
         from service import BudgetService
         from settings import Settings
         from updater import Updater
 
+        self._computer = THIS_COMPUTER
         self._settings = Settings(DATA_DIR / "settings.json")
         self._db = Database(DATA_DIR / "budget.db", backup_dir=BACKUP_DIR)
         backups.at_launch(self._db)  # before anything else can change the budget
-        self._app_path = launch.bundle_path()
+        self._app_path = self._computer.installed_app()
         self._updater = Updater(self._app_path, VERSION, settings=self._settings, data_dir=DATA_DIR,
-                                on_status=self._on_update_status)
+                                on_status=self._on_update_status, computer=self._computer)
         self._service = BudgetService(self._db, self._settings, DATA_DIR, hooks={
             "app_info": self._app_info,
             "choose_files": self._choose_files,
@@ -182,22 +159,16 @@ class BudgetApp:
         return list(result or [])
 
     def _open_folder(self, path):
-        from AppKit import NSURL, NSWorkspace
-        from PyObjCTools import AppHelper
-
         path = Path(path)
         path.mkdir(parents=True, exist_ok=True)  # Imported Files waits for the first import
-        AppHelper.callAfter(NSWorkspace.sharedWorkspace().openURL_, NSURL.fileURLWithPath_(str(path)))
+        self._computer.on_main_thread(self._computer.open_path, path)
         return True
 
     def _open_release_notes(self):
         """In the browser: the app itself only ever talks to GitHub to update."""
-        from AppKit import NSURL, NSWorkspace
-        from PyObjCTools import AppHelper
+        from updater import RELEASES_URL
 
-        import launch
-
-        AppHelper.callAfter(NSWorkspace.sharedWorkspace().openURL_, NSURL.URLWithString_(launch.RELEASES_URL))
+        self._computer.on_main_thread(self._computer.open_web_page, RELEASES_URL)
         return True
 
     def _open_license(self):
@@ -206,9 +177,6 @@ class BudgetApp:
         import shutil
         import tempfile
 
-        from AppKit import NSURL, NSWorkspace
-        from PyObjCTools import AppHelper
-
         frozen = getattr(sys, "frozen", False)
         source = _app_files_dir() / "LICENSE.txt" if frozen else _app_files_dir().parent / "LICENSE"
         copy = Path(tempfile.gettempdir()) / APP_NAME / "LICENSE.txt"
@@ -216,7 +184,7 @@ class BudgetApp:
         copy.unlink(missing_ok=True)
         shutil.copyfile(source, copy)
         copy.chmod(0o444)
-        AppHelper.callAfter(NSWorkspace.sharedWorkspace().openURL_, NSURL.fileURLWithPath_(str(copy)))
+        self._computer.on_main_thread(self._computer.open_path, copy)
         return True
 
     def _check_updates(self):
@@ -229,21 +197,19 @@ class BudgetApp:
             raise UserError(str(e)) from None
 
     def _restart_into_update(self):
-        from PyObjCTools import AppHelper
-
         def go():
             self._back_up()  # first: the new copy starts as soon as this one has quit
             if self._updater.install(relaunch_after=True):
                 self._quit_now(backed_up=True)
-        AppHelper.callAfter(go)
+        self._computer.on_main_thread(go)
         return True
 
     def _set_github_token(self, token):
         from errors import UserError
-        from updater import UpdateError, save_keychain_token
+        from updater import UpdateError
 
         try:
-            save_keychain_token(str(token or "").strip())
+            self._updater.save_token(str(token or "").strip())
         except UpdateError as e:
             raise UserError(str(e)) from None
         return self._updater.state()
@@ -262,9 +228,7 @@ class BudgetApp:
         self._send("update", state)
 
     def _on_settings_changed(self, values):
-        from PyObjCTools import AppHelper
-
-        AppHelper.callAfter(self._apply_theme, values["theme"])
+        self._computer.on_main_thread(self._apply_theme, values["theme"])
 
     # ── Downloads watcher ──
 
@@ -289,28 +253,20 @@ class BudgetApp:
     # ── window (main thread) ──
 
     def _apply_theme(self, theme):
-        import AppKit
-
         if self._window is None or self._window.native is None:
             return
-        name = {"light": AppKit.NSAppearanceNameAqua, "dark": AppKit.NSAppearanceNameDarkAqua}.get(theme)
-        self._window.native.setAppearance_(AppKit.NSAppearance.appearanceNamed_(name) if name else None)
+        self._computer.set_theme(self._window.native, theme)
 
     def _background_color(self):
-        import AppKit
-
         theme = self._settings.get()["theme"]
         if theme == "system":
-            best = AppKit.NSApp.effectiveAppearance().bestMatchFromAppearancesWithNames_(
-                [AppKit.NSAppearanceNameAqua, AppKit.NSAppearanceNameDarkAqua])
-            theme = "dark" if best == AppKit.NSAppearanceNameDarkAqua else "light"
+            theme = "dark" if self._computer.dark() else "light"
         return "#1c1c1e" if theme == "dark" else "#f5f5f7"
 
     def _on_loaded(self):
-        from PyObjCTools import AppHelper
         from webview.dom import DOMEventHandler
 
-        AppHelper.callAfter(self._apply_theme, self._settings.get()["theme"])
+        self._computer.on_main_thread(self._apply_theme, self._settings.get()["theme"])
         try:
             document = self._window.dom.document
             document.events.dragover += DOMEventHandler(lambda e: None, prevent_default=True)
@@ -349,9 +305,7 @@ class BudgetApp:
                 answered = False
             self._quit_asked = None
             if not answered:
-                from PyObjCTools import AppHelper
-
-                AppHelper.callAfter(self._quit_now)
+                self._computer.on_main_thread(self._quit_now)
         threading.Thread(target=ask, name="quit", daemon=True).start()
         return False
 
@@ -379,74 +333,39 @@ class BudgetApp:
 
     def _restore_frame(self):
         """Just before the window first shows (on the main thread): puts it back the size and
-        place it was left, which macOS saves under WINDOW_FRAME_NAME from then on, and keeps
-        it on a screen: a place that no longer fits (a laptop without its monitor) is moved
-        and shrunk to fit."""
-        import AppKit
-
+        place it was left, which the system remembers under WINDOW_FRAME_NAME from then on, and
+        keeps it on a screen: a place that no longer fits (a laptop without its monitor) is
+        moved and shrunk to fit."""
         try:
-            window = self._window.native
-            window.setFrameUsingName_(WINDOW_FRAME_NAME)
-            window.setFrameAutosaveName_(WINDOW_FRAME_NAME)
-            frame, screens = window.frame(), AppKit.NSScreen.screens()
-            if not screens:
-                return
-
-            def overlap(screen):
-                both = AppKit.NSIntersectionRect(frame, screen.visibleFrame())
-                return both.size.width * both.size.height
-
-            screen = max(screens, key=overlap)
-            area = (screen if overlap(screen) else AppKit.NSScreen.mainScreen()).visibleFrame()
-            width, height = min(frame.size.width, area.size.width), min(frame.size.height, area.size.height)
-            x = min(max(frame.origin.x, area.origin.x), area.origin.x + area.size.width - width)
-            y = min(max(frame.origin.y, area.origin.y), area.origin.y + area.size.height - height)
-            if (x, y, width, height) != (frame.origin.x, frame.origin.y, frame.size.width, frame.size.height):
-                window.setFrame_display_(AppKit.NSMakeRect(x, y, width, height), True)
-            log.info("Window %d×%d", width, height)
+            size = self._computer.restore_window(self._window.native, WINDOW_FRAME_NAME)
+            if size:
+                log.info("Window %d×%d", *size)
         except Exception:
             log.exception("Couldn't put the window back where it was")
 
     def _quit_now(self, backed_up=False):
-        import AppKit
-
         self._before_quit(backed_up)
-        AppKit.NSApp.terminate_(None)
+        self._computer.quit()
 
-    def _install_quit_handler(self):
+    def _should_quit(self, logging_out):
         """⌘Q (or Quit in the Dock) goes the close button's way, through the page. Logging
-        out, restarting or shutting down quits straight away: holding it up would stop the Mac."""
-        import AppKit
-        import objc
-        from webview.platforms import cocoa
-
-        app = self
-        quit_reason = int.from_bytes(b"why?", "big")  # keyAEQuitReason: set when the Mac is logging out
-
-        def applicationShouldTerminate_(self, sender):
-            if app._quitting:
-                return AppKit.NSTerminateNow
-            event = AppKit.NSAppleEventManager.sharedAppleEventManager().currentAppleEvent()
-            logging_out = event is not None and event.attributeDescriptorForKeyword_(quit_reason) is not None
-            if logging_out or app._ask_page_to_quit():
-                app._before_quit()
-                return AppKit.NSTerminateNow
-            return AppKit.NSTerminateCancel
-
-        objc.classAddMethods(cocoa.BrowserView.AppDelegate, [applicationShouldTerminate_])
+        out, restarting or shutting down quits straight away: holding it up would stop the
+        computer. True quits now."""
+        if self._quitting:
+            return True
+        if logging_out or self._ask_page_to_quit():
+            self._before_quit()
+            return True
+        return False
 
     def run(self):
         import webview
-        import webview.platforms.cocoa  # noqa: F401 (sets up NSApp)
 
-        import launch
-
-        if self._app_path and not launch.in_applications_folder(self._app_path):
-            if launch.offer_to_move(self._app_path):
-                return
-        self._install_quit_handler()
+        if self._app_path and self._computer.moved_to_install_folder(self._app_path):
+            return  # it's relaunching from there
+        self._computer.when_asked_to_quit(self._should_quit)
         html = (_app_files_dir() / "index.html").read_text(encoding="utf-8")
-        width, height = _first_window_size()
+        width, height = self._computer.first_window_size(MIN_SIZE, WINDOW_SHARE)
         self._window = webview.create_window(
             APP_NAME, html=html, js_api=Api(self), width=width, height=height,
             min_size=MIN_SIZE, background_color=self._background_color(), text_select=True)
@@ -469,6 +388,7 @@ def main():
     lock = _acquire_single_instance_lock()
     if lock is None:
         log.info("Another copy is already running; exiting")
+        THIS_COMPUTER.already_running()
         return
     sys.path.insert(0, str(_app_files_dir()))
     try:

@@ -610,7 +610,7 @@ def _removed_text(result):
     page = "\n".join(re.search(rf"^{p}", PAGE, re.S | re.M).group(0) for p in (
         r"const plural = [^\n]*$", r"const removedText = [^\n]*$"))
     script = page + f"\nprocess.stdout.write(JSON.stringify(removedText({json.dumps(result)})));"
-    return json.loads(subprocess.run([node, "-e", script], capture_output=True, text=True, check=True).stdout)
+    return json.loads(subprocess.run([node, "-e", script], capture_output=True, encoding="utf-8", check=True).stdout)
 
 
 def test_remove_imports_question_and_message_say_what_stays():

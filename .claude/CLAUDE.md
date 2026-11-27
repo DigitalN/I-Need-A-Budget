@@ -65,9 +65,26 @@ real engine over localhost. Claude's shell can't screenshot the app's own window
 All in `Application Files/`:
 
 - `main.py`: launcher. Logging, single-instance lock, where backups go (`BACKUP_DIR`)
-  and every way of quitting (`_before_quit`: the backup, then a waiting update), the pywebview
-  window, the Downloads watcher thread, the updater, and `Api`, which exposes one method,
-  `call(name, args)`, to the page. `VERSION` here is the app's only version number.
+  and every way of quitting (`_before_quit`: the backup, then a waiting update; `_should_quit`
+  for the ways the system asks), the pywebview window, the Downloads watcher thread, the
+  updater, and `Api`, which exposes one method, `call(name, args)`, to the page. Whatever a Mac
+  and a Windows PC do differently it asks `THIS_COMPUTER` (computer.py). `VERSION` here is the
+  app's only version number.
+- `computer.py`: what a Mac and a Windows PC do differently, behind one interface (issue #182):
+  `computer.this()` picks `computer_mac.Mac` or `computer_windows.Windows`, the one place that
+  looks at `sys.platform`. Its methods: this computer's data, log, Documents and Downloads
+  folders (Windows asks for its Known Folders: a Documents OneDrive moved isn't `~/Documents`);
+  the one-copy lock and what a second launch does; the window's first size, remembered frame,
+  Dark mode and theme; `when_asked_to_quit(should_quit)` (⌘Q, the Dock, logging out), `quit`,
+  `bring_forward`, `on_main_thread`; opening a folder, file or web page; where the app is
+  installed, moving it there and relaunching; the update token's keeper, `curl`, `gh`, and the
+  update's steps (`why_updates_off`, `folder_for_update`, `take_update`: on a Mac the disk image
+  and codesign, `swap_in`). `computer_mac.py` is the only file using AppKit, Foundation, objc,
+  PyObjCTools, fcntl or the Mac's own tools; `computer_windows.py` the only one using Windows'
+  APIs. Both import anywhere (each system's modules are imported in its methods), so their pure
+  parts are tested on either. On Windows the window, quitting and opening things raise
+  NotImplementedError until the Windows app (#187), and updates until #188.
+  `scripts/tests/test_computer.py` checks each keeps to its own file.
 - `service.py`: everything the page can ask for. `BudgetService.dispatch()` runs only
   methods marked `@exposed`; results are `{"ok": true, "result": …, "step": …}` (`step`, on a
   change or an undo: the undo step it made, so a toast's Undo reverses exactly its own; None
@@ -143,9 +160,11 @@ All in `Application Files/`:
   makes the changes and arranges the figures for the page. Working one of these figures
   out anywhere else (service.py, index.html) is a bug. `scripts/tests/test_figures.py` checks
   it on random databases.
-- `updater.py`, `launch.py`: updates from the repo's GitHub releases (anonymously, or
-  with a token if there is one); moving into Applications;
-  relaunching.
+- `updater.py`: updates from the repo's GitHub releases (anonymously, or with a token if
+  there is one): when to check, GitHub's answers, the token's shape, downloading. Checking,
+  swapping in and relaunching are the computer's (moving into Applications too:
+  `computer_mac.py`, which was `launch.py` until 1.5.0). `scripts/check-update.py` reads both
+  layouts from a tag.
 - `settings.py`: settings, validated on every load and save: this Mac's in `settings.json`
   (Appearance, Import from Downloads and its folder, updates, the Dashboard's months), and the
   budget's own, Overspending and Usual's months (`average_months`), in its `meta` (issue #153:
@@ -425,7 +444,8 @@ All in `Application Files/`:
   sets `connect-src 'none'`. A future Tangerine sync would be the second network access:
   it must be our own code (see Roadmap).
 - pywebview exposes every public attribute of `Api` to JavaScript; keep internals behind a
-  leading underscore. AppKit calls run on the main thread (`AppHelper.callAfter`).
+  leading underscore. The window's calls run on the main thread (`THIS_COMPUTER.on_main_thread`;
+  `AppHelper.callAfter` on a Mac).
 - Every user-facing change should be undoable: wrap it in `db.write("Short label")`.
   Background imports aren't undoable (they're removed from Accounts → Imported files).
 - **An import or a re-check that changes something clears ⌘Z** (issue #42): undoing an
@@ -536,8 +556,8 @@ late with only recent transactions counts as new (the accepted cost).
     warranty · License"; License opens a read-only copy of the app's `LICENSE.txt` in the
     default text app (TextEdit saving into the app itself would break its signature).
   The updater asks
-  GitHub anonymously, or with a token when there is one (saved in the Keychain from
-  Settings, or the GitHub CLI's login, `gh auth token`). Settings shows the token field
+  GitHub anonymously, or with a token when there is one (saved from Settings, in the Keychain
+  on a Mac, or the GitHub CLI's login, `gh auth token`). Settings shows the token field
   only when GitHub refused this copy (`needs_access`): it would if the repository went
   private again.
 - Ask once before anything on GitHub (pushing, opening a PR, publishing a release), then
@@ -843,7 +863,8 @@ Don't undo these without asking:
   without data for every account, income. Clicking a figure opens its transactions. No
   by-payee report (the maintainer dropped it: e-transfer payees mix unrelated things).
 - **The top of the repository is kept short** (the maintainer's call): `.claude/` (this file,
-  `launch.json`), `Application Files/`, `docs/` (DEVELOPMENT.md, CONTEXT.md, NOTICE, ADRs,
+  `launch.json`), `.github/` (the tests' workflow: GitHub only reads workflows from there),
+  `Application Files/`, `docs/` (DEVELOPMENT.md, CONTEXT.md, NOTICE, ADRs,
   pictures), `scripts/` (tools, `First Time Setup.command`, `tests/`, `hooks/`),
   `.gitignore`, `LICENSE`, `README.md`. Nothing else goes there (CITATION.cff, a Build
   .command, `.gitattributes` and `pytest.ini` were removed). `scripts/` keeps its name:
@@ -902,6 +923,14 @@ Don't undo these without asking:
 
 `python3 -m pytest` (scripts/tests/, all synthetic data). `scripts/tests/test_privacy.py` fails if the
 working tree has anything from `.git-denylist` or a card-number shape.
+
+GitHub runs the whole suite on macOS and Windows for every pull request into `main` or
+`claude/cross-platform` and every push to them (`.github/workflows/tests.yml`, issue #186):
+Python 3.13, the pinned packages, node for the page tests, no secrets. Both checks count: a
+failure on either system fails the run (since #182 made the suite pass on Windows). GitHub's
+machines have no `.git-denylist`: there the privacy checks look for card numbers, bank files and
+databases only. Making the checks required for merging into `main` is the maintainer's setting
+on GitHub: ask before changing it.
 
 ## Agent skills
 
