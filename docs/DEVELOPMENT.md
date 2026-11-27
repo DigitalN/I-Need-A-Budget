@@ -224,14 +224,19 @@ public one. The release run makes its temporary keychain's password itself, so t
   password manager's item "I Need A Budget release key". The maintainer pastes the saved copy back
   (hidden) to check it. Only then does the key go into `RELEASE_KEY` and its public half into the
   repository, and Claude commits that. The private key never touches a file, so nothing can be
-  synced or left behind. The clipboard is cleared afterwards. Windows' clipboard history (Win+V) keeps its own
-  copy: the script says so when it's on.
+  synced or left behind. The clipboard is cleared afterwards. Before anything secret is copied,
+  Windows' Clipboard history and Clipboard history across your devices (which uploads it) have to
+  be off: the script asks for them to be turned off when they're on. Without a clipboard tool it
+  shows the key once on a screen of its own, and only on a terminal (never into `| tee` or a file).
+  With `RELEASE_KEY` on GitHub, `key` never makes a new key: see below.
 - `scripts/release-secrets.sh certificate`, on the Mac, with macOS's own tools: checks
   that the keychain has a valid Apple Development certificate of team `XT4LT7MS6Y` and that it has
   30 or more days left. Keychain Access then exports it as a `.p12` into a folder of its own,
   outside iCloud, with a password the script makes up and puts on the clipboard. The script checks
   the `.p12` (the same certificate, with its private key), puts it and its password into the
-  environment, then deletes it, and the folder too if you stop.
+  environment, then deletes it, and the folder too if you stop. If Keychain Access saved it
+  somewhere else (⌘⇧G missed), the script shows where and offers to delete it. A `.p12` or `.pfx`
+  can't be committed: `.gitignore` and the pre-commit hook refuse them.
 - `scripts/release-secrets.sh selftest` checks the formats: RFC 8032's test vector, and a
   throwaway key that signs a file, a changed file and another key refused. No GitHub, no
   secrets.
@@ -244,11 +249,12 @@ expired certificate left in the keychain is harmless.
 
 **The release key** is kept in the maintainer's password manager as well as on GitHub. If the
 environment loses it, `scripts/release-secrets.sh key` puts the password manager's copy back,
-checking it against `release-key.pub` first. If both copies were lost, Windows copies could never
-update again on their own. You'd delete `release-key.pub`, run `key` for a new key, commit the new
-public half and release, and every Windows copy would need that release installed by hand once.
-Never make a new key otherwise: every Windows copy refuses a release signed with a key it doesn't
-have. Mac copies aren't affected.
+checking it against `release-key.pub` first. With `RELEASE_KEY` set and `release-key.pub` missing,
+`key` stops (get the file back with git). If both copies were lost, Windows copies could never
+update again on their own. You'd run `scripts/release-secrets.sh key --new`, commit the new public
+half and release, and every Windows copy would need that release installed by hand once. Never
+make a new key otherwise: every Windows copy refuses a release signed with a key it doesn't have.
+Mac copies aren't affected.
 
 ## How updates work
 
