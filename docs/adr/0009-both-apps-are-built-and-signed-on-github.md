@@ -23,8 +23,11 @@ which kept Mac builds on the Mac so the certificate never left it.
 ## Consequences
 
 - Anyone who got into the GitHub account could now ship signed code to every copy; before,
-  they would have needed the Mac too. Two-factor sign-in and the environment's required
-  approval are the guard.
+  they would have needed the Mac too. Two-factor sign-in is the guard. The environment's
+  Approve only guards against a release run started by mistake or from the wrong branch, not
+  against a stolen login: the maintainer is its only reviewer and self-reviews are allowed, so
+  whoever holds their GitHub login (a stolen token included) could approve through the API.
+  Claude never approves a release run.
 - The first Windows install shows "Windows protected your PC" (More info → Run anyway).
   Updates don't, because the app downloads them itself.
 - A copy of the release key is kept in the maintainer's password manager. If it were lost
