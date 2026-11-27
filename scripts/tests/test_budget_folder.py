@@ -1395,3 +1395,206 @@ def test_settings_learn_of_a_folder_before_anything_is_done_in_it(tmp_path, monk
     monkeypatch.setattr(BudgetFolder, "_take", failing)
     assert not a.dispatch("open_budget_folder", [str(old)])["ok"]
     assert a.settings.get()["budget_folder"] == str(other)  # a step that failed puts it back
+
+
+
+# ── the fifth review of #196: its reproductions, kept as they were written ──
+
+def everything_kept(tmp_path):
+    found = set()
+    for p in tmp_path.rglob("*"):
+        if p.is_file() and p.suffix in (".inab", ".db") and p.name != "budget.db" and "Saves" not in p.parts \
+                and p.name != "the backup.db":
+            found |= set(categories_in(p))
+    return found
+
+
+def test_keep_this_over_a_restore_then_the_restore_arrives_as_a_conflict_copy(tmp_path):
+    folder = tmp_path / "Budget"
+    a = computer(tmp_path, "PC-A")
+    add_category(a.db, "Groceries")
+    a.move_to(folder)
+    b = computer(tmp_path, "PC-B")
+    b.open_from(folder)
+    made = shutil.copyfile(backups.make(a.db), tmp_path / "the backup.db")
+    add_category(a.db, "Rent")
+    a.check(wait=False)
+    b.check(wait=False)
+    shutil.copyfile(made, folder / FILE_NAME)          # the person restores a backup
+    seen_on_b = _view(b, folder)                        # PC-B's sync tool falls behind (it has the restore)
+    assert b.check(wait=False)["took"]                  # PC-B takes it, saves it back as itself (in its view)
+    add_category(a.db, "Bills")                         # PC-A has a change not saved yet
+    assert a.check(wait=False)["state"] == "two_computers"
+    a.keep_this()                                       # the person keeps PC-A's: Groceries, Rent, Bills
+    assert "Bills" in categories_in(folder / FILE_NAME)
+    # PC-B's sync catches up: both changed, so its save becomes a conflict copy
+    shutil.copyfile(seen_on_b / FILE_NAME, folder / "Budget-PC-B.inab")
+    b.folder, b._reachable, b._seen = folder, None, {}
+    state = a.check(wait=False)
+    print("A after the copy:", state["state"], state.get("took"), categories(a.db), names(folder))
+    b.check(wait=False)
+    print("B:", categories(b.db), "folder:", categories_in(folder / FILE_NAME))
+    print("anywhere kept:", sorted(everything_kept(tmp_path)))
+    assert "Bills" in categories(a.db), "PC-A's kept change was taken away without asking"
+
+
+def delete_category(db, name):
+    with db.write("Delete category") as c:
+        c.execute("DELETE FROM categories WHERE name = ?", (name,))
+
+
+def test_both_changed_after_a_restore_nobody_is_asked(tmp_path):
+    """PC-A keeps its own over the restore; PC-B, which took the restore, adds Bills on top of it.
+    Both changed: one of the two should be asked. Here each silently takes the other's."""
+    folder = tmp_path / "Budget"
+    a = computer(tmp_path, "PC-A")
+    add_category(a.db, "Groceries")
+    a.move_to(folder)
+    b = computer(tmp_path, "PC-B")
+    b.open_from(folder)
+    made = shutil.copyfile(backups.make(a.db), tmp_path / "the backup.db")
+    add_category(a.db, "Rent")
+    a.check(wait=False)
+    b.check(wait=False)
+    shutil.copyfile(made, folder / FILE_NAME)
+    seen_on_b = _view(b, folder)
+    assert b.check(wait=False)["took"]
+    add_category(b.db, "Gifts")                          # PC-B's change on top of the restore
+    b.check(wait=False)
+    add_category(a.db, "Bills")
+    assert a.check(wait=False)["state"] == "two_computers"
+    a.keep_this()                                        # PC-A's change, kept by choice
+    # the sync tool keeps PC-B's as Budget.inab and makes PC-A's the copy
+    shutil.copyfile(folder / FILE_NAME, folder / "Budget-PC-A.inab")
+    shutil.copyfile(seen_on_b / FILE_NAME, folder / FILE_NAME)
+    b.folder, b._reachable, b._seen = folder, None, {}
+    sa = a.check(wait=False)
+    sb = b.check(wait=False)
+    print("A:", sa["state"], categories(a.db), "| B:", sb["state"], categories(b.db),
+          "| folder:", categories_in(folder / FILE_NAME), names(folder / "Backups"))
+    for _ in range(3):
+        a.check(wait=False); b.check(wait=False)
+    print("after more looks A:", a.state()["state"], categories(a.db), "| B:", b.state()["state"], categories(b.db))
+    print("backups:", [categories_in(p) for p in sorted((folder / "Backups").glob("*.db"))])
+    assert "two_computers" in (sa["state"], sb["state"]), "both changed and nobody was asked"
+
+
+def test_a_change_back_to_contents_once_had_is_not_new(tmp_path):
+    """PC-B deletes a category PC-A added while PC-A adds another: both changed. PC-B's budget is
+    then exactly one PC-A once had, so PC-A treats it as nothing new."""
+    folder = tmp_path / "Budget"
+    a = computer(tmp_path, "PC-A")
+    add_category(a.db, "Groceries")
+    a.move_to(folder)
+    b = computer(tmp_path, "PC-B")
+    b.open_from(folder)
+    add_category(a.db, "Gifts")
+    a.check(wait=False)
+    assert b.check(wait=False)["took"]
+    seen_on_b = _view(b, folder)
+    delete_category(b.db, "Gifts")                       # PC-B's change: Gifts goes
+    b.check(wait=False)
+    add_category(a.db, "Rent")                           # PC-A's change: Rent
+    a.check(wait=False)
+    shutil.copyfile(seen_on_b / FILE_NAME, folder / FILE_NAME)  # PC-B's lands last (no copy kept)
+    b.folder, b._reachable, b._seen = folder, None, {}
+    sa = a.check(wait=False)
+    sb = b.check(wait=False)
+    print("A:", sa["state"], categories(a.db), "| B:", sb["state"], categories(b.db),
+          "| folder:", categories_in(folder / FILE_NAME),
+          "| backups:", [categories_in(p) for p in sorted((folder / "Backups").glob("*.db"))])
+    assert "two_computers" in (sa["state"], sb["state"]), "PC-B's deletion was undone without asking"
+
+
+def test_two_restores_on_two_computers_order_by_clock(tmp_path):
+    """Two different backups restored, one on each computer while PC-B's sync is behind; each then
+    adds something. The lines know nothing of each other, so the order is the computers' clocks."""
+    base = datetime(2026, 11, 27, 9, 0, tzinfo=timezone(timedelta(hours=-7)))
+    clocks = {"PC-A": base, "PC-B": base + timedelta(minutes=10)}   # PC-B's clock is 10 minutes ahead
+
+    def comp(name):
+        data = tmp_path / name
+        return BudgetFolder(Database(data / "budget.db"), data, None, computer_name=name, app_version="1.5.0",
+                            machine_id=f"machine-{name}", clock=Clock(), now=lambda: clocks[name], sleep=lambda s: None)
+
+    folder = tmp_path / "Budget"
+    a = comp("PC-A")
+    add_category(a.db, "Groceries")
+    a.move_to(folder)
+    b = comp("PC-B")
+    b.open_from(folder)
+    first = shutil.copyfile(backups.make(a.db), tmp_path / "first.db")
+    add_category(a.db, "Rent")
+    a.check(wait=False); b.check(wait=False)
+    second = shutil.copyfile(backups.make(a.db), tmp_path / "second.db")
+    add_category(a.db, "Bills")
+    a.check(wait=False); b.check(wait=False)
+    seen_on_b = _view(b, folder)
+    shutil.copyfile(second, seen_on_b / FILE_NAME)      # restored at PC-B first (real time)...
+    assert b.check(wait=False)["took"]
+    clocks["PC-A"] += timedelta(minutes=2)
+    shutil.copyfile(first, folder / FILE_NAME)          # ...and another one at PC-A two minutes later
+    assert a.check(wait=False)["took"]
+    add_category(a.db, "Gifts"); a.check(wait=False)
+    add_category(b.db, "Pets"); b.check(wait=False)
+    shutil.copyfile(seen_on_b / FILE_NAME, folder / "Budget-PC-B.inab")
+    b.folder, b._reachable, b._seen = folder, None, {}
+    sa = a.check(wait=False)
+    sb = b.check(wait=False)
+    kept = set()
+    for p in tmp_path.rglob("*"):
+        if p.is_file() and p.suffix in (".inab", ".db") and p.name not in ("budget.db", "first.db", "second.db") \
+                and "Saves" not in p.parts and "PC-B sees" not in p.parts:
+            kept |= set(categories_in(p))
+    print("A:", sa["state"], sa.get("took"), categories(a.db), "| B:", sb["state"], categories(b.db), "| anywhere:", sorted(kept))
+    assert "Gifts" in kept | set(categories(a.db)) | set(categories(b.db)), "PC-A's Gifts lost without asking"
+
+
+
+@pytest.mark.parametrize("a_looks_first", [True, False])
+def test_a_save_in_flight_when_a_backup_is_restored(tmp_path, a_looks_first):
+    """PC-B saves Pets; its sync is behind. A backup is restored in the folder. The sync tool keeps
+    PC-B's as Budget.inab and makes the restored one the copy. Nobody is asked; Pets is in no file."""
+    folder = tmp_path / "Budget"
+    a = computer(tmp_path, "PC-A")
+    add_category(a.db, "Groceries")
+    a.move_to(folder)
+    b = computer(tmp_path, "PC-B")
+    b.open_from(folder)
+    made = shutil.copyfile(backups.make(a.db), tmp_path / "the backup.db")
+    add_category(a.db, "Rent")
+    a.check(wait=False); b.check(wait=False)
+    seen_on_b = _view(b, folder)
+    add_category(b.db, "Pets")
+    b.check(wait=False)                                  # PC-B's save, not synced yet
+    shutil.copyfile(made, folder / FILE_NAME)            # the person restores a backup
+    if a_looks_first:
+        assert a.check(wait=False)["took"]               # PC-A takes it and saves it back as itself
+    shutil.copyfile(folder / FILE_NAME, folder / "Budget-PC-A.inab")   # the sync tool keeps PC-B's
+    shutil.copyfile(seen_on_b / FILE_NAME, folder / FILE_NAME)
+    b.folder, b._reachable, b._seen = folder, None, {}
+    states = []
+    for _ in range(3):
+        states += [a.check(wait=False)["state"], b.check(wait=False)["state"]]
+    kept = set()
+    for p in tmp_path.rglob("*"):
+        if p.is_file() and p.suffix in (".inab", ".db") and p.name not in ("budget.db", "the backup.db") \
+                and "Saves" not in p.parts and "PC-B sees" not in p.parts:
+            kept |= set(categories_in(p))
+    print("states:", states, "A:", categories(a.db), "B:", categories(b.db), "anywhere:", sorted(kept))
+    assert "Pets" in kept | set(categories(a.db)) | set(categories(b.db)) or "two_computers" in states
+
+
+def test_opening_the_same_folder_after_a_restore(tmp_path):
+    folder = tmp_path / "Budget"
+    a = computer(tmp_path, "PC-A")
+    add_category(a.db, "Groceries")
+    a.move_to(folder)
+    made = shutil.copyfile(backups.make(a.db), tmp_path / "the backup.db")
+    add_category(a.db, "Rent")
+    a.check(wait=False)
+    add_category(a.db, "Bills")                          # not saved yet
+    shutil.copyfile(made, folder / FILE_NAME)
+    state = a.open_from(folder)                          # Settings' Open… on its own folder
+    print("state:", state["state"], categories(a.db), [categories_in(p) for p in sorted((folder / "Backups").glob("*not-kept*"))])
+    assert state["state"] == "two_computers", "same budget treated as another: no question"
