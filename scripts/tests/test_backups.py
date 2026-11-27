@@ -21,8 +21,8 @@ from db import SCHEMA_VERSION, Database
 MAIN = Path(__file__).resolve().parents[2] / "Application Files" / "main.py"
 QUIT = datetime(2026, 11, 8, 14, 32, 5)
 PERMISSIONS = pytest.mark.skipif(sys.platform == "win32", reason="a folder's permissions don't stop access on Windows")
-MAC = pytest.mark.skipif(sys.platform != "darwin",
-                         reason="macOS asks the app's delegate; the Windows app adds its own ways (#187)")
+MAC = pytest.mark.skipif(sys.platform != "darwin", reason="macOS asks the app's delegate")
+WINDOWS = pytest.mark.skipif(sys.platform != "win32", reason="Windows closes pywebview's WinForms window")
 
 
 def open_db(folder):
@@ -644,6 +644,9 @@ class FakeUpdater:
     def take_kept(self):
         return self.kept
 
+    def log_off_called_off(self):
+        self.taken_back = getattr(self, "taken_back", 0) + 1
+
     def install(self, relaunch_after=False, logging_out=False):
         self.installs.append((relaunch_after, names(self.folder)))  # what was backed up by then
         self.logging_out.append(logging_out)  # Windows installs nothing then: test_windows_update.py
@@ -662,7 +665,15 @@ class FakeComputer:
 
 
 ROUTES = ["close button", pytest.param("⌘Q", marks=MAC), pytest.param("Quit in the Dock", marks=MAC), "Restart now",
-          "quit to install an update", pytest.param("logging out or shutting down", marks=MAC)]
+          "quit to install an update", pytest.param("logging out or shutting down", marks=MAC),
+          pytest.param("✕ or Alt+F4", marks=WINDOWS), pytest.param("logging off or shutting down", marks=WINDOWS),
+          pytest.param("Task Manager", marks=WINDOWS)]
+# What Windows sends the window for each: (message, wParam, lParam).
+SC_CLOSE = (0x0112, 0xF060, 0)                  # WM_SYSCOMMAND: ✕, Alt+F4, the taskbar's Close window
+WM_CLOSE = (0x0010, 0, 0)                       # without SC_CLOSE first: Task Manager, taskkill
+QUERY_LOG_OFF = (0x0011, 0, 0x80000000)         # WM_QUERYENDSESSION, ENDSESSION_LOGOFF: may the session end?
+LOGGING_OFF = (0x0016, 1, 0x80000000)           # WM_ENDSESSION: it does
+LOG_OFF_CALLED_OFF = (0x0016, 0, 0x80000000)    # WM_ENDSESSION: another app stopped it
 
 
 class AppleEvent:
@@ -692,9 +703,55 @@ def the_mac_asks_to_quit(monkeypatch, app, event):
         def currentAppleEvent(self):
             return event
 
-    Mac().when_asked_to_quit(app._should_quit)
+    Mac().when_asked_to_quit(app._should_quit, app._quit_called_off)
     monkeypatch.setattr(AppKit, "NSAppleEventManager", Events)
     return cocoa.BrowserView.AppDelegate.alloc().init().applicationShouldTerminate_(None)
+
+
+def a_windows_window(monkeypatch, app):
+    """The app's window as Windows has it: a real WinForms form, whose closing goes the way
+    pywebview's does (FormClosing → computer_windows' on_closing → pywebview's own, which raises
+    the closing event main.py's _on_closing listens to, and cancels the close when it says so),
+    its messages watched as restore_window watches them. Windows.quit() closes it as pywebview's
+    destroy() does, with Close()."""
+    from types import SimpleNamespace
+
+    import webview
+    from webview.event import Event
+    from webview.platforms import winforms
+
+    import System.Windows.Forms as WinForms
+    from computer_windows import Windows
+
+    form = winforms.BrowserView.BrowserForm
+    monkeypatch.setattr(form, "on_closing", form.on_closing)  # pywebview's own again after the test
+    monkeypatch.setattr(form, "_pywebview_on_closing", None, raising=False)
+
+    class ThisWindows(Windows):  # the window's thread is the test's
+        def on_main_thread(self, fn, *args):
+            fn(*args)
+
+    app._computer = ThisWindows()
+    app._computer.when_asked_to_quit(app._should_quit, app._quit_called_off)
+    window = WinForms.Form()
+    pywebview_side = SimpleNamespace(closing=Event(None, True), pywebview_window=SimpleNamespace(confirm_close=False))
+    pywebview_side.closing += app._on_closing
+    window.FormClosing += lambda sender, args: form.on_closing(pywebview_side, sender, args)
+    app._computer._watch_window(window)
+    monkeypatch.setattr(webview, "windows", [SimpleNamespace(destroy=window.Close)])
+    monkeypatch.setattr(logging.getLogger("pywebview"), "setLevel", lambda level: None)
+    return window
+
+
+def windows_sends(window, message):
+    """Windows' message to the window, on its thread (the test's); returns the window's answer."""
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.windll.user32
+    user32.SendMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+    user32.SendMessageW.restype = ctypes.c_ssize_t
+    return user32.SendMessageW(window.Handle.ToInt64(), *message)
 
 
 def start_app(monkeypatch, tmp_path):
@@ -731,6 +788,23 @@ def quit_by(route, main, app, this_computer, monkeypatch):
 
         assert the_mac_asks_to_quit(monkeypatch, app, AppleEvent("logging out")) == AppKit.NSTerminateNow
         assert not asked
+    elif route == "✕ or Alt+F4":  # the close button's way
+        window = a_windows_window(monkeypatch, app)
+        windows_sends(window, SC_CLOSE)
+        assert not window.IsDisposed  # open while the page saves what you were typing
+        assert asked and not app._updater.installs  # nothing until the page answers
+        main.Api(app).quit()  # Windows.quit(): Close() comes back through FormClosing, which lets it close
+        assert window.IsDisposed and asked == [route]
+    elif route == "Task Manager":  # straight away, without asking the page: Windows is waiting
+        window = a_windows_window(monkeypatch, app)
+        windows_sends(window, WM_CLOSE)
+        assert window.IsDisposed and not asked
+    elif route == "logging off or shutting down":  # straight away: the backup's made before Windows is answered
+        window = a_windows_window(monkeypatch, app)
+        assert windows_sends(window, QUERY_LOG_OFF) == 1  # it may end
+        assert names(main.BACKUP_DIR) and not asked
+        windows_sends(window, LOGGING_OFF)
+        assert window.IsDisposed
     else:
         app._before_quit()
     app._before_quit()  # asked again while quitting: nothing more
@@ -773,7 +847,8 @@ def test_every_way_of_quitting_leaves_a_backup_with_the_latest_changes(route, tm
     assert len(made) == 1 and categories_in(main.BACKUP_DIR / made[0]) == ["Groceries"]
     relaunch = route == "Restart now"
     assert app._updater.installs[0] == (relaunch, made)  # the update goes in after the backup
-    assert any(app._updater.logging_out) == (route == "logging out or shutting down")  # the updater is told
+    straight_away = ("logging out or shutting down", "logging off or shutting down", "Task Manager")
+    assert any(app._updater.logging_out) == (route in straight_away)  # the updater is told: nothing installs then
     assert not (tmp_path / "home").exists()  # nothing near the real Documents
 
 
@@ -789,6 +864,86 @@ def test_every_way_of_quitting_with_nothing_changed_makes_no_backup_and_the_upda
     relaunch = route == "Restart now"
     assert app._updater.installs[0] == (relaunch, [earlier.name])
     assert not (tmp_path / "home").exists()  # nothing near the real Documents
+
+
+@WINDOWS
+def test_a_log_off_another_app_stops_is_called_off_and_the_app_carries_on(tmp_path, monkeypatch):
+    """Another app stops the log-off and the person cancels: Windows tells the app the session
+    isn't ending after all. It carries on: the next ✕ asks the page again and makes a backup with
+    what changed since, and Downloads is watched again."""
+    main, app, this_computer = start_app(monkeypatch, tmp_path)
+    window = a_windows_window(monkeypatch, app)
+    add_category(app._db, "Groceries")
+    assert windows_sends(window, QUERY_LOG_OFF) == 1
+    assert app._quitting and len(names(main.BACKUP_DIR)) == 1
+    windows_sends(window, LOG_OFF_CALLED_OFF)
+    assert not window.IsDisposed and not app._quitting  # still open, and not quitting
+    assert app._updater.taken_back == 1  # an update the log-off kept waits for the next quit again
+
+    watched = []
+    app._service = type("Service", (), {"watch_downloads": lambda self: watched.append(1)})()
+    monkeypatch.setattr(main.time, "sleep", lambda seconds: (_ for _ in ()).throw(SystemExit))
+    with pytest.raises(SystemExit):
+        app._watch()
+    assert watched  # the watcher's next look
+
+    add_category(app._db, "Rent")
+    real_at_quit = backups.at_quit
+    monkeypatch.setattr(backups, "at_quit", lambda db: real_at_quit(db, QUIT))  # a later second than the first
+    asked = []
+    monkeypatch.setattr(app, "_ask_page_to_quit", lambda: asked.append("✕") or False)
+    windows_sends(window, SC_CLOSE)
+    assert asked and not window.IsDisposed  # through the page, as before the log-off
+    main.Api(app).quit()
+    assert window.IsDisposed
+    assert len(names(main.BACKUP_DIR)) == 2
+    assert categories_in(main.BACKUP_DIR / backups.name(QUIT)) == ["Groceries", "Rent"]
+    assert app._updater.logging_out == [True, False]  # the next quit installs what's waiting
+
+
+@WINDOWS
+def test_task_manager_after_a_close_that_was_cancelled_still_quits_straight_away(tmp_path, monkeypatch):
+    """✕, then Keep editing: WinForms' CloseReason stays UserClosing, so Task Manager's close (a
+    WM_CLOSE on its own) would read as the person's and wait for the page while Task Manager is
+    about to end the app. Who's closing comes from the message instead."""
+    main, app, this_computer = start_app(monkeypatch, tmp_path)
+    window = a_windows_window(monkeypatch, app)
+    add_category(app._db, "Groceries")
+    asked = []
+    monkeypatch.setattr(app, "_ask_page_to_quit", lambda: asked.append("✕") or False)
+    windows_sends(window, SC_CLOSE)
+    assert asked == ["✕"] and not window.IsDisposed  # the page asks; you keep editing
+    windows_sends(window, WM_CLOSE)
+    assert window.IsDisposed and asked == ["✕"]  # straight away, without asking the page again
+    made = names(main.BACKUP_DIR)
+    assert len(made) == 1 and categories_in(main.BACKUP_DIR / made[0]) == ["Groceries"]
+
+
+@WINDOWS
+def test_a_close_after_a_called_off_log_off_is_the_persons_again(tmp_path, monkeypatch):
+    main, app, this_computer = start_app(monkeypatch, tmp_path)
+    window = a_windows_window(monkeypatch, app)
+    windows_sends(window, QUERY_LOG_OFF)
+    windows_sends(window, LOG_OFF_CALLED_OFF)
+    asked = []
+    monkeypatch.setattr(app, "_ask_page_to_quit", lambda: asked.append("✕") or False)
+    windows_sends(window, SC_CLOSE)
+    assert asked and not window.IsDisposed  # the page asks, not a log-off's straight quit
+    window.Dispose()
+
+
+@WINDOWS
+def test_a_second_log_off_after_one_called_off_quits(tmp_path, monkeypatch):
+    main, app, this_computer = start_app(monkeypatch, tmp_path)
+    window = a_windows_window(monkeypatch, app)
+    windows_sends(window, QUERY_LOG_OFF)
+    windows_sends(window, LOG_OFF_CALLED_OFF)
+    add_category(app._db, "Groceries")
+    assert windows_sends(window, QUERY_LOG_OFF) == 1
+    windows_sends(window, LOGGING_OFF)
+    assert window.IsDisposed
+    newest = sorted(names(main.BACKUP_DIR))[-1]
+    assert categories_in(main.BACKUP_DIR / newest) == ["Groceries"]
 
 
 def test_a_backup_restored_on_another_mac_keeps_the_overspending_choice(app, tmp_path):

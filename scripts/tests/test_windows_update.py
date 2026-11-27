@@ -575,6 +575,50 @@ def test_an_update_waits_through_a_log_off_and_goes_in_at_the_next_launch(how, p
     assert not pc["kept"].exists()
 
 
+def test_an_update_kept_by_a_log_off_that_is_called_off_goes_in_at_the_next_quit_once(pc, caplog):
+    """Another app stops the log-off and the app carries on (main._quit_called_off): the update the
+    log-off kept for the next launch is taken back, checked again, and goes in at the next quit (or
+    with Restart now), as before the log-off. A second log-off keeps it again; the launch after the
+    quit has none to install a second time."""
+    pc["publish"](signed_installer(pc["tmp"] / "release", pc["seed"]))
+    u = pc["start"]()
+    u._check()
+    assert not u.install(logging_out=True) and pc["kept"].exists()
+    with caplog.at_level(logging.INFO, logger="inab"):
+        u.log_off_called_off()
+    assert u.status == updater.READY and u._staged is not None
+    assert "The log-off was called off: 9.9.0 goes in at the next quit again" in caplog.text
+
+    assert not u.install(logging_out=True)  # another log-off: kept, not lost
+    assert sorted(p.name for p in pc["kept"].iterdir()) == ["update-setup.exe", "update-setup.exe.sig"]
+    u.log_off_called_off()  # called off too
+    assert u.install()  # the next quit
+    [(folder, moved, version)] = pc["started"]
+    assert version == "9.9.0" and moved.exists() and not pc["kept"].exists()
+    assert not pc["start"]().take_kept()  # the next launch
+    assert len(pc["started"]) == 1
+
+
+def test_a_called_off_log_off_with_nothing_kept_changes_nothing(pc):
+    u = pc["start"]()
+    u.log_off_called_off()
+    assert u._staged is None and u.status == updater.IDLE and not pc["kept"].exists()
+
+
+def test_an_update_a_called_off_log_off_kept_that_doesnt_pass_again_is_dropped(pc, caplog):
+    pc["publish"](signed_installer(pc["tmp"] / "release", pc["seed"]))
+    u = pc["start"]()
+    u._check()
+    u.install(logging_out=True)
+    with (pc["kept"] / "update-setup.exe").open("ab") as f:
+        f.write(b"\0")
+    with caplog.at_level(logging.INFO, logger="inab"):
+        u.log_off_called_off()
+    assert u._staged is None and u.status == updater.IDLE  # nothing waits: Restart now isn't offered
+    assert not pc["kept"].exists() and not u.install()
+    assert "Not installing the update kept from logging out" in caplog.text
+
+
 @pytest.mark.parametrize("what", ["changed", "not newer", "updates off"])
 def test_an_update_kept_from_a_log_off_that_doesnt_pass_again_is_dropped(what, pc, caplog, monkeypatch):
     pc["publish"](signed_installer(pc["tmp"] / "release", pc["seed"]))

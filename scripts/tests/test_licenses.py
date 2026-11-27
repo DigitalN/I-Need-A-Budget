@@ -15,7 +15,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import third_party_licenses  # noqa: E402
 
 TAG = "SPDX-License-Identifier: GPL-3.0-only"
-SOURCE = re.compile(r"\.(py|sh|swift|command|html|spec)$|^scripts/hooks/")
+SOURCE = re.compile(r"\.(py|sh|swift|command|html|spec|iss|yml)$|^scripts/hooks/")
 
 
 def test_every_source_file_says_its_license():

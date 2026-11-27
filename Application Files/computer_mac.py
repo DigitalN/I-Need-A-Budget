@@ -159,10 +159,14 @@ class Mac(Computer):
         name = {"light": AppKit.NSAppearanceNameAqua, "dark": AppKit.NSAppearanceNameDarkAqua}.get(theme)
         native.setAppearance_(AppKit.NSAppearance.appearanceNamed_(name) if name else None)
 
-    def when_asked_to_quit(self, should_quit):
+    def can_draw_the_page(self):
+        return True  # WebKit is part of macOS
+
+    def when_asked_to_quit(self, should_quit, called_off):
         """macOS asks the app's delegate (applicationShouldTerminate_), with the Apple event the
         quit came with: logging out, restarting or shutting down gives a reason, ⌘Q none, and
-        Quit in the Dock an event without one."""
+        Quit in the Dock an event without one. Once the app says it may, it quits: nothing is
+        called off."""
         import AppKit
         import objc
 
