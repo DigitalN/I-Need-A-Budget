@@ -414,7 +414,8 @@ def test_moving_again_leaves_a_note_where_it_was(tmp_path):
     assert state["state"] == "moved" and state["moved"]["computer"] == "PC-A"
     add_category(b.db, "Rent")
     assert b.check(wait=False)["state"] == "moved" and FILE_NAME not in names(old)  # not put back
-    assert b.open_from(new)["state"] == "two_computers"  # PC-B changed it since: which to keep?
+    assert b.open_from(new)["state"] == "saved"  # PC-A's move holds what PC-B started from: PC-B's change goes on top
+    assert categories_in(new / FILE_NAME) == ["Rent"]
 
 
 def test_opening_a_budget_on_a_new_computer(tmp_path):
@@ -718,14 +719,16 @@ def test_restoring_a_backup_asks_a_computer_with_changes_not_saved_yet(tmp_path)
     add_category(a.db, "Groceries")
     a.move_to(folder)
     made = backups.make(a.db)
+    add_category(a.db, "Bills")
+    a.check(wait=False)
     add_category(a.db, "Rent")
     shutil.copyfile(made, folder / FILE_NAME)
     state = a.check(wait=False)
     assert state["state"] == "two_computers" and state["other"]["computer"] is None
     files = a.two_computers()
-    assert categories_in(files["started_from"]) == ["Groceries"] and categories_in(files["other"]) == ["Groceries"]
+    assert categories_in(files["started_from"]) == ["Groceries", "Bills"] and categories_in(files["other"]) == ["Groceries"]
     a.keep_this()
-    assert categories_in(folder / FILE_NAME) == ["Groceries", "Rent"]
+    assert categories_in(folder / FILE_NAME) == ["Groceries", "Bills", "Rent"]
 
 
 def test_a_backup_restored_as_the_working_copy_asks_instead_of_being_replaced(tmp_path):
@@ -1048,7 +1051,7 @@ def test_an_older_version_put_back_is_asked_about_never_saved_over(tmp_path):
     saved = (folder / FILE_NAME).read_bytes()
     state = a.check(wait=False)
     assert state["state"] == "older" and state["other"]["computer"] == "PC-A"
-    assert b.check(wait=False)["state"] == "two_computers"  # PC-B never had those contents: a question all the same
+    assert b.check(wait=False)["state"] == "older"  # one in its own line, though PC-B never had it
     add_category(a.db, "Gifts")
     assert a.check(wait=False)["state"] == "older" and (folder / FILE_NAME).read_bytes() == saved
     assert categories(a.db) == ["Groceries", "Rent", "Gifts"]  # nor gone back to
