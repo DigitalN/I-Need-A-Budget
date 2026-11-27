@@ -4,13 +4,14 @@
 
 <h3 align="center">Give every dollar a job.</h3>
 
-<p align="center">An envelope budget for your Mac. Download your transactions from any bank;
-it sorts them and asks only about the rest. Free, and your money never leaves your Mac.</p>
+<p align="center">An envelope budget for your Mac or Windows PC. Download your transactions from
+any bank; it sorts them and asks only about the rest. Free, and your money never leaves your
+computer.</p>
 
 <p align="center">
-  <a href="https://github.com/DigitalN/I-Need-A-Budget/releases/latest"><b>Download for Mac</b></a>
+  <a href="https://github.com/DigitalN/I-Need-A-Budget/releases/latest"><b>Download for Mac or Windows</b></a>
   &nbsp;·&nbsp; <a href="#how-it-works">How it works</a>
-  &nbsp;·&nbsp; <a href="#your-money-stays-on-your-mac">Privacy</a>
+  &nbsp;·&nbsp; <a href="#your-money-stays-on-your-computer">Privacy</a>
 </p>
 
 <picture>
@@ -34,7 +35,7 @@ it sorts them and asks only about the rest. Free, and your money never leaves yo
 > “Is **Costco Gas** the same as **Costco**?”
 
 Store numbers and typos are tidied away. Refunds go back where the money came from; a
-friend paying you back for dinner is matched to the dinner. Press 1–4 to pick, ⌘Z to undo.
+friend paying you back for dinner is matched to the dinner. Press 1–4 to pick, ⌘Z to undo (Ctrl+Z on Windows).
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/inbox-dark.png">
@@ -85,10 +86,10 @@ behind it.
 - **Coming from Actual Budget?** Leave its export in Downloads and the app learns how you
   categorize from it.
 
-## Your money stays on your Mac
+## Your money stays on your computer
 
 No bank login, no account to make, no subscription, no cloud. Your budget lives on your
-Mac. The only thing the app connects to is GitHub, to update itself.
+computer. The only thing the app connects to is GitHub, to update itself.
 
 When you quit after changing something, a backup of the budget is saved in **I Need A Budget
 Backups** in your Documents folder, which iCloud Drive backs up if it syncs your Documents.
@@ -99,11 +100,24 @@ there, and copy the backup in as `budget.db`, replacing the one there.
 
 ## Install
 
+On a Mac:
+
 1. Download the `.dmg` from the [latest release](https://github.com/DigitalN/I-Need-A-Budget/releases/latest).
 2. Drag **I Need A Budget** into **Applications** and open it.
 3. The first time, macOS says it can't check the app for malware (it isn't notarized by
    Apple). Click **Done**, then in **System Settings → Privacy & Security** click
    **Open Anyway**. Only once.
+
+On Windows 10 or 11:
+
+1. Download `I-Need-A-Budget-<version>-Setup.exe` from the [latest release](https://github.com/DigitalN/I-Need-A-Budget/releases/latest)
+   and open it.
+2. Windows says "Windows protected your PC" (the installer isn't signed). Click **More info**,
+   then **Run anyway**. Only once.
+3. It installs for you alone, with no administrator needed, and adds I Need A Budget to the
+   Start menu.
+
+There's no Linux version.
 
 It updates itself from then on. A short setup walks you through your files, categories and
 balances. Start a few months back if you like: they catch up in one click.

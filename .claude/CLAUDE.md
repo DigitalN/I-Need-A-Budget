@@ -1,7 +1,8 @@
 # I Need A Budget
 
 An envelope budget (like YNAB or Actual Budget) built around the files banks let you
-download, as a Mac app: Python + pywebview, one window, SQLite. Building, the release checklist, how
+download, as an app for the Mac and Windows 10 or 11 (not Linux): Python + pywebview, one window,
+SQLite, the same code on both. Building, the release checklist, how
 updates work and the dev preview are in @../docs/DEVELOPMENT.md. What it does for the user is in
 README.md. The words for things (categorize, file, transfer vs e-transfer, payment
 category, recurring charge...) are in `docs/CONTEXT.md`: use them in the page, docs, comments
@@ -20,9 +21,11 @@ commits, issues, PRs and release notes can all be read by anyone. That covers ba
 database, account or card digits, people's names (e-transfers), employers, payees
 that are local businesses, category names that reveal finances, and real amounts.
 
-- All data lives outside the repository: `~/Library/Application Support/I Need A Budget`
+- All data lives outside the repository. On a Mac: `~/Library/Application Support/I Need A Budget`
   (database, settings, `Imported Files/`), `~/Library/Logs/I Need A Budget`, and the
-  backups in `~/Documents/I Need A Budget Backups`.
+  backups in `~/Documents/I Need A Budget Backups`. On Windows: `%LOCALAPPDATA%\I Need A Budget`
+  (the same, with `Logs\` inside it) and `I Need A Budget Backups` in Documents (the folder
+  Windows says is Documents: OneDrive may have moved it).
 - `.gitignore` excludes bank files and databases. `scripts/hooks/pre-commit` (switched on
   with `git config core.hooksPath scripts/hooks`; First Time Setup does it) refuses
   commits with those files, card-number shapes, or any word in `.git-denylist`, a local,
@@ -41,7 +44,8 @@ that are local businesses, category names that reveal finances, and real amounts
 
 ## Debugging
 
-Application logs: `~/Library/Logs/I Need A Budget/app.log` (rotating, 3 × 1 MB). Page
+Application logs: `~/Library/Logs/I Need A Budget/app.log` on a Mac,
+`%LOCALAPPDATA%\I Need A Budget\Logs\app.log` on Windows (rotating, 3 × 1 MB). Page
 (JavaScript) errors are forwarded there too. When the user reports a bug, **read the log
 first**. The updater logs `Automatic updates off: <reason>`, `Up to date at`,
 `Downloading`, `ready to install`, `Installed …` or `Update check failed: …`. On Windows the
@@ -192,7 +196,7 @@ All in `Application Files/`:
   helper; nothing is installed while Windows logs off (`installs_after_quitting`): the checked download
   waits in the data folder's `Update waiting`, and the next launch checks it again and installs it
   before the window opens (`Updater.take_kept`).
-- `settings.py`: settings, validated on every load and save: this Mac's in `settings.json`
+- `settings.py`: settings, validated on every load and save: this computer's in `settings.json`
   (Appearance, Import from Downloads and its folder, updates, the Dashboard's months), and the
   budget's own, Overspending and Usual's months (`average_months`), in its `meta` (issue #153:
   a backup carries them, and changing one is a change for `backups.changed`). Figures reads
@@ -475,6 +479,7 @@ All in `Application Files/`:
   `AppHelper.callAfter` on a Mac).
 - Every user-facing change should be undoable: wrap it in `db.write("Short label")`.
   Background imports aren't undoable (they're removed from Accounts → Imported files).
+  ⌘Z here means Ctrl+Z on Windows too.
 - **An import or a re-check that changes something clears ⌘Z** (issue #42): undoing an
   earlier step would replay its SQL over what they changed (deleting an account took the
   rows an import had just put in it). `db.write()` without a label watches for a change and
@@ -558,9 +563,9 @@ late with only recent transactions counts as new (the accepted cost).
   set by the PRs themselves, so merging is all the maintainer does. The first PR after a
   release raises it (1.0.1 → 1.0.2 by default, 1.0.x → 1.1.0 only for a change big enough
   to deserve it); the PRs after it leave it alone until that version is released, so PRs
-  made side by side don't clash on it. It's 1.4.3 until 1.4.3 is released: 1.4.2 came out on
-  2026-11-17, and #79's PR, the first after it, raised it. Never leave the bump for a separate
-  PR after the merge.
+  made side by side don't clash on it. It's 1.5.0 until 1.5.0 is released: 1.4.3 came out on
+  2026-11-18, and 1.5.0's pieces went into `claude/cross-platform` without it, until #191 raised
+  it there (issue #181). Never leave the bump for a separate PR after the merge.
 - **A release happens only when the maintainer says it's ready** (their rule since
   2026-11-09, as bugs kept turning up). A merge, a finished list or every session being
   done is never the go-ahead. Then Claude starts the Release workflow
@@ -580,20 +585,22 @@ late with only recent transactions counts as new (the accepted cost).
     (after a `#!` line; an HTML comment after the doctype). `scripts/tests/test_licenses.py`
     fails on one without it, new files included.
   - The app carries `LICENSE.txt`, `NOTICE.txt` and `Third-party licenses.txt` in
-    `Contents/Resources` (the spec adds them). The last is written at build time by
+    `Contents/Resources` on a Mac, `_internal\` on Windows (the spec adds them; the installer
+    puts copies beside the `.exe`). The last is written at build time by
     `scripts/third_party_licenses.py` from the packages whose modules PyInstaller
     collected, plus PyInstaller (its launcher) and Python (the docs' license page, which
     covers OpenSSL and the rest Python incorporates). A bundled package with no license
     file stops the build unless its metadata says MIT (then it gets the MIT text) or its
     text is in `GIVEN`.
   - Finder's Get Info says "© 2026 DigitalN. Free software under the GNU GPL v3."
-    (`NSHumanReadableCopyright`; it said "Private. Not for distribution." until 1.3.1).
+    (`NSHumanReadableCopyright`; it said "Private. Not for distribution." until 1.3.1), and
+    so does the `.exe`'s Properties → Details (its version resource's `LegalCopyright`).
   - Settings ends with "© 2026 DigitalN · Free software under the GNU GPL v3, with no
     warranty · License"; License opens a read-only copy of the app's `LICENSE.txt` in the
-    default text app (TextEdit saving into the app itself would break its signature).
+    default text app, TextEdit or Notepad (saving into the app itself would break its signature).
   The updater asks
   GitHub anonymously, or with a token when there is one (saved from Settings, in the Keychain
-  on a Mac, or the GitHub CLI's login, `gh auth token`). Settings shows the token field
+  on a Mac or Credential Manager on Windows, or the GitHub CLI's login, `gh auth token`). Settings shows the token field
   only when GitHub refused this copy (`needs_access`): it would if the repository went
   private again.
 - Ask once before anything on GitHub (pushing, opening a PR, publishing a release), then
@@ -619,6 +626,20 @@ late with only recent transactions counts as new (the accepted cost).
   source) into `~/Library/Caches/I Need A Budget-preview/`, write a `settings.json` there
   whose `downloads_dir` is an empty folder (the preview sets `<data>/downloads` itself if there isn't one, and refuses `~/Downloads`), run the `preview` launch entry, and delete the
   folder afterwards. The preview loads `service.py` once: restart it after Python changes.
+
+## Testing on Windows
+
+- The maintainer's PC has no real copy or data. Install a build (`scripts/build-windows.sh`, or
+  a Tests run's `Setup.exe`) with `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART`, which doesn't open
+  it, and start `%LOCALAPPDATA%\Programs\I Need A Budget\I Need A Budget.exe` only with
+  `INAB_DATA_DIR` set to a throwaway folder whose `settings.json` points `downloads_dir` at an
+  empty folder. The Start menu entry, opened from a shell with that variable set, reaches the
+  same copy (the one-copy lock is the data folder's).
+- To drive the real page, start it with
+  `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9333`: DevTools' protocol on
+  localhost then evaluates script, sends real mouse and key events and screenshots the page alone.
+- Afterwards: the install folder's `unins000.exe /VERYSILENT`, the throwaway folder, and
+  `reg delete "HKCU\Software\I Need A Budget" /f` (the window's frame).
 
 ## Git
 
@@ -746,8 +767,8 @@ Don't undo these without asking:
   it so typing replaces it, also the box Return or Tab moved you to; another click in a box
   you've clicked into places the cursor. It's done on mouse-down, before WebKit places
   the cursor: cancelling the mouse-up (1.0.7–1.2.2) missed a box you were already in, and
-  Chromium (the preview) hid it. Test clicks in WebKit, the Mac app's engine, and in
-  Chromium, Windows' (WebView2). A box
+  Chromium (the preview) hid it. Test clicks in both engines: WebKit, the Mac app's, and
+  Chromium, Windows' (Microsoft Edge's WebView2; the preview in the browser pane is Chromium). A box
   saves when you leave it (Return, Tab, a click elsewhere), never when a redraw replaces
   it mid-typing. Redrawing the Budget page keeps the scroll position and the box you're
   in (it used to jump to the top after every save: `scrollIntoView` on the month strip
@@ -915,7 +936,7 @@ Don't undo these without asking:
   without data for every account, income. Clicking a figure opens its transactions. No
   by-payee report (the maintainer dropped it: e-transfer payees mix unrelated things).
 - **The top of the repository is kept short** (the maintainer's call): `.claude/` (this file,
-  `launch.json`), `.github/` (the tests' workflow: GitHub only reads workflows from there),
+  `launch.json`), `.github/` (the Tests and Release workflows: GitHub only reads workflows from there),
   `Application Files/`, `docs/` (DEVELOPMENT.md, CONTEXT.md, NOTICE, ADRs,
   pictures), `scripts/` (tools, `First Time Setup.command`, `tests/`, `hooks/`),
   `.gitignore`, `LICENSE`, `README.md`. Nothing else goes there (CITATION.cff, a Build
@@ -964,7 +985,8 @@ Don't undo these without asking:
 - Copy is short and plain. The user trims explanations that don't earn their place;
   don't add paragraphs of help text to forms.
 - **Test the interface with the mouse**, not only the keyboard, in the dev preview on a
-  copy of the real data (see Testing). Several bugs only showed up when clicking.
+  copy of the real data (see Testing), in WebKit and in Chromium (Windows' WebView2). Several
+  bugs only showed up when clicking.
 - **The page knows its system** (issue #185): `platform` in the app's info, "mac" or
   "windows" (`computer.this().name`; the page's `onWindows()`; the preview's `--platform` pretends). Keys are named the way it
   does: `undoKey()` (⌘Z / Ctrl+Z) and `returnKey()` (Return / Enter). On Windows nothing in the
