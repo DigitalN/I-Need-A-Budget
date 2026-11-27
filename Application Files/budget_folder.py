@@ -807,8 +807,8 @@ class BudgetFolder:
             for save in over:
                 if save.name != FILE_NAME:
                     _remove(folder / save.name, self._sleep)
-            self._save(folder, also=[_counts_of(s, mine) for s in over])
             self._other = None
+            self._saved_choice(folder, also=[_counts_of(s, mine) for s in over])
             log.info("Kept this computer's budget; the one saved on %s is in Backups", other.computer)
             return self.check(wait=False)
 
@@ -829,14 +829,22 @@ class BudgetFolder:
                 self._forget(other)
                 self._other = None
                 raise UserError("The other computer's budget can't be read just now: try again in a moment.") from None
+            self._other = None
             if other.name != FILE_NAME:  # a conflict copy: the folder holds it from now
                 _remove(folder / other.name, self._sleep)
-                self._save(folder)
+                self._saved_choice(folder)
             elif self._mine().counts != other.counts:
-                self._save(folder)
-            self._other = None
+                self._saved_choice(folder)
             log.info("Kept the budget saved on %s; this computer's is in %s", other.computer, kept)
             return self.check(wait=False)
+
+    def _saved_choice(self, folder, also=()):
+        """The save a choice makes. It's recorded before the folder is written (`_save`), so when the
+        file is held too long the choice stands and the save is tried again at the next look."""
+        try:
+            self._save(folder, also)
+        except OSError as e:
+            log.warning("The budget kept couldn't be saved in %s yet: %s", folder, e)
 
     def _decision(self):
         if self._other is None or self.folder is None:

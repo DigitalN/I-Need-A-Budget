@@ -1125,3 +1125,126 @@ def test_moving_into_a_folder_a_budget_moved_out_of(tmp_path):
     assert a.look_in(old_folder)["moved"]["computer"] == "PC-A"
     assert a.move_to(old_folder)["state"] == "saved"
     assert budget_folder.MOVED_NOTE not in names(old_folder) and a.look_in(old_folder)["moved"] is None
+
+
+# ── the third review of #196 ──
+
+def _restored_once(tmp_path, name="PC-A", folder_name="Budget"):
+    """A computer whose budget has a restore in its line."""
+    folder = tmp_path / folder_name
+    a = computer(tmp_path, name)
+    add_category(a.db, "Groceries")
+    a.move_to(folder)
+    made = shutil.copyfile(backups.make(a.db), tmp_path / f"{name} backup.db")
+    shutil.copyfile(made, folder / FILE_NAME)
+    assert a.check(wait=False)["took"]
+    add_category(a.db, "Rent")
+    a.check(wait=False)
+    return folder, a
+
+
+def test_opening_another_budget_after_a_restore_takes_it(tmp_path):
+    """A line with a restore in it reads as later than one without: that never makes another
+    budget an older one of this computer's."""
+    _, a = _restored_once(tmp_path)
+    other = tmp_path / "Other"
+    c = computer(tmp_path, "PC-C")
+    add_category(c.db, "Gifts")
+    c.move_to(other)
+    saved = (other / FILE_NAME).read_bytes()
+    state = a.open_from(other)
+    assert state["state"] == "saved" and categories(a.db) == ["Gifts"]
+    assert [categories_in(p) for p in not_kept(other)] == [["Groceries", "Rent"]]  # this computer's, kept
+    state = c.check(wait=False)
+    assert state["state"] == "saved" and "took" not in state and (other / FILE_NAME).read_bytes() == saved
+
+
+def test_another_budget_opened_has_its_saves_taken(tmp_path):
+    folder, other = tmp_path / "Budget", tmp_path / "Other"
+    a = computer(tmp_path, "PC-A")
+    add_category(a.db, "Groceries")
+    a.move_to(folder)
+    b = computer(tmp_path, "PC-B")
+    b.open_from(folder)
+    for i in range(2):
+        add_category(b.db, f"Sample {i}")
+        b.check(wait=False)
+        a.check(wait=False)
+    c = computer(tmp_path, "PC-C")
+    add_category(c.db, "Gifts")
+    c.move_to(other)
+    a.open_from(other)
+    for name in ("Bills", "Rent"):
+        add_category(c.db, name)
+        c.check(wait=False)
+        state = a.check(wait=False)
+        assert state["state"] == "saved" and state["took"]["computer"] == "PC-C"
+
+
+def _held(monkeypatch, folder):
+    replace = budget_folder._replace
+
+    def held(source, target, *args, **kwargs):
+        if Path(target) == folder / FILE_NAME:
+            raise PermissionError(13, "The process cannot access the file")
+        return replace(source, target, *args, **kwargs)
+
+    monkeypatch.setattr(budget_folder, "_replace", held)
+    return lambda: monkeypatch.setattr(budget_folder, "_replace", replace)
+
+
+def test_keeping_this_one_stays_kept_while_its_save_waits(tmp_path, monkeypatch):
+    folder, a, b = _changed_on_both(tmp_path)
+    b.check(wait=False)
+    let_go = _held(monkeypatch, folder)
+    state = b.keep_this()
+    assert state["state"] == "waiting" and state["unsaved"]
+    assert b.check(wait=False)["state"] == "waiting"  # tried again, never "older"
+    let_go()
+    assert b.check(wait=False)["state"] == "saved" and categories_in(folder / FILE_NAME) == ["Rent"]
+    assert a.check()["took"]["computer"] == "PC-B"
+
+
+def test_keeping_the_other_one_from_a_copy_stays_kept_while_its_save_waits(tmp_path, monkeypatch):
+    folder, seen_on_b = tmp_path / "Budget", tmp_path / "PC-B sees" / "Budget"
+    a = computer(tmp_path, "PC-A")
+    a.move_to(folder)
+    shutil.copytree(folder, seen_on_b)
+    b = computer(tmp_path, "PC-B")
+    b.open_from(seen_on_b)
+    add_category(a.db, "Groceries")
+    a.check(wait=False)
+    add_category(b.db, "Rent")
+    b.check(wait=False)
+    shutil.copyfile(seen_on_b / FILE_NAME, folder / "Budget-PC-B.inab")
+    assert a.check(wait=False)["state"] == "two_computers"
+    let_go = _held(monkeypatch, folder)
+    assert a.keep_other()["state"] == "waiting" and categories(a.db) == ["Rent"]
+    assert a.check(wait=False)["state"] == "waiting"
+    let_go()
+    assert a.check(wait=False)["state"] == "saved" and categories_in(folder / FILE_NAME) == ["Rent"]
+
+
+def test_the_same_backup_restored_twice_while_a_computer_missed_the_first(tmp_path):
+    folder = tmp_path / "Budget"
+    a = computer(tmp_path, "PC-A")
+    add_category(a.db, "Groceries")
+    a.move_to(folder)
+    b = computer(tmp_path, "PC-B")
+    b.open_from(folder)
+    made = shutil.copyfile(backups.make(a.db), tmp_path / "the backup.db")
+    add_category(a.db, "Rent")
+    a.check(wait=False)
+    shutil.copyfile(made, folder / FILE_NAME)  # PC-B is off for the first restore
+    assert a.check(wait=False)["took"]
+    add_category(a.db, "Bills")
+    a.check(wait=False)
+    shutil.copyfile(made, folder / FILE_NAME)  # the same backup again
+    assert a.check(wait=False)["took"] and categories(a.db) == ["Groceries"]
+    state = b.check(wait=False)  # PC-B's budget is that backup's already: the same save, counted
+    assert state["state"] == "saved" and categories(b.db) == ["Groceries"]
+    assert b._mine().id == save_in(folder / FILE_NAME)["id"]
+    add_category(b.db, "Gifts")
+    b.check(wait=False)
+    state = a.check(wait=False)
+    assert state["took"]["computer"] == "PC-B" and categories(a.db) == ["Groceries", "Gifts"]
