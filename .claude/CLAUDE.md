@@ -722,7 +722,8 @@ Don't undo these without asking:
   it so typing replaces it, also the box Return or Tab moved you to; another click in a box
   you've clicked into places the cursor. It's done on mouse-down, before WebKit places
   the cursor: cancelling the mouse-up (1.0.7–1.2.2) missed a box you were already in, and
-  Chromium (the preview) hid it. Test clicks in WebKit, the app's engine. A box
+  Chromium (the preview) hid it. Test clicks in WebKit, the Mac app's engine, and in
+  Chromium, Windows' (WebView2). A box
   saves when you leave it (Return, Tab, a click elsewhere), never when a redraw replaces
   it mid-typing. Redrawing the Budget page keeps the scroll position and the box you're
   in (it used to jump to the top after every save: `scrollIntoView` on the month strip
@@ -927,6 +928,17 @@ Don't undo these without asking:
   don't add paragraphs of help text to forms.
 - **Test the interface with the mouse**, not only the keyboard, in the dev preview on a
   copy of the real data (see Testing). Several bugs only showed up when clicking.
+- **The page knows its system** (issue #185): `platform` in the app's info, "mac" or
+  "windows" (`computer.this().name`; the page's `onWindows()`; the preview's `--platform` pretends). Keys are named the way it
+  does: `undoKey()` (⌘Z / Ctrl+Z) and `returnKey()` (Return / Enter). On Windows nothing in the
+  page mentions the Mac, Finder, the Keychain or ⌘; "on this computer" on both (`test_page.py`
+  checks: a Mac word may only be the Mac's side of `onWindows() ? … : …`). Windows' fonts apply only on
+  Windows (`:root[data-platform="windows"]`), so the Mac's stay as they were. A one-key shortcut ignores a key pressed
+  with Ctrl, Alt or ⌘ (`withModifier`; AltGr types a character, so it's the key). On Windows the
+  browser's own keys (F5, Ctrl+R, Ctrl+P, Ctrl+F, zooming, Ctrl and the mouse wheel) never reach the
+  window (`keepBrowserKeysOut`), and scrollbars are thin. WebView2 tabs to buttons where WebKit
+  doesn't: a button beside amount boxes that only the mouse uses is `tabindex="-1"`, so Tab goes
+  from box to box.
 
 ## Working style
 
