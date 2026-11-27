@@ -147,7 +147,7 @@ class BudgetApp:
 
     def _app_info(self):
         return {"version": VERSION, "data_dir": str(DATA_DIR), "log_path": str(LOG_PATH),
-                "updates": self._updater.state()}
+                "updates": self._updater.state(), "platform": self._computer.name}
 
     def _choose_files(self):
         import webview

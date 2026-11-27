@@ -2,12 +2,14 @@
 # SPDX-License-Identifier: GPL-3.0-only
 """Development preview: the app's page in an ordinary browser, driving the real engine.
 
-    python3 scripts/preview.py [--data FOLDER] [--port 8765] [--today 2026-10-12]
+    python3 scripts/preview.py [--data FOLDER] [--port 8765] [--today 2026-10-12] [--platform windows]
 
 Serves Application Files/index.html on http://127.0.0.1:<port> with a stand-in for
 pywebview's bridge that POSTs to /api, which calls the same BudgetService.dispatch()
 the app uses. Handy for looking at and clicking through the interface (Claude's
-browser pane can't see inside the app's own window).
+browser pane can't see inside the app's own window). `--platform` pretends to be the
+other system: the page's wording and keys follow it (issue #185); the fonts are this
+computer's.
 
 This is a development tool only: it isn't bundled, and the app itself never opens a
 network port. It refuses to use the app's real data folder; by default it uses
@@ -59,6 +61,8 @@ def main():
     parser.add_argument("--data", default=str(Path.home() / "Library" / "Caches" / "I Need A Budget-preview"))
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--today", help="pretend it's this date (YYYY-MM-DD)")
+    parser.add_argument("--platform", choices=("mac", "windows"), default=computer.this().name,
+                        help="the system the page thinks it's on (default: this one)")
     args = parser.parse_args()
     data = Path(args.data).expanduser().resolve()
     if data == REAL_DATA.resolve():
@@ -71,7 +75,8 @@ def main():
     from service import BudgetService
 
     service = BudgetService(Database(data / "budget.db"), settings, data, hooks={
-        "app_info": lambda: {"version": "preview", "data_dir": str(data), "log_path": "", "updates": None},
+        "app_info": lambda: {"version": "preview", "data_dir": str(data), "log_path": "", "updates": None,
+                             "platform": args.platform},
         "open_license": lambda: subprocess.run(["open", "-t", str(ROOT / "LICENSE")], check=True) and True,
     })
     service.read_imported_files()  # as the app does at launch, after an upgrade (issue #148)
@@ -105,7 +110,7 @@ def main():
         def log_message(self, *args):
             pass
 
-    print(f"Preview on http://127.0.0.1:{args.port} (data: {data})", flush=True)
+    print(f"Preview on http://127.0.0.1:{args.port} (data: {data}, as on {args.platform})", flush=True)
     ThreadingHTTPServer(("127.0.0.1", args.port), Handler).serve_forever()
 
 
