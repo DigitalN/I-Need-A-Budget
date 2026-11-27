@@ -1,0 +1,631 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# Releases (issue #190, docs/adr/0009): builds both apps, signs them, checks everything installed copies
+# will check, and publishes one release v<version> with the .dmg, the Setup.exe and its .sig. Nothing is
+# published unless every job before it passed, on both systems.
+#
+#   gh workflow run release.yml --ref main -F notes=@NOTES.md     a release (notes written outside the repository)
+#   gh workflow run release.yml --ref main -f dry_run=true         everything but publishing
+#
+# Only a run started on main reaches the `release` environment, whose secrets sign both apps, and it waits
+# there for the maintainer's Approve. Every other run is a dry run that signs with throwaway identities
+# made in the run and forgotten: pull requests and pushes that change how a release is built or checked
+# (the paths below) run one, so this workflow is tried before it's ever on main. docs/DEVELOPMENT.md →
+# Release checklist says how it's used.
+
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      notes:
+        description: "The release notes, already checked for private details: -F notes=@NOTES.md"
+        type: string
+        required: false
+      dry_run:
+        description: "Everything but publishing"
+        type: boolean
+        default: false
+  pull_request:
+    branches: [main, claude/cross-platform]
+    paths: &release-files
+      - .github/workflows/release.yml
+      - scripts/build.sh
+      - scripts/build-windows.sh
+      - scripts/installer.iss
+      - scripts/sign-mac.sh
+      - scripts/sign-windows.sh
+      - scripts/make-dmg.py
+      - scripts/make-dmg-background.swift
+      - scripts/dmg-requirements.txt
+      - scripts/check-update.py
+      - scripts/check-mac-app.py
+      - scripts/third_party_licenses.py
+      - Application Files/INeedABudget.spec
+      - Application Files/requirements.txt
+      - Application Files/release-key.pub
+      - Application Files/updater.py
+      - Application Files/computer_mac.py
+      - Application Files/computer_windows.py
+      - Application Files/windows_update.py
+  push:
+    branches: [main, claude/cross-platform]
+    paths: *release-files
+
+permissions:
+  contents: read
+
+# One release at a time, never cancelled half-way; a newer push stops the dry run it replaces.
+concurrency:
+  group: ${{ github.event_name == 'workflow_dispatch' && 'release' || format('release-dry-run-{0}', github.event.pull_request.number || github.ref) }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
+
+env:
+  PYTHONUTF8: "1"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+defaults:
+  run:
+    shell: bash  # Git for Windows' bash on Windows: the same commands everywhere
+
+jobs:
+  # What release.sh checked before building: from main, a version newer than the latest release, no such
+  # tag yet, and notes with nothing private in them. Works out what the rest of the run does.
+  check:
+    name: What's going out
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.what.outputs.version }}
+      previous: ${{ steps.what.outputs.previous }}
+      real: ${{ steps.what.outputs.real }}
+      publish: ${{ steps.what.outputs.publish }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6.3.0
+        with:
+          python-version: "3.13"
+
+      - name: Version, the latest release, and what this run does
+        id: what
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$*"; exit 1; }
+          newer() { python -c 'import sys; sys.path.insert(0, "Application Files"); from updater import is_newer; sys.exit(0 if is_newer(sys.argv[1], sys.argv[2]) else 1)' "$1" "$2"; }
+
+          version=$(sed -n 's/^VERSION = "\([^"]*\)".*/\1/p' "Application Files/main.py")
+          [[ "$version" =~ ^[0-9]+(\.[0-9]+)*$ ]] || fail "Couldn't read VERSION from Application Files/main.py."
+
+          # A run started on main signs with the release secrets, after the Approve; only it may publish.
+          real=false; publish=false
+          if [[ "$EVENT" == workflow_dispatch && "$GITHUB_REF" == refs/heads/main ]]; then
+            real=true
+            [[ "$DRY_RUN" == true ]] || publish=true
+          elif [[ "$EVENT" == workflow_dispatch && "$DRY_RUN" != true ]]; then
+            fail "Releases go out from main only, and this run is on ${GITHUB_REF#refs/heads/}. A dry run works anywhere: -f dry_run=true."
+          fi
+
+          # The latest release installed copies see (drafts and pre-releases aren't).
+          if answer=$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" 2>&1); then
+            latest=$(jq -r .tag_name <<< "$answer")
+            [[ "$latest" =~ ^v[0-9] ]] || fail "GitHub's latest release has the tag \"$latest\"."
+          elif grep -q "HTTP 404" <<< "$answer"; then
+            latest=""
+          else
+            fail "GitHub didn't say which release is the latest: $answer"
+          fi
+
+          build="$version"
+          if [[ -n "$latest" ]] && ! newer "$version" "$latest"; then
+            [[ "$real" == false ]] || fail "VERSION is $version, which isn't newer than the latest release ($latest): installed copies wouldn't take it. Raise VERSION in Application Files/main.py."
+            # A dry run before VERSION is raised builds as the next version, so the update checks have something newer to check.
+            build=$(python -c 'import sys; sys.path.insert(0, "Application Files"); from updater import version_key; v = list(version_key(sys.argv[1])) + [0, 0]; print(f"{v[0]}.{v[1]}.{v[2] + 1}")' "$latest")
+            echo "::notice::VERSION is $version, which isn't newer than the latest release ($latest): this dry run builds it as $build."
+          fi
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/v$build" >/dev/null 2>&1; then
+            [[ "$publish" == false ]] || fail "There's already a tag v$build."
+            echo "::notice::There's already a tag v$build: a release would stop here."
+          fi
+
+          {
+            echo "version=$build"
+            echo "previous=$latest"
+            echo "real=$real"
+            echo "publish=$publish"
+          } >> "$GITHUB_OUTPUT"
+          {
+            if [[ "$publish" == true ]]; then echo "### Releasing $build from ${GITHUB_SHA:0:7}"
+            elif [[ "$real" == true ]]; then echo "### Dry run of $build, signed with the release secrets: nothing is published"
+            else echo "### Dry run of $build, signed with throwaway identities: nothing is published"; fi
+            echo "The latest release now: ${latest:-none}."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # The same checks as a commit's (scripts/hooks/privacy_check.py). GitHub's machines have no
+      # .git-denylist, so the private words were checked on the computer the run was started from.
+      - name: The release notes have nothing private in them
+        env:
+          NOTES: ${{ inputs.notes }}
+          PUBLISH: ${{ steps.what.outputs.publish }}
+        run: |
+          set -euo pipefail
+          notes="$RUNNER_TEMP/notes.md"
+          if [[ -n "$NOTES" ]]; then
+            printf '%s\n' "$NOTES" > "$notes"
+          elif [[ "$PUBLISH" == true ]]; then
+            echo "::error::A release needs its notes: gh workflow run release.yml --ref main -F notes=@NOTES.md"; exit 1
+          else
+            echo "A dry run's notes, made up." > "$notes"
+          fi
+          python scripts/hooks/privacy_check.py --what "In the release notes" "$notes" ||
+            { echo "::error::The release notes have something private in them."; exit 1; }
+
+  # The whole suite on both systems, as .github/workflows/tests.yml runs it.
+  tests:
+    name: Tests (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - name: macOS
+            os: macos-latest
+          - name: Windows
+            os: windows-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5.1.0
+        with:
+          fetch-depth: 0  # the tags: some tests run an older version's code from its tag
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6.3.0
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: Application Files/requirements.txt
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444  # v5.0.0
+        with:
+          node-version: "22"
+      - name: Install the pinned packages
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r "Application Files/requirements.txt"
+      - name: Make python3 the same Python
+        if: runner.os == 'Windows'
+        run: |
+          if ! python3 -c "import sys; assert sys.version_info[:2] == (3, 13)" 2>/dev/null; then
+            dir=$(python -c "import os, sys; print(os.path.dirname(sys.executable))")
+            cp "$dir/python.exe" "$dir/python3.exe"
+          fi
+      - name: Switch on the privacy hooks
+        run: git config core.hooksPath scripts/hooks
+      - name: Run the tests
+        run: python -m pytest -ra
+
+  # Both apps, built with no secret in reach: signing comes after, in its own job.
+  build-mac:
+    name: Build (macOS)
+    needs: check
+    runs-on: macos-latest
+    timeout-minutes: 30
+    env:
+      VERSION: ${{ needs.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6.3.0
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: Application Files/requirements.txt
+      - name: Install the pinned packages
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r "Application Files/requirements.txt"
+      - &which-version
+        name: The version this run builds
+        run: |
+          python - "$VERSION" <<'PY'
+          import re, sys
+          from pathlib import Path
+          main = Path("Application Files/main.py")
+          text = main.read_text(encoding="utf-8")
+          new, count = re.subn(r'^VERSION = "[^"]*"', f'VERSION = "{sys.argv[1]}"', text, count=1, flags=re.MULTILINE)
+          assert count == 1, "main.py has no VERSION line"
+          if new != text:
+              main.write_text(new, encoding="utf-8")
+              print(f"Built as {sys.argv[1]}, the dry run's stand-in for main.py's version.")
+          PY
+      - name: Build the Mac app
+        run: |
+          set -euo pipefail
+          echo "macOS $(sw_vers -productVersion), $(python -c 'import platform, sys; print(f"Python {platform.python_version()} ({sys.executable})")'), PyInstaller $(python -m PyInstaller --version)"
+          app=$(scripts/build.sh --adhoc)
+          shown=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$app/Contents/Info.plist")
+          [[ "$shown" == "$VERSION" ]] || { echo "::error::The app says it's $shown, not $VERSION."; exit 1; }
+          python scripts/check-mac-app.py "$app"
+          mkdir -p "$RUNNER_TEMP/out"
+          ditto -c -k --keepParent "$app" "$RUNNER_TEMP/out/mac-app.zip"
+      - name: The build's log
+        if: failure()
+        run: cat "$HOME/Library/Caches/I Need A Budget-build/build.log" 2>/dev/null || true
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: mac-app
+          path: ${{ runner.temp }}/out/mac-app.zip
+          retention-days: 1
+          if-no-files-found: error
+
+  build-windows:
+    name: Build (Windows)
+    needs: check
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      VERSION: ${{ needs.check.outputs.version }}
+      INAB_BUILD_DIR: ${{ runner.temp }}/build
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6.3.0
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: Application Files/requirements.txt
+      - name: Install the pinned packages
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r "Application Files/requirements.txt"
+      - *which-version
+      - name: Inno Setup
+        run: |
+          if ! command -v iscc >/dev/null && [[ ! -x "/c/Program Files (x86)/Inno Setup 6/ISCC.exe" ]]; then
+            choco install innosetup --no-progress -y
+          fi
+      - name: Build the Windows installer
+        run: |
+          set -euo pipefail
+          installer=$(scripts/build-windows.sh "$RUNNER_TEMP/out")
+          [[ "$(basename "$installer")" == "I-Need-A-Budget-$VERSION-Setup.exe" ]] || { echo "::error::The installer is $installer."; exit 1; }
+          # Windows copies check updates with the release key's public half built into them.
+          bundled="$INAB_BUILD_DIR/dist/I Need A Budget/_internal/release-key.pub"
+          [[ -f "Application Files/release-key.pub" ]] || { echo "::error::There's no Application Files/release-key.pub: Windows copies couldn't update."; exit 1; }
+          cmp -s "$bundled" "Application Files/release-key.pub" || { echo "::error::The Windows app doesn't have Application Files/release-key.pub in it."; exit 1; }
+      - name: The build's log
+        if: failure()
+        run: cat "$INAB_BUILD_DIR/build.log" 2>/dev/null || true
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: windows-installer
+          path: ${{ runner.temp }}/out/I-Need-A-Budget-${{ needs.check.outputs.version }}-Setup.exe
+          retention-days: 1
+          if-no-files-found: error
+
+  # The only job that can reach the release secrets: it runs only for a run started on main, after the
+  # maintainer's Approve, and only once the tests and both builds have passed. It runs nothing but the
+  # repository's own scripts, Apple's tools and OpenSSL (no package from PyPI), and deletes the keychain
+  # and the key before it ends. sign-dry has the same steps, with throwaway identities and no environment.
+  sign:
+    name: Sign (release secrets)
+    needs: [check, tests, build-mac, build-windows]
+    if: needs.check.outputs.real == 'true'
+    environment: release
+    runs-on: macos-latest
+    timeout-minutes: 20
+    env:
+      SIGN_WITH: release-secrets
+      VERSION: ${{ needs.check.outputs.version }}
+    steps: &sign-steps
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6.3.0
+        with:
+          python-version: "3.13"  # for windows_update.py's check, which needs nothing but the standard library
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: mac-app
+          path: ${{ runner.temp }}/in
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: windows-installer
+          path: ${{ runner.temp }}/in
+      - name: Unpack the app
+        run: ditto -x -k "$RUNNER_TEMP/in/mac-app.zip" "$RUNNER_TEMP/app"
+      - name: Sign the Mac app
+        env:
+          MAC_CERTIFICATE: ${{ secrets.MAC_CERTIFICATE }}
+          MAC_CERTIFICATE_PASSWORD: ${{ secrets.MAC_CERTIFICATE_PASSWORD }}
+        run: |
+          if [[ "$SIGN_WITH" == release-secrets ]]; then
+            scripts/sign-mac.sh "$RUNNER_TEMP/app/I Need A Budget.app"
+          else
+            scripts/sign-mac.sh --throwaway "$RUNNER_TEMP/identities" "$RUNNER_TEMP/app/I Need A Budget.app"
+          fi
+      - name: Sign the Windows installer
+        env:
+          RELEASE_KEY: ${{ secrets.RELEASE_KEY }}
+        run: |
+          installer="$RUNNER_TEMP/in/I-Need-A-Budget-$VERSION-Setup.exe"
+          if [[ "$SIGN_WITH" == release-secrets ]]; then
+            scripts/sign-windows.sh "$installer"
+          else
+            scripts/sign-windows.sh --throwaway "$RUNNER_TEMP/identities" "$installer"
+          fi
+      - name: Delete the keychain and the key
+        if: always()
+        run: |
+          scripts/sign-mac.sh --clean
+          scripts/sign-windows.sh --clean
+      - name: The signed files
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/signed"
+          ditto -c -k --keepParent "$RUNNER_TEMP/app/I Need A Budget.app" "$RUNNER_TEMP/signed/mac-app.zip"
+          mv "$RUNNER_TEMP/in/I-Need-A-Budget-$VERSION-Setup.exe" "$RUNNER_TEMP/in/I-Need-A-Budget-$VERSION-Setup.exe.sig" "$RUNNER_TEMP/signed/"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: signed
+          path: ${{ runner.temp }}/signed
+          retention-days: 1
+          if-no-files-found: error
+      # The throwaway identities' public halves, which the update checks need in place of the real ones.
+      - if: env.SIGN_WITH != 'release-secrets'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: test-identities
+          path: ${{ runner.temp }}/identities
+          retention-days: 1
+          if-no-files-found: error
+
+  sign-dry:
+    name: Sign (throwaway identities)
+    needs: [check, tests, build-mac, build-windows]
+    if: needs.check.outputs.real != 'true'
+    runs-on: macos-latest
+    timeout-minutes: 20
+    env:
+      SIGN_WITH: throwaway
+      VERSION: ${{ needs.check.outputs.version }}
+    steps: *sign-steps
+
+  # The disk image, made from the signed app without Finder, and what Mac copies will check: the
+  # previous release, installed here, takes it with its own version's updater.
+  package:
+    name: Disk image and update check (macOS)
+    needs: [check, sign, sign-dry]
+    if: ${{ !cancelled() && !failure() && (needs.sign.result == 'success' || needs.sign-dry.result == 'success') }}
+    runs-on: macos-latest
+    timeout-minutes: 20
+    env:
+      VERSION: ${{ needs.check.outputs.version }}
+      PREVIOUS: ${{ needs.check.outputs.previous }}
+      REAL: ${{ needs.check.outputs.real }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5.1.0
+        with:
+          fetch-depth: 0  # the previous release's tag, whose updater check-update.py runs
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6.3.0
+        with:
+          python-version: "3.13"
+      - name: Install dmgbuild
+        run: python -m pip install --require-hashes -r scripts/dmg-requirements.txt
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: signed
+          path: ${{ runner.temp }}/signed
+      - if: env.REAL != 'true'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: test-identities
+          path: ${{ runner.temp }}/identities
+      - name: Make the disk image
+        run: |
+          set -euo pipefail
+          ditto -x -k "$RUNNER_TEMP/signed/mac-app.zip" "$RUNNER_TEMP/app"
+          mkdir -p "$RUNNER_TEMP/release"
+          mv "$RUNNER_TEMP/signed/I-Need-A-Budget-$VERSION-Setup.exe" "$RUNNER_TEMP/signed/I-Need-A-Budget-$VERSION-Setup.exe.sig" "$RUNNER_TEMP/release/"
+          python scripts/make-dmg.py "$RUNNER_TEMP/app/I Need A Budget.app" "$RUNNER_TEMP/release/I-Need-A-Budget-$VERSION.dmg"
+      - name: Check the disk image
+        run: |
+          set -euo pipefail
+          dmg="$RUNNER_TEMP/release/I-Need-A-Budget-$VERSION.dmg"
+          hdiutil verify "$dmg"
+          if [[ "$REAL" == true ]]; then
+            python scripts/make-dmg.py --check "$dmg" --version "$VERSION"
+          else
+            python scripts/make-dmg.py --check "$dmg" --version "$VERSION" --test-identity "$(cat "$RUNNER_TEMP/identities/test-identity")"
+          fi
+      - name: The installed version takes it (macOS)
+        run: |
+          set -euo pipefail
+          if [[ -z "$PREVIOUS" ]]; then echo "No release yet: no copy to update from."; exit 0; fi
+          gh release download "$PREVIOUS" --repo "$GITHUB_REPOSITORY" --pattern '*.dmg' --dir "$RUNNER_TEMP/previous"
+          mount=$(hdiutil attach "$RUNNER_TEMP/previous/"*.dmg -nobrowse -readonly -noautoopen | grep -o '/Volumes/.*$')
+          mkdir -p "$HOME/Applications"
+          ditto "$mount/I Need A Budget.app" "$HOME/Applications/I Need A Budget.app"
+          hdiutil detach "$mount" -quiet
+          args=("$RUNNER_TEMP/release/I-Need-A-Budget-$VERSION.dmg" "$HOME/Applications/I Need A Budget.app")
+          [[ "$REAL" == true ]] || args+=(--test-identity "$(cat "$RUNNER_TEMP/identities/test-identity")")
+          python scripts/check-update.py "${args[@]}"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: release-${{ needs.check.outputs.version }}${{ needs.check.outputs.real != 'true' && '-dry-run' || '' }}
+          path: ${{ runner.temp }}/release
+          retention-days: 7
+          if-no-files-found: error
+
+  # What Windows copies will check: installed from this installer, a copy has the release key and
+  # can update itself; and the previous release's Windows copy, if it had one, takes it.
+  check-windows:
+    name: Update check (Windows)
+    needs: [check, package]
+    if: ${{ !cancelled() && !failure() && needs.package.result == 'success' }}
+    runs-on: windows-latest
+    timeout-minutes: 20
+    env:
+      VERSION: ${{ needs.check.outputs.version }}
+      PREVIOUS: ${{ needs.check.outputs.previous }}
+      REAL: ${{ needs.check.outputs.real }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5.1.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6.3.0
+        with:
+          python-version: "3.13"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: release-${{ needs.check.outputs.version }}${{ needs.check.outputs.real != 'true' && '-dry-run' || '' }}
+          path: ${{ runner.temp }}/release
+      - if: env.REAL != 'true'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: test-identities
+          path: ${{ runner.temp }}/identities
+      - name: The installed version takes it (Windows)
+        run: |
+          set -euo pipefail
+          setup="$RUNNER_TEMP/release/I-Need-A-Budget-$VERSION-Setup.exe"
+          previous=""
+          if [[ -n "$PREVIOUS" ]]; then
+            previous=$(gh release view "$PREVIOUS" --repo "$GITHUB_REPOSITORY" --json assets --jq '[.assets[].name | select(ascii_downcase | endswith("-setup.exe"))][0] // ""')
+          fi
+          if [[ -z "$previous" ]]; then
+            echo "The latest release (${PREVIOUS:-none}) has no Windows installer: no Windows copy to update from yet."
+            exit 0
+          fi
+          gh release download "$PREVIOUS" --repo "$GITHUB_REPOSITORY" --pattern "$previous" --dir "$RUNNER_TEMP/previous"
+          MSYS2_ARG_CONV_EXCL='*' "$RUNNER_TEMP/previous/$previous" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
+          args=("$setup")
+          [[ "$REAL" == true ]] || args+=(--test-key "$RUNNER_TEMP/identities/test-key.pub")
+          python scripts/check-update.py "${args[@]}"
+      - name: Installed from it, a copy can update itself
+        run: |
+          set -euo pipefail
+          setup="$RUNNER_TEMP/release/I-Need-A-Budget-$VERSION-Setup.exe"
+          MSYS2_ARG_CONV_EXCL='*' "$setup" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART "/LOG=$(cygpath -w "$RUNNER_TEMP/install.log")" ||
+            { cat "$RUNNER_TEMP/install.log"; echo "::error::The installer failed."; exit 1; }
+          test_key=""
+          [[ "$REAL" == true ]] || test_key="$RUNNER_TEMP/identities/test-key.pub"
+          python - "$setup" "$VERSION" "$test_key" <<'PY'
+          import os, sys
+          from pathlib import Path
+          sys.path.insert(0, "Application Files")
+          import computer_windows, windows_update
+          from updater import UpdateError
+
+          setup, version, test_key = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+          installed = Path(os.environ["LOCALAPPDATA"]) / "Programs" / "I Need A Budget"
+          this = computer_windows.Windows()
+          problems = []
+          for what, path in (("The installer", setup), ("The installed program", installed / "I Need A Budget.exe")):
+              said = this._installer_version(path)
+              if said != version:
+                  problems.append(f"{what} says it's version {said}, not {version}.")
+          key = windows_update.release_key(installed / "_internal" / "release-key.pub")
+          if key is None or key != windows_update.release_key():
+              problems.append("The installed copy doesn't have Application Files/release-key.pub: it couldn't update.")
+          off = this.why_updates_off(installed)
+          if off:
+              problems.append(f"The installed copy wouldn't update itself: {off}.")
+          try:  # the installed copy's own key; a dry run's throwaway one in its place
+              windows_update.check(setup, windows_update.release_key(Path(test_key)) if test_key else key)
+          except UpdateError as e:
+              problems.append(f"Its signature: {e}")
+          for why in problems:
+              print(f"::error::{why}")
+          if problems:
+              sys.exit(1)
+          signed = "the dry run's throwaway key, standing in for the release key" if test_key else "the release key"
+          print(f"OK: installed {version} in {installed}, with the release key, able to update itself; the installer is signed with {signed}.")
+          PY
+
+  publish:
+    name: Publish
+    needs: [check, sign, package, check-windows]
+    if: >-
+      ${{ !cancelled() && !failure() && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+      && needs.check.outputs.publish == 'true' && needs.sign.result == 'success'
+      && needs.package.result == 'success' && needs.check-windows.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.check.outputs.version }}
+      PREVIOUS: ${{ needs.check.outputs.previous }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: release-${{ needs.check.outputs.version }}
+          path: ${{ runner.temp }}/release
+      - name: Publish v${{ needs.check.outputs.version }}
+        env:
+          NOTES: ${{ inputs.notes }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$*"; exit 1; }
+          latest() { gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name 2>/dev/null || true; }
+          tag="v$VERSION"
+          cd "$RUNNER_TEMP/release"
+          files=("I-Need-A-Budget-$VERSION.dmg" "I-Need-A-Budget-$VERSION-Setup.exe" "I-Need-A-Budget-$VERSION-Setup.exe.sig")
+          [[ "$(ls | sort)" == "$(printf '%s\n' "${files[@]}" | sort)" ]] || fail "The release's files aren't the three it should have: $(ls | tr '\n' ' ')"
+
+          printf '%s\n' "$NOTES" > "$RUNNER_TEMP/notes.md"
+          python3 "$GITHUB_WORKSPACE/scripts/hooks/privacy_check.py" --what "In the release notes" "$RUNNER_TEMP/notes.md" ||
+            fail "The release notes have something private in them."
+          # The update checks ran against the latest release as it was: it must still be that one.
+          [[ "$(latest)" == "$PREVIOUS" ]] || fail "The latest release changed while this ran ($PREVIOUS, now $(latest)): run it again."
+          # gh would put the release on a tag that's already there, wherever it points.
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" >/dev/null 2>&1; then fail "There's already a tag $tag."; fi
+
+          gh release create "$tag" "${files[@]}" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "I Need A Budget $VERSION" --notes-file "$RUNNER_TEMP/notes.md" --latest
+
+          # What installed copies see: this tag, at this commit, with exactly these three files, byte for byte.
+          gh api "repos/$GITHUB_REPOSITORY/releases/latest" > "$RUNNER_TEMP/latest.json"
+          python3 - "$RUNNER_TEMP/latest.json" "$tag" "${files[@]}" <<'PY' || { gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --draft=true; fail "GitHub doesn't show the release as it should, so it's a draft again: installed copies still see $PREVIOUS."; }
+          import hashlib, json, sys
+          answer, tag, files = sys.argv[1], sys.argv[2], sys.argv[3:]
+          with open(answer, encoding="utf-8") as f:
+              release = json.load(f)
+          assets = {a["name"]: a.get("digest") for a in release.get("assets", [])}
+          problems = []
+          if release.get("tag_name") != tag:
+              problems.append(f"The latest release is {release.get('tag_name')}, not {tag}.")
+          if sorted(assets) != sorted(files):
+              problems.append(f"It has {sorted(assets)}, not {sorted(files)}.")
+          for name in files:
+              digest = assets.get(name)
+              with open(name, "rb") as f:
+                  mine = "sha256:" + hashlib.sha256(f.read()).hexdigest()
+              if digest and digest != mine:
+                  problems.append(f"GitHub's {name} isn't the file this run checked.")
+          for why in problems:
+              print(f"::error::{why}")
+          sys.exit(1 if problems else 0)
+          PY
+          tagged=$(gh api "repos/$GITHUB_REPOSITORY/commits/$tag" --jq .sha)
+          [[ "$tagged" == "$GITHUB_SHA" ]] || fail "$tag points at $tagged, not $GITHUB_SHA."
+
+          # The release page lists only the current one.
+          if [[ -n "$PREVIOUS" && "$PREVIOUS" != "$tag" ]]; then
+            gh release edit "$PREVIOUS" --repo "$GITHUB_REPOSITORY" --draft=true >/dev/null
+          fi
+          echo "### Published $tag" >> "$GITHUB_STEP_SUMMARY"
+          echo "Installed copies update within a day, or now with Settings → Check now (then quit)." >> "$GITHUB_STEP_SUMMARY"
