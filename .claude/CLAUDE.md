@@ -863,7 +863,8 @@ Don't undo these without asking:
   without data for every account, income. Clicking a figure opens its transactions. No
   by-payee report (the maintainer dropped it: e-transfer payees mix unrelated things).
 - **The top of the repository is kept short** (the maintainer's call): `.claude/` (this file,
-  `launch.json`), `Application Files/`, `docs/` (DEVELOPMENT.md, CONTEXT.md, NOTICE, ADRs,
+  `launch.json`), `.github/` (the tests' workflow: GitHub only reads workflows from there),
+  `Application Files/`, `docs/` (DEVELOPMENT.md, CONTEXT.md, NOTICE, ADRs,
   pictures), `scripts/` (tools, `First Time Setup.command`, `tests/`, `hooks/`),
   `.gitignore`, `LICENSE`, `README.md`. Nothing else goes there (CITATION.cff, a Build
   .command, `.gitattributes` and `pytest.ini` were removed). `scripts/` keeps its name:
@@ -922,6 +923,14 @@ Don't undo these without asking:
 
 `python3 -m pytest` (scripts/tests/, all synthetic data). `scripts/tests/test_privacy.py` fails if the
 working tree has anything from `.git-denylist` or a card-number shape.
+
+GitHub runs the whole suite on macOS and Windows for every pull request into `main` or
+`claude/cross-platform` and every push to them (`.github/workflows/tests.yml`, issue #186):
+Python 3.13, the pinned packages, node for the page tests, no secrets. Windows' check doesn't
+fail the run until #182 has made the suite pass there (`experimental` in the workflow). GitHub's
+machines have no `.git-denylist`: there the privacy checks look for card numbers, bank files and
+databases only. Making the checks required for merging into `main` is the maintainer's setting
+on GitHub: ask before changing it.
 
 ## Agent skills
 
