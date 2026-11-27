@@ -241,25 +241,60 @@ def test_a_windows_windows_smallest_size_fits_its_screen():
     assert frame == (100, 0, 1016, 672) and frame[3] >= smallest_window((1000, 660), (16, 39), laptop)[1]
 
 
-def test_without_webview2_windows_says_what_is_missing_instead_of_failing(monkeypatch):
-    """pywebview's fallback, Internet Explorer's engine, isn't in the build: importing its Windows side
-    fails without WebView2. The app says so, offers Microsoft's page, and stops before the window."""
+def pywebviews_windows_side(monkeypatch, side):
+    """What importing pywebview's Windows side gives: a module, or None for an import that fails."""
     import webview.platforms
+
+    monkeypatch.delattr(webview.platforms, "winforms", raising=False)
+    monkeypatch.setitem(sys.modules, "webview.platforms.winforms", side)
+
+
+def test_without_webview2_windows_says_what_is_missing_instead_of_failing(monkeypatch):
+    """Without WebView2 pywebview goes for Internet Explorer's engine (is_chromium false), which the
+    build leaves out, so importing its Windows side fails. The app says what's missing, offers
+    Microsoft's page, and stops before the window."""
+    from types import SimpleNamespace
 
     import computer_windows
 
     asked, opened = [], []
-    monkeypatch.delattr(webview.platforms, "winforms", raising=False)
-    monkeypatch.setitem(sys.modules, "webview.platforms.winforms", None)  # importing it fails
-    monkeypatch.setattr(computer_windows, "_ask", lambda text: asked.append(text) or True)
+    pywebviews_windows_side(monkeypatch, SimpleNamespace(is_chromium=False))  # from source, the fallback there
+    monkeypatch.setattr(computer_windows, "_ask", lambda text, yes_or_no=True: asked.append(text) or True)
     windows = Windows()
     monkeypatch.setattr(windows, "open_web_page", opened.append)
     assert windows.can_draw_the_page() is False
     assert "needs Microsoft Edge WebView2" in asked[0]
     assert opened == ["https://developer.microsoft.com/microsoft-edge/webview2/"]
 
-    monkeypatch.setattr(computer_windows, "_ask", lambda text: False)  # No: nothing opens
+    monkeypatch.setattr(computer_windows, "_ask", lambda text, yes_or_no=True: False)  # No: nothing opens
     assert windows.can_draw_the_page() is False and len(opened) == 1
+
+
+def test_what_import_error_means_webview2_is_missing():
+    from computer_windows import webview2_missing
+
+    left_out = ImportError("cannot import name 'mshtml' from 'webview.platforms'", name="webview.platforms")
+    left_out.name_from = "mshtml"  # what Python 3.12 and later say for `from . import mshtml`
+    assert webview2_missing(left_out)
+    assert webview2_missing(ModuleNotFoundError("No module named 'webview.platforms.mshtml'",
+                                                name="webview.platforms.mshtml"))
+    assert not webview2_missing(ModuleNotFoundError("No module named 'clr'", name="clr"))
+    assert not webview2_missing(ImportError("import of webview.platforms.winforms halted",
+                                            name="webview.platforms.winforms"))
+
+
+def test_a_copy_missing_something_else_says_its_damaged_not_webview2(monkeypatch):
+    """A broken build (pythonnet missing, say) isn't a reason to send the person to Microsoft."""
+    import computer_windows
+
+    told = []
+    pywebviews_windows_side(monkeypatch, None)  # importing it fails, and not for WebView2
+    monkeypatch.setattr(computer_windows, "_ask", lambda text, yes_or_no=True: told.append((text, yes_or_no)))
+    windows = Windows()
+    monkeypatch.setattr(windows, "open_web_page", lambda url: pytest.fail("not Microsoft's page"))
+    assert windows.can_draw_the_page() is False
+    assert told == [("I Need A Budget can't open its window: part of it is missing or damaged.\n\n"
+                     "Install it again from its latest release.", False)]
 
 
 def test_a_mac_can_always_draw_the_page():

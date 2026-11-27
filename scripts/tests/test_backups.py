@@ -702,8 +702,9 @@ def the_mac_asks_to_quit(monkeypatch, app, event):
 def a_windows_window(monkeypatch, app):
     """The app's window as Windows has it: a real WinForms form, whose closing goes the way
     pywebview's does (FormClosing → computer_windows' on_closing → pywebview's own, which raises
-    the closing event main.py's _on_closing listens to, and cancels the close when it says so).
-    Windows.quit() closes it as pywebview's destroy() does, with Close()."""
+    the closing event main.py's _on_closing listens to, and cancels the close when it says so),
+    its messages watched as restore_window watches them. Windows.quit() closes it as pywebview's
+    destroy() does, with Close()."""
     from types import SimpleNamespace
 
     import webview
@@ -727,6 +728,7 @@ def a_windows_window(monkeypatch, app):
     pywebview_side = SimpleNamespace(closing=Event(None, True), pywebview_window=SimpleNamespace(confirm_close=False))
     pywebview_side.closing += app._on_closing
     window.FormClosing += lambda sender, args: form.on_closing(pywebview_side, sender, args)
+    app._computer._watch_window(window)
     monkeypatch.setattr(webview, "windows", [SimpleNamespace(destroy=window.Close)])
     monkeypatch.setattr(logging.getLogger("pywebview"), "setLevel", lambda level: None)
     return window
@@ -865,6 +867,37 @@ def test_a_log_off_another_app_stops_is_called_off_and_the_app_carries_on(tmp_pa
     assert window.IsDisposed
     assert len(names(main.BACKUP_DIR)) == 2
     assert categories_in(main.BACKUP_DIR / backups.name(QUIT)) == ["Groceries", "Rent"]
+
+
+@WINDOWS
+def test_task_manager_after_a_close_that_was_cancelled_still_quits_straight_away(tmp_path, monkeypatch):
+    """✕, then Keep editing: WinForms' CloseReason stays UserClosing, so Task Manager's close (a
+    WM_CLOSE on its own) would read as the person's and wait for the page while Task Manager is
+    about to end the app. Who's closing comes from the message instead."""
+    main, app, this_computer = start_app(monkeypatch, tmp_path)
+    window = a_windows_window(monkeypatch, app)
+    add_category(app._db, "Groceries")
+    asked = []
+    monkeypatch.setattr(app, "_ask_page_to_quit", lambda: asked.append("✕") or False)
+    windows_sends(window, SC_CLOSE)
+    assert asked == ["✕"] and not window.IsDisposed  # the page asks; you keep editing
+    windows_sends(window, WM_CLOSE)
+    assert window.IsDisposed and asked == ["✕"]  # straight away, without asking the page again
+    made = names(main.BACKUP_DIR)
+    assert len(made) == 1 and categories_in(main.BACKUP_DIR / made[0]) == ["Groceries"]
+
+
+@WINDOWS
+def test_a_close_after_a_called_off_log_off_is_the_persons_again(tmp_path, monkeypatch):
+    main, app, this_computer = start_app(monkeypatch, tmp_path)
+    window = a_windows_window(monkeypatch, app)
+    windows_sends(window, QUERY_LOG_OFF)
+    windows_sends(window, LOG_OFF_CALLED_OFF)
+    asked = []
+    monkeypatch.setattr(app, "_ask_page_to_quit", lambda: asked.append("✕") or False)
+    windows_sends(window, SC_CLOSE)
+    assert asked and not window.IsDisposed  # the page asks, not a log-off's straight quit
+    window.Dispose()
 
 
 @WINDOWS

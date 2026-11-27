@@ -47,7 +47,8 @@ SETTINGS_KEY = rf"Software\{APP_NAME}"     # this computer's settings for the ap
 WINDOW_CLASS = "WindowsForms10.Window."    # what every WinForms window's class name starts with
 APPS_THEME = r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
 WEBVIEW2_PAGE = "https://developer.microsoft.com/microsoft-edge/webview2/"  # Microsoft's, where the runtime is
-WM_ENDSESSION = 0x0016
+WM_CLOSE, WM_QUERYENDSESSION, WM_ENDSESSION, WM_NCDESTROY, WM_SYSCOMMAND = 0x0010, 0x0011, 0x0016, 0x0082, 0x0112
+SC_CLOSE = 0xF060
 
 
 def known_folder(folder_id):
@@ -190,24 +191,42 @@ def _app_windows(other_than_pid):
     return found
 
 
-def _ask(text):
-    """A Yes / No message box of Windows' own, before there's a window. True for Yes."""
+def _ask(text, yes_or_no=True):
+    """A message box of Windows' own, before there's a window: Yes / No (True for Yes), or OK."""
     import ctypes
 
-    MB_YESNO, MB_ICONWARNING, MB_SETFOREGROUND, IDYES = 0x4, 0x30, 0x10000, 6
-    return ctypes.windll.user32.MessageBoxW(None, text, APP_NAME, MB_YESNO | MB_ICONWARNING | MB_SETFOREGROUND) == IDYES
+    MB_YESNO, MB_ICONWARNING, MB_ICONERROR, MB_SETFOREGROUND, IDYES = 0x4, 0x30, 0x10, 0x10000, 6
+    style = (MB_YESNO | MB_ICONWARNING) if yes_or_no else MB_ICONERROR
+    return ctypes.windll.user32.MessageBoxW(None, text, APP_NAME, style | MB_SETFOREGROUND) == IDYES
 
 
-class _EndOfSession:
-    """Whether a log-off or shutdown the app said yes to really happens. After answering
-    WM_QUERYENDSESSION, Windows sends WM_ENDSESSION: false when another app stopped it and the
-    person cancelled. WinForms keeps that to itself, so the window is subclassed (comctl32)
-    until it comes, then `called_off()` when it's false."""
+def webview2_missing(error):
+    """Whether importing pywebview's Windows side failed for want of WebView2: it then imports
+    Internet Explorer's engine instead (webview.platforms.mshtml), which the build leaves out.
+    Anything else is a copy that's broken."""
+    return getattr(error, "name_from", None) == "mshtml" or (error.name or "").endswith(".mshtml")
+
+
+class _Closes:
+    """Who's closing the window, worked out from the message it's handling, and whether a log-off
+    the app said yes to really happens. WinForms' CloseReason stays as it was after a close that
+    was cancelled (✕, then Keep editing): a later Task Manager close would read as the person's.
+    And after WM_QUERYENDSESSION Windows sends WM_ENDSESSION, false when another app stopped the
+    log-off and the person cancelled, which WinForms keeps to itself. So the window is subclassed
+    (comctl32) from when it's made."""
+
+    PERSON = "the person"              # SC_CLOSE: ✕, Alt+F4, the taskbar's Close window
+    TASK_MANAGER = "Task Manager"      # a WM_CLOSE on its own: Task Manager, taskkill, another app
+    SESSION = "a log-off or shutdown"  # WM_QUERYENDSESSION, Windows' Restart Manager (an installer) too
+    APP = "the app"                    # Windows.quit()
 
     def __init__(self, called_off):
         import ctypes
         from ctypes import wintypes
 
+        self.by = None             # while a close's message is being handled
+        self.app_closing = False   # Windows.quit() has started closing the window
+        self.watching = False      # the window's messages are seen
         self._comctl32 = comctl32 = ctypes.windll.comctl32
         procedure = ctypes.WINFUNCTYPE(ctypes.c_ssize_t, wintypes.HWND, wintypes.UINT, wintypes.WPARAM,
                                        wintypes.LPARAM, ctypes.c_size_t, ctypes.c_size_t)
@@ -218,19 +237,40 @@ class _EndOfSession:
 
         @procedure
         def watching(hwnd, message, wparam, lparam, ident, _):
-            if message == WM_ENDSESSION:
+            if message == WM_ENDSESSION and not wparam:
+                try:
+                    called_off()
+                except Exception:
+                    log.exception("Carrying on after a called-off log-off failed")
+            elif message == WM_NCDESTROY:
                 comctl32.RemoveWindowSubclass(hwnd, watching, ident)
-                if not wparam:
-                    try:
-                        called_off()
-                    except Exception:
-                        log.exception("Carrying on after a called-off log-off failed")
-            return comctl32.DefSubclassProc(hwnd, message, wparam, lparam)
+                self.watching = False
+            if message == WM_SYSCOMMAND and wparam & 0xFFF0 == SC_CLOSE:
+                by = self.PERSON
+            elif message == WM_CLOSE:  # also what SC_CLOSE becomes, inside it
+                by = self.by or (self.APP if self.app_closing else self.TASK_MANAGER)
+            elif message == WM_QUERYENDSESSION:
+                by = self.SESSION
+            else:
+                return comctl32.DefSubclassProc(hwnd, message, wparam, lparam)
+            outer, self.by = self.by, by
+            try:
+                return comctl32.DefSubclassProc(hwnd, message, wparam, lparam)
+            finally:
+                self.by = outer
 
-        self._watching = watching  # kept: Windows calls it until it's removed
+        self._watching = watching  # kept: Windows calls it until the window goes
 
     def watch(self, hwnd):
-        self._comctl32.SetWindowSubclass(hwnd, self._watching, 1, 0)  # once, however often it's asked
+        self.watching = bool(self._comctl32.SetWindowSubclass(hwnd, self._watching, 1, 0))
+        if not self.watching:
+            log.warning("Couldn't watch the window's messages: who closes it is WinForms' guess")
+
+    def closing_by(self, reason):
+        """Who's closing it now; WinForms' reason when the message wasn't seen."""
+        if self.watching and self.by:
+            return self.by
+        return {"WindowsShutDown": self.SESSION, "TaskManagerClosing": self.TASK_MANAGER}.get(str(reason), self.PERSON)
 
 
 def _form():
@@ -253,6 +293,7 @@ class Windows(Computer):
 
     def __init__(self):
         self._running = None  # the mutex the installer looks for, once this copy has the lock
+        self._closes = None   # who closes the window (when_asked_to_quit), watched from restore_window
 
     # ── folders ──
 
@@ -345,9 +386,10 @@ class Windows(Computer):
         import System.Windows.Forms as WinForms
         from System.Drawing import Rectangle, Size
 
+        self._watch_window(native)
         page = (native.MinimumSize.Width, native.MinimumSize.Height)
         frame = (native.Width - native.ClientSize.Width, native.Height - native.ClientSize.Height)
-        self._keep_frame(native, name)
+        self._keep_frame(native, name, page, frame)
 
         primary = WinForms.Screen.PrimaryScreen.WorkingArea
         primary = (primary.X, primary.Y, primary.Width, primary.Height)
@@ -365,11 +407,25 @@ class Windows(Computer):
             native.WindowState = WinForms.FormWindowState.Maximized
         return native.Width, native.Height
 
-    def _keep_frame(self, native, name):
+    def _watch_window(self, native):
+        if self._closes is not None:
+            self._closes.watch(native.Handle.ToInt64())
+
+    def _keep_frame(self, native, name, page, frame):
+        """Saves its size and place whenever they change, and keeps its smallest size within the
+        screen it's on (moved to a smaller one, the page's minimum could go under the taskbar)."""
         import System.Windows.Forms as WinForms
+        from System.Drawing import Size
 
         states = WinForms.FormWindowState
         last = {"state": None}
+
+        def fit(*_):
+            try:
+                area = WinForms.Screen.FromControl(native).WorkingArea
+                native.MinimumSize = Size(*smallest_window(page, frame, (area.X, area.Y, area.Width, area.Height)))
+            except Exception:
+                log.warning("Couldn't fit the window's smallest size to its screen", exc_info=True)
 
         def save(*_):
             try:
@@ -387,7 +443,8 @@ class Windows(Computer):
             if native.WindowState != last["state"]:  # maximized or put back; ResizeEnd has the rest
                 save()
 
-        native.ResizeEnd += save  # after a move or a resize
+        native.ResizeEnd += fit  # after a move or a resize, first: a bigger minimum makes it bigger
+        native.ResizeEnd += save
         native.Resize += resized
         native.FormClosing += save
 
@@ -422,14 +479,19 @@ class Windows(Computer):
     def can_draw_the_page(self):
         """pywebview needs Microsoft's WebView2 Runtime (the installer checks for it, but it can be
         removed later). Without it pywebview falls back on Internet Explorer's engine, which the
-        build leaves out, and the app would stop with Windows' own error box."""
+        build leaves out, and the app would stop with Windows' own error box. A copy missing
+        anything else says it's damaged."""
         try:
             from webview.platforms import winforms
 
             if winforms.is_chromium:
                 return True
-        except ImportError:
-            pass
+        except Exception as error:
+            if not (isinstance(error, ImportError) and webview2_missing(error)):
+                log.exception("The window can't be made: this copy is missing something")
+                _ask(f"{APP_NAME} can't open its window: part of it is missing or damaged.\n\n"
+                     f"Install it again from its latest release.", yes_or_no=False)
+                return False
         log.error("Microsoft Edge WebView2 isn't installed: the page can't be drawn")
         if _ask(f"{APP_NAME} needs Microsoft Edge WebView2, which this PC doesn't have.\n\n"
                 f"Open Microsoft's download page? Install the Evergreen Runtime from there, then open "
@@ -443,23 +505,22 @@ class Windows(Computer):
         (pywebview's closing event, through the page). Logging off, shutting down or restarting
         (WM_QUERYENDSESSION, also an installer's Restart Manager) and Task Manager (a bare
         WM_CLOSE) quit straight away: the backup is made before Windows is told it may go on. A
-        log-off that doesn't happen after all is called off (_EndOfSession). pywebview's handler
-        is replaced before the window is made, as its FormClosing is bound when it is."""
+        log-off that doesn't happen after all is called off. Who's closing is worked out from the
+        message (_Closes), as WinForms' reason can be left from a close that was cancelled.
+        pywebview's handler is replaced before the window is made, as its FormClosing is bound
+        when it is."""
         from webview.platforms import winforms  # first: it loads .NET's WinForms
-
-        import System.Windows.Forms as WinForms
 
         form = winforms.BrowserView.BrowserForm
         pywebviews = getattr(form, "_pywebview_on_closing", None) or form.on_closing
-        reasons = WinForms.CloseReason
-        session = _EndOfSession(called_off)
+        closes = self._closes = _Closes(called_off)
 
         def on_closing(window, sender, args):
-            if args.CloseReason in (reasons.WindowsShutDown, reasons.TaskManagerClosing):
-                log.info("Windows is closing the app (%s)", args.CloseReason)
-                if should_quit(True) and args.CloseReason == reasons.WindowsShutDown:  # backs up
-                    session.watch(sender.Handle.ToInt64())
-            pywebviews(window, sender, args)  # the closing event: it lets it close, the app quitting
+            by = closes.closing_by(args.CloseReason)
+            if by in (closes.SESSION, closes.TASK_MANAGER):
+                log.info("Windows is closing the app (%s)", by)
+                should_quit(True)  # backs up; quitting, the closing event then lets it close
+            pywebviews(window, sender, args)
 
         form._pywebview_on_closing = pywebviews
         form.on_closing = on_closing
@@ -472,6 +533,8 @@ class Windows(Computer):
         # What pywebview still has for the page as it goes (the answer to the page's own quit
         # call, say) no longer reaches it, and would only be logged as an error.
         logging.getLogger("pywebview").setLevel(logging.CRITICAL)
+        if self._closes is not None:
+            self._closes.app_closing = True
         for window in list(webview.windows):
             window.destroy()
 
