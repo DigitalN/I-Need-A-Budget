@@ -92,6 +92,18 @@ All in `Application Files/`:
   renamed), `prune` (four months; the `-wal`/`-shm` SQLite leaves beside a backup opened in
   place go with it), `move_old` (the data folder's old `Backups/`).
   `scripts/tests/test_backups.py` covers it, every way of quitting included.
+- `budget_folder.py`: the budget folder ([ADR 0008](../docs/adr/0008-the-budget-lives-in-a-folder-you-choose.md),
+  issue #183; not wired to the window yet, #189 does that). `BudgetFolder` saves the working
+  copy into the folder whole as `Budget.inab` (a copy in the data folder's `Saves/` with meta
+  `save`: id, the saves it was built on, computer, time, versions; then a hidden name, renamed,
+  retried while Windows or a sync tool holds the file), a few seconds after changes stop and at
+  quit, only when `backups.digest` changed. `check` (every few seconds) takes another computer's
+  save built on this one's when nothing changed here, or finds it changed on two computers
+  (`two_computers()`: the three files; `keep_this`, `keep_other`; the other goes into `Backups/`).
+  Sync tools' conflict copies count the same; a newer budget format is refused; a folder that
+  can't be reached is waited for; `move_to`, `open_from`, notes of where it's open.
+  `INAB_COMPUTER` names this computer (two previews on one folder).
+  `scripts/tests/test_budget_folder.py` covers it with two data folders sharing one folder.
 - `importer.py`: detects and parses OFX/QFX/QBO from any bank, Tangerine card and bank
   CSVs, RBC's CSV (every account in one file, so a file has `parts`), CSVs set up once
   (`csvlayout.py`), and Actual Budget's export (learnt from, never imported as
