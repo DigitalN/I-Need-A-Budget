@@ -268,7 +268,6 @@ jobs:
     timeout-minutes: 30
     env:
       VERSION: ${{ needs.check.outputs.version }}
-      INAB_BUILD_DIR: ${{ runner.temp }}/build
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5.1.0
         with:
@@ -291,6 +290,7 @@ jobs:
       - name: Build the Windows installer
         run: |
           set -euo pipefail
+          export INAB_BUILD_DIR="$RUNNER_TEMP/build"
           installer=$(scripts/build-windows.sh "$RUNNER_TEMP/out")
           [[ "$(basename "$installer")" == "I-Need-A-Budget-$VERSION-Setup.exe" ]] || { echo "::error::The installer is $installer."; exit 1; }
           # Windows copies check updates with the release key's public half built into them.
@@ -299,7 +299,7 @@ jobs:
           cmp -s "$bundled" "Application Files/release-key.pub" || { echo "::error::The Windows app doesn't have Application Files/release-key.pub in it."; exit 1; }
       - name: The build's log
         if: failure()
-        run: cat "$INAB_BUILD_DIR/build.log" 2>/dev/null || true
+        run: cat "$RUNNER_TEMP/build/build.log" 2>/dev/null || true
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: windows-installer
