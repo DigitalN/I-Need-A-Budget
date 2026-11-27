@@ -24,13 +24,15 @@ def tracked_files():
 def test_gitignore_keeps_out_bank_files_and_databases():
     ignored = subprocess.run(["git", "check-ignore", "--no-index", "x.CSV", "x.csv", "x.qfx", "x.ofx", "budget.db",
                               "budget.db-wal", "budget.db-shm", "budget.db-journal", "budget-2026-10-12.tmp", "app.log",
-                              "Imported Files/a.CSV", "Backups/budget-2026-10-12.db", ".git-denylist"],
+                              "Imported Files/a.CSV", "Backups/budget-2026-10-12.db", ".git-denylist",
+                              "Certificates.p12", "release.PFX"],
                              cwd=ROOT, capture_output=True, text=True).stdout.split()
-    assert len(ignored) == 14  # 13 paths, one of them with a space
+    assert len(ignored) == 16  # 15 paths, one of them with a space
 
 
 def test_no_bank_files_or_databases_would_be_committed():
-    bad = [p for p in tracked_files() if p.suffix.lower() in (".csv", ".ofx", ".qfx", ".qbo", ".db", ".sqlite")]
+    bad = [p for p in tracked_files() if p.suffix.lower() in (".csv", ".ofx", ".qfx", ".qbo", ".db", ".sqlite",
+                                                                ".p12", ".pfx")]
     assert bad == []
 
 
