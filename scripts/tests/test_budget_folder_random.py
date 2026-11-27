@@ -59,8 +59,9 @@ SEEDS += [found for found in FOUND if found not in SEEDS]
 # The same, with backups restored by hand: 3, 45 and 54 following a move after a restore counted nothing
 # known; 145 a change on top of a restore's very contents forgot what it was built on; 401 a computer that
 # missed the restore of its very contents was asked; 2216 a budget saved again unchanged, and counts joined
-# after a take, each counted one more of its own; 49, 60, 216, 763, 1053, 1120 and 3425 this test's own mistakes.
-FOUND_WITH_RESTORES = [(seed, 40) for seed in (3, 45, 49, 54, 60, 145, 216, 401, 763, 1053, 1120, 2216, 3425)]
+# after a take, each counted one more of its own; 959 a save built on the same change made apart was asked
+# about; 49, 60, 216, 763, 1053, 1120 and 3425 this test's own mistakes.
+FOUND_WITH_RESTORES = [(seed, 40) for seed in (3, 45, 49, 54, 60, 145, 216, 401, 763, 959, 1053, 1120, 2216, 3425)]
 RESTORE_SEEDS = [(seed, STEPS) for seed in range(int(os.environ.get("INAB_SEEDS", "100")))]
 RESTORE_SEEDS += [found for found in FOUND_WITH_RESTORES if found not in RESTORE_SEEDS]
 START = datetime(2026, 11, 27, 9, 0, tzinfo=timezone(timedelta(hours=-7)))

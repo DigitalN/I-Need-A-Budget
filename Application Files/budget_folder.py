@@ -45,7 +45,8 @@ Every budget in the folder is a save: Budget.inab, and a sync tool's conflict co
   "restore previous version", the same backup restored again): never saved over and never gone
   back to without asking (`older`).
 A save this computer didn't come after, with the very contents of its budget, is the same save
-(it's recorded as coming after both). Whenever what this computer records differs from the
+(it's recorded as coming after both, and its counts kept as alike: `Save.alike`, so a save that
+came after it is taken by a computer that changed nothing, unasked). Whenever what this computer records differs from the
 folder's save (a restore taken, Keep the other one, the same contents adopted), it saves, so the
 other computers see it counted; a restore taken is saved as itself, not as one more save.
 
@@ -139,6 +140,7 @@ SAVES = "Saves"               # in the data folder
 COMPUTER_FILE = "computer.json"  # in the data folder: this computer's id in saves
 KEPT_SAVES = 10               # besides the one this computer started from and the other one
 SAVE_AFTER = 5                # seconds without a change before saving
+ALIKE = 16                    # other saves with a save's very contents it remembers (`Save.alike`)
 REPLACE_TRIES = 40            # × REPLACE_WAIT: how long a file Windows or a sync tool holds is waited for
 REPLACE_WAIT = 0.25
 SAVE_KEY = backups.SAVE_KEY   # meta: the save this budget is, or started from
@@ -161,6 +163,7 @@ class NotABudget(Exception):
 class Save:
     id: str
     counts: dict = field(default_factory=dict)  # what it came after: computer id → its count, restore key → 1
+    alike: list = field(default_factory=list)   # the counts of other saves with its very contents (made apart)
     computer: str = None        # the name of the computer that saved it
     saved_at: str = None        # ISO, with the saving computer's offset from UTC
     app_version: str = None
@@ -172,7 +175,8 @@ class Save:
 
     def kept(self):
         """What's kept in meta about it."""
-        return json.dumps({"id": self.id, "counts": self.counts, "computer": self.computer, "saved_at": self.saved_at,
+        return json.dumps({"id": self.id, "counts": self.counts, "alike": self.alike,
+                           "computer": self.computer, "saved_at": self.saved_at,
                            "app_version": self.app_version, "schema_version": self.schema_version,
                            "digest": self.digest})
 
@@ -182,8 +186,9 @@ class Save:
         if not isinstance(raw, dict) or not isinstance(raw.get("id"), str):
             raise ValueError("not a save")
         counts = raw.get("counts") if isinstance(raw.get("counts"), dict) else {}
-        counts = {k: v for k, v in counts.items() if isinstance(k, str) and type(v) is int and v > 0}
-        return cls(id=raw["id"], counts=counts, computer=raw.get("computer"), saved_at=raw.get("saved_at"), app_version=raw.get("app_version"),
+        counts = _vector(counts)
+        alike = [_vector(v) for v in raw.get("alike") or [] if isinstance(v, dict)]
+        return cls(id=raw["id"], counts=counts, alike=[v for v in alike if v], computer=raw.get("computer"), saved_at=raw.get("saved_at"), app_version=raw.get("app_version"),
                    schema_version=int(raw.get("schema_version") or SCHEMA_VERSION), digest=raw.get("digest"))
 
     def about(self):
@@ -268,6 +273,20 @@ def _covers(a, b):
     return all(a.get(k, 0) >= n for k, n in b.items())
 
 
+def _vector(counts):
+    return {k: v for k, v in counts.items() if isinstance(k, str) and type(v) is int and v > 0}
+
+
+def _alike(counts, *lists):
+    """Other saves' counts with the very same contents, each once, the newest few, never `counts` itself."""
+    out = []
+    for vectors in lists:
+        for v in vectors:
+            if v and v != counts and v not in out:
+                out.append(v)
+    return out[-ALIKE:]
+
+
 def _merge(*counts):
     merged = {}
     for c in counts:
@@ -317,6 +336,8 @@ def arriving(save, mine):
         return NEWER
     if kind == APART and mine is not None and save.digest and restore_key(save.digest) in mine.counts:
         return OLDER
+    if kind == APART and mine is not None and any(_covers(save.counts, v) for v in mine.alike):
+        return NEWER  # it came after a save with this computer's very contents (the same change made apart)
     return kind
 
 
@@ -569,8 +590,13 @@ class BudgetFolder:
         """A save with the very contents of this computer's budget (its own save after a crash, two
         computers making one change) is the same save: recorded as coming after both, no take. A
         restore arriving is taken as the restore: its counts alone, as every computer takes it."""
-        counts = dict(save.counts) if restore else _merge(save.counts, mine.counts if mine else {})
-        adopted = replace(save, counts=counts, raw=False, name=None, path=None)
+        same = mine is not None and mine.digest == save.digest
+        if restore:
+            counts, alike = dict(save.counts), _alike(save.counts, save.alike)
+        else:
+            counts = _merge(save.counts, mine.counts if mine else {})
+            alike = _alike(counts, save.alike, [save.counts], mine.alike if same else [], [mine.counts] if same else [])
+        adopted = replace(save, counts=counts, alike=alike, raw=False, name=None, path=None)
         self._set_mine(adopted)
         if save.name == FILE_NAME:
             self._landed(save.id)
@@ -762,7 +788,8 @@ class BudgetFolder:
                 if count or over or mine is None:  # a change, or a choice: one more of this computer's
                     counts[self.computer_id()] = self._next_count(counts)
                 save_id = uuid.uuid4().hex
-                save = Save(id=save_id, counts=counts,
+                same = mine is not None and digest == mine.digest  # nothing changed: the saves alike still are
+                save = Save(id=save_id, counts=counts, alike=_alike(counts, mine.alike) if same else [],
                             computer=self.computer, saved_at=stamp, app_version=self.app_version,
                             schema_version=SCHEMA_VERSION, digest=digest, name=FILE_NAME,
                             path=saves / f"{save_id}{EXTENSION}")
@@ -878,7 +905,9 @@ class BudgetFolder:
             # joined in, so a save that comes after the restore is taken here). Otherwise after both: a newer
             # save's own counts, or one taken by choice (Keep the other one, Use it) counted after this one's.
             counts = dict(save.counts) if fresh or restore or mine is None else _merge(save.counts, mine.counts)
-            self._set_mine(replace(save, counts=counts, raw=False, digest=backups.digest(self.db)))
+            same = not (fresh or restore) and mine is not None and mine.digest == found.digest
+            alike = _alike(counts, save.alike, mine.alike if same else [], [mine.counts] if same else [])
+            self._set_mine(replace(save, counts=counts, alike=alike, raw=False, digest=backups.digest(self.db)))
             if save.name == FILE_NAME:
                 self._landed(save.id)
             elif landed and not fresh:

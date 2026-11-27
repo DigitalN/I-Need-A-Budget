@@ -1729,3 +1729,28 @@ def test_a_computer_that_missed_the_restore_of_its_very_contents_takes_what_came
     b.check(wait=False)
     state = a.check(wait=False)
     assert state["state"] == "saved" and state["took"] and categories(a.db) == ["Groceries", "Bills"]
+
+
+def test_a_save_built_on_the_same_change_made_apart_is_taken(tmp_path):
+    """PC-A and PC-C add Gifts apart; PC-A joins PC-C's save (the very same contents), then PC-C,
+    whose sync is behind, adds Rent on top of its own (random seed 959). PC-A changed nothing since:
+    everything it has is in PC-C's save, so it's taken, unasked."""
+    folder = tmp_path / "Budget"
+    a = computer(tmp_path, "PC-A")
+    add_category(a.db, "Groceries")
+    a.move_to(folder)
+    c = computer(tmp_path, "PC-C")
+    c.open_from(folder)
+    seen_on_c = _view(c, folder)
+    add_category(a.db, "Gifts")
+    a.check(wait=False)
+    add_category(c.db, "Gifts")                          # the same change, where PC-C's sync is behind
+    c.check(wait=False)
+    shutil.copyfile(seen_on_c / FILE_NAME, folder / "Budget-PC-C.inab")  # the sync tool keeps PC-A's
+    assert a.check(wait=False)["state"] == "saved"       # the same contents: joined
+    add_category(c.db, "Rent")                           # on top of its own, still behind
+    c.check(wait=False)
+    shutil.copyfile(folder / FILE_NAME, folder / "Budget-cloud.inab")    # now the sync tool keeps PC-C's
+    shutil.copyfile(seen_on_c / FILE_NAME, folder / FILE_NAME)
+    state = a.check(wait=False)
+    assert state["state"] == "saved" and state["took"] and categories(a.db) == ["Groceries", "Gifts", "Rent"]
