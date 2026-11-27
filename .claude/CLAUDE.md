@@ -132,16 +132,18 @@ All in `Application Files/`:
 - `budget_folder.py`: the budget folder ([ADR 0008](../docs/adr/0008-the-budget-lives-in-a-folder-you-choose.md),
   issue #183; not wired to the window yet, #189 does that). `BudgetFolder` saves the working
   copy into the folder whole as `Budget.inab` (a copy in the data folder's `Saves/` with meta
-  `save`: id, its line (the original, or a restore's, named from the restored file's contents,
-  so every computer makes the same of a restore), each computer's count of saves in that line (a
-  version vector, exact however long the history), computer, time, versions; recorded as this computer's before it goes into the folder
+  `save`: id, counts (one version vector over computers, each one's count of its saves, and
+  restores, `restore:<digest>` named from the restored file's contents, so every computer makes the
+  same of a restore), computer, time, versions; recorded as this computer's before it goes into the folder
   under a hidden name, renamed, retried while Windows or a sync tool holds the file), a few
   seconds after changes stop and at quit, only when `backups.digest` changed. `check` (every few
   seconds) takes another computer's save built on this one's when nothing changed here (after
   the page's requests under way: `Turns`), or finds it changed on two computers
   (`two_computers()` for `changes.compare`; `keep_this`, `keep_other`; the other goes into
-  `Backups/`). Sync tools' conflict copies count the same, and a `Budget.inab` no computer saved
-  (a backup: backups keep no meta `save`) is a new save; an older save put back, or a
+  `Backups/`). Sync tools' conflict copies count the same. A `Budget.inab` no computer saved (a
+  backup copied in to restore it: backups keep no meta `save`) is taken by each computer that changed
+  nothing, its budget into `Backups/` first and its counts then the restore's alone, and asked about
+  by one that did; as a conflict copy it's apart. An older save put back, or a
   `Budget.inab` gone once this computer's save was there, asks (`older`, `missing`); a newer
   budget format is refused; a folder that can't be reached is waited for; `move_to`,
   `open_from`, notes of where it's open. This computer's id in saves is new for each budget and

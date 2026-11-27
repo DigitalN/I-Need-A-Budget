@@ -15,8 +15,8 @@ What's where:
   (`.Budget open on <computer>.json`), removed at quit: a heads-up, not a lock.
 
 **Saving** (`_save`): a complete copy of the working copy (`VACUUM INTO`, in Saves/) with what's
-kept about the save written into it (meta `save`: an id, how many saves each computer has made
-in it, which computer saved it, when, the app's version and the budget format's). Then that's
+kept about the save written into it (meta `save`: an id, what it counts, which computer saved it,
+when, the app's version and the budget format's). Then that's
 recorded in the working copy as the save it started from, and only then is the copy put in the
 folder, under a hidden name and renamed over Budget.inab, tried again while Windows or a sync
 tool briefly holds the file (`_replace`). A crash after recording leaves the folder behind,
@@ -25,28 +25,26 @@ budget changed since the save it started from (`backups.digest`, which leaves ou
 about saves and backups: they aren't a change), a few seconds after changes stop
 (`SAVE_AFTER`), and at quit.
 
-**Which save came from which** (`relation`): a save is on a line, the original or a restore's,
-and counts how many saves each computer has made in that line (a version vector: `counts`,
-computer id → count). In one line, a save came after another when each of its counts is at least
-the other's: exact however many saves there were. A restored backup (a Budget.inab no computer
-saved) starts a line named after its contents (`restore:<digest>`), and its id and counts come from
-its contents too, so every computer that takes it makes the same of it, whatever it had seen; it
-comes after any line it isn't in. Across lines: by the lines a save says it came after
-(`supersedes`), then the original before any restore's. Never by any computer's clock: two saves
-neither of which came after the other are apart, a question when their contents differ.
+**Which save came from which** (`relation`): one version vector, `counts`, over computers and
+restores: each computer's id → its count (one more for each save it makes, never counted again:
+`computer.json` keeps the last), and each restore's key (`restore:<digest>`, from the restored
+file's contents) → 1. A save came after another when it counts everything the other does: exact
+however many saves there were. Never by any computer's clock: two saves neither of which came
+after the other are apart, a question when their contents differ.
 Every budget in the folder is a save: Budget.inab, and a sync tool's conflict copy (OneDrive's
 `Budget-<computer>.inab`, iCloud's `Budget 2.inab`, Dropbox's `Budget (… conflicted copy
 …).inab`) the same way. Watching (`check`, every few seconds, the Downloads watcher's rhythm):
 - this computer's save, or one it came after: nothing new (a conflict copy goes into Backups/);
-- one that came after this computer's: taken straight away when this computer has changed
-  nothing since the save it started from (the working copy becomes it, ⌘Z is cleared, as an
-  import does); otherwise the budget was **changed on two computers**;
+- one that came after this computer's (or counts a restore of this computer's very contents):
+  taken straight away when this computer has changed nothing since the save it started from (the
+  working copy becomes it, ⌘Z is cleared, as an import does); otherwise the budget was **changed
+  on two computers**;
 - neither (each computer saved on top of the same save, before seeing the other's): changed on
   two computers;
 - an older one than this computer's in the folder, other than its own last save (a sync tool's
   "restore previous version", the same backup restored again): never saved over and never gone
   back to without asking (`older`).
-A save with the very contents of this computer's budget is the same save, whatever its counts
+A save this computer didn't come after, with the very contents of its budget, is the same save
 (it's recorded as coming after both). Whenever what this computer records differs from the
 folder's save (a restore taken, Keep the other one, the same contents adopted), it saves, so the
 other computers see it counted; a restore taken is saved as itself, not as one more save.
@@ -86,10 +84,17 @@ and empty, goes into that folder's Backups/ first. The same budget opened in ano
 older than this computer's is saved over, and what reached the old folder after the move (a copy
 a question put away, a file imported while this computer's sync was behind) follows.
 
-**Restoring a backup** (backups.py): quit the app on every computer, then copy the backup into
-the budget folder as `Budget.inab`. Backups keep nothing about saves, so it's one no computer
-saved: each takes it when it next looks (one with changes not saved yet asks). The same backup
-restored again is the same save, older by then than the line it started: `older` asks.
+**Restoring a backup** (backups.py; the maintainer's choice on #196): quit the app on every
+computer, then copy the backup into the budget folder as `Budget.inab`. Backups keep nothing about
+saves, so it's one no computer saved (`a_restore`): its id and counts come from its contents, so
+every computer makes the same of it, and as Budget.inab it comes after whatever doesn't count it
+already (`arriving`). Each computer that changed nothing takes it when it next looks: its own
+budget goes into Backups/ first (once for those contents), and its counts are then the restore's
+alone, nothing it had joined in; the first saves it back as itself. One with changes not saved
+yet asks. Keep this over it counts both, so a computer that only took the restore takes that. As a
+sync tool's conflict copy a restore is apart from the save it conflicts with, and so is a save in
+flight when the backup was restored: each asks unless the contents are the same. The same backup
+restored again is older by then than what came after it: `older` asks.
 
 **A Budget.inab that's gone** once this computer's save was in the folder (`save_landed`) is never
 made again without asking (`missing`): the window offers to save it again (`save_again`) or to
