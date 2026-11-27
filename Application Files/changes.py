@@ -61,7 +61,7 @@ and days as "Oct 3", in docs/CONTEXT.md's words.
 import os
 import sqlite3
 from pathlib import Path
-from urllib.request import pathname2url
+from urllib.parse import quote
 
 import backups
 from ledger import DEBT_KINDS, KIND_LABELS
@@ -268,12 +268,11 @@ def _read(source):
 
 
 def _uri(path):
-    """A file: URI SQLite opens, for any path: C:\\… or /Users/…, and \\\\server\\share\\… (file:////server/share/…:
-    SQLite refuses a host in the URI). Not resolved: on Windows that would turn a mapped drive into its share."""
-    url = pathname2url(os.path.abspath(path))
-    if url.startswith("//") and not url.startswith("///"):
-        url = "//" + url
-    return f"file:{url}"
+    """A file: URI SQLite opens, for any path, with no host in it (SQLite refuses one): /Users/… → file:///Users/…,
+    C:\\… → file:///C:/…, \\\\server\\share\\… → file:////server/share/…. Not resolved: on Windows that would turn a
+    mapped drive into its share. Built with urllib.parse, not urllib.request (which brings sockets in)."""
+    path = os.path.abspath(path).replace(os.sep, "/")
+    return "file://" + quote(path if path.startswith("/") else "/" + path, safe="/:")
 
 
 def _snapshot(conn):
