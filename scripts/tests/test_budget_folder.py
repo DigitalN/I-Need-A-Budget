@@ -74,7 +74,8 @@ def not_kept(folder):
     return [folder / "Backups" / n for n in names(folder / "Backups") if n.startswith("budget-not-kept-")]
 
 
-def saved_elsewhere(folder, computer_name, app_version="1.5.0", schema_version=SCHEMA_VERSION, category=None):
+def saved_elsewhere(folder, computer_name, app_version="1.5.0", schema_version=SCHEMA_VERSION, category=None,
+                    same_digest=None):
     """Another computer's save over Budget.inab, built on the one there, as that computer would make it."""
     target = folder / FILE_NAME
     scratch = target.with_name(".elsewhere.partial")
@@ -84,10 +85,11 @@ def saved_elsewhere(folder, computer_name, app_version="1.5.0", schema_version=S
             group = c.execute("INSERT INTO category_groups (name) VALUES ('Elsewhere')").lastrowid
             c.execute("INSERT INTO categories (group_id, name) VALUES (?, ?)", (group, category))
         before = json.loads(c.execute("SELECT value FROM meta WHERE key = 'save'").fetchone()[0])
-        save_id = uuid.uuid4().hex
+        counts = dict(before["counts"])
+        counts[f"id-{computer_name}"] = counts.get(f"id-{computer_name}", 0) + 1
         c.execute("UPDATE meta SET value = ? WHERE key = 'save'", (json.dumps({
-            "id": save_id, "history": [save_id] + before["history"], "computer": computer_name,
-            "saved_at": NOW.isoformat(), "app_version": app_version, "schema_version": schema_version}),))
+            "id": uuid.uuid4().hex, "counts": counts, "computer": computer_name, "saved_at": NOW.isoformat(),
+            "app_version": app_version, "schema_version": schema_version, "digest": same_digest}),))
         c.execute("UPDATE meta SET value = ? WHERE key = 'schema_version'", (str(schema_version),))
     os.replace(scratch, target)
 
@@ -112,7 +114,7 @@ def test_a_save_is_one_complete_file_and_nothing_beside_it(tmp_path):
     assert {k: first[k] for k in ("computer", "saved_at", "app_version", "schema_version")} == {
         "computer": "PC-A", "saved_at": "2026-11-27T09:14:05-07:00", "app_version": "1.5.0",
         "schema_version": SCHEMA_VERSION}
-    assert first["history"] == [first["id"]]
+    assert first["counts"] == {a.computer_id(): 1}
     assert (a.db.path.parent / "Saves" / f"{first['id']}.inab").is_file()  # the save it started from
 
     add_category(a.db, "Rent")
@@ -120,7 +122,7 @@ def test_a_save_is_one_complete_file_and_nothing_beside_it(tmp_path):
     assert names(folder) == [".Budget open on PC-A.json", FILE_NAME]
     assert categories_in(saved) == ["Groceries", "Rent"]
     second = save_in(saved)
-    assert second["history"] == [second["id"], first["id"]]
+    assert second["counts"] == {a.computer_id(): 2}
 
 
 def test_nothing_is_saved_when_nothing_changed(tmp_path):
@@ -206,8 +208,8 @@ def test_changed_on_two_computers_shows_both_and_saves_neither(tmp_path):
     assert categories_in(folder / FILE_NAME) == ["Groceries"]  # not saved over
     assert categories(b.db) == ["Rent"]  # nor taken
     files = b.two_computers()
-    assert categories_in(files["started_from"]) == []
-    assert categories_in(files["this"]) == ["Rent"]
+    assert categories_in(files["started_from"]) == [] and files["can_show_changes"]
+    assert files["this"] is b.db and categories(files["this"]) == ["Rent"]  # the working copy, as it is
     assert categories_in(files["other"]) == ["Groceries"]
     assert files["other_save"]["computer"] == "PC-A"
 
@@ -259,7 +261,7 @@ def test_a_sync_tools_conflict_copy_is_another_computers_save(tmp_path, copy):
     assert state["state"] == "two_computers" and state["other"]["computer"] == "PC-B"
     files = a.two_computers()
     assert categories_in(files["started_from"]) == []  # the save both started from, before either change
-    assert categories_in(files["this"]) == ["Groceries"] and categories_in(files["other"]) == ["Rent"]
+    assert categories(files["this"]) == ["Groceries"] and categories_in(files["other"]) == ["Rent"]
     assert a.keep_this()["state"] == "saved"
     assert copy not in names(folder) and categories_in(folder / FILE_NAME) == ["Groceries"]
     assert [categories_in(p) for p in not_kept(folder)] == [["Rent"]]
@@ -552,3 +554,327 @@ def test_replacing_the_working_copy_keeps_the_database_and_clears_undo(tmp_path)
     assert mine.conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
     add_category(mine, "Gifts")  # undo still works on what it is now
     assert mine.undo() == "Add category" and categories(mine) == ["Groceries"]
+
+
+# ── the review of #196 ──
+
+def test_a_long_history_is_still_one_line(tmp_path):
+    """However many saves: a save built on another is always known to be (counts, not a list cut short)."""
+    folder = tmp_path / "Budget"
+    a = computer(tmp_path, "PC-A")
+    a.move_to(folder)
+    b = computer(tmp_path, "PC-B")
+    b.open_from(folder)
+    for i in range(60):
+        add_category(a.db, f"Sample {i}")
+        a.check(wait=False)
+    state = b.check()
+    assert state["took"]["computer"] == "PC-A" and len(categories(b.db)) == 60
+    add_category(b.db, "Rent")
+    b.check(wait=False)
+    add_category(a.db, "Gifts")
+    assert a.check(wait=False)["state"] == "two_computers"
+    assert a.keep_this()["state"] == "saved"
+    state = b.check()  # PC-B changed nothing since its save: the one kept counts it
+    assert state["took"]["computer"] == "PC-A" and "Gifts" in categories(b.db) and "Rent" not in categories(b.db)
+
+
+def test_a_copy_that_went_from_saves_is_read_again_never_taken_empty(tmp_path):
+    folder = tmp_path / "Budget"
+    a = computer(tmp_path, "PC-A")
+    a.move_to(folder)
+    b = computer(tmp_path, "PC-B")
+    b.open_from(folder)
+    add_category(a.db, "Groceries")
+    a.check(wait=False)
+    [(_, read)] = b._read_folder(folder)[0] and [(None, b._seen[str(folder / FILE_NAME)][1])]
+    read.path.unlink()  # its copy in Saves/ is gone (cleaned by hand)
+    state = b.check()
+    assert state["took"]["computer"] == "PC-A" and categories(b.db) == ["Groceries"]
+
+    add_category(a.db, "Rent")
+    a.check(wait=False)
+    b._read_folder(folder)
+    copy = b._seen[str(folder / FILE_NAME)][1].path
+    copy.write_bytes(b"half a file")  # damaged after it was read
+    assert b.check()["state"] == "waiting" and categories(b.db) == ["Groceries"]  # nothing taken
+    assert b.check()["took"]["computer"] == "PC-A" and categories(b.db) == ["Groceries", "Rent"]
+
+
+def test_replacing_with_a_file_that_isnt_there_changes_nothing(tmp_path):
+    db = Database(tmp_path / "budget.db")
+    add_category(db, "Rent")
+    with pytest.raises(sqlite3.OperationalError):
+        db.replace_with(tmp_path / "gone.inab")
+    assert categories(db) == ["Rent"] and not (tmp_path / "gone.inab").exists()
+
+
+def test_a_crash_while_saving_is_saved_again_never_asked(tmp_path, monkeypatch):
+    folder = tmp_path / "Budget"
+    a = computer(tmp_path, "PC-A")
+    a.move_to(folder)
+    add_category(a.db, "Groceries")
+    recording = a._set_mine
+
+    def power_cut(save):
+        raise KeyboardInterrupt("power cut")
+
+    a._set_mine = power_cut  # before what's saved is recorded
+    with pytest.raises(KeyboardInterrupt):
+        a.check(wait=False)
+    a._set_mine = recording
+    a._seen.clear()
+    assert a.check(wait=False)["state"] == "saved" and categories_in(folder / FILE_NAME) == ["Groceries"]
+
+    add_category(a.db, "Rent")
+    copy = budget_folder._copy
+
+    def cut_off(source, target):  # after it's recorded, before it's in the folder
+        if Path(target).parent == folder:
+            raise KeyboardInterrupt("power cut")
+        return copy(source, target)
+
+    monkeypatch.setattr(budget_folder, "_copy", cut_off)
+    with pytest.raises(KeyboardInterrupt):
+        a.check(wait=False)
+    monkeypatch.setattr(budget_folder, "_copy", copy)
+    a._seen.clear()
+    state = a.check(wait=False)
+    assert state["state"] == "saved" and categories_in(folder / FILE_NAME) == ["Groceries", "Rent"]
+    assert names(folder) == [".Budget open on PC-A.json", FILE_NAME]
+
+
+def test_a_copy_in_saves_held_by_another_program_is_waited_for(tmp_path, monkeypatch):
+    folder = tmp_path / "Budget"
+    waited = []
+    a = computer(tmp_path, "PC-A", sleep=waited.append)
+    a.move_to(folder)
+    add_category(a.db, "Groceries")
+    replace, busy = os.replace, {"tries": 3}
+
+    def held(source, target):
+        if Path(target).parent.name == "Saves" and busy["tries"]:
+            busy["tries"] -= 1
+            raise PermissionError(13, "The process cannot access the file")
+        return replace(source, target)
+
+    monkeypatch.setattr(budget_folder.os, "replace", held)
+    assert a.check(wait=False)["state"] == "saved" and waited == [budget_folder.REPLACE_WAIT] * 3
+    monkeypatch.setattr(budget_folder.os, "replace", replace)
+    assert a.check(wait=False)["state"] == "saved"  # its own save, not another computer's
+
+
+def test_a_save_with_this_computers_contents_is_the_same_save(tmp_path):
+    folder = tmp_path / "Budget"
+    a = computer(tmp_path, "PC-A")
+    add_category(a.db, "Groceries")
+    a.move_to(folder)
+    saved_elsewhere(folder, "PC-B", same_digest=save_in(folder / FILE_NAME)["digest"])
+    state = a.check(wait=False)
+    assert state["state"] == "saved" and "took" not in state
+
+
+def test_backups_keep_nothing_about_saves(tmp_path):
+    folder = tmp_path / "Budget"
+    a = computer(tmp_path, "PC-A")
+    a.move_to(folder)
+    made = backups.make(a.db)
+    with closing(sqlite3.connect(f"{made.as_uri()}?mode=ro", uri=True)) as c:
+        assert c.execute("SELECT COUNT(*) FROM meta WHERE key = 'save'").fetchone()[0] == 0
+
+
+def test_restoring_a_backup_into_the_folder_is_taken_by_every_computer(tmp_path):
+    """The 1.5 way: quit the app on every computer, copy the backup in as Budget.inab."""
+    folder = tmp_path / "Budget"
+    a = computer(tmp_path, "PC-A")
+    a.move_to(folder)
+    b = computer(tmp_path, "PC-B")
+    b.open_from(folder)
+    add_category(a.db, "Groceries")
+    a.check(wait=False)
+    b.check()
+    made = backups.make(a.db)
+    add_category(a.db, "Rent")
+    a.check(wait=False)
+    b.check()
+    shutil.copyfile(made, folder / FILE_NAME)
+    assert a.check()["took"]["computer"] is None and categories(a.db) == ["Groceries"]
+    assert b.check()["took"]["computer"] is None and categories(b.db) == ["Groceries"]
+    assert a.check()["state"] == b.check()["state"] == "saved"
+    add_category(a.db, "Gifts")
+    a.check(wait=False)
+    assert b.check()["took"]["computer"] == "PC-A" and categories(b.db) == ["Groceries", "Gifts"]
+    shutil.copyfile(made, folder / "Budget 2.inab")  # a sync tool's copy of the restored one: old now
+    assert a.check()["state"] == "saved" and "Budget 2.inab" not in names(folder)
+
+
+def test_restoring_a_backup_asks_a_computer_with_changes_not_saved_yet(tmp_path):
+    folder = tmp_path / "Budget"
+    a = computer(tmp_path, "PC-A")
+    add_category(a.db, "Groceries")
+    a.move_to(folder)
+    made = backups.make(a.db)
+    add_category(a.db, "Rent")
+    shutil.copyfile(made, folder / FILE_NAME)
+    state = a.check(wait=False)
+    assert state["state"] == "two_computers" and state["other"]["computer"] is None
+    files = a.two_computers()
+    assert categories_in(files["started_from"]) == ["Groceries"] and categories_in(files["other"]) == ["Groceries"]
+    a.keep_this()
+    assert categories_in(folder / FILE_NAME) == ["Groceries", "Rent"]
+
+
+def test_a_backup_restored_as_the_working_copy_asks_instead_of_being_replaced(tmp_path):
+    """The way before 1.5 (CLAUDE.md's): with the app closed, the backup copied in as budget.db."""
+    folder = tmp_path / "Budget"
+    a = computer(tmp_path, "PC-A")
+    add_category(a.db, "Groceries")
+    a.move_to(folder)
+    made = shutil.copyfile(backups.make(a.db), tmp_path / "the backup.db")  # aside: quitting backs up again
+    add_category(a.db, "Rent")
+    a.at_quit()
+    a.db.close()
+    for side in ("budget.db-wal", "budget.db-shm"):
+        (a.data_dir / side).unlink(missing_ok=True)
+    shutil.copyfile(made, a.data_dir / "budget.db")
+    saved = (folder / FILE_NAME).read_bytes()
+    relaunched = BudgetFolder(Database(a.data_dir / "budget.db"), a.data_dir, folder, computer="PC-A", now=lambda: NOW)
+    assert relaunched.at_launch()["state"] == "two_computers"
+    assert categories(relaunched.db) == ["Groceries"] and (folder / FILE_NAME).read_bytes() == saved
+
+
+def test_a_take_waits_for_a_request_under_way(tmp_path):
+    """A request reads, then writes: another computer's save never lands in between."""
+    folder = tmp_path / "Budget"
+    a = service(tmp_path, "PC-A")
+    call(a, "move_budget_folder", str(folder))
+    b = service(tmp_path, "PC-B")
+    call(b, "open_budget_folder", str(folder))
+    call(a, "add_group", "Everyday")
+    a.budget_folder_at_quit()
+    found = {}
+    with b.turns.shared():  # a request under way
+        watcher = threading.Thread(target=lambda: found.update(b.watch_budget_folder()))
+        watcher.start()
+        watcher.join(0.5)
+        assert watcher.is_alive()  # the take waits
+        call(b, "add_group", "Bills")  # the request's write
+    watcher.join(5)
+    assert found["state"] == "two_computers"  # not taken over PC-B's change: asked
+    assert [g["name"] for g in call(b, "categories")] == ["Bills"]
+
+
+def test_a_take_from_inside_a_request_is_refused_not_stuck():
+    turns = budget_folder.Turns()
+    with turns.shared(), pytest.raises(RuntimeError):
+        with turns.alone():
+            pass
+    with turns.alone(), turns.alone(), turns.shared():  # one thread: reentrant
+        pass
+
+
+def test_the_save_this_computer_started_from_is_never_pruned(tmp_path):
+    folder = tmp_path / "Budget"
+    a = computer(tmp_path, "PC-A")
+    a.move_to(folder)
+    b = computer(tmp_path, "PC-B")
+    b.open_from(folder)
+    add_category(b.db, "Rent")
+    for i in range(15):
+        add_category(a.db, f"Sample {i}")
+        a.check(wait=False)
+        assert b.check()["state"] == "two_computers"
+    files = b.two_computers()
+    assert files["can_show_changes"] and categories_in(files["started_from"]) == []
+    assert len(names(b.db.path.parent / "Saves")) <= budget_folder.KEPT_SAVES + 3
+
+
+def test_when_the_save_both_started_from_is_gone_the_question_is_still_asked(tmp_path):
+    folder, seen_on_b = tmp_path / "Budget", tmp_path / "PC-B sees" / "Budget"
+    a = computer(tmp_path, "PC-A")
+    a.move_to(folder)
+    shutil.copytree(folder, seen_on_b)
+    b = computer(tmp_path, "PC-B")
+    b.open_from(seen_on_b)
+    add_category(b.db, "Rent")
+    b.check(wait=False)
+    for i in range(budget_folder.KEPT_SAVES + 2):  # PC-A saves on, apart: the save both started from is pruned
+        add_category(a.db, f"Sample {i}")
+        a.check(wait=False)
+    shutil.copyfile(seen_on_b / FILE_NAME, folder / "Budget 2.inab")
+    assert a.check()["state"] == "two_computers"
+    files = a.two_computers()
+    assert files["started_from"] is None and not files["can_show_changes"]
+    assert a.keep_this()["state"] == "saved"
+    shutil.copyfile(folder / FILE_NAME, seen_on_b / FILE_NAME)
+    assert b.check()["took"]["computer"] == "PC-A"
+
+
+def test_keeping_this_one_looks_again_first(tmp_path):
+    folder, a, b = _changed_on_both(tmp_path)
+    b.check(wait=False)
+    add_category(a.db, "Gifts")
+    a.check(wait=False)  # PC-A saved again after PC-B was asked
+    assert b.keep_this()["state"] == "saved"
+    assert sorted(sorted(categories_in(p)) for p in not_kept(folder)) == [["Gifts", "Groceries"], ["Groceries"]]
+    assert a.check()["took"]["computer"] == "PC-B" and categories(a.db) == ["Rent"]
+
+    folder, a, b = _changed_on_both(tmp_path / "newer")
+    b.check(wait=False)
+    saved_elsewhere(folder, "PC-C", app_version="9.0.0", schema_version=SCHEMA_VERSION + 1)
+    saved = (folder / FILE_NAME).read_bytes()
+    with pytest.raises(UserError, match="9.0.0"):
+        b.keep_this()
+    assert (folder / FILE_NAME).read_bytes() == saved
+
+
+def test_moving_from_a_folder_that_cant_be_reached_asks_first(tmp_path):
+    old, new = tmp_path / "Drive" / "Budget", tmp_path / "New" / "Budget"
+    a = computer(tmp_path, "PC-A")
+    add_category(a.db, "Groceries")
+    a.move_to(old)
+    old.rename(tmp_path / "Unplugged")
+    with pytest.raises(UserError, match="can't be reached"):
+        a.move_to(new)
+    assert not new.exists()
+    assert a.move_to(new, old_folder_gone=True)["state"] == "saved"
+    assert categories_in(new / FILE_NAME) == ["Groceries"]
+
+
+def test_a_budget_icloud_hasnt_downloaded_yet_is_still_a_budget(tmp_path):
+    folder = tmp_path / "iCloud" / "Budget"
+    folder.mkdir(parents=True)
+    (folder / ".Budget.inab.icloud").write_bytes(b"placeholder")
+    a = computer(tmp_path, "PC-A")
+    assert a.look_in(folder)["budget"] == {"computer": None, "saved_at": None, "app_version": None}
+    with pytest.raises(UserError, match="already has a budget"):
+        a.move_to(folder)
+    with pytest.raises(UserError, match="iCloud"):
+        a.open_from(folder)
+    assert names(folder) == [".Budget.inab.icloud"]
+
+
+def test_two_computers_backing_up_at_once_keep_both(tmp_path):
+    folder = tmp_path / "Budget"
+    a = computer(tmp_path, "PC-A")
+    a.move_to(folder)
+    b = computer(tmp_path, "PC-B")
+    b.open_from(folder)
+    when = datetime(2026, 11, 27, 9, 14, 5)
+    made = {backups.make(a.db, when).name, backups.make(b.db, when).name}
+    assert made == {"budget-2026-11-27-09-14-05 on PC-A.db", "budget-2026-11-27-09-14-05 on PC-B.db"}
+    assert made <= set(names(folder / "Backups"))
+
+
+def test_pruning_leaves_another_computers_backup_being_made(tmp_path):
+    folder = tmp_path / "Backups"
+    folder.mkdir()
+    theirs = folder / ".budget-2026-11-27-09-14-05 on PC-B.db.partial"
+    mine = folder / ".budget-2026-11-27-09-14-05 on PC-A.db.partial"
+    stale = folder / ".budget-2026-11-20-09-14-05 on PC-C.db.partial"
+    for path in (theirs, mine, stale):
+        path.write_bytes(b"x")
+    two_days_ago = time.time() - 2 * 24 * 3600
+    os.utime(stale, (two_days_ago, two_days_ago))
+    backups.prune(folder, datetime(2026, 11, 27).date(), tag="PC-A")
+    assert names(folder) == [theirs.name]

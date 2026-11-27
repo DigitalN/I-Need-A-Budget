@@ -347,6 +347,7 @@ class BudgetFolder:
         self._noted = None         # the folder this computer's note is in
         self._since = None         # when the budget was opened here, for the note
         self._problem = None       # the last problem logged, so a round that fails again isn't logged again
+        self._behind = False       # the folder doesn't have this computer's last save yet (it didn't land)
         self._state = None
         self.folder = None
         if folder:
@@ -368,7 +369,7 @@ class BudgetFolder:
     def _set(self, kind, **extra):
         mine = self._mine()
         state = {"folder": str(self.folder) if self.folder else None, "state": kind,
-                 "unsaved": self.folder is not None and self._changed(),
+                 "unsaved": self.folder is not None and (self._behind or self._changed()),
                  "saved": mine.about() if mine else None, **extra}
         if kind not in ("none", "unreachable"):
             state["open_elsewhere"] = self.others_open()
@@ -446,6 +447,7 @@ class BudgetFolder:
         if FILE_NAME in unreadable:
             return self._set("waiting")
         behind = main is None or relation(main, mine) == OLDER  # not there, or a save of ours didn't land
+        self._behind = behind and mine is not None
         if behind or (self._changed() and (not wait or self._quiet())):
             self._save(folder)
         return self._set("unsaved" if self._changed() else "saved")
@@ -604,11 +606,13 @@ class BudgetFolder:
         finally:
             _discard(local)
         self._set_mine(save)  # first: a crash after this leaves the folder behind, saved again next look
+        self._behind = True
         try:
             _copy(save.path, partial)
             _replace(partial, folder / FILE_NAME, self._sleep)
         finally:
             _discard(partial)
+        self._behind = False
         self._seen[str(folder / FILE_NAME)] = (_stat_key(folder / FILE_NAME), save)
         self._prune_saves()
         log.info("Saved the budget to %s", folder / FILE_NAME)
@@ -856,6 +860,7 @@ class BudgetFolder:
     def _use(self, folder):
         self.folder = folder
         self._other = None
+        self._behind = False
         self._reachable = None
         self._noted = None
         self.db.backup_tag = _slug(self.computer)  # two computers' backups in one folder never share a name
