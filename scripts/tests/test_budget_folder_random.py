@@ -163,7 +163,7 @@ class World:
                 # those very contents that it adopted on the way (another's Move…), which its counts come after
                 for other, (v, kept) in self.made.items():
                     if v not in (before, cur) and self.versions[v][0] == self.versions[before][0] and \
-                            kept.line == started.line and budget_folder._covers(started.counts, kept.counts) and \
+                            budget_folder._covers(started.counts, kept.counts) and \
                             v not in self.versions[cur][1]:
                         self.versions[cur][1].append(v)
                         self.children.setdefault(v, set()).add(cur)
