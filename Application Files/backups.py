@@ -258,9 +258,11 @@ def months_before(day, months):
 
 def prune(folder, today, tag=None):
     """Deletes the backups in `folder` from before the last four months, except the newest one
-    from before `today`; the side files of any backup that's gone; and copies left half made: with
-    a `tag` (a budget folder every computer backs up into), only this computer's, or another's
-    left a day. Returns the backups it deleted."""
+    from before `today`; the side files of any backup that's gone; and copies left half made. With
+    a `tag` (a budget folder every computer backs up into), only this computer's backups are
+    looked at, by their names (another computer's clock may be months out from this one's: the
+    copies a question kept must never go by this one's), and another's half-made copy only once
+    it's a day old. Returns the backups it deleted."""
     folder = Path(folder)
     try:
         files = [path for path in folder.iterdir() if path.is_file()]
@@ -271,7 +273,7 @@ def prune(folder, today, tag=None):
         old_daily = _HALF_MADE.fullmatch(path.name)
         if (_partial(path) and _ours_or_old(path, tag)) or (old_daily and old_daily[1] < cutoff.isoformat()):
             path.unlink(missing_ok=True)
-    backups = found(folder)
+    backups = [(when, path) for when, path in found(folder) if tag is None or _is_ones(path.name, tag)]
     before_today = [path for when, path in backups if when.date() < today]
     spare = before_today[-1] if before_today else None
     gone = []
@@ -286,6 +288,11 @@ def prune(folder, today, tag=None):
     if gone:
         log.info("Deleted %d backup%s from before %s", len(gone), "" if len(gone) == 1 else "s", cutoff)
     return gone
+
+
+def _is_ones(name, tag):
+    """Whether a backup's name says this computer (its `tag`) made it."""
+    return name.endswith(f"{_on(tag)}.db") or re.search(rf"{re.escape(_on(tag))} \(\d+\)\.db$", name) is not None
 
 
 def _ours_or_old(path, tag):

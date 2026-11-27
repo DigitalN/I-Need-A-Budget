@@ -280,7 +280,13 @@ def test_a_sync_tools_copy_of_this_computers_own_save_is_put_away(tmp_path):
     shutil.copyfile(folder / FILE_NAME, folder / "Budget 2.inab")
     assert a.check()["state"] == "saved"
     assert "Budget 2.inab" not in names(folder)
-    assert [categories_in(p) for p in not_kept(folder)] == [["Groceries"]]  # kept, not deleted
+    assert not_kept(folder) == []  # Budget.inab has its very contents: nothing to keep a copy of
+    add_category(a.db, "Rent")
+    a.check(wait=False)
+    shutil.copyfile(sorted((a.db.path.parent / "Saves").glob("*.inab"), key=lambda p: p.stat().st_mtime)[0],
+                    folder / "Budget 3.inab")  # an older one of this computer's, which it came after
+    assert a.check()["state"] == "saved" and "Budget 3.inab" not in names(folder)
+    assert [categories_in(p) for p in not_kept(folder)] == [["Groceries"]]  # other contents: kept, not deleted
 
 
 def test_another_computers_note_is_read_back(tmp_path):
