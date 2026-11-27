@@ -309,16 +309,16 @@ class BudgetApp:
         threading.Thread(target=ask, name="quit", daemon=True).start()
         return False
 
-    def _before_quit(self, backed_up=False):
+    def _before_quit(self, backed_up=False, logging_out=False):
         """Once, whichever way the app quits: a backup (if the budget changed), then a downloaded
-        update is installed."""
+        update is installed (while logging out only where that's one step: Updater.install)."""
         if self._quitting:
             return
         self._quitting = True
         if not backed_up:
             self._back_up()
         try:
-            self._updater.install(relaunch_after=False)
+            self._updater.install(relaunch_after=False, logging_out=logging_out)
         except Exception:
             log.exception("Installing the update on quit failed")
         log.info("Quitting")
@@ -354,7 +354,7 @@ class BudgetApp:
         if self._quitting:
             return True
         if logging_out or self._ask_page_to_quit():
-            self._before_quit()
+            self._before_quit(logging_out=logging_out)
             return True
         return False
 
@@ -363,6 +363,10 @@ class BudgetApp:
 
         if self._app_path and self._computer.moved_to_install_folder(self._app_path):
             return  # it's relaunching from there
+        if self._updater.take_kept():  # an update a log-off kept, checked again: in before the window opens
+            self._back_up()            # as Restart now does it
+            if self._updater.install(relaunch_after=True):
+                return                 # the app reopens once its installer is done
         self._computer.when_asked_to_quit(self._should_quit)
         html = (_app_files_dir() / "index.html").read_text(encoding="utf-8")
         width, height = self._computer.first_window_size(MIN_SIZE, WINDOW_SHARE)

@@ -54,7 +54,10 @@ def platform_uuid(text):
 class Mac(Computer):
     name = "mac"
     update_file = (".dmg", "disk image")
+    update_signature = None             # the app in it is signed: codesign checks it
+    installs_after_quitting = False     # the swap is one step, before it quits
     curl = "/usr/bin/curl"
+    no_window = {}                      # a command-line tool shows no window on a Mac
     gh = ("/opt/homebrew/bin/gh", "/usr/local/bin/gh", "/usr/bin/gh")
 
     def __init__(self):
