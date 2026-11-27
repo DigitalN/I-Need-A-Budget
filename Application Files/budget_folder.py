@@ -415,7 +415,7 @@ class BudgetFolder:
         self._sleep = sleep
         self._lock = threading.RLock()
         self._id = None
-        self._backed_up = set()    # contents copied into Backups/ this session: never twice
+        self._backed_up = set()    # (Backups/ folder, contents) copied there this session: never twice
         self._in_backups = {}      # a file in Backups/ → ((time, size), its contents' digest)
         self._seen = {}            # path in the folder → ((mtime, size), Save): read already
         self._other = None         # changed on two computers: the other computer's save
@@ -787,10 +787,11 @@ class BudgetFolder:
     def _keep_a_copy(self, save):
         """Copies a save from the folder into Backups/ before it's saved over or removed, unless a
         copy with its very contents is there already (whichever computer made it)."""
-        if save.digest in self._backed_up or save.digest in self._backup_digests():
+        here = os.path.normcase(os.path.abspath(self.db.backup_dir))  # a copy counts only in the Backups/ in use now
+        if (here, save.digest) in self._backed_up or save.digest in self._backup_digests():
             return
         self._back_up_file(save.path)
-        self._backed_up.add(save.digest)
+        self._backed_up.add((here, save.digest))
 
     def _backup_digests(self):
         """The contents of the budgets in Backups/, each worked out once (by its time and size)."""
@@ -1153,7 +1154,7 @@ class BudgetFolder:
         budget; changes a session that didn't quit normally left are saved). Returns the state."""
         with self._lock:
             self._point_backups()
-            backups.at_launch(self.db)
+            backups.at_launch(self.db, self._clock_time())
             return self.check(wait=False)
 
     def at_quit(self):
@@ -1162,7 +1163,7 @@ class BudgetFolder:
         write-ahead log folded in."""
         with self._lock:
             self._point_backups()
-            backups.at_quit(self.db)
+            backups.at_quit(self.db, self._clock_time())
             try:
                 self.check(wait=False)
             except Exception:
@@ -1175,6 +1176,11 @@ class BudgetFolder:
                     self.db.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             except sqlite3.Error:
                 log.exception("Couldn't fold the write-ahead log into the database")
+
+    def _clock_time(self):
+        """This computer's time, for backups' names and their age alike: the not-kept copies a question
+        made are named by it, and must never look old to a second clock."""
+        return self._now().replace(tzinfo=None)
 
     # ── open on another computer ──
 

@@ -248,6 +248,7 @@ class World:
         shutil.copytree(self.home[name], view)
         self.lagging[name] = (view, self.home[name], _snapshot(self.home[name]), _snapshot(view))
         c.folder, c._reachable, c._seen = view, None, {}
+        c._point_backups()  # as the app does whenever its folder changes
 
     def sync(self, c, name):
         if name not in self.lagging:
@@ -274,6 +275,7 @@ class World:
                 (folder / rel).parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(view / rel, folder / rel)
         c.folder, c._reachable, c._seen = folder, None, {}
+        c._point_backups()
 
     def backup(self, c, name):
         (self.tmp / "pool").mkdir(exist_ok=True)
@@ -370,9 +372,11 @@ class World:
         if name in self.unplugged:
             self.unplugged.discard(name)
             c.folder, c._reachable = self.home[name], None
+            c._point_backups()
         elif self._in_sync(name):
             self.unplugged.add(name)
             c.folder, c._reachable = self.tmp / "Unplugged" / name, None
+            c._point_backups()
 
     # ── the rule ──
 
