@@ -31,6 +31,7 @@ anywhere.
 import contextlib
 import logging
 import os
+import platform
 import sys
 import uuid
 from pathlib import Path
@@ -336,6 +337,11 @@ class Windows(Computer):
                 return str(winreg.QueryValueEx(key, "MachineGuid")[0]) or None
         except (OSError, ImportError):
             return None
+
+    def computer_name(self):
+        """The PC's name as Settings → System → About shows it (Device name): its DNS host name,
+        which is what Python's gethostname asks Windows for."""
+        return platform.node() or None
 
     # ── one copy at a time ──
 

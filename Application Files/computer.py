@@ -54,6 +54,12 @@ class Computer:
         folder copied onto another Windows installation is. None when the system won't say."""
         raise NotImplementedError
 
+    def computer_name(self):
+        """This computer's name as the person knows it from the system's settings, for the window's
+        "saved on …" and the names of its files in the budget folder (budget_folder.this_computer):
+        never a network name, which changes with the network. None when the system won't say."""
+        raise NotImplementedError
+
     # ── one copy at a time ──
 
     def lock(self, path):

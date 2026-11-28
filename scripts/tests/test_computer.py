@@ -5,19 +5,22 @@ Throwaway folders only: nothing here writes to the real data, Documents or Downl
 import inspect
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
 import computer
+import budget_folder
 import computer_mac
+import computer_windows
 from computer_mac import Mac
 from computer_windows import Windows
 
 APP_FILES = Path(__file__).resolve().parents[2] / "Application Files"
 MAC_ONLY = re.compile(r"^\s*(import|from)\s+(AppKit|Foundation|WebKit|Quartz|objc|PyObjCTools|fcntl)\b"
-                      r"|webview\.platforms\.cocoa|/usr/bin/|/usr/libexec/|/bin/sh\b", re.M)
+                      r"|webview\.platforms\.cocoa|/usr/bin/|/usr/sbin/|/usr/libexec/|/bin/sh\b", re.M)
 WINDOWS_ONLY = re.compile(r"^\s*(import|from)\s+(ctypes|msvcrt|winreg|winsound|_winapi)\b|windll", re.M)
 
 
@@ -141,6 +144,51 @@ def test_the_machines_own_id():
     found = computer.this().machine_id()
     assert found is None or (isinstance(found, str) and found)
     assert computer.this().machine_id() == found  # the same every time
+
+
+def test_the_computers_name_is_the_one_its_settings_show(monkeypatch):
+    """What the window says a budget was "saved on", and what this computer's files in the budget
+    folder are named by: a Mac's Computer Name (System Settings → General → About), never its
+    network name, which changes with the network; a Windows PC's device name."""
+    ran = []
+
+    def scutil(arguments, **kwargs):
+        ran.append(arguments)
+        return subprocess.CompletedProcess(arguments, 0, stdout="Sample's MacBook Air\n")
+
+    monkeypatch.setattr(computer_mac, "_run", scutil)
+    assert Mac().computer_name() == "Sample's MacBook Air"
+    assert ran == [["/usr/sbin/scutil", "--get", "ComputerName"]]
+    monkeypatch.setattr(computer_mac, "_run", lambda a, **k: subprocess.CompletedProcess(a, 1, stdout=""))
+    assert Mac().computer_name() is None
+
+    def missing(arguments, **kwargs):
+        raise FileNotFoundError(arguments[0])
+
+    monkeypatch.setattr(computer_mac, "_run", missing)
+    assert Mac().computer_name() is None
+    monkeypatch.setattr(computer_windows.platform, "node", lambda: "SAMPLE-PC")
+    assert Windows().computer_name() == "SAMPLE-PC"
+
+
+def test_this_computer_has_a_name_of_its_own():
+    name = computer.this().computer_name()
+    assert name is None or (isinstance(name, str) and name and name == name.strip())
+
+
+def test_the_budget_folder_names_this_computer_as_its_settings_do(monkeypatch):
+    """INAB_COMPUTER first (two copies on one budget folder), then the system's settings, then the
+    network's name for it, without a Mac's ".local"."""
+    monkeypatch.delenv("INAB_COMPUTER", raising=False)
+    monkeypatch.setattr(computer.this(), "computer_name", lambda: "Sample's MacBook Air")
+    assert budget_folder.this_computer() == "Sample's MacBook Air"
+    monkeypatch.setenv("INAB_COMPUTER", "PC-B")
+    assert budget_folder.this_computer() == "PC-B"
+    monkeypatch.delenv("INAB_COMPUTER")
+    monkeypatch.setattr(computer.this(), "computer_name", lambda: None)
+    monkeypatch.setattr(budget_folder.platform, "node", lambda: "sample-mac.local")
+    assert budget_folder.this_computer() == "sample-mac"
+    assert budget_folder.computer_tag("Sample's MacBook Air", "abcdef123") == "Sample's MacBook Air abcdef"
 
 
 # ── the Windows app (issue #187) ──

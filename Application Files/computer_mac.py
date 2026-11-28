@@ -85,6 +85,15 @@ class Mac(Computer):
             return None
         return platform_uuid(result.stdout) if result.returncode == 0 else None
 
+    def computer_name(self):
+        """The name the Mac's owner gave it (System Settings → General → About → Name), not its
+        network name, which is whatever the network it's on calls it ("dhcp-…", "….lan")."""
+        try:
+            result = _run(["/usr/sbin/scutil", "--get", "ComputerName"], text=True, timeout=10)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        return (result.stdout.strip() or None) if result.returncode == 0 else None
+
     # ── one copy at a time ──
 
     def lock(self, path):

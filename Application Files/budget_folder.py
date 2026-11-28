@@ -247,9 +247,11 @@ class Turns:
 
 
 def this_computer():
-    """This computer's name as the window shows it ("Saved on …"): INAB_COMPUTER when it's set
-    (the tests, two dev previews sharing one folder), else the name the system has for it."""
-    name = os.environ.get("INAB_COMPUTER") or platform.node() or "This computer"
+    """This computer's name as the window shows it ("Saved on …") and its files in the folder are
+    named by: INAB_COMPUTER when it's set (the tests, two dev previews sharing one folder), else the
+    name the person knows it by from the system's settings (computer.computer_name: a Mac's
+    Computer Name, Windows' device name), else its network name."""
+    name = os.environ.get("INAB_COMPUTER") or computer.this().computer_name() or platform.node() or "This computer"
     return name[:-len(".local")] if name.endswith(".local") else name
 
 

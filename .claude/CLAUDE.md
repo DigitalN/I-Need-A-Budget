@@ -97,7 +97,9 @@ All in `Application Files/`:
   `computer.this()` picks `computer_mac.Mac` or `computer_windows.Windows`, the one place that
   looks at `sys.platform`. Its methods: this computer's data, log, Documents and Downloads
   folders (Windows asks for its Known Folders: a Documents OneDrive moved isn't `~/Documents`);
-  the one-copy lock and what a second launch does; the window's first size, remembered frame,
+  its name (`computer_name`, for "saved on …" and its files in the budget folder: a Mac's Computer
+  Name from System Settings, never its network name, which changes with the network; Windows'
+  device name); the one-copy lock and what a second launch does; the window's first size, remembered frame,
   Dark mode and theme; whether it can draw the page (`can_draw_the_page`: Windows without WebView2
   says so and stops); `when_asked_to_quit(should_quit, called_off)` (⌘Q, the Dock, logging out;
   `called_off` when Windows doesn't log off after all), `quit`,
@@ -169,8 +171,9 @@ All in `Application Files/`:
   `Backups/`), `open_from`, notes of where it's open. This computer's id in saves is new for each
   budget and machine (`computer.json`, `computer.machine_id`); its files in the folder are named by
   its name and the start of that id (`computer_tag`, `tag_in`; its earlier tags kept in
-  `computer.json`, so `prune` deletes backups named by them as its own). `INAB_COMPUTER` names this
-  computer (two previews on one folder). Never by a clock. `scripts/tests/test_budget_folder.py`
+  `computer.json`, so `prune` deletes backups named by them as its own). Its name is
+  `this_computer()`: `INAB_COMPUTER` (two previews on one folder), else the system's
+  (`computer_name`). Never by a clock. `scripts/tests/test_budget_folder.py`
   covers it with two data folders sharing one folder, `test_budget_folder_random.py` on random
   histories (the arbiter).
   **In the window** (issue #189): service.py's `budget_folder_look` (at launch, the watcher's
