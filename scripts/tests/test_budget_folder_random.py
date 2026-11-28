@@ -12,7 +12,9 @@ of:
   twice, ones a computer missed);
 - questions answered either way;
 - crashes mid-save;
-- Open…, Move… (with others lagging), and a computer's folder unplugged.
+- Open…, Move… (with others lagging), and a computer's folder unplugged;
+- in some seeds, a computer that leaves for good partway through (its sync tool delivering what it
+  had, or not).
 
 Every change is a version of the budget, with the version it was made on as its parent; a restore
 is a version after what it was copied over; and what the app makes of saves (a take, the same
@@ -28,7 +30,9 @@ versions, never on what a computer says:
   or take has and nothing changed here (a backup copied in asks, by design: an old save);
 - at the end, once everything has synced and every question is answered, every computer has the
   same budget, every version is in its history or was dropped by a person, and every version an
-  answer dropped is in Backups/: so a change both sides made was asked about.
+  answer dropped is in Backups/: so a change both sides made was asked about. A computer that left
+  doesn't come back: what it had and never got into the budget folder goes with it, but every
+  version it did get there must be in the others' history too, or dropped by a person.
 
 INAB_SEEDS and INAB_STEPS run more (5,000+ locally); a seed that ever found a bug stays in FOUND.
 Made-up data only."""
@@ -75,7 +79,8 @@ SEEDS += [found for found in FOUND if found not in SEEDS]
 # 39, 49, 60, 94, 101, 158, 216, 279, 763, 1023 (80), 1053, 1120, 1868, 3425, 50947, 51482, 60169 (80) and 60189
 # (80) this test's own mistakes. (Since the seventh review a seed's changes are drawn apart from its steps, so the
 # earlier seeds' histories differ from when they found their bugs: they stay as cases all the same.) On the five
-# rules: 46 a question they ask by design (an answer made on a restore can't count what it was copied over).
+# rules: 46 a question they ask by design (an answer made on a restore can't count what it was copied over);
+# 3906 this test's own mistake (an answer modelled as counting a third save with the shown side's contents).
 FOUND_WITH_RESTORES = [(seed, 40) for seed in (3, 39, 45, 46, 48, 49, 54, 60, 94, 101, 145, 158, 202, 216, 279, 384,
                                                401, 589, 763, 959, 1053, 1120, 1868, 2216, 3425, 50017, 50057,
                                                50173, 50947, 51413, 51482, 51662)] + \
@@ -103,10 +108,14 @@ def categories(db):
 
 
 class World:
-    def __init__(self, tmp, seed, restores=True):
+    def __init__(self, tmp, seed, restores=True, steps=None):
         self.restores = restores  # backups restored by hand (copied in as Budget.inab)
         self.r, self.tmp, self.seed = random.Random(seed), tmp, seed
         self.r2 = random.Random(seed * 7919 + 1)  # what a change is, apart from the steps: the same steps either way
+        self.r3 = random.Random(seed * 104729 + 3)  # who leaves for good, and when (the eighth review)
+        self.gone, self.leave_at, self.leaver = None, None, None
+        if steps and self.r3.random() < 0.3:
+            self.leave_at, self.leaver = self.r3.randint(steps // 4, steps), self.r3.choice(NAMES)
         self.added = {}                    # computer → the categories it added, in order
         self.last = {}                     # computer → (its budget's contents before its last change, the change)
         self.t, self.n, self.log = START, 0, []
@@ -124,6 +133,8 @@ class World:
         self.children = {}
         self.dropped = set()               # versions a person dropped: answered against, or copied over
         self.answered = set()              # versions an answer dropped: they must be in Backups/
+        self.drops = []                    # (who, the version that is the drop, dropped, answered) for each
+        self.stands_for = {}               # a copy rule 1 put away → the Budget.inab with its very contents then
         self.saved = {}                    # a save's id → the version it is (a save, a join, an answer)
         self.raw = {}                      # a backup's contents → the newest restore of it (copied in)
         self.choices = set()               # versions that are an answer: no contents of their own, only an order
@@ -132,6 +143,10 @@ class World:
         self.took = {}                     # computer → what the app did since it was last followed, as it happened
         self.cur = {}                      # computer → the version its budget is
         self.base = {}                     # computer → the version of its last save or take
+        self.made_by = {}                  # a version → the computer that made it (a change, a join, an answer)
+        self.landed = {}                   # a version → the budget folders it was ever a budget file in
+        self.clouds = [self.cloud]         # every budget folder the budget was in
+        self.at_move = {}                  # a folder the budget moved out of → the versions in it then
         self.computers = {}
         a = self._computer("PC-A")
         add_category(a.db, "Start")
@@ -148,7 +163,7 @@ class World:
         data = self.tmp / name
         c = BudgetFolder(db or Database(data / "budget.db"), data, folder, computer_name=name, app_version="1.5.0",
                          machine_id=f"machine-{name}", now=lambda: self.t + self.skew[name], sleep=lambda s: None)
-        take, join, answer = c._take, c._join, c._answer
+        take, join, answer, put_away = c._take, c._join, c._answer, c._put_away
 
         def took(save, *args, **kwargs):  # rule 2 (or Use it, or another budget opened): the save it took
             done = take(save, *args, **kwargs)
@@ -166,7 +181,15 @@ class World:
             self.took.setdefault(name, []).append(("answer", other.id, made.id))
             return made
 
-        c._take, c._join, c._answer = took, joined, answered
+        def put(folder, save):  # rule 1 with Budget.inab's very contents: Budget.inab stands for the copy
+            main = folder / FILE_NAME
+            copy, there = self._of_save(save), self._of_file(main) if main.is_file() else None
+            if copy is not None and there is not None and copy != there and \
+                    self.versions[copy][0] == self.versions[there][0]:
+                self.stands_for.setdefault(copy, set()).add(there)  # not an order: its counts don't include it
+            return put_away(folder, save)
+
+        c._take, c._join, c._answer, c._put_away = took, joined, answered, put
         self.computers[name] = c
         return c
 
@@ -210,6 +233,7 @@ class World:
                 same = [v for v in (self._of_id(*s) for s in saves) if v is not None and self.versions[v][0] == digest]
                 self.saved[made] = self.cur[name] = self.base[name] = \
                     self._version(digest, list(dict.fromkeys([cur] + same)))
+                self.made_by[self.cur[name]] = name
         c = self.computers[name]
         d = backups.digest(c.db)
         if d != self.versions[self.cur[name]][0]:
@@ -262,17 +286,64 @@ class World:
     def step(self):
         self.n += 1
         self.t += timedelta(minutes=1)
-        op = self.r.choices(
-            ["add", "delete", "add_back", "look", "lag", "sync", "backup", "restore", "answer", "crash",
-             "reopen", "move", "follow", "unplug"],
-            weights=[4, 2, 1, 9, 2, 3, 1, 1 if self.restores else 0, 3, 1, 1, 1, 2, 1])[0]
-        name = self.r.choice(NAMES)
-        self.log.append(f"{self.n} {op} {name}")
         self.looked = None  # the computer the app looked for in this step (its question is what it found now)
-        getattr(self, op)(self.computers[name], name)
-        for each in NAMES:
+        if self.n == self.leave_at:
+            self.log.append(f"{self.n} leave {self.leaver}")
+            self.leave(self.leaver)
+        else:
+            op = self.r.choices(
+                ["add", "delete", "add_back", "look", "lag", "sync", "backup", "restore", "answer", "crash",
+                 "reopen", "move", "follow", "unplug"],
+                weights=[4, 2, 1, 9, 2, 3, 1, 1 if self.restores else 0, 3, 1, 1, 1, 2, 1])[0]
+            name = self.r.choice(NAMES)
+            self.log.append(f"{self.n} {op} {name}{' (gone)' if name == self.gone else ''}")
+            if name != self.gone:
+                getattr(self, op)(self.computers[name], name)
+        for each in self._here():
             self._follow(each)
+        self._note_landed()
         self.check_the_rule(asked=self.looked)
+
+    def _here(self):
+        """The computers still in use (not the one that left)."""
+        return [name for name in NAMES if name != self.gone]
+
+    def leave(self, name):
+        """A computer leaves for good (a laptop that dies, given away): its sync tool may still deliver
+        what it had, then nothing of it is seen again, its budget and data folder included."""
+        if name in self.lagging and self.r3.random() < 0.7:
+            self.sync(self.computers[name], name)
+        self.lagging.pop(name, None)
+        self.unplugged.discard(name)
+        self.gone = name
+
+    def _note_landed(self):
+        """Which versions are budget files in a budget folder now (never a lagging computer's copy)."""
+        for folder in self.clouds:
+            for path in _budgets(folder):
+                v = self._of_file(path)
+                if v is not None:
+                    self.landed.setdefault(v, set()).add(str(folder))
+
+    def _reached(self, v):
+        """Whether `v`, or anything made on it, was ever a budget file in a budget folder."""
+        seen, todo = set(), [v]
+        while todo:
+            u = todo.pop()
+            if u in self.landed:
+                return True
+            if u not in seen:
+                seen.add(u)
+                todo.extend(self.children.get(u, ()))
+        return False
+
+    def _gone_with(self, v):
+        """A version only the computer that left had: it never got into a budget folder (a change not
+        saved, a save its sync tool never delivered), or only into one the budget had moved out of,
+        after the move (accepted on #196's eighth review: its question waits for that computer)."""
+        if self.gone is None or self.made_by.get(v) != self.gone:
+            return False
+        return all(f in self.at_move and v not in self.at_move[f] for f in self.landed.get(v, ()))
 
     def _change(self, c, name, change, what=None):
         """A change: a new version made on this computer's, unless it goes straight back to the very
@@ -285,6 +356,7 @@ class World:
         d, back, before = backups.digest(c.db), self.base[name], self.cur[name]
         if d != self.versions[back][0]:
             self.cur[name] = self._version(d, (before,))
+            self.made_by[self.cur[name]] = name
         elif before != back:  # its own change undone: in its history, and nothing to lose
             self.versions[back][1].append(before)
             self.children.setdefault(before, set()).add(back)
@@ -393,6 +465,7 @@ class World:
         again = self.raw.get(digest)
         parents = [v for v in (over, again) if v is not None]
         self.raw[digest] = v = self._version(digest, list(dict.fromkeys(parents)))
+        self.drops.append((name if name in self.lagging else None, v, {over} - {None}, set()))
         self.restored.add(v)
         self.restored_into[v] = self.lagging[name][1] if name in self.lagging else folder
 
@@ -404,11 +477,8 @@ class World:
         self._follow(name)
         other, before = c._other, self.cur[name]
         asked = self._of_save(other)
-        if keep_this:  # the side shown is dropped, and any budget in the folder with its very contents (what the person saw)
-            mine = self._ancestry([before])
-            shown = [asked] + [v for v in (self._of_file(p) for p in _budgets(c.folder))
-                               if v is not None and other.digest == self.versions[v][0]]
-            dropping = {v for v in shown if v is not None and v not in mine}
+        if keep_this:  # the side shown is dropped: only it (the answer counts the two sides, nothing else)
+            dropping = {asked} if asked is not None and asked not in self._ancestry([before]) else set()
         try:
             c.keep_this() if keep_this else c.keep_other()
         except UserError:  # refused before it looked (the folder can't be reached, moved since)
@@ -420,18 +490,20 @@ class World:
         first, answer, after = events[:made[0]], events[made[0]][2], events[made[0] + 1:]
         if keep_this:
             assert not first, f"seed {self.seed}: {name} took something keeping its own\n" + self._trail()
-            self.dropped |= dropping
             # In Backups/ after: what it dropped (unless it's the very contents kept: nothing of it is gone)
-            self.answered |= {v for v in dropping if self.versions[v][0] != self.versions[before][0]}
+            answered = {v for v in dropping if self.versions[v][0] != self.versions[before][0]}
             choice = self._version(self.versions[before][0], (before, *dropping))  # a step after both sides
         else:
             assert [e[0] for e in first] == ["take"] and first[0][1][0] == other.id and asked is not None, \
                 f"seed {self.seed}: {name} didn't take what it was asked about\n" + self._trail()
-            self.dropped.add(before)
-            if self.versions[before][0] != self.versions[asked][0]:  # the very contents kept: nothing of it is gone
-                self.answered.add(before)
+            dropping = {before}
+            answered = {before} if self.versions[before][0] != self.versions[asked][0] else set()
             choice = self._version(self.versions[asked][0], (asked, before))
+        self.dropped |= dropping
+        self.answered |= answered
+        self.drops.append((name, choice, dropping, answered))
         self.choices.add(choice)
+        self.made_by[choice] = name
         self.saved[answer] = self.cur[name] = self.base[name] = choice
         self.took[name] = after  # what its look after the answer did: after the choice
         self._follow(name)
@@ -468,11 +540,14 @@ class World:
             return
         target = self.tmp / f"Moved {self.n}"
         self.looked = name
+        held = {self._of_file(p) for p in _budgets(self.cloud)}
         try:
             c.move_to(target)
         except UserError:
             return
+        self.at_move[str(self.cloud)] = held
         self.cloud = self.home[name] = target
+        self.clouds.append(target)
 
     def follow(self, c, name):
         if self._in_sync(name) and c.state()["state"] == "moved":
@@ -498,9 +573,9 @@ class World:
     def _kept(self):
         """The contents the app keeps: computers' budgets, budget files in the folder, Backups/ (the
         folder's, and the data folders' while one couldn't be reached)."""
-        kept = {self.versions[self.cur[name]][0] for name in NAMES}
-        places = [self.cloud, self.cloud / "Backups"] + [self.tmp / name / "Backups" for name in NAMES] + \
-                 [self.tmp / name / backups.FOLDER_NAME for name in NAMES]
+        kept = {self.versions[self.cur[name]][0] for name in self._here()}
+        places = [self.cloud, self.cloud / "Backups"] + [self.tmp / name / "Backups" for name in self._here()] + \
+                 [self.tmp / name / backups.FOLDER_NAME for name in self._here()]
         for place in places:
             for path in place.glob("*") if place.is_dir() else []:
                 if path.suffix in (".inab", ".db") and path.is_file() and not path.name.startswith("."):
@@ -512,10 +587,11 @@ class World:
         found now; another's may be from before a change it made since, gone at its next look)."""
         kept = self._kept()
         for v, (digest, _) in enumerate(self.versions):
-            if v not in self.children and v not in self.dropped and v not in self.choices and v not in self.restored:
+            if v not in self.children and v not in self.dropped and v not in self.choices and \
+                    v not in self.restored and not self._gone_with(v):
                 assert digest in kept, f"seed {self.seed}: version {v} lost\n" + self._trail()
         for name, c in self.computers.items():
-            if name != asked:
+            if name != asked or name == self.gone:
                 continue
             state = c.state()["state"]
             if state in ("two_computers", "older") and c._other is not None:
@@ -538,31 +614,38 @@ class World:
             self.unplug(self.computers[name], name)
         for name in sorted(self.lagging):
             self.sync(self.computers[name], name)
+        here = self._here()
         states = {}
         for _ in range(12):
-            for name in NAMES:
+            for name in here:
                 c = self.computers[name]
                 state = c.check(wait=False)["state"]
-                for each in NAMES:
+                for each in here:
                     self._follow(each)
+                self._note_landed()
                 self.check_the_rule(asked=name)
                 if state == "moved":
                     self.follow(c, name)
                 elif state in ("two_computers", "older"):
                     self.answer(c, name, keep_this=True)
-                for each in NAMES:
+                for each in here:
                     self._follow(each)
+                self._note_landed()
                 self.check_the_rule()
-            states = {name: self.computers[name].check(wait=False)["state"] for name in NAMES}
-            for each in NAMES:
+            states = {name: self.computers[name].check(wait=False)["state"] for name in here}
+            for each in here:
                 self._follow(each)
-            if set(states.values()) == {"saved"} and len({self.versions[self.cur[n]][0] for n in NAMES}) == 1:
+            if set(states.values()) == {"saved"} and len({self.versions[self.cur[n]][0] for n in here}) == 1:
                 break
-        final = {self.versions[self.cur[n]][0] for n in NAMES}
+        final = {self.versions[self.cur[n]][0] for n in here}
         assert set(states.values()) == {"saved"} and len(final) == 1, \
             f"seed {self.seed}: never agree: {states}\n" + self._trail()
-        history = self._ancestry({self.cur[n] for n in NAMES})  # events: what the computers' budgets came from
-        dropped = self._ancestry(self.dropped)
+        history = self._ancestry({self.cur[n] for n in here})  # events: what the computers' budgets came from
+        # What a person decided on the computer that left counts only if it reached a budget folder (its answer, or
+        # the backup copied into its copy of the folder): what never did went with it, its Backups/ copy too
+        counted = [d for d in self.drops if d[0] is None or d[0] != self.gone or self._reached(d[1])]
+        dropped = self._ancestry(set().union(*(d[2] for d in counted)) if counted else set())
+        answered = set().union(*(d[3] for d in counted)) if counted else set()
         kept_contents, kept = {self.versions[u][0] for u in history}, self._kept()
         # A backup copied in is the person's file, not work: outside the history only when it changed nothing (the
         # very contents of what's kept: the same backup restored over what it already was), or when it went into a
@@ -570,11 +653,14 @@ class World:
         aside = self._ancestry({v for v in self.restored if v not in history and (
             self.versions[v][0] in kept_contents or
             ((self.restored_into[v] / MOVED_NOTE).exists() and self.versions[v][0] in kept))})
+        def accounted(v, seen=()):  # in the history, dropped, or the very contents of a Budget.inab that is
+            return v in history or v in dropped or v in self.choices or v in aside or self._gone_with(v) or \
+                any(u not in seen and accounted(u, (*seen, v)) for u in self.stands_for.get(v, ()))
         for v in range(len(self.versions)):
-            assert v in history or v in dropped or v in self.choices or v in aside, \
+            assert accounted(v), \
                 f"seed {self.seed}: version {v} is in no budget and nobody chose to drop it\n" + self._trail()
         kept = self._kept()
-        for v in self.answered:
+        for v in answered:
             assert self.versions[v][0] in kept, \
                 f"seed {self.seed}: version {v}, answered against, isn't in Backups/\n" + self._trail()
 
@@ -617,7 +703,7 @@ def _same(a, b):
 
 
 def run(tmp, seed, steps, restores=True):
-    world = World(tmp, seed, restores)
+    world = World(tmp, seed, restores, steps)
     try:
         for _ in range(steps):
             world.step()

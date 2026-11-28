@@ -28,8 +28,9 @@ under a hidden name, then renamed) a few seconds after changes stop, and when it
   in the folder is `Budget.inab` or a sync tool's conflict copy of it; one *includes* another when
   its counts are at least the other's.
   1. A conflict copy that `Budget.inab` includes, or with its very contents, or that this
-     computer's last save or take includes, or whose contents are in Backups/ already, goes into
-     Backups/ (deleted when Backups/ has its contents). Silently.
+     computer's last save or take includes, goes into Backups/ (deleted when Backups/ has its
+     contents). Silently. Its contents being in Backups/ settle nothing: a backup isn't a
+     decision (every quit backs up before it saves), so such a copy asks under rule 4.
   2. `Budget.inab` is taken silently only when it includes this computer's last save or take and
      nothing changed here since; this computer's budget goes into Backups/ first unless its
      contents are there. Taking it clears ⌘Z, as an import does.
@@ -45,6 +46,12 @@ under a hidden name, then renamed) a few seconds after changes stop, and when it
      two sides shown isn't counted by the answer: it's asked about next.
   5. This computer writes `Budget.inab` only when nothing in the folder is left unsettled by rules
      1–3; otherwise it asks first, keeping its change meanwhile.
+- What counts as a change, and as the same contents (rules 2, 3 and 1), is `backups.digest`. It
+  leaves out what's kept about saves and backups, and what only shows the budget, which a launch
+  on a settled budget changes on its own (decided on #196's eighth review): an inbox item's reason
+  (only text to show, written again by the re-check) and a folded group (how this computer shows
+  the Budget page). A change of only those is saved and backed up with the next real one; a take
+  replaces them with the other computer's.
 - Restoring a backup stays copying it in (the maintainer's choice, 2026-11-27): quit the app on
   every computer and copy it into the folder as `Budget.inab`. A backup keeps nothing about saves,
   so it's an old save: older than every computer's, it asks (Use it).
@@ -57,6 +64,12 @@ under a hidden name, then renamed) a few seconds after changes stop, and when it
   - Two computers that made different changes always ask.
   - An answer made on a restored backup counts only what that computer had (the random test found
     it): a computer that had only the save the backup was copied over is asked once more.
+  - Move… leaves another computer's saves from the old folder in the new folder's Backups/, and
+    its question waits until that computer follows the move.
+  - A sync tool delivering a new `Budget.inab` between the check and the rename is overwritten;
+    the sync tool's version history keeps it.
+  - A computer opened before the other's last save has synced, whose launch re-check categorizes
+    what One at a time left, asks once (its side shows what the app categorized).
 - The folder holds `Budget.inab`, `Backups/` (from every computer, kept four months as
   before) and `Imported Files/`. Each computer keeps its own settings, logs, working copy
   and starting copy. The budget's own settings (Overspending, Usual's months) were already

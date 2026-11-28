@@ -22,7 +22,8 @@ Budget.inab, tried again while Windows or a sync tool briefly holds the file (`_
 recording, the Budget.inab it replaces is noted (meta `save_landed`, which names this computer's
 save once it's there): a crash after recording leaves Budget.inab the one this computer chose to
 save over, and the next look saves again. Only when the budget changed since this computer's save
-(`backups.digest`, which leaves out what's kept about saves and backups: they aren't a change), a
+(`backups.digest`, which leaves out what's kept about saves and backups, and what only shows the
+budget, an inbox item's reason and a folded group: they aren't a change, nor other contents), a
 few seconds after changes stop (`SAVE_AFTER`), and at quit; or when the folder doesn't have this
 computer's save yet.
 
@@ -37,8 +38,9 @@ conflict copy of it (OneDrive's `Budget-<computer>.inab`, iCloud's `Budget 2.ina
 `Budget (… conflicted copy …).inab`). "This computer's save" is its last save or take (meta `save`),
 "its budget" the working copy.
 1. Conflict copies: one that Budget.inab includes, or with Budget.inab's very contents, or that
-   this computer's save includes, or whose contents are in Backups/ already, goes into Backups/
-   (or is deleted, when Backups/ has its contents). Silently.
+   this computer's save includes, goes into Backups/ (or is deleted, when Backups/ has its
+   contents). Silently. Contents in Backups/ alone never settle one: a backup isn't a decision
+   (every quit backs up before it saves).
 2. Take: Budget.inab is taken silently only when it includes this computer's save and nothing
    changed here since (`_take`: the working copy becomes it, ⌘Z is cleared, as an import does),
    this computer's budget going into Backups/ first unless its contents are there.
@@ -447,7 +449,7 @@ class BudgetFolder:
                 if not (save.digest == current or (mine is not None and save.id in (mine.id, landed))):
                     unsettled.append(save)
             elif (main is not None and (includes(main, save) or save.digest == main.digest)) or \
-                    (mine is not None and includes(mine, save)) or save.digest in self._backup_digests():  # 1
+                    (mine is not None and includes(mine, save)):  # 1
                 self._put_away(folder, save)
             else:
                 unsettled.append(save)
