@@ -66,8 +66,8 @@ quit normally, at the first launch of 1.4.0 (no file named in meta yet), or afte
 newest was deleted by hand. With a budget folder (ADR 0008) those go into its `Backups/`, and it
 logs `Saved the budget to …/Budget.inab`, `Took the budget saved on <computer> at …` (rule 2),
 `The budget saved on … is the same as this computer's` (rule 3), `Kept this computer's budget; …`
-or `Kept the budget saved on …` (an answer to its question), `Not saving over the budget saved on
-…: it arrived since`, `The budget folder … can't be reached` and `… is back`, `Moved the budget
+or `Kept the budget saved on …` (an answer to its question; a backup copied in is `the budget copied
+into the folder` in each), `Not saving over the budget saved on …: it arrived since`, `The budget folder … can't be reached` and `… is back`, `Moved the budget
 to …` (1.5.0's first launch, Move…) and `Opened the budget in …` (Open my budget).
 
 To reproduce without touching the user's data: `INAB_DATA_DIR=<tmp folder>` (logs go to
