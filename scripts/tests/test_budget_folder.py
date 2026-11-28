@@ -1937,3 +1937,33 @@ def test_two_computers_with_the_same_name_never_share_a_file_name(tmp_path):
     made = {backups.make(a.db, when).name, backups.make(b.db, when).name}
     assert len(made) == 2 and made <= set(names(folder / "Backups"))
     assert budget_folder.tag_in(tmp_path / "one", "Laptop") == a._tag()
+
+
+def test_a_backup_restored_into_the_folder_the_budget_moves_out_of_is_kept(tmp_path, monkeypatch):
+    """The sixth review: a backup copied into the old folder during Move… (after it looked, before it
+    left), or after it, isn't taken (the move stands), and goes into the new folder's Backups/."""
+    old, new = tmp_path / "Budget", tmp_path / "Moved"
+    a = computer(tmp_path, "PC-A")
+    add_category(a.db, "Groceries")
+    a.move_to(old)
+    b = computer(tmp_path, "PC-B")
+    b.open_from(old)
+    made = shutil.move(backups.make(a.db), tmp_path / "the backup.db")  # kept aside, not in Backups/
+    add_category(a.db, "Rent")
+    a.check(wait=False)
+    assert b.check(wait=False)["took"]
+    real = BudgetFolder._leave
+
+    def restored_meanwhile(self, folder):
+        shutil.copyfile(made, folder / FILE_NAME)        # the person restores it in the old folder just then
+        return real(self, folder)
+
+    monkeypatch.setattr(BudgetFolder, "_leave", restored_meanwhile)
+    a.move_to(new)
+    monkeypatch.setattr(BudgetFolder, "_leave", real)
+    assert categories(a.db) == ["Groceries", "Rent"] and [categories_in(p) for p in not_kept(new)] == [["Groceries"]]
+    add_category(b.db, "Gifts")                          # another backup restored there after the move
+    shutil.move(backups.make(b.db), old / FILE_NAME)
+    assert b.check(wait=False)["state"] == "moved"
+    b.open_from(new)
+    assert sorted(categories_in(p) for p in not_kept(new)) == [["Groceries"], ["Groceries", "Rent", "Gifts"]]

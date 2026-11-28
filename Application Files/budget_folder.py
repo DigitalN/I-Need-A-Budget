@@ -1353,10 +1353,18 @@ class BudgetFolder:
 
     def _bring_from(self, old, folder):
         """What went into the folder the budget moved out of after the move, from a computer that
-        hadn't heard of it yet (a copy a question put away, a file it imported), follows the budget."""
+        hadn't heard of it yet (a copy a question put away, a file it imported, a backup copied in to
+        restore it there), follows the budget: a budget there goes into Backups/ (the move stands)."""
+        _try(f"Keeping the budget left in {old}", lambda: self._keep_left(old / FILE_NAME))
         _try(f"Moving the backups left in {old}", lambda: backups.move_old(old / BACKUPS, folder / BACKUPS))
         _try(f"Moving the imported files left in {old}", lambda: _move_tree(
             old / IMPORTED_FILES, folder / IMPORTED_FILES))
+
+    def _keep_left(self, path):
+        if path.is_file():
+            save, mine = self._read(path)[0], self._mine()
+            if relation(save, mine) not in (SAME, OLDER) and save.digest != (mine and mine.digest):
+                self._keep_a_copy(save)
 
     def _saves_dir(self):
         return self.db.path.parent / SAVES
