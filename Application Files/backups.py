@@ -39,11 +39,12 @@ With INAB_DATA_DIR set, main.py puts the folder inside that folder, so tests, th
 preview and test copies never touch the real Documents. `Database` defaults to there too.
 
 A backup keeps nothing about saves (meta `save`, budget_folder.py, is taken out of every copy):
-restored, it's a budget no computer saved, so it never passes for an older save of one.
+restored, it's an old save, older than every computer's.
 
 To restore one with a budget folder (1.5.0): quit the app on every computer, then copy the backup
-into the budget folder as `Budget.inab`, replacing the one there. Each computer takes it when it
-next opens the budget; one that had changes it hadn't saved yet asks which to keep. Without one:
+into the budget folder as `Budget.inab`, replacing the one there. The first computer that opens the
+budget asks about it (The budget in the folder is older than this one: Use it), and the others take
+its answer. Without one:
 quit the app, delete `budget.db-wal` and `budget.db-shm` in the data folder if they're there, and
 copy the backup in as `budget.db`.
 
@@ -77,9 +78,8 @@ DIGEST_KEY = "backed_up"      # meta: `digest` of the budget when the last backu
 FILE_KEY = "backed_up_to"     # meta: the name of the file that backup made
 BACKUP_META = (DIGEST_KEY, FILE_KEY)  # what `make` keeps in meta: not the budget, so not in `digest`
 SAVE_KEY = "save"             # meta: the save in the budget folder this budget is, or started from (budget_folder.py)
-LANDED_KEY = "save_landed"    # meta: the newest of this computer's saves known to be in the budget folder
-FOUND_KEY = "save_found"      # meta: the save found in a folder this computer opened (never one put back)
-SAVE_META = (SAVE_KEY, LANDED_KEY, FOUND_KEY)  # what budget_folder.py keeps: not in backups, nor in a save
+LANDED_KEY = "save_landed"    # meta: the save in the budget folder this computer's save is, or saves over
+SAVE_META = (SAVE_KEY, LANDED_KEY)  # what budget_folder.py keeps: not in backups, nor in a save
 NOT_A_CHANGE = BACKUP_META + SAVE_META  # what's kept about backups and saves isn't a change to the budget
 NOT_THE_BUDGET = ("undo_log", "undo_groups", "undo_state")  # this session's undo, cleared at launch
 SIDE_FILES = ("-wal", "-shm", "-journal")  # what SQLite leaves beside a database someone opened
@@ -202,7 +202,7 @@ def _unused(folder, filename):
 
 def _keep_no_save(path):
     """Takes what's kept about saves (budget_folder.py) out of a backup's copy: restored into the
-    budget folder, it's a budget no computer saved, taken by every computer as a new save."""
+    budget folder, it's an old save, which every computer's includes (so it asks)."""
     with closing(sqlite3.connect(str(path), isolation_level=None)) as c:
         tables = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
         if "meta" not in tables:

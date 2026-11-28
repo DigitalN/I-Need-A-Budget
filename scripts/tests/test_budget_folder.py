@@ -232,13 +232,17 @@ def test_keeping_this_computers_puts_the_other_in_backups(tmp_path):
 def test_keeping_the_other_computers_puts_this_one_in_backups(tmp_path):
     folder, a, b = _changed_on_both(tmp_path)
     b.check(wait=False)
-    saved = (folder / FILE_NAME).read_bytes()
+    other = save_in(folder / FILE_NAME)
     assert b.keep_other()["state"] == "saved"
     assert categories(b.db) == ["Groceries"] and b.db.undo_label() is None
-    assert (folder / FILE_NAME).read_bytes() == saved
     [mine] = not_kept(folder)
     assert categories_in(mine) == ["Rent"]
-    assert "took" not in a.check()  # nothing new for PC-A
+    answer = save_in(folder / FILE_NAME)  # the answer: a new event of PC-B's after both sides
+    assert categories_in(folder / FILE_NAME) == ["Groceries"] and answer["id"] != other["id"]
+    assert all(answer["counts"].get(k, 0) >= n for k, n in other["counts"].items())
+    assert answer["counts"][b.computer_id()] > 0
+    state = a.check()  # it includes PC-A's save, which changed nothing since: taken, the very contents
+    assert state["took"]["computer"] == "PC-B" and categories(a.db) == ["Groceries"]
 
 
 @pytest.mark.parametrize("copy", ["Budget-PC-B.inab", "Budget 2.inab",
@@ -280,13 +284,13 @@ def test_a_sync_tools_copy_of_this_computers_own_save_is_put_away(tmp_path):
     shutil.copyfile(folder / FILE_NAME, folder / "Budget 2.inab")
     assert a.check()["state"] == "saved"
     assert "Budget 2.inab" not in names(folder)
-    assert not_kept(folder) == []  # Budget.inab has its very contents: nothing to keep a copy of
+    assert [categories_in(p) for p in not_kept(folder)] == [["Groceries"]]  # rule 1: into Backups/
     add_category(a.db, "Rent")
     a.check(wait=False)
     shutil.copyfile(sorted((a.db.path.parent / "Saves").glob("*.inab"), key=lambda p: p.stat().st_mtime)[0],
-                    folder / "Budget 3.inab")  # an older one of this computer's, which it came after
+                    folder / "Budget 3.inab")  # an older one of this computer's, which its save includes
     assert a.check()["state"] == "saved" and "Budget 3.inab" not in names(folder)
-    assert [categories_in(p) for p in not_kept(folder)] == [["Groceries"]]  # other contents: kept, not deleted
+    assert [categories_in(p) for p in not_kept(folder)] == [["Groceries"]]  # its contents were there: deleted
 
 
 def test_another_computers_note_is_read_back(tmp_path):
@@ -672,14 +676,16 @@ def test_a_copy_in_saves_held_by_another_program_is_waited_for(tmp_path, monkeyp
     assert a.check(wait=False)["state"] == "saved"  # its own save, not another computer's
 
 
-def test_a_save_with_this_computers_contents_is_the_same_save(tmp_path):
+def test_a_newer_save_with_this_computers_contents_is_taken_without_replacing_the_budget(tmp_path):
     folder = tmp_path / "Budget"
     a = computer(tmp_path, "PC-A")
     add_category(a.db, "Groceries")
     a.move_to(folder)
     saved_elsewhere(folder, "PC-B", same_digest=save_in(folder / FILE_NAME)["digest"])
     state = a.check(wait=False)
-    assert state["state"] == "saved" and "took" not in state
+    assert state["state"] == "saved" and state["took"]["computer"] == "PC-B"
+    assert a._mine().id == save_in(folder / FILE_NAME)["id"]
+    assert a.db.undo_label() == "Add category"  # the very contents: the working copy stays, ⌘Z too
 
 
 def test_backups_keep_nothing_about_saves(tmp_path):
@@ -691,8 +697,9 @@ def test_backups_keep_nothing_about_saves(tmp_path):
         assert c.execute("SELECT COUNT(*) FROM meta WHERE key = 'save'").fetchone()[0] == 0
 
 
-def test_restoring_a_backup_into_the_folder_is_taken_by_every_computer(tmp_path):
-    """The 1.5 way: quit the app on every computer, copy the backup in as Budget.inab."""
+def test_restoring_a_backup_asks_once_and_the_others_take_the_answer(tmp_path):
+    """The 1.5 way: quit the app on every computer, copy the backup in as Budget.inab. It's an old
+    save: the first computer opened asks (older: Use it), and the others take its answer."""
     folder = tmp_path / "Budget"
     a = computer(tmp_path, "PC-A")
     a.move_to(folder)
@@ -706,16 +713,20 @@ def test_restoring_a_backup_into_the_folder_is_taken_by_every_computer(tmp_path)
     a.check(wait=False)
     b.check()
     shutil.copyfile(made, folder / FILE_NAME)
-    assert a.check()["took"]["computer"] is None and categories(a.db) == ["Groceries"]
-    assert save_in(folder / FILE_NAME)["computer"] == "PC-A"  # saved back at once, counting the restore
+    state = a.check()
+    assert state["state"] == "older" and state["other"]["computer"] is None
+    assert categories_in(a.two_computers()["started_from"]) == ["Groceries"]  # what this computer changed since
+    assert a.keep_other()["state"] == "saved" and categories(a.db) == ["Groceries"]  # Use it
+    assert [categories_in(p) for p in not_kept(folder)] == [["Groceries", "Rent"]]
+    assert save_in(folder / FILE_NAME)["computer"] == "PC-A"  # the answer, which PC-B's save is in
     assert b.check()["took"]["computer"] == "PC-A" and categories(b.db) == ["Groceries"]
     assert a.check()["state"] == b.check()["state"] == "saved"
     add_category(a.db, "Gifts")
     a.check(wait=False)
     assert b.check()["took"]["computer"] == "PC-A" and categories(b.db) == ["Groceries", "Gifts"]
-    shutil.copyfile(made, folder / FILE_NAME)  # the same backup again: the same save, older than the line now
+    shutil.copyfile(made, folder / FILE_NAME)  # the same backup again: asked again
     assert a.check()["state"] == "older" and b.check()["state"] == "older"
-    assert a.keep_other()["state"] == "saved" and categories(a.db) == ["Groceries"]  # Use it
+    assert a.keep_other()["state"] == "saved" and categories(a.db) == ["Groceries"]
     assert b.check()["took"]["computer"] == "PC-A" and categories(b.db) == ["Groceries"]
 
 
@@ -730,9 +741,9 @@ def test_restoring_a_backup_asks_a_computer_with_changes_not_saved_yet(tmp_path)
     add_category(a.db, "Rent")
     shutil.copyfile(made, folder / FILE_NAME)
     state = a.check(wait=False)
-    assert state["state"] == "two_computers" and state["other"]["computer"] is None
+    assert state["state"] == "older" and state["other"]["computer"] is None
     files = a.two_computers()
-    assert categories_in(files["started_from"]) == ["Groceries", "Bills"] and categories_in(files["other"]) == ["Groceries"]
+    assert categories_in(files["started_from"]) == categories_in(files["other"]) == ["Groceries"]
     a.keep_this()
     assert categories_in(folder / FILE_NAME) == ["Groceries", "Bills", "Rent"]
 
@@ -828,8 +839,9 @@ def test_keeping_this_one_looks_again_first(tmp_path):
     b.check(wait=False)
     add_category(a.db, "Gifts")
     a.check(wait=False)  # PC-A saved again after PC-B was asked
-    state = b.keep_this()  # what PC-B's person never saw is kept beside it and asked about next (#196's sixth review)
+    state = b.keep_this()  # the answer counts only what PC-B's person saw: what arrived since is asked about next
     assert state["state"] == "two_computers" and categories_in(b.two_computers()["other"]) == ["Groceries", "Gifts"]
+    assert categories_in(folder / FILE_NAME) == ["Groceries", "Gifts"]  # never saved over unseen
     assert b.keep_this()["state"] == "saved"
     assert sorted(sorted(categories_in(p)) for p in not_kept(folder)) == [["Gifts", "Groceries"], ["Groceries"]]
     assert a.check()["took"]["computer"] == "PC-B" and categories(a.db) == ["Rent"]
@@ -934,31 +946,6 @@ def test_keeping_the_other_one_is_counted_in_the_folder(tmp_path):
         _sync(folder, seen_on_a)
         state = a.check(wait=False)
         assert state["state"] == "saved" and state["took"]["computer"] == "PC-B"
-
-
-def test_a_restore_is_taken_whatever_each_computer_had_seen(tmp_path):
-    """PC-B saved last and PC-A never saw it; then a backup is restored. Both take it, and what
-    either saves after it, the other takes."""
-    folder = tmp_path / "Budget"
-    a = computer(tmp_path, "PC-A")
-    add_category(a.db, "Groceries")
-    a.move_to(folder)
-    b = computer(tmp_path, "PC-B")
-    b.open_from(folder)
-    made = shutil.copyfile(backups.make(a.db), tmp_path / "the backup.db")
-    add_category(b.db, "Rent")
-    b.check(wait=False)
-    shutil.copyfile(made, folder / FILE_NAME)
-    state = a.check(wait=False)  # PC-A's budget has the backup's very contents: the same save, nothing to take
-    assert state["state"] == "saved" and "took" not in state
-    assert b.check(wait=False)["took"] and categories(a.db) == categories(b.db) == ["Groceries"]
-    add_category(a.db, "Gifts")
-    a.check(wait=False)
-    state = b.check(wait=False)
-    assert state["took"]["computer"] == "PC-A" and categories(b.db) == ["Groceries", "Gifts"]
-    add_category(b.db, "Bills")
-    b.check(wait=False)
-    assert a.check(wait=False)["took"]["computer"] == "PC-B"
 
 
 def test_a_data_folder_copied_to_another_machine_counts_as_another_computer(tmp_path):
@@ -1138,39 +1125,7 @@ def test_moving_into_a_folder_a_budget_moved_out_of(tmp_path):
     assert budget_folder.MOVED_NOTE not in names(old_folder) and a.look_in(old_folder)["moved"] is None
 
 
-# ── the third review of #196 ──
-
-def _restored_once(tmp_path, name="PC-A", folder_name="Budget"):
-    """A computer whose budget has a restore in its line."""
-    folder = tmp_path / folder_name
-    a = computer(tmp_path, name)
-    add_category(a.db, "Groceries")
-    a.move_to(folder)
-    made = shutil.copyfile(backups.make(a.db), tmp_path / f"{name} backup.db")
-    add_category(a.db, "Bills")
-    a.check(wait=False)
-    shutil.copyfile(made, folder / FILE_NAME)
-    assert a.check(wait=False)["took"]
-    add_category(a.db, "Rent")
-    a.check(wait=False)
-    return folder, a
-
-
-def test_opening_another_budget_after_a_restore_takes_it(tmp_path):
-    """A line with a restore in it reads as later than one without: that never makes another
-    budget an older one of this computer's."""
-    _, a = _restored_once(tmp_path)
-    other = tmp_path / "Other"
-    c = computer(tmp_path, "PC-C")
-    add_category(c.db, "Gifts")
-    c.move_to(other)
-    saved = (other / FILE_NAME).read_bytes()
-    state = a.open_from(other)
-    assert state["state"] == "saved" and categories(a.db) == ["Gifts"]
-    assert [categories_in(p) for p in not_kept(other)] == [["Groceries", "Rent"]]  # this computer's, kept
-    state = c.check(wait=False)
-    assert state["state"] == "saved" and "took" not in state and (other / FILE_NAME).read_bytes() == saved
-
+# ── the reviews of #196: their cases, on the five rules ──
 
 def test_another_budget_opened_has_its_saves_taken(tmp_path):
     folder, other = tmp_path / "Budget", tmp_path / "Other"
@@ -1212,7 +1167,7 @@ def test_keeping_this_one_stays_kept_while_its_save_waits(tmp_path, monkeypatch)
     let_go = _held(monkeypatch, folder)
     state = b.keep_this()
     assert state["state"] == "waiting" and state["unsaved"]
-    assert b.check(wait=False)["state"] == "waiting"  # tried again, never "older"
+    assert b.check(wait=False)["state"] == "waiting"  # tried again, never asked again
     let_go()
     assert b.check(wait=False)["state"] == "saved" and categories_in(folder / FILE_NAME) == ["Rent"]
     assert a.check()["took"]["computer"] == "PC-B"
@@ -1238,32 +1193,6 @@ def test_keeping_the_other_one_from_a_copy_stays_kept_while_its_save_waits(tmp_p
     assert a.check(wait=False)["state"] == "saved" and categories_in(folder / FILE_NAME) == ["Rent"]
 
 
-def test_the_same_backup_restored_twice_while_a_computer_missed_the_first(tmp_path):
-    folder = tmp_path / "Budget"
-    a = computer(tmp_path, "PC-A")
-    add_category(a.db, "Groceries")
-    a.move_to(folder)
-    b = computer(tmp_path, "PC-B")
-    b.open_from(folder)
-    made = shutil.copyfile(backups.make(a.db), tmp_path / "the backup.db")
-    add_category(a.db, "Rent")
-    a.check(wait=False)
-    shutil.copyfile(made, folder / FILE_NAME)  # PC-B is off for the first restore
-    assert a.check(wait=False)["took"]
-    add_category(a.db, "Bills")
-    a.check(wait=False)
-    shutil.copyfile(made, folder / FILE_NAME)  # the same backup again: one identity, so it's older than the line now
-    assert a.check(wait=False)["state"] == "older"
-    assert a.keep_other()["state"] == "saved" and categories(a.db) == ["Groceries"]  # Use it
-    state = b.check(wait=False)  # PC-B missed the first and has those very contents: the same save, counted
-    assert state["state"] == "saved" and categories(b.db) == ["Groceries"]
-    assert b._mine().id == save_in(folder / FILE_NAME)["id"]
-    add_category(b.db, "Gifts")
-    b.check(wait=False)
-    state = a.check(wait=False)
-    assert state["took"]["computer"] == "PC-B" and categories(a.db) == ["Groceries", "Gifts"]
-
-
 def test_what_each_computer_changed_is_shown_from_what_two_computers_gives(tmp_path):
     """#184's changes.compare reads the three budgets as two_computers() hands them over."""
     import changes
@@ -1277,8 +1206,6 @@ def test_what_each_computer_changed_is_shown_from_what_two_computers_gives(tmp_p
     assert "Groceries" in json.dumps(shown["other"]) and "Rent" not in json.dumps(shown["other"])
 
 
-# ── the fourth review of #196 ──
-
 def _view(c, folder):
     """`c`'s sync tool falls behind: it works in a copy of the folder until it's synced again."""
     shutil.copytree(folder, folder.parent / f"{c.computer} sees" / folder.name, dirs_exist_ok=True)
@@ -1286,75 +1213,10 @@ def _view(c, folder):
     return c.folder
 
 
-def test_keeping_the_other_one_keeps_what_it_saved_since(tmp_path):
-    """PC-A is asked; while it is, PC-B saves again. Keep the other one keeps PC-B's newest."""
-    folder = tmp_path / "Budget"
-    a = computer(tmp_path, "PC-A")
-    add_category(a.db, "Groceries")
-    a.move_to(folder)
-    b = computer(tmp_path, "PC-B")
-    b.open_from(folder)
-    seen_on_b = _view(b, folder)
-    add_category(a.db, "Rent")
-    a.check(wait=False)
-    add_category(b.db, "Gifts")
-    b.check(wait=False)
-    shutil.copyfile(seen_on_b / FILE_NAME, folder / FILE_NAME)  # PC-B's wins in the folder
-    assert a.check(wait=False)["state"] == "two_computers"
-    add_category(b.db, "Bills")
-    b.check(wait=False)
-    shutil.copyfile(seen_on_b / FILE_NAME, folder / FILE_NAME)
-    assert a.keep_other()["state"] == "saved"
-    assert categories(a.db) == ["Groceries", "Gifts", "Bills"]
-    assert [categories_in(p) for p in not_kept(folder)] == [["Groceries", "Rent"]]
-    shutil.copyfile(folder / FILE_NAME, seen_on_b / FILE_NAME)
-    b._seen = {}
-    assert b.check(wait=False)["state"] == "saved" and categories(b.db) == ["Groceries", "Gifts", "Bills"]
-
-
-def _restored_twice(tmp_path):
-    """PC-B was off for one restore; then another restore that both take, PC-B's save landing last."""
-    folder = tmp_path / "Budget"
-    a = computer(tmp_path, "PC-A")
-    add_category(a.db, "Groceries")
-    a.move_to(folder)
-    b = computer(tmp_path, "PC-B")
-    b.open_from(folder)
-    first = shutil.copyfile(backups.make(a.db), tmp_path / "first.db")
-    add_category(a.db, "Rent")
-    a.check(wait=False)
-    b.check(wait=False)
-    second = shutil.copyfile(backups.make(a.db), tmp_path / "second.db")
-    shutil.copyfile(first, folder / FILE_NAME)
-    a.check(wait=False)
-    add_category(a.db, "Gifts")
-    a.check(wait=False)
-    shutil.copyfile(second, folder / FILE_NAME)
-    seen_on_b = _view(b, folder)
-    a.check(wait=False)
-    b.check(wait=False)
-    shutil.copyfile(seen_on_b / FILE_NAME, folder / FILE_NAME)
-    return folder, seen_on_b, a, b
-
-
-def test_a_change_made_after_a_restore_is_taken_whatever_each_computer_saw(tmp_path):
-    folder, seen_on_b, a, b = _restored_twice(tmp_path)
-    assert a.check(wait=False)["state"] == "saved" and categories(a.db) == ["Groceries", "Rent"]
-    add_category(b.db, "Bills")
-    b.check(wait=False)
-    shutil.copyfile(seen_on_b / FILE_NAME, folder / FILE_NAME)
-    state = a.check(wait=False)
-    assert state["took"]["computer"] == "PC-B" and categories(a.db) == ["Groceries", "Rent", "Bills"]
-
-
-def test_a_change_after_a_restore_arriving_as_a_copy_is_taken_never_put_away(tmp_path):
-    folder, seen_on_b, a, b = _restored_twice(tmp_path)
-    a.check(wait=False)
-    add_category(b.db, "Bills")
-    b.check(wait=False)
-    shutil.copyfile(seen_on_b / FILE_NAME, folder / "Budget-PC-B.inab")
-    state = a.check(wait=False)
-    assert state["took"]["computer"] == "PC-B" and "Bills" in categories(a.db)
+def back_in(c, folder):
+    """`c`'s sync tool catches up (or its folder is back): it looks at `folder` again."""
+    c.folder, c._reachable, c._seen = folder, None, {}
+    c._point_backups()
 
 
 def test_moving_is_refused_while_an_older_one_is_put_back(tmp_path):
@@ -1399,55 +1261,28 @@ def test_settings_learn_of_a_folder_before_anything_is_done_in_it(tmp_path, monk
     assert a.settings.get()["budget_folder"] == str(other)  # a step that failed puts it back
 
 
-
-# ── the fifth review of #196: its reproductions, kept as they were written ──
-
-def everything_kept(tmp_path):
-    found = set()
-    for p in tmp_path.rglob("*"):
-        if p.is_file() and p.suffix in (".inab", ".db") and p.name != "budget.db" and "Saves" not in p.parts \
-                and p.name != "the backup.db":
-            found |= set(categories_in(p))
-    return found
-
-
-def test_keep_this_over_a_restore_then_the_restore_arrives_as_a_conflict_copy(tmp_path):
-    folder = tmp_path / "Budget"
-    a = computer(tmp_path, "PC-A")
-    add_category(a.db, "Groceries")
-    a.move_to(folder)
-    b = computer(tmp_path, "PC-B")
-    b.open_from(folder)
-    made = shutil.copyfile(backups.make(a.db), tmp_path / "the backup.db")
-    add_category(a.db, "Rent")
-    a.check(wait=False)
-    b.check(wait=False)
-    shutil.copyfile(made, folder / FILE_NAME)          # the person restores a backup
-    seen_on_b = _view(b, folder)                        # PC-B's sync tool falls behind (it has the restore)
-    assert b.check(wait=False)["took"]                  # PC-B takes it, saves it back as itself (in its view)
-    add_category(a.db, "Bills")                         # PC-A has a change not saved yet
-    assert a.check(wait=False)["state"] == "two_computers"
-    a.keep_this()                                       # the person keeps PC-A's: Groceries, Rent, Bills
-    assert "Bills" in categories_in(folder / FILE_NAME)
-    # PC-B's sync catches up: both changed, so its save becomes a conflict copy
-    shutil.copyfile(seen_on_b / FILE_NAME, folder / "Budget-PC-B.inab")
-    b.folder, b._reachable, b._seen = folder, None, {}
-    state = a.check(wait=False)
-    print("A after the copy:", state["state"], state.get("took"), categories(a.db), names(folder))
-    b.check(wait=False)
-    print("B:", categories(b.db), "folder:", categories_in(folder / FILE_NAME))
-    print("anywhere kept:", sorted(everything_kept(tmp_path)))
-    assert "Bills" in categories(a.db), "PC-A's kept change was taken away without asking"
-
-
 def delete_category(db, name):
     with db.write("Delete category") as c:
         c.execute("DELETE FROM categories WHERE name = ?", (name,))
 
 
-def test_both_changed_after_a_restore_nobody_is_asked(tmp_path):
-    """PC-A keeps its own over the restore; PC-B, which took the restore, adds Bills on top of it.
-    Both changed: one of the two should be asked. Here each silently takes the other's."""
+def backups_in(folder):
+    return [sorted(categories_in(p)) for p in sorted((folder / "Backups").glob("*.db"))]
+
+
+def everywhere(tmp_path, *left_out):
+    """The categories in every budget the app keeps: the computers' working copies and every budget
+    file but Saves/ (a lagging computer's view and the person's own backups `left_out`)."""
+    found = set()
+    for p in tmp_path.rglob("*"):
+        if p.is_file() and p.suffix in (".inab", ".db") and "Saves" not in p.parts and p.name not in left_out and \
+                not any(part.endswith(" sees") for part in p.parts):
+            found |= set(categories_in(p))
+    return found
+
+
+def _restored(tmp_path):
+    """PC-A and PC-B share a budget (Groceries, then Rent); a backup of Groceries is set aside."""
     folder = tmp_path / "Budget"
     a = computer(tmp_path, "PC-A")
     add_category(a.db, "Groceries")
@@ -1457,33 +1292,90 @@ def test_both_changed_after_a_restore_nobody_is_asked(tmp_path):
     made = shutil.copyfile(backups.make(a.db), tmp_path / "the backup.db")
     add_category(a.db, "Rent")
     a.check(wait=False)
+    assert b.check(wait=False)["took"]
+    return folder, a, b, made
+
+
+def test_after_a_restore_two_computers_that_both_ask_settle_their_two_answers(tmp_path):
+    """Accepted on the rebuild: if two computers open before the sync finishes, both ask about the
+    restore; their two answers (Use it on each) have the same contents, so rule 1 or 3 settles them."""
+    folder, a, b, made = _restored(tmp_path)
+    seen_on_b = _view(b, folder)
+    shutil.copyfile(made, folder / FILE_NAME)
+    shutil.copyfile(made, seen_on_b / FILE_NAME)  # it reached PC-B's copy before PC-A's answer did
+    assert a.check(wait=False)["state"] == b.check(wait=False)["state"] == "older"
+    a.keep_other()
+    b.keep_other()
+    shutil.copyfile(seen_on_b / FILE_NAME, folder / "Budget-PC-B.inab")  # the sync tool keeps PC-A's
+    back_in(b, folder)
+    states = [c.check(wait=False)["state"] for c in (a, b, a, b)]
+    assert states == ["saved"] * 4 and "Budget-PC-B.inab" not in names(folder)
+    assert categories(a.db) == categories(b.db) == categories_in(folder / FILE_NAME) == ["Groceries"]
+    assert a._mine().id == b._mine().id
+    assert backups_in(folder).count(["Groceries", "Rent"]) == 1  # what they had, kept once
+
+
+def test_a_backup_copied_in_as_another_save_lands_becomes_an_older_copy(tmp_path):
+    """Accepted on the rebuild: a backup copied in while another computer saved can become the sync
+    tool's conflict copy; rule 1 then puts it into Backups/ as an older save, and nothing else is lost:
+    it must be copied in again."""
+    folder, a, b, made = _restored(tmp_path)
+    seen_on_b = _view(b, folder)
+    add_category(b.db, "Pets")
     b.check(wait=False)
+    shutil.copyfile(made, folder / FILE_NAME)  # the person restores the backup as PC-B's save lands
+    shutil.copyfile(folder / FILE_NAME, folder / "Budget-cloud.inab")
+    shutil.copyfile(seen_on_b / FILE_NAME, folder / FILE_NAME)
+    back_in(b, folder)
+    assert a.check(wait=False)["took"] and categories(a.db) == ["Groceries", "Rent", "Pets"]
+    assert "Budget-cloud.inab" not in names(folder) and ["Groceries"] in backups_in(folder)
+    assert b.check(wait=False)["state"] == "saved"
+
+
+# Their reproductions (the fifth, sixth and seventh reviews, against the designs before): each ends
+# with no change lost unasked. Where those designs took a restore silently, it now asks (older: Use it).
+
+def test_keep_this_over_a_restore_then_the_restore_arrives_as_a_conflict_copy(tmp_path):
+    folder, a, b, made = _restored(tmp_path)
+    shutil.copyfile(made, folder / FILE_NAME)          # the person restores a backup
+    seen_on_b = _view(b, folder)                        # PC-B's sync tool falls behind (it has the restore)
+    assert b.check(wait=False)["state"] == "older"
+    b.keep_other()                                      # Use it, saved in PC-B's view
+    add_category(a.db, "Bills")                         # PC-A has a change not saved yet
+    assert a.check(wait=False)["state"] == "older"
+    a.keep_this()                                       # the person keeps PC-A's: Groceries, Rent, Bills
+    assert categories_in(folder / FILE_NAME) == ["Groceries", "Rent", "Bills"]
+    shutil.copyfile(seen_on_b / FILE_NAME, folder / "Budget-PC-B.inab")  # PC-B's answer arrives as a copy
+    back_in(b, folder)
+    assert a.check(wait=False)["state"] == "saved" and categories(a.db) == ["Groceries", "Rent", "Bills"]
+    assert b.check(wait=False)["state"] == "two_computers"  # PC-B's answer isn't in PC-A's: asked
+    b.keep_other()
+    assert categories(b.db) == ["Groceries", "Rent", "Bills"] and a.check(wait=False)["state"] == "saved"
+
+
+def test_both_changed_after_a_restore_one_is_asked(tmp_path):
+    """PC-A keeps its own over the restore; PC-B, which used the restore, adds Gifts on top of it."""
+    folder, a, b, made = _restored(tmp_path)
     shutil.copyfile(made, folder / FILE_NAME)
     seen_on_b = _view(b, folder)
-    assert b.check(wait=False)["took"]
+    assert b.check(wait=False)["state"] == "older"
+    b.keep_other()
     add_category(b.db, "Gifts")                          # PC-B's change on top of the restore
     b.check(wait=False)
     add_category(a.db, "Bills")
-    assert a.check(wait=False)["state"] == "two_computers"
+    assert a.check(wait=False)["state"] == "older"
     a.keep_this()                                        # PC-A's change, kept by choice
-    # the sync tool keeps PC-B's as Budget.inab and makes PC-A's the copy
-    shutil.copyfile(folder / FILE_NAME, folder / "Budget-PC-A.inab")
+    shutil.copyfile(folder / FILE_NAME, folder / "Budget-PC-A.inab")  # the sync tool keeps PC-B's
     shutil.copyfile(seen_on_b / FILE_NAME, folder / FILE_NAME)
-    b.folder, b._reachable, b._seen = folder, None, {}
-    sa = a.check(wait=False)
-    sb = b.check(wait=False)
-    print("A:", sa["state"], categories(a.db), "| B:", sb["state"], categories(b.db),
-          "| folder:", categories_in(folder / FILE_NAME), names(folder / "Backups"))
-    for _ in range(3):
-        a.check(wait=False); b.check(wait=False)
-    print("after more looks A:", a.state()["state"], categories(a.db), "| B:", b.state()["state"], categories(b.db))
-    print("backups:", [categories_in(p) for p in sorted((folder / "Backups").glob("*.db"))])
-    assert "two_computers" in (sa["state"], sb["state"]), "both changed and nobody was asked"
+    back_in(b, folder)
+    states = [a.check(wait=False)["state"], b.check(wait=False)["state"]]
+    assert "two_computers" in states, "both changed and nobody was asked"
+    assert {"Bills", "Gifts"} <= everywhere(tmp_path, "the backup.db")
 
 
 def test_a_change_back_to_contents_once_had_is_not_new(tmp_path):
-    """PC-B deletes a category PC-A added while PC-A adds another: both changed. PC-B's budget is
-    then exactly one PC-A once had, so PC-A treats it as nothing new."""
+    """PC-B deletes a category PC-A added while PC-A adds another: both changed, though PC-B's budget
+    is then exactly one PC-A once had."""
     folder = tmp_path / "Budget"
     a = computer(tmp_path, "PC-A")
     add_category(a.db, "Groceries")
@@ -1499,18 +1391,14 @@ def test_a_change_back_to_contents_once_had_is_not_new(tmp_path):
     add_category(a.db, "Rent")                           # PC-A's change: Rent
     a.check(wait=False)
     shutil.copyfile(seen_on_b / FILE_NAME, folder / FILE_NAME)  # PC-B's lands last (no copy kept)
-    b.folder, b._reachable, b._seen = folder, None, {}
-    sa = a.check(wait=False)
-    sb = b.check(wait=False)
-    print("A:", sa["state"], categories(a.db), "| B:", sb["state"], categories(b.db),
-          "| folder:", categories_in(folder / FILE_NAME),
-          "| backups:", [categories_in(p) for p in sorted((folder / "Backups").glob("*.db"))])
-    assert "two_computers" in (sa["state"], sb["state"]), "PC-B's deletion was undone without asking"
+    back_in(b, folder)
+    states = [a.check(wait=False)["state"], b.check(wait=False)["state"]]
+    assert "two_computers" in states, "PC-B's deletion was undone without asking"
 
 
-def test_two_restores_on_two_computers_order_by_clock(tmp_path):
-    """Two different backups restored, one on each computer while PC-B's sync is behind; each then
-    adds something. The lines know nothing of each other, so the order is the computers' clocks."""
+def test_two_restores_on_two_computers(tmp_path):
+    """Two different backups restored, one on each computer while PC-B's sync is behind; each is used,
+    then each computer adds something. Neither answer counts the other: asked, never by a clock."""
     base = datetime(2026, 11, 27, 9, 0, tzinfo=timezone(timedelta(hours=-7)))
     clocks = {"PC-A": base, "PC-B": base + timedelta(minutes=10)}   # PC-B's clock is 10 minutes ahead
 
@@ -1533,58 +1421,43 @@ def test_two_restores_on_two_computers_order_by_clock(tmp_path):
     a.check(wait=False); b.check(wait=False)
     seen_on_b = _view(b, folder)
     shutil.copyfile(second, seen_on_b / FILE_NAME)      # restored at PC-B first (real time)...
-    assert b.check(wait=False)["took"]
+    assert b.check(wait=False)["state"] == "older"
+    b.keep_other()
     clocks["PC-A"] += timedelta(minutes=2)
     shutil.copyfile(first, folder / FILE_NAME)          # ...and another one at PC-A two minutes later
-    assert a.check(wait=False)["took"]
+    assert a.check(wait=False)["state"] == "older"
+    a.keep_other()
     add_category(a.db, "Gifts"); a.check(wait=False)
     add_category(b.db, "Pets"); b.check(wait=False)
     shutil.copyfile(seen_on_b / FILE_NAME, folder / "Budget-PC-B.inab")
-    b.folder, b._reachable, b._seen = folder, None, {}
-    sa = a.check(wait=False)
-    sb = b.check(wait=False)
-    kept = set()
-    for p in tmp_path.rglob("*"):
-        if p.is_file() and p.suffix in (".inab", ".db") and p.name not in ("budget.db", "first.db", "second.db") \
-                and "Saves" not in p.parts and "PC-B sees" not in p.parts:
-            kept |= set(categories_in(p))
-    print("A:", sa["state"], sa.get("took"), categories(a.db), "| B:", sb["state"], categories(b.db), "| anywhere:", sorted(kept))
-    assert "Gifts" in kept | set(categories(a.db)) | set(categories(b.db)), "PC-A's Gifts lost without asking"
-
+    back_in(b, folder)
+    states = [a.check(wait=False)["state"], b.check(wait=False)["state"]]
+    assert "two_computers" in states and categories(a.db) == ["Groceries", "Gifts"]
+    assert {"Gifts", "Pets"} <= everywhere(tmp_path, "first.db", "second.db")
 
 
 @pytest.mark.parametrize("a_looks_first", [True, False])
 def test_a_save_in_flight_when_a_backup_is_restored(tmp_path, a_looks_first):
     """PC-B saves Pets; its sync is behind. A backup is restored in the folder. The sync tool keeps
-    PC-B's as Budget.inab and makes the restored one the copy. Nobody is asked; Pets is in no file."""
-    folder = tmp_path / "Budget"
-    a = computer(tmp_path, "PC-A")
-    add_category(a.db, "Groceries")
-    a.move_to(folder)
-    b = computer(tmp_path, "PC-B")
-    b.open_from(folder)
-    made = shutil.copyfile(backups.make(a.db), tmp_path / "the backup.db")
-    add_category(a.db, "Rent")
-    a.check(wait=False); b.check(wait=False)
+    PC-B's as Budget.inab and makes the other the copy: PC-A's answer (asked), or the backup."""
+    folder, a, b, made = _restored(tmp_path)
     seen_on_b = _view(b, folder)
     add_category(b.db, "Pets")
     b.check(wait=False)                                  # PC-B's save, not synced yet
     shutil.copyfile(made, folder / FILE_NAME)            # the person restores a backup
     if a_looks_first:
-        assert a.check(wait=False)["took"]               # PC-A takes it and saves it back as itself
+        assert a.check(wait=False)["state"] == "older"
+        a.keep_other()                                   # Use it: PC-A's answer, saved
     shutil.copyfile(folder / FILE_NAME, folder / "Budget-PC-A.inab")   # the sync tool keeps PC-B's
     shutil.copyfile(seen_on_b / FILE_NAME, folder / FILE_NAME)
-    b.folder, b._reachable, b._seen = folder, None, {}
+    back_in(b, folder)
     states = []
-    for _ in range(3):
+    for _ in range(2):
         states += [a.check(wait=False)["state"], b.check(wait=False)["state"]]
-    kept = set()
-    for p in tmp_path.rglob("*"):
-        if p.is_file() and p.suffix in (".inab", ".db") and p.name not in ("budget.db", "the backup.db") \
-                and "Saves" not in p.parts and "PC-B sees" not in p.parts:
-            kept |= set(categories_in(p))
-    print("states:", states, "A:", categories(a.db), "B:", categories(b.db), "anywhere:", sorted(kept))
-    assert "Pets" in kept | set(categories(a.db)) | set(categories(b.db)) or "two_computers" in states
+    if a_looks_first:  # PC-A used the restore; PC-B's Pets isn't in that: asked
+        assert states[0] == "two_computers" and categories(b.db) == ["Groceries", "Rent", "Pets"]
+    else:  # the backup is the copy: an older save, into Backups/ (copied in again to restore it)
+        assert states == ["saved"] * 4 and categories(a.db) == ["Groceries", "Rent", "Pets"]
 
 
 def test_opening_the_same_folder_after_a_restore(tmp_path):
@@ -1598,208 +1471,51 @@ def test_opening_the_same_folder_after_a_restore(tmp_path):
     add_category(a.db, "Bills")                          # not saved yet
     shutil.copyfile(made, folder / FILE_NAME)
     state = a.open_from(folder)                          # Settings' Open… on its own folder
-    print("state:", state["state"], categories(a.db), [categories_in(p) for p in sorted((folder / "Backups").glob("*not-kept*"))])
-    assert state["state"] == "two_computers", "same budget treated as another: no question"
+    assert state["state"] == "older" and categories(a.db) == ["Groceries", "Rent", "Bills"]
 
 
-def test_the_same_change_saved_on_two_computers_is_joined_without_a_question(tmp_path):
-    """PC-A and PC-B make the very same change apart (random seed 4045): their saves' counts are
-    apart, their contents the same. Joining them leaves Budget.inab, which PC-B has just joined,
-    not an older one put back."""
-    folder = tmp_path / "Budget"
-    a = computer(tmp_path, "PC-A")
-    add_category(a.db, "Groceries")
-    a.move_to(folder)
-    b = computer(tmp_path, "PC-B")
-    b.open_from(folder)
-    seen_on_b = _view(b, folder)
-    add_category(a.db, "Gifts")
-    assert a.check(wait=False)["state"] == "saved"
-    add_category(b.db, "Gifts")                          # the same change, saved where PC-B's sync is behind
-    assert b.check(wait=False)["state"] == "saved"
-    assert backups.digest(a.db) == backups.digest(b.db)
-    shutil.copyfile(seen_on_b / FILE_NAME, folder / "Budget-PC-B.inab")  # the sync tool keeps PC-A's
-    b.folder, b._reachable, b._seen = folder, None, {}
-    b._point_backups()
-    assert b.check(wait=False)["state"] == "saved"
-    assert a.check(wait=False)["state"] == "saved"
-    assert names(folder).count(FILE_NAME) == 1 and "Budget-PC-B.inab" not in names(folder)
-    assert categories(a.db) == categories(b.db) == ["Groceries", "Gifts"]
-    assert not not_kept(folder)
-
-
-def test_following_a_moved_budget_brings_what_reached_the_old_folder_since(tmp_path):
-    """PC-B's sync is behind when PC-A moves the budget (random seed 582): a copy PC-B put in
-    Backups/ meanwhile (Keep this one) reaches the old folder after the move, and follows the budget."""
-    folder, moved = tmp_path / "Budget", tmp_path / "Moved"
-    a = computer(tmp_path, "PC-A")
-    add_category(a.db, "Groceries")
-    a.move_to(folder)
-    b = computer(tmp_path, "PC-B")
-    b.open_from(folder)
-    seen_on_b = _view(b, folder)
-    a.move_to(moved)
-    b._point_backups()
-    backups.save(b.db, b._not_kept_name())               # what a question on PC-B put away
-    shutil.copytree(seen_on_b / "Backups", folder / "Backups", dirs_exist_ok=True)  # synced after the move
-    b.folder, b._reachable, b._seen = folder, None, {}
-    b._point_backups()
-    assert b.check(wait=False)["state"] == "moved"
-    b.open_from(moved)
-    assert len(not_kept(moved)) == 1
-    assert not (folder / "Backups").exists()
-
-
-def test_moving_an_unchanged_budget_is_the_same_save_and_a_changed_one_a_new_save(tmp_path, monkeypatch):
-    """Move… with nothing changed puts the very save in the new folder (random seed 172); a change
-    that slips in before the copy is made (a request) makes it a new save, never other contents
-    under the same one."""
-    a = computer(tmp_path, "PC-A")
-    add_category(a.db, "Groceries")
-    a.move_to(tmp_path / "Budget")
-    first = a._mine()
-    a.move_to(tmp_path / "Moved")
-    assert save_in(tmp_path / "Moved" / FILE_NAME)["id"] == first.id
-
-    def unchanged():  # it looks unchanged, then a request changes it before the copy is made
-        add_category(a.db, "Rent")
-        return True
-    monkeypatch.setattr(a, "_unchanged", unchanged)
-    a.move_to(tmp_path / "Moved again")
-    moved = save_in(tmp_path / "Moved again" / FILE_NAME)
-    assert moved["id"] != first.id and moved["counts"] != first.counts
-    assert categories_in(tmp_path / "Moved again" / FILE_NAME) == ["Groceries", "Rent"]
-
-
-def test_keep_this_over_a_restore_is_taken_by_a_computer_that_only_took_the_restore(tmp_path):
-    """Restoring by copying a backup in (the maintainer's choice on #196). PC-B changed nothing and
-    takes the restore: its budget goes into Backups/ first, and its counts are the restore's alone.
-    PC-A had a change not saved yet, so it's asked; Keep this counts the restore too, so PC-B takes
-    it without a question."""
-    folder = tmp_path / "Budget"
-    a = computer(tmp_path, "PC-A")
-    add_category(a.db, "Groceries")
-    a.move_to(folder)
-    b = computer(tmp_path, "PC-B")
-    b.open_from(folder)
-    made = shutil.copyfile(backups.make(a.db), tmp_path / "the backup.db")
-    add_category(a.db, "Rent")
-    a.check(wait=False)
-    assert b.check(wait=False)["took"]
-    add_category(a.db, "Bills")                          # not saved yet
+def test_a_computer_that_missed_a_restore_and_changed_nothing_takes_the_answer(tmp_path):
+    """PC-B is off while a backup is restored, PC-A uses it and adds Gifts on top. PC-B changed
+    nothing: every answer and save after counts what it had."""
+    folder, a, b, made = _restored(tmp_path)
     shutil.copyfile(made, folder / FILE_NAME)            # the person restores the backup
-    assert b.check(wait=False)["took"] and categories(b.db) == ["Groceries"]
-    assert b._mine().counts == {budget_folder.restore_key(backups.digest(b.db)): 1}
-    assert [categories_in(p) for p in not_kept(folder)] == [["Groceries", "Rent"]]
-    assert a.check(wait=False)["state"] == "two_computers"
-    a.keep_this()
-    state = b.check(wait=False)
-    assert state["state"] == "saved" and state["took"] and categories(b.db) == ["Groceries", "Rent", "Bills"]
-
-
-def test_two_computers_taking_one_restore_keep_one_copy_of_what_they_had(tmp_path):
-    folder = tmp_path / "Budget"
-    a = computer(tmp_path, "PC-A")
-    add_category(a.db, "Groceries")
-    a.move_to(folder)
-    b, c = computer(tmp_path, "PC-B"), computer(tmp_path, "PC-C")
-    b.open_from(folder)
-    c.open_from(folder)
-    made = shutil.copyfile(backups.make(a.db), tmp_path / "the backup.db")
-    add_category(a.db, "Rent")
-    a.check(wait=False)
-    assert b.check(wait=False)["took"] and c.check(wait=False)["took"]
-    shutil.copyfile(made, folder / FILE_NAME)
-    for each in (a, b, c):
-        assert each.check(wait=False)["state"] == "saved" and categories(each.db) == ["Groceries"]
-    assert [categories_in(p) for p in not_kept(folder)] == [["Groceries", "Rent"]]  # once, by its contents
-
-
-def test_a_computer_that_missed_the_restore_of_its_very_contents_takes_what_came_after(tmp_path):
-    """PC-A doesn't look while a backup with exactly its budget is restored and PC-B saves on top
-    of it (random seed 401). Nothing PC-A has is missing from PC-B's save: it's taken, unasked."""
-    folder = tmp_path / "Budget"
-    a = computer(tmp_path, "PC-A")
-    add_category(a.db, "Groceries")
-    a.move_to(folder)
-    b = computer(tmp_path, "PC-B")
-    b.open_from(folder)
-    made = shutil.copyfile(backups.make(a.db), tmp_path / "the backup.db")
-    shutil.copyfile(made, folder / FILE_NAME)            # the very contents PC-A and PC-B have
-    assert b.check(wait=False)["state"] == "saved"       # PC-B: the restore itself, saved back as itself
-    add_category(b.db, "Bills")
-    b.check(wait=False)
-    state = a.check(wait=False)
-    assert state["state"] == "saved" and state["took"] and categories(a.db) == ["Groceries", "Bills"]
-
-
-def test_a_save_built_on_the_same_change_made_apart_is_taken(tmp_path):
-    """PC-A and PC-C add Gifts apart; PC-A joins PC-C's save (the very same contents), then PC-C,
-    whose sync is behind, adds Rent on top of its own (random seed 959). PC-A changed nothing since:
-    everything it has is in PC-C's save, so it's taken, unasked."""
-    folder = tmp_path / "Budget"
-    a = computer(tmp_path, "PC-A")
-    add_category(a.db, "Groceries")
-    a.move_to(folder)
-    c = computer(tmp_path, "PC-C")
-    c.open_from(folder)
-    seen_on_c = _view(c, folder)
-    add_category(a.db, "Gifts")
-    a.check(wait=False)
-    add_category(c.db, "Gifts")                          # the same change, where PC-C's sync is behind
-    c.check(wait=False)
-    shutil.copyfile(seen_on_c / FILE_NAME, folder / "Budget-PC-C.inab")  # the sync tool keeps PC-A's
-    assert a.check(wait=False)["state"] == "saved"       # the same contents: joined
-    add_category(c.db, "Rent")                           # on top of its own, still behind
-    c.check(wait=False)
-    shutil.copyfile(folder / FILE_NAME, folder / "Budget-cloud.inab")    # now the sync tool keeps PC-C's
-    shutil.copyfile(seen_on_c / FILE_NAME, folder / FILE_NAME)
-    state = a.check(wait=False)
-    assert state["state"] == "saved" and state["took"] and categories(a.db) == ["Groceries", "Gifts", "Rent"]
-
-
-# The sixth review of #196 (reproductions against 03ab640). Made-up data only.
-
-def backups_in(folder):
-    return [sorted(categories_in(p)) for p in sorted((folder / "Backups").glob("*.db"))]
-
-
-def test_a_computer_that_missed_a_restore_and_changed_nothing_takes_what_came_after(tmp_path):
-    """PC-B is off while a backup is restored and PC-A adds Gifts on top. PC-B changed nothing."""
-    folder = tmp_path / "Budget"
-    a = computer(tmp_path, "PC-A")
-    add_category(a.db, "Groceries")
-    a.move_to(folder)
-    b = computer(tmp_path, "PC-B")
-    b.open_from(folder)
-    made = shutil.copyfile(backups.make(a.db), tmp_path / "the backup.db")
-    add_category(a.db, "Rent")
-    a.check(wait=False)
-    b.check(wait=False)                                  # PC-B has Groceries, Rent; then it's off
-    shutil.copyfile(made, folder / FILE_NAME)            # the person restores the backup
-    assert a.check(wait=False)["took"]
+    assert a.check(wait=False)["state"] == "older"
+    a.keep_other()
     add_category(a.db, "Gifts")
     a.check(wait=False)                                  # PC-A's change on top of the restore
     state = b.check(wait=False)                          # PC-B comes back, nothing changed on it
-    print("B:", state["state"], categories(b.db))
-    assert state["state"] == "saved" and "Gifts" in categories(b.db), "asked though only PC-A changed"
+    assert state["state"] == "saved" and categories(b.db) == ["Groceries", "Gifts"]
+
+
+def test_a_computer_that_missed_a_restore_after_saving_last_takes_the_answer(tmp_path):
+    """PC-B made the last change before the restore (PC-A took it), then is off."""
+    folder = tmp_path / "Budget"
+    a = computer(tmp_path, "PC-A")
+    add_category(a.db, "Groceries")
+    a.move_to(folder)
+    b = computer(tmp_path, "PC-B")
+    b.open_from(folder)
+    made = shutil.copyfile(backups.make(a.db), tmp_path / "the backup.db")
+    add_category(b.db, "Rent")
+    b.check(wait=False)
+    assert a.check(wait=False)["took"]                   # PC-B's save, taken; then PC-B is off
+    shutil.copyfile(made, folder / FILE_NAME)            # the person restores the backup
+    assert a.check(wait=False)["state"] == "older"
+    a.keep_other()
+    add_category(a.db, "Gifts")
+    a.check(wait=False)
+    state = b.check(wait=False)                          # PC-B comes back, nothing changed on it
+    assert state["state"] == "saved" and categories(b.db) == ["Groceries", "Gifts"]
 
 
 def test_a_change_back_to_a_restores_contents_is_asked_about(tmp_path):
     """After a restore, PC-A adds Gifts and PC-B takes it. PC-B (sync behind) deletes Gifts: its
     budget is the restore's very contents again. PC-A adds Pets. Both changed."""
-    folder = tmp_path / "Budget"
-    a = computer(tmp_path, "PC-A")
-    add_category(a.db, "Groceries")
-    a.move_to(folder)
-    b = computer(tmp_path, "PC-B")
-    b.open_from(folder)
-    made = shutil.copyfile(backups.make(a.db), tmp_path / "the backup.db")
-    add_category(a.db, "Rent")
-    a.check(wait=False); b.check(wait=False)
+    folder, a, b, made = _restored(tmp_path)
     shutil.copyfile(made, folder / FILE_NAME)
-    a.check(wait=False); b.check(wait=False)
-    assert categories(a.db) == categories(b.db) == ["Groceries"]
+    assert a.check(wait=False)["state"] == "older"
+    a.keep_other()
+    assert b.check(wait=False)["took"] and categories(a.db) == categories(b.db) == ["Groceries"]
     add_category(a.db, "Gifts")
     a.check(wait=False)
     assert b.check(wait=False)["took"]
@@ -1810,18 +1526,18 @@ def test_a_change_back_to_a_restores_contents_is_asked_about(tmp_path):
     a.check(wait=False)
     shutil.copyfile(folder / FILE_NAME, folder / "Budget-PC-A.inab")    # the sync tool keeps PC-B's
     shutil.copyfile(seen_on_b / FILE_NAME, folder / FILE_NAME)
-    b.folder, b._reachable, b._seen = folder, None, {}
-    b._point_backups()
+    back_in(b, folder)
     states = []
     for _ in range(2):
         states += [a.check(wait=False)["state"], b.check(wait=False)["state"]]
-    print("states:", states, "A:", categories(a.db), "B:", categories(b.db), "backups:", backups_in(folder))
     assert "two_computers" in states, "PC-B's deletion was undone and nobody was asked"
+    assert categories(a.db) == ["Groceries", "Gifts", "Pets"] and categories(b.db) == ["Groceries"]
 
 
 def test_keep_this_answered_late_on_the_second_computer(tmp_path):
-    """Both changed; PC-A answers Keep this first. PC-B's question was open before that and it
-    answers Keep this without looking again: PC-A's kept change is put away, nobody asked about it."""
+    """Both changed; PC-A answers Keep this first. PC-B's question was open before that, and it answers
+    Keep this after PC-A's answer arrived: its answer counts only what it was shown, so PC-A's answer
+    is asked about next, never put away unseen."""
     folder = tmp_path / "Budget"
     a = computer(tmp_path, "PC-A")
     add_category(a.db, "Groceries")
@@ -1837,67 +1553,36 @@ def test_keep_this_answered_late_on_the_second_computer(tmp_path):
     assert b.check(wait=False)["state"] == "two_computers"
     a.keep_this()                                        # PC-A keeps Rent
     shutil.copyfile(folder / FILE_NAME, seen_on_b / FILE_NAME)  # PC-B's sync catches up...
-    b.folder, b._reachable, b._seen = folder, None, {}
-    b._point_backups()
+    back_in(b, folder)
     state = b.keep_this()                                # ...as its person answers the open question
-    print("B:", state["state"], "A:", categories(a.db), "B:", categories(b.db), "backups:", backups_in(folder))
-    # PC-A's kept save has the very contents PC-B's person was shown (Rent): their answer stands, Rent in Backups/
-    assert state["state"] == "saved" and ["Groceries", "Rent"] in backups_in(folder)
+    assert state["state"] == "two_computers" and categories_in(folder / FILE_NAME) == ["Groceries", "Rent"]
+    assert b.keep_this()["state"] == "saved"            # asked again about PC-A's answer: Gifts kept
+    assert ["Groceries", "Rent"] in backups_in(folder)
     assert a.check(wait=False)["took"] and categories(a.db) == categories(b.db) == ["Groceries", "Gifts"]
-
-
-def test_a_computer_that_missed_a_restore_after_saving_last_takes_what_came_after(tmp_path):
-    """PC-B made the last change before the restore (PC-A took it). PC-B is off while the backup is
-    restored and PC-A adds Gifts on top. PC-B changed nothing since."""
-    folder = tmp_path / "Budget"
-    a = computer(tmp_path, "PC-A")
-    add_category(a.db, "Groceries")
-    a.move_to(folder)
-    b = computer(tmp_path, "PC-B")
-    b.open_from(folder)
-    made = shutil.copyfile(backups.make(a.db), tmp_path / "the backup.db")
-    add_category(b.db, "Rent")
-    b.check(wait=False)
-    assert a.check(wait=False)["took"]                   # PC-B's save, taken; then PC-B is off
-    shutil.copyfile(made, folder / FILE_NAME)            # the person restores the backup
-    assert a.check(wait=False)["took"]
-    add_category(a.db, "Gifts")
-    a.check(wait=False)
-    state = b.check(wait=False)                          # PC-B comes back, nothing changed on it
-    print("B:", state["state"], categories(b.db), b._mine().counts, a._mine().counts)
-    assert state["state"] == "saved" and "Gifts" in categories(b.db), "asked though only PC-A changed"
 
 
 def test_keep_this_on_two_computers_over_the_same_restore(tmp_path):
     """Both have a change not saved yet when a backup is restored; both are asked about the restore
     and both answer Keep this. PC-B's answer comes after PC-A's save landed."""
-    folder = tmp_path / "Budget"
-    a = computer(tmp_path, "PC-A")
-    add_category(a.db, "Groceries")
-    a.move_to(folder)
-    b = computer(tmp_path, "PC-B")
-    b.open_from(folder)
-    made = shutil.copyfile(backups.make(a.db), tmp_path / "the backup.db")
-    add_category(a.db, "Rent"); a.check(wait=False); b.check(wait=False)
+    folder, a, b, made = _restored(tmp_path)
     add_category(a.db, "Bills")                          # PC-A's change, not saved yet
     add_category(b.db, "Gifts")                          # PC-B's change, not saved yet
     shutil.copyfile(made, folder / FILE_NAME)
-    assert a.check(wait=False)["state"] == "two_computers"
-    assert b.check(wait=False)["state"] == "two_computers"
+    assert a.check(wait=False)["state"] == "older"
+    assert b.check(wait=False)["state"] == "older"
     a.keep_this()                                        # PC-A: keep Bills over the restore
-    b.keep_this()                                        # PC-B: keep Gifts over the restore (its question was about the restore)
+    b.keep_this()                                        # PC-B: keep Gifts over the restore (its question was about it)
     states = []
     for _ in range(2):
         states += [a.check(wait=False)["state"], b.check(wait=False)["state"]]
-    print("states:", states, "A:", categories(a.db), "B:", categories(b.db), "backups:", backups_in(folder))
-    assert "Bills" in categories(a.db) or "two_computers" in states[2:], \
+    assert "Bills" in categories(a.db) and "two_computers" in states[2:], \
         "PC-A's kept Bills went to Backups; nobody was asked about Bills against Gifts"
 
 
 def test_an_older_save_of_a_restore_put_back_is_asked_about(tmp_path):
-    """A first restore is taken and saved back as itself (that file stays in the sync tool's version
-    history). Later another backup is restored and changed on. The sync tool's "restore previous
-    version" puts the first one's save back: an older save put back should ask."""
+    """A first restore is used (its answer stays in the sync tool's version history). Later another
+    backup is restored and changed on. The sync tool's "restore previous version" puts the first
+    answer back: older, asked."""
     folder = tmp_path / "Budget"
     a = computer(tmp_path, "PC-A")
     add_category(a.db, "Groceries")
@@ -1907,15 +1592,16 @@ def test_an_older_save_of_a_restore_put_back_is_asked_about(tmp_path):
     second = shutil.copyfile(backups.make(a.db), tmp_path / "second.db")
     add_category(a.db, "Bills"); a.check(wait=False)
     shutil.copyfile(first, folder / FILE_NAME)
-    assert a.check(wait=False)["took"]                   # saved back as itself
+    assert a.check(wait=False)["state"] == "older"
+    a.keep_other()
     history = shutil.copyfile(folder / FILE_NAME, tmp_path / "version history.inab")
     shutil.copyfile(second, folder / FILE_NAME)
-    assert a.check(wait=False)["took"]
+    assert a.check(wait=False)["state"] == "older"
+    a.keep_other()
     add_category(a.db, "Gifts"); a.check(wait=False)
     shutil.copyfile(history, folder / FILE_NAME)         # "restore previous version"
     state = a.check(wait=False)
-    print("A:", state["state"], state.get("took"), categories(a.db))
-    assert state["state"] == "older", "went back to an older save without asking"
+    assert state["state"] == "older" and categories(a.db) == ["Groceries", "Rent", "Gifts"]
 
 
 def test_two_computers_with_the_same_name_never_share_a_file_name(tmp_path):
@@ -1938,9 +1624,10 @@ def test_two_computers_with_the_same_name_never_share_a_file_name(tmp_path):
     assert budget_folder.tag_in(tmp_path / "one", "Laptop") == a._tag()
 
 
-def test_a_backup_restored_into_the_folder_the_budget_moves_out_of_is_kept(tmp_path, monkeypatch):
-    """The sixth review: a backup copied into the old folder during Move… (after it looked, before it
-    left), or after it, isn't taken (the move stands), and goes into the new folder's Backups/."""
+def test_every_budget_left_in_the_folder_moved_out_of_goes_into_backups(tmp_path, monkeypatch):
+    """Move…: the budget goes to the new folder; every other budget file in the old folder (one
+    copied in during the move or after it, a sync tool's copy) goes into the new folder's Backups/.
+    Nothing is deleted, nothing asked."""
     old, new = tmp_path / "Budget", tmp_path / "Moved"
     a = computer(tmp_path, "PC-A")
     add_category(a.db, "Groceries")
@@ -1960,12 +1647,16 @@ def test_a_backup_restored_into_the_folder_the_budget_moves_out_of_is_kept(tmp_p
     monkeypatch.setattr(BudgetFolder, "_leave", restored_meanwhile)
     a.move_to(new)
     monkeypatch.setattr(BudgetFolder, "_leave", real)
-    assert categories(a.db) == ["Groceries", "Rent"] and [categories_in(p) for p in not_kept(new)] == [["Groceries"]]
+    assert categories(a.db) == ["Groceries", "Rent"] and ["Groceries"] in backups_in(new)
+    assert not list(old.glob("*.inab"))
     add_category(b.db, "Gifts")                          # another backup restored there after the move
     shutil.move(backups.make(b.db), old / FILE_NAME)
+    shutil.copyfile(new / FILE_NAME, old / "Budget 2.inab")  # and a sync tool's copy of the moved budget
     assert b.check(wait=False)["state"] == "moved"
     b.open_from(new)
-    assert sorted(categories_in(p) for p in not_kept(new)) == [["Groceries"], ["Groceries", "Rent", "Gifts"]]
+    assert ["Gifts", "Groceries", "Rent"] in backups_in(new) and not list(old.glob("*.inab"))
+    assert b.check(wait=False)["state"] == "saved"       # the same save moved: PC-B's change goes on top
+    assert categories_in(new / FILE_NAME) == ["Groceries", "Rent", "Gifts"]
 
 
 def test_backups_named_by_an_earlier_tag_are_still_this_computers_to_prune(tmp_path):
@@ -1995,27 +1686,20 @@ def test_backups_named_by_an_earlier_tag_are_still_this_computers_to_prune(tmp_p
     assert other.db.backup_earlier_tags == ()
 
 
-# The seventh review of #196 (reproductions against 27d8e89). Made-up data only.
-
-def back_in(c, folder):
-    c.folder, c._reachable, c._seen = folder, None, {}
-    c._point_backups()
-
-
-def test_a_change_that_joins_another_save_is_still_a_change_and_asked_about(tmp_path):
+def test_a_change_that_comes_to_another_saves_contents_is_still_a_change_and_asked_about(tmp_path):
     """PC-A deletes Gifts, and its budget then has the very contents of PC-B's save (PC-B added and
-    removed Pets): the app joins the two, with no count of PC-A's own for the deletion. PC-C,
-    asked about PC-A's earlier save (with Gifts) against PC-B's, keeps PC-A's. That choice counts
-    everything the join does, so PC-A takes it unasked and Gifts is back."""
+    removed Pets): rule 3 joins them, with one count of PC-A's own. PC-C, asked about PC-A's earlier
+    save (with Gifts) against PC-B's, keeps PC-A's; that answer doesn't count PC-A's join, so PC-A is
+    asked, and its deletion of Gifts stays until it answers."""
     folder = tmp_path / "Budget"
     a = computer(tmp_path, "PC-A")
     add_category(a.db, "Groceries")
     a.move_to(folder)
     b, c = computer(tmp_path, "PC-B"), computer(tmp_path, "PC-C")
-    b.open_from(folder); c.open_from(folder)
+    b.open_from(folder)
     seen_on_b = _view(b, folder)                         # PC-B's sync falls behind
     add_category(a.db, "Gifts"); a.check(wait=False)     # PC-A: Gifts
-    assert c.check(wait=False)["took"]
+    c.open_from(folder)                                  # PC-C opens it now (nothing of its own to back up)
     start = backups.digest(b.db)
     add_category(b.db, "Pets"); b.check(wait=False)      # PC-B adds Pets and takes it out again
     delete_category(b.db, "Pets"); b.check(wait=False)
@@ -2024,8 +1708,7 @@ def test_a_change_that_joins_another_save_is_still_a_change_and_asked_about(tmp_
     back_in(b, folder)
     seen_on_a = _view(a, folder)                         # now PC-A's sync falls behind
     delete_category(a.db, "Gifts")                       # PC-A's change: Gifts goes
-    state = a.check(wait=False)
-    print("A after deleting Gifts:", state["state"], a._mine().counts)
+    assert a.check(wait=False)["state"] == "saved"       # the very contents of PC-B's save: joined
     assert c.check(wait=False)["state"] == "two_computers"
     c.keep_this()                                        # PC-C's person keeps PC-A's earlier save (Gifts)
     shutil.copyfile(seen_on_a / FILE_NAME, folder / "Budget-PC-A.inab")  # PC-A's join arrives as a copy
@@ -2033,15 +1716,14 @@ def test_a_change_that_joins_another_save_is_still_a_change_and_asked_about(tmp_
     states = []
     for _ in range(2):
         states += [a.check(wait=False)["state"], b.check(wait=False)["state"], c.check(wait=False)["state"]]
-    print("states:", states, "A:", categories(a.db), "B:", categories(b.db), "C:", categories(c.db))
-    assert "Gifts" not in categories(a.db) and "two_computers" in states[:3] and "two_computers" in states[3:], \
+    assert "Gifts" not in categories(a.db) and states[0] == states[3] == "two_computers", \
         "PC-A's deletion of Gifts was undone and nobody was asked"
 
 
 def test_a_change_not_saved_yet_that_joins_a_copy_still_asks_about_a_restore(tmp_path):
     """PC-A, its folder unplugged, adds Rent (not saved). PC-B (sync behind) makes the same change.
-    A backup is restored; PC-B's save arrives as a copy. PC-A comes back: it joins the copy (the very
-    contents of its unsaved change), so it looks unchanged, and takes the restore in the same look."""
+    A backup is restored; PC-B's save arrives as a copy. PC-A comes back: it joins the copy (rule 3,
+    its unsaved change's very contents), takes nothing in that look, and asks about the restore."""
     folder = tmp_path / "Budget"
     a = computer(tmp_path, "PC-A")
     add_category(a.db, "Groceries")
@@ -2062,28 +1744,116 @@ def test_a_change_not_saved_yet_that_joins_a_copy_still_asks_about_a_restore(tmp
     back_in(b, folder)
     back_in(a, folder)                                   # PC-A's folder is back
     state = a.check(wait=False)
-    print("A:", state["state"], state.get("took"), categories(a.db), "backups:", backups_in(folder), names(folder))
-    assert state["state"] == "two_computers", "PC-A had a change not saved yet and the restore replaced it unasked"
-    assert categories(a.db) == ["Groceries", "Bills", "Rent"] and a.check(wait=False)["state"] == "two_computers"
+    assert state["state"] == "older", "PC-A had a change not saved yet and the restore replaced it unasked"
+    assert categories(a.db) == ["Groceries", "Bills", "Rent"] and a.check(wait=False)["state"] == "older"
 
 
-def test_a_restore_saved_back_as_itself_is_never_in_flight(tmp_path):
-    """PC-A took a restore and saved it back as itself, with no change of its own; the sync tool keeps
-    a copy of that file when a second backup is restored (random seed 74006). Nothing of PC-A's is in
-    flight: it takes the second restore without a question."""
+def test_the_same_change_saved_on_two_computers_is_joined_without_a_question(tmp_path):
+    """PC-A and PC-B make the very same change apart (random seed 4045): their saves' counts are
+    apart, their contents the same (rule 3). PC-B's join is a new event after both, which PC-A then
+    takes; PC-B's own copy goes into Backups/ (rule 1)."""
     folder = tmp_path / "Budget"
     a = computer(tmp_path, "PC-A")
     add_category(a.db, "Groceries")
     a.move_to(folder)
-    first = shutil.move(backups.make(a.db), tmp_path / "first.db")
+    b = computer(tmp_path, "PC-B")
+    b.open_from(folder)
+    seen_on_b = _view(b, folder)
+    add_category(a.db, "Gifts")
+    assert a.check(wait=False)["state"] == "saved"
+    add_category(b.db, "Gifts")                          # the same change, saved where PC-B's sync is behind
+    assert b.check(wait=False)["state"] == "saved"
+    assert backups.digest(a.db) == backups.digest(b.db)
+    shutil.copyfile(seen_on_b / FILE_NAME, folder / "Budget-PC-B.inab")  # the sync tool keeps PC-A's
+    b.folder, b._reachable, b._seen = folder, None, {}
+    b._point_backups()
+    assert b.check(wait=False)["state"] == "saved"
+    assert a.check(wait=False)["state"] == "saved"
+    assert names(folder).count(FILE_NAME) == 1 and "Budget-PC-B.inab" not in names(folder)
+    assert categories(a.db) == categories(b.db) == ["Groceries", "Gifts"]
+    assert [categories_in(p) for p in not_kept(folder)] == [["Groceries", "Gifts"]]  # nothing else
+    assert a._mine().id == b._mine().id == save_in(folder / FILE_NAME)["id"]
+
+
+def test_following_a_moved_budget_brings_what_reached_the_old_folder_since(tmp_path):
+    """PC-B's sync is behind when PC-A moves the budget (random seed 582): a copy PC-B put in
+    Backups/ meanwhile (Keep this one) reaches the old folder after the move, and follows the budget."""
+    folder, moved = tmp_path / "Budget", tmp_path / "Moved"
+    a = computer(tmp_path, "PC-A")
+    add_category(a.db, "Groceries")
+    a.move_to(folder)
+    b = computer(tmp_path, "PC-B")
+    b.open_from(folder)
+    seen_on_b = _view(b, folder)
+    a.move_to(moved)
+    b._point_backups()
+    backups.save(b.db, b._backup_name(not_kept=True))    # what a question on PC-B put away
+    shutil.copytree(seen_on_b / "Backups", folder / "Backups", dirs_exist_ok=True)  # synced after the move
+    b.folder, b._reachable, b._seen = folder, None, {}
+    b._point_backups()
+    assert b.check(wait=False)["state"] == "moved"
+    b.open_from(moved)
+    assert len(not_kept(moved)) == 1
+    assert not (folder / "Backups").exists()
+
+
+def test_moving_an_unchanged_budget_is_the_same_save_and_a_changed_one_a_new_save(tmp_path):
+    """Move… with nothing changed puts the very save in the new folder (random seed 172); a change
+    made before it (one waiting for the watcher) makes it a new save, never other contents under
+    the same one: which it is, is decided from the copy made."""
+    a = computer(tmp_path, "PC-A")
+    add_category(a.db, "Groceries")
+    a.move_to(tmp_path / "Budget")
+    first = a._mine()
+    a.move_to(tmp_path / "Moved")
+    assert save_in(tmp_path / "Moved" / FILE_NAME)["id"] == first.id
     add_category(a.db, "Rent")
-    a.check(wait=False)
-    second = shutil.move(backups.make(a.db), tmp_path / "second.db")
-    add_category(a.db, "Bills")
-    a.check(wait=False)
-    shutil.copyfile(first, folder / FILE_NAME)
-    assert a.check(wait=False)["took"] and categories(a.db) == ["Groceries"]  # saved back as itself
-    shutil.copyfile(folder / FILE_NAME, folder / "Budget-PC-A.inab")    # the sync tool keeps a copy of it
-    shutil.copyfile(second, folder / FILE_NAME)                         # as the second backup goes in
+    a.move_to(tmp_path / "Moved again")
+    moved = save_in(tmp_path / "Moved again" / FILE_NAME)
+    assert moved["id"] != first.id and moved["counts"] != first.counts
+    assert categories_in(tmp_path / "Moved again" / FILE_NAME) == ["Groceries", "Rent"]
+
+
+def test_a_computer_that_missed_the_restore_of_its_very_contents_takes_what_came_after(tmp_path):
+    """PC-A doesn't look while a backup with exactly its budget is restored and PC-B saves on top
+    of it (random seed 401). PC-B's join counts what both had: PC-A takes what came after, unasked."""
+    folder = tmp_path / "Budget"
+    a = computer(tmp_path, "PC-A")
+    add_category(a.db, "Groceries")
+    a.move_to(folder)
+    b = computer(tmp_path, "PC-B")
+    b.open_from(folder)
+    made = shutil.copyfile(backups.make(a.db), tmp_path / "the backup.db")
+    shutil.copyfile(made, folder / FILE_NAME)            # the very contents PC-A and PC-B have
+    assert b.check(wait=False)["state"] == "saved"       # PC-B: its very contents (rule 3), joined
+    add_category(b.db, "Bills")
+    b.check(wait=False)
     state = a.check(wait=False)
-    assert state["state"] == "saved" and state["took"] and categories(a.db) == ["Groceries", "Rent"]
+    assert state["state"] == "saved" and state["took"] and categories(a.db) == ["Groceries", "Bills"]
+
+
+def test_a_save_built_on_the_same_change_made_apart_is_asked_about(tmp_path):
+    """PC-A and PC-C add Gifts apart; PC-A joins PC-C's save (rule 3: a new event of its own), then
+    PC-C, whose sync is behind, adds Rent on top of its own (random seed 959). PC-C's save doesn't
+    count PC-A's join: asked (accepted on the rebuild), and nothing is lost."""
+    folder = tmp_path / "Budget"
+    a = computer(tmp_path, "PC-A")
+    add_category(a.db, "Groceries")
+    a.move_to(folder)
+    c = computer(tmp_path, "PC-C")
+    c.open_from(folder)
+    seen_on_c = _view(c, folder)
+    add_category(a.db, "Gifts")
+    a.check(wait=False)
+    add_category(c.db, "Gifts")                          # the same change, where PC-C's sync is behind
+    c.check(wait=False)
+    shutil.copyfile(seen_on_c / FILE_NAME, folder / "Budget-PC-C.inab")  # the sync tool keeps PC-A's
+    assert a.check(wait=False)["state"] == "saved"       # the same contents: joined
+    add_category(c.db, "Rent")                           # on top of its own, still behind
+    c.check(wait=False)
+    shutil.copyfile(folder / FILE_NAME, folder / "Budget-cloud.inab")    # now the sync tool keeps PC-C's
+    shutil.copyfile(seen_on_c / FILE_NAME, folder / FILE_NAME)
+    assert a.check(wait=False)["state"] == "two_computers"
+    assert a.keep_other()["state"] == "saved" and categories(a.db) == ["Groceries", "Gifts", "Rent"]
+    back_in(c, folder)
+    assert c.check(wait=False)["took"] and categories(c.db) == ["Groceries", "Gifts", "Rent"]
