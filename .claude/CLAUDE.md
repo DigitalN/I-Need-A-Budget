@@ -25,7 +25,10 @@ that are local businesses, category names that reveal finances, and real amounts
   (database, settings, `Imported Files/`), `~/Library/Logs/I Need A Budget`, and the
   backups in `~/Documents/I Need A Budget Backups`. On Windows: `%LOCALAPPDATA%\I Need A Budget`
   (the same, with `Logs\` inside it) and `I Need A Budget Backups` in Documents (the folder
-  Windows says is Documents: OneDrive may have moved it).
+  Windows says is Documents: OneDrive may have moved it). From 1.5.0 the budget also lives in the
+  budget folder the person chooses (`Budget.inab`, `Backups/`, `Imported Files/`; suggested:
+  `I Need A Budget` in Documents), which their sync tool may copy to every computer they use:
+  never one inside a checkout.
 - `.gitignore` excludes bank files and databases. `scripts/hooks/pre-commit` (switched on
   with `git config core.hooksPath scripts/hooks`; First Time Setup does it) refuses
   commits with those files, card-number shapes, or any word in `.git-denylist`, a local,
@@ -60,10 +63,17 @@ when a file first sets it (issue #76), `… not imported: This file is in USD; y
 at a quit after a change (`No backup made: …` when nothing changed since the newest one),
 and at launch only when no backup holds the budget as it is: after a session that didn't
 quit normally, at the first launch of 1.4.0 (no file named in meta yet), or after the
-newest was deleted by hand.
+newest was deleted by hand. With a budget folder (ADR 0008) those go into its `Backups/`, and it
+logs `Saved the budget to …/Budget.inab`, `Took the budget saved on <computer> at …` (rule 2),
+`The budget saved on … is the same as this computer's` (rule 3), `Kept this computer's budget; …`
+or `Kept the budget saved on …` (an answer to its question), `Not saving over the budget saved on
+…: it arrived since`, `The budget folder … can't be reached` and `… is back`, `Moved the budget
+to …` (1.5.0's first launch, Move…) and `Opened the budget in …` (Open my budget).
 
 To reproduce without touching the user's data: `INAB_DATA_DIR=<tmp folder>` (logs go to
-`<tmp folder>/Logs/`, backups to `<tmp folder>/I Need A Budget Backups/`), and `INAB_TODAY=2026-10-12` to pin "today" (an account added then is added that day: `util.stamp`). To see the interface,
+`<tmp folder>/Logs/`, backups to `<tmp folder>/I Need A Budget Backups/`, and the budget folder
+it suggests is `<tmp folder> budget folder`, beside it), `INAB_COMPUTER=PC-B` to name the computer
+(two copies on one budget folder), and `INAB_TODAY=2026-10-12` to pin "today" (an account added then is added that day: `util.stamp`). To see the interface,
 run the dev preview (`python3 scripts/preview.py`, or the `preview` entry in
 `.claude/launch.json`) and open it in the browser pane: it's the real page driving the
 real engine over localhost. Claude's shell can't screenshot the app's own window.
@@ -616,12 +626,13 @@ late with only recent transactions counts as new (the accepted cost).
 ## Testing on the maintainer's Mac
 
 - Their real copy runs from `/Applications` with real data. Don't quit it, reinstall it
-  or touch `~/Library/Application Support/I Need A Budget` without asking.
+  or touch `~/Library/Application Support/I Need A Budget` or their budget folder without asking.
 - Say so before opening windows on screen for a test. For the built app, launch a copy
   against a throwaway folder: `open -n --env INAB_DATA_DIR=/tmp/x "/Applications/I Need A Budget.app"`
   (and point `downloads_dir` in that folder's `settings.json` somewhere harmless, or the
-  watcher will import from the real Downloads).
-- After testing, quit test copies and delete their folders.
+  watcher will import from the real Downloads). Its budget folder is a throwaway too: Start a new
+  budget in the one it suggests (`/tmp/x budget folder`), never Open my budget on the real one.
+- After testing, quit test copies and delete their folders, budget folders included.
 - To try the interface on real data: copy the database with SQLite's backup API (read-only
   source) into `~/Library/Caches/I Need A Budget-preview/`, write a `settings.json` there
   whose `downloads_dir` is an empty folder (the preview sets `<data>/downloads` itself if there isn't one, and refuses `~/Downloads`), run the `preview` launch entry, and delete the
@@ -634,11 +645,16 @@ late with only recent transactions counts as new (the accepted cost).
   it, and start `%LOCALAPPDATA%\Programs\I Need A Budget\I Need A Budget.exe` only with
   `INAB_DATA_DIR` set to a throwaway folder whose `settings.json` points `downloads_dir` at an
   empty folder. The Start menu entry, opened from a shell with that variable set, reaches the
-  same copy (the one-copy lock is the data folder's).
+  same copy (the one-copy lock is the data folder's). Start a new budget in the budget folder it
+  suggests, `<throwaway> budget folder`.
+- Two computers are two copies, each with its own `INAB_DATA_DIR` and `INAB_COMPUTER`, opening
+  one budget folder: they can run at once. That's two copies on one PC, not a sync tool: OneDrive's
+  delays and conflict copies are only seen on two real computers.
 - To drive the real page, start it with
   `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9333`: DevTools' protocol on
   localhost then evaluates script, sends real mouse and key events and screenshots the page alone.
-- Afterwards: the install folder's `unins000.exe /VERYSILENT`, the throwaway folder, and
+- Afterwards: the install folder's `unins000.exe /VERYSILENT`, the throwaway folders (budget
+  folders included), and
   `reg delete "HKCU\Software\I Need A Budget" /f` (the window's frame).
 
 ## Git

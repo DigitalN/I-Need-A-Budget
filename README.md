@@ -5,13 +5,13 @@
 <h3 align="center">Give every dollar a job.</h3>
 
 <p align="center">An envelope budget for your Mac or Windows PC. Download your transactions from
-any bank; it sorts them and asks only about the rest. Free, and your money never leaves your
-computer.</p>
+any bank; it sorts them and asks only about the rest. Free, with no account and no cloud of ours:
+your budget stays in a folder you choose.</p>
 
 <p align="center">
   <a href="https://github.com/DigitalN/I-Need-A-Budget/releases/latest"><b>Download for Mac or Windows</b></a>
   &nbsp;·&nbsp; <a href="#how-it-works">How it works</a>
-  &nbsp;·&nbsp; <a href="#your-money-stays-on-your-computer">Privacy</a>
+  &nbsp;·&nbsp; <a href="#your-budget-stays-yours">Privacy</a>
 </p>
 
 <picture>
@@ -86,17 +86,46 @@ behind it.
 - **Coming from Actual Budget?** Leave its export in Downloads and the app learns how you
   categorize from it.
 
-## Your money stays on your computer
+## One budget, on any of your computers
 
-No bank login, no account to make, no subscription, no cloud. Your budget lives on your
-computer. The only thing the app connects to is GitHub, to update itself.
+Your budget lives in a folder you choose, with its backups and the bank files it imported. The
+setup suggests **I Need A Budget** in Documents. A copy updating from an earlier version asks where,
+before anything else, and moves its budget there. Settings → Budget folder shows where it is, with
+**Open** and **Move…**.
 
-When you quit after changing something, a backup of the budget is saved in **I Need A Budget
-Backups** in your Documents folder, which iCloud Drive backs up if it syncs your Documents.
-Backups are kept for four months. If the app is refused access to Documents, they stay in its
-data folder's Backups until it's allowed, then move over. To restore one, quit the app, open its
-data folder (Settings → Your data → Open), delete `budget.db-wal` and `budget.db-shm` if they're
-there, and copy the backup in as `budget.db`, replacing the one there.
+To use it on another computer too, Mac or Windows, keep the folder where OneDrive, iCloud Drive or
+Dropbox syncs it (or on a drive you take along). Install the app on the other computer and choose
+**Open my budget** in its setup. Your sync tool carries the budget: the app never goes online for it.
+
+Use one computer at a time. The app saves the budget into the folder a few seconds after you stop
+making changes, and when you quit; the other computer takes it from there. If the budget is still
+open on another computer, the app says so when it opens. If the folder isn't available (a drive
+unplugged, a sync tool not running), your changes stay on this computer until it's back.
+
+When the two don't line up, it asks, and saves nothing until you choose:
+
+- **This budget changed on two computers**: each one changed it since the last save they both
+  had. It shows what each changed.
+- **The budget in the folder is older than this one**: a backup you copied in, say.
+
+**Use it** takes the one in the folder, **Keep this** keeps this computer's. The one you don't keep
+goes into Backups.
+
+## Your budget stays yours
+
+No bank login, no account to make, no subscription, no cloud of ours. The only thing the app
+connects to is GitHub, to update itself.
+
+When you quit after changing something, a backup of the budget goes into the budget folder's
+**Backups**, and is kept for four months. To restore one, quit the app on every computer, then
+copy the backup into the budget folder (Settings → Budget folder → Open) as `Budget.inab`,
+replacing the one there. The first computer you open asks once, "The budget in the folder is older
+than this one": choose **Use it**, and your other computers take it from there.
+
+Until you've chosen a folder, backups are in **I Need A Budget Backups** in Documents. To restore
+one of those, quit the app, open its data folder (Settings → Your data → Open), delete
+`budget.db-wal` and `budget.db-shm` if they're there, and copy the backup in as `budget.db`,
+replacing the one there.
 
 ## Install
 
@@ -119,8 +148,8 @@ On Windows 10 or 11:
 
 There's no Linux version.
 
-It updates itself from then on. A short setup walks you through your files, categories and
-balances. Start a few months back if you like: they catch up in one click.
+It updates itself from then on. A short setup asks where to keep your budget, then walks you
+through your files, categories and balances. Start a few months back if you like: they catch up in one click.
 
 ## License
 

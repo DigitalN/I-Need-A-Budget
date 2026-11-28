@@ -39,8 +39,9 @@ cd "Application Files" && INAB_DATA_DIR=/tmp/inab-test python3 main.py
 ```
 
 `INAB_DATA_DIR` points at a throwaway data folder (its backups go in it too, never into
-the real Documents); `INAB_TODAY=YYYY-MM-DD` pins today's
-date; `INAB_DEBUG=1` turns on the web inspector. Tests (`scripts/tests/`): `python3 -m pytest`.
+the real Documents, and the budget folder it suggests is beside it: `/tmp/inab-test budget folder`);
+`INAB_COMPUTER=PC-B` names this computer in the budget folder, for two copies sharing one;
+`INAB_TODAY=YYYY-MM-DD` pins today's date; `INAB_DEBUG=1` turns on the web inspector. Tests (`scripts/tests/`): `python3 -m pytest`.
 
 ### On Windows
 
@@ -102,9 +103,9 @@ On a Windows 10 or 11 PC:
    `I-Need-A-Budget-<version>-Setup.exe` under Artifacts.
 2. Open it. It's unsigned, so Windows says "Windows protected your PC": More info → Run anyway.
    It shouldn't ask for an administrator. Leave Open I Need A Budget ticked and finish.
-3. The app opens on onboarding. Put made-up bank files in Downloads
-   (`python scripts/demo_data.py --files-only` writes two Quicken files there), then Look again:
-   they're listed. Go through the steps to the Dashboard.
+3. The app opens on onboarding. Start a new budget, in the folder it suggests. Put made-up bank
+   files in Downloads (`python scripts/demo_data.py --files-only` writes two Quicken files there),
+   then Look again: they're listed. Go through the steps to the Dashboard.
 4. Start → I Need A Budget is there. With the app open, open it again from Start: the window
    comes forward, and nothing else opens. Minimize it first and try again.
 5. Settings: Light, Dark and System change the title bar too. Each Open button opens File
@@ -117,8 +118,16 @@ On a Windows 10 or 11 PC:
    the same with Alt+F4.
 8. Move and resize the window, close it, open it: it's where you left it. Maximize it, close,
    open: maximized.
-9. Settings → Apps → Installed apps → I Need A Budget → Uninstall. Then
-   `%LOCALAPPDATA%\I Need A Budget` is still there, with the budget. Install again: the
+9. Two computers, played by two copies on this PC with data folders of their own. Quit the app,
+   then from Git for Windows' bash start a second copy:
+   `INAB_DATA_DIR="$TEMP/inab-b" INAB_COMPUTER=PC-B "$LOCALAPPDATA/Programs/I Need A Budget/I Need A Budget.exe"`.
+   Choose Open my budget, then the first copy's budget folder (`Documents\I Need A Budget`): it's
+   the same budget. Change something and quit. Open the first copy: it has the change. Now open
+   both (the second says the budget is open on another computer: Open anyway) and change something
+   different in each: "This budget changed on two computers", with what each changed. Keep this
+   on one; the other takes it. Quit both, then delete `%TEMP%\inab-b`.
+10. Settings → Apps → Installed apps → I Need A Budget → Uninstall. Then
+   `%LOCALAPPDATA%\I Need A Budget` and the budget folder are still there. Install again: the
    budget's back, without onboarding.
 
 The app icon is drawn by `scripts/make-icon.swift`. To redraw it, on a Mac:
@@ -314,10 +323,11 @@ release): only the previous release's draft can be left to do, by hand as above.
   `Downloading`, `ready to install`, and on quit `Installed <version>` (on Windows,
   `Installing <version> after quitting`, then `Installed <version>`).
 - [ ] The maintainer's own copy updates the same way (within a day, or Settings → Check
-  now, then quit). Its log shows `Backed up the budget to …/Documents/I Need A Budget
-  Backups/…` on quit (`No backup made: …` if nothing changed since the newest one). If
-  the release raised the schema, it also shows `Upgraded the database`, and that folder
-  has the pre-upgrade copy.
+  now, then quit). Its log shows `Backed up the budget to …` on quit, in the budget folder's
+  `Backups/` (`No backup made: …` if nothing changed since the newest one), and `Saved the
+  budget to …/Budget.inab`. If the release raised the schema, it also shows `Upgraded the
+  database`, and `Backups/` has the pre-upgrade copy. The first launch of 1.5.0 asks once where
+  the budget goes (`Moved the budget to …`).
 - [ ] CLAUDE.md and the README describe what's shipping (new features, decisions, gaps).
 
 **History.** 1.0.0 was installed from a local build and never published. 1.0.1
