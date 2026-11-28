@@ -124,8 +124,11 @@ On a Windows 10 or 11 PC:
    Choose Open my budget, then the first copy's budget folder (`Documents\I Need A Budget`): it's
    the same budget. Change something and quit. Open the first copy: it has the change. Now open
    both (the second says the budget is open on another computer: Open anyway) and change something
-   different in each: "This budget changed on two computers", with what each changed. Keep this
-   on one; the other takes it. Quit both, then delete `%TEMP%\inab-b`.
+   different in each within a few seconds, before either saves: one asks "This budget changed on
+   two computers", with what each changed. Keep this; the other takes it (once you leave the box
+   you're in). Quit both, copy a backup from the folder's Backups in as `Budget.inab`, and open
+   one: it asks "The budget in the folder is older than this one" once; Use it, and the other
+   opens on it. Quit both, then delete `%TEMP%\inab-b`.
 10. Settings → Apps → Installed apps → I Need A Budget → Uninstall. Then
    `%LOCALAPPDATA%\I Need A Budget` and the budget folder are still there. Install again: the
    budget's back, without onboarding.
