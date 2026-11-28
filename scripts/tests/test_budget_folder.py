@@ -1966,3 +1966,102 @@ def test_a_backup_restored_into_the_folder_the_budget_moves_out_of_is_kept(tmp_p
     assert b.check(wait=False)["state"] == "moved"
     b.open_from(new)
     assert sorted(categories_in(p) for p in not_kept(new)) == [["Groceries"], ["Groceries", "Rent", "Gifts"]]
+
+
+def test_backups_named_by_an_earlier_tag_are_still_this_computers_to_prune(tmp_path):
+    """The seventh review: a computer's tag changes with its name, or its id when a budget is started
+    again. Its backups under the tag it had before are still its own to prune; another computer's never."""
+    folder = tmp_path / "Budget"
+    a = computer(tmp_path, "PC-A")
+    add_category(a.db, "Groceries")
+    a.move_to(folder)
+    before = a._tag()
+    a.computer = "Office PC"                             # renamed
+    a._use(folder)
+    assert a.db.backup_tag != before and a.db.backup_earlier_tags == (before,)
+    backups_dir = folder / "Backups"
+    long_ago, last_week = datetime(2026, 1, 1, 9, 0), datetime(2026, 11, 20, 9, 0)
+    old_mine = backups_dir / backups.name(long_ago, before)
+    old_theirs = backups_dir / backups.name(long_ago, "PC-B 123abc")
+    recent = backups_dir / backups.name(last_week, a.db.backup_tag)  # the newest before today stays
+    for path in (old_mine, old_theirs, recent):
+        shutil.copyfile(backups.make(a.db, datetime(2026, 11, 27, 9, 0, 1)), path)
+    gone = backups.prune(backups_dir, datetime(2026, 11, 27).date(), a.db.backup_tag, a.db.backup_earlier_tags)
+    assert old_mine in gone and old_theirs.exists() and recent.exists()
+    other = computer(tmp_path / "elsewhere", "PC-A")     # this data folder copied to another machine keeps none
+    shutil.copyfile(a.db.path.parent / budget_folder.COMPUTER_FILE, other.db.path.parent / budget_folder.COMPUTER_FILE)
+    other.machine_id = lambda: "another machine"
+    other._use(folder)
+    assert other.db.backup_earlier_tags == ()
+
+
+# The seventh review of #196 (reproductions against 27d8e89). Made-up data only.
+
+def back_in(c, folder):
+    c.folder, c._reachable, c._seen = folder, None, {}
+    c._point_backups()
+
+
+def test_a_change_that_joins_another_save_is_still_a_change_and_asked_about(tmp_path):
+    """PC-A deletes Gifts, and its budget then has the very contents of PC-B's save (PC-B added and
+    removed Pets): the app joins the two, with no count of PC-A's own for the deletion. PC-C,
+    asked about PC-A's earlier save (with Gifts) against PC-B's, keeps PC-A's. That choice counts
+    everything the join does, so PC-A takes it unasked and Gifts is back."""
+    folder = tmp_path / "Budget"
+    a = computer(tmp_path, "PC-A")
+    add_category(a.db, "Groceries")
+    a.move_to(folder)
+    b, c = computer(tmp_path, "PC-B"), computer(tmp_path, "PC-C")
+    b.open_from(folder); c.open_from(folder)
+    seen_on_b = _view(b, folder)                         # PC-B's sync falls behind
+    add_category(a.db, "Gifts"); a.check(wait=False)     # PC-A: Gifts
+    assert c.check(wait=False)["took"]
+    start = backups.digest(b.db)
+    add_category(b.db, "Pets"); b.check(wait=False)      # PC-B adds Pets and takes it out again
+    delete_category(b.db, "Pets"); b.check(wait=False)
+    assert backups.digest(b.db) == start
+    shutil.copyfile(seen_on_b / FILE_NAME, folder / "Budget-PC-B.inab")  # PC-B's save arrives as a copy
+    back_in(b, folder)
+    seen_on_a = _view(a, folder)                         # now PC-A's sync falls behind
+    delete_category(a.db, "Gifts")                       # PC-A's change: Gifts goes
+    state = a.check(wait=False)
+    print("A after deleting Gifts:", state["state"], a._mine().counts)
+    assert c.check(wait=False)["state"] == "two_computers"
+    c.keep_this()                                        # PC-C's person keeps PC-A's earlier save (Gifts)
+    shutil.copyfile(seen_on_a / FILE_NAME, folder / "Budget-PC-A.inab")  # PC-A's join arrives as a copy
+    back_in(a, folder)
+    states = []
+    for _ in range(2):
+        states += [a.check(wait=False)["state"], b.check(wait=False)["state"], c.check(wait=False)["state"]]
+    print("states:", states, "A:", categories(a.db), "B:", categories(b.db), "C:", categories(c.db))
+    assert "Gifts" not in categories(a.db) and "two_computers" in states[:3] and "two_computers" in states[3:], \
+        "PC-A's deletion of Gifts was undone and nobody was asked"
+
+
+def test_a_change_not_saved_yet_that_joins_a_copy_still_asks_about_a_restore(tmp_path):
+    """PC-A, its folder unplugged, adds Rent (not saved). PC-B (sync behind) makes the same change.
+    A backup is restored; PC-B's save arrives as a copy. PC-A comes back: it joins the copy (the very
+    contents of its unsaved change), so it looks unchanged, and takes the restore in the same look."""
+    folder = tmp_path / "Budget"
+    a = computer(tmp_path, "PC-A")
+    add_category(a.db, "Groceries")
+    a.move_to(folder)
+    b = computer(tmp_path, "PC-B")
+    b.open_from(folder)
+    made = shutil.copyfile(backups.make(a.db), tmp_path / "the backup.db")
+    add_category(a.db, "Bills"); a.check(wait=False)     # both have Bills after the backup
+    assert b.check(wait=False)["took"]
+    back_in(a, tmp_path / "Unplugged")                   # PC-A's folder can't be reached
+    assert a.check(wait=False)["state"] == "unreachable"
+    add_category(a.db, "Rent")                           # PC-A's change, not saved
+    seen_on_b = _view(b, folder)
+    add_category(b.db, "Rent"); b.check(wait=False)      # the same change on PC-B, saved in its copy
+    assert backups.digest(a.db) == backups.digest(b.db)
+    shutil.copyfile(made, folder / FILE_NAME)            # a backup restored
+    shutil.copyfile(seen_on_b / FILE_NAME, folder / "Budget-PC-B.inab")  # PC-B's save arrives as a copy
+    back_in(b, folder)
+    back_in(a, folder)                                   # PC-A's folder is back
+    state = a.check(wait=False)
+    print("A:", state["state"], state.get("took"), categories(a.db), "backups:", backups_in(folder), names(folder))
+    assert state["state"] == "two_computers", "PC-A had a change not saved yet and the restore replaced it unasked"
+    assert categories(a.db) == ["Groceries", "Bills", "Rent"] and a.check(wait=False)["state"] == "two_computers"

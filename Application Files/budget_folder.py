@@ -549,13 +549,14 @@ class BudgetFolder:
         others, publish = [], False
         # This computer's own save not known to have landed here (a sync tool's copy of it, one whose write failed, the
         # old folder's after following a move): in flight, so a save that comes after this computer's only by a restore
-        # it missed isn't taken unasked (the others are asked about this computer's save, where it turns up). One it
-        # took from another computer landed where it took it from.
-        in_flight = mine is not None and (any(s.id == mine.id and s.name != FILE_NAME for s in saves) or
-                                          (mine.id != self.db.get_meta(LANDED_KEY) and self._own(mine)))
+        # it missed isn't taken unasked (the others are asked about this computer's save, where it turns up). Only a
+        # save it made: one it took from another computer (a restore saved back as itself too) landed where it was.
+        in_flight = mine is not None and self._own(mine) and (
+            any(s.id == mine.id and s.name != FILE_NAME for s in saves) or mine.id != self.db.get_meta(LANDED_KEY))
+        before, changed_here = mine, False  # a join that is a change of this computer's: nothing else taken in this look
         for save in saves:  # Budget.inab first
             kind = arriving(save, mine)
-            if kind == APART and save.name != FILE_NAME and put_back(save, mine):
+            if kind == APART and save.name != FILE_NAME and put_back(save, before):  # never by what a join just merged
                 kind = OLDER  # a sync tool's copy of a save this computer's history counted: put away (Backups/ first)
             if kind in (NEWER, APART) and save.schema_version == SCHEMA_VERSION and \
                     save.digest in (current, mine and mine.digest):
@@ -565,8 +566,12 @@ class BudgetFolder:
                 # Not one this computer came after: a change back to an older save's contents is still a change.
                 # A restore that's this computer's budget as it is now is the restore (its counts alone, saved back as
                 # itself, so every computer takes it); with a change on top, the change comes after both.
-                mine, kind = self._adopt(save, mine, restore=kind == NEWER and unseen_restore(save, mine) and
-                                         save.digest == current), SAME
+                # The very contents of a change not saved yet (this computer's budget, not the save it started from): a
+                # change of this computer's, counted as one, and nothing else is taken until it's saved.
+                change = mine is not None and save.digest == current != mine.digest
+                mine, kind = self._adopt(save, mine, change=change, restore=kind == NEWER and
+                                         unseen_restore(save, mine) and save.digest == current), SAME
+                changed_here = changed_here or change
             if kind == SAME and save.name == FILE_NAME:
                 self._landed(save.id)
                 publish = publish or self._differs(save)
@@ -579,7 +584,7 @@ class BudgetFolder:
                 others.append(save)  # newer, apart, or an older copy with contents new to this computer
         if others:
             other = others[0]
-            if arriving(other, mine) == NEWER and \
+            if arriving(other, mine) == NEWER and not changed_here and \
                     not (in_flight and relation(other, mine) == APART and unseen_restore(other, mine)) and \
                     self._take(other, only_if_unchanged=True):
                 if other.name != FILE_NAME:  # a conflict copy built on this computer's: the folder holds it from now
@@ -641,16 +646,23 @@ class BudgetFolder:
         mine = self._mine()
         return save.raw and mine is not None and (mine.id, mine.counts) == (save.id, save.counts)
 
-    def _adopt(self, save, mine, restore=False):
+    def _adopt(self, save, mine, restore=False, change=False):
         """A save with the very contents of this computer's budget (its own save after a crash, two
         computers making one change) is the same save: recorded as coming after both, no take. A
-        restore arriving is taken as the restore: its counts alone, as every computer takes it."""
-        same = mine is not None and mine.digest == save.digest
+        restore arriving is taken as the restore: its counts alone, as every computer takes it.
+        `change`: the contents of a change not saved yet here, so a change of this computer's too: one
+        more of its own counts, and the save made of it is taken by the others for what it is."""
+        # The same contents made apart (neither counts the other): a later save of either side comes after both. One
+        # that counts this computer's already is simply taken: nothing of this computer's earlier save stays alike.
+        siblings = mine is not None and mine.digest == save.digest and relation(save, mine) == APART
         if restore:
             counts, alike = dict(save.counts), _alike(save.counts, save.alike)
         else:
             counts = _merge(save.counts, mine.counts if mine else {})
-            alike = _alike(counts, save.alike, [save.counts], mine.alike if same else [], [mine.counts] if same else [])
+            alike = _alike(counts, save.alike, [save.counts], mine.alike, [mine.counts]) if siblings else                 _alike(counts, save.alike)
+        if change:  # nothing else came after this computer's change: no save alike (one after B's isn't after it)
+            counts[self.computer_id()] = self._next_count(counts)
+            alike = []
         seen = _merge(known(save), known(mine) if mine else {})
         adopted = replace(save, id=save.id if counts == save.counts else self._joined_id(save), counts=counts,
                           alike=alike, seen=seen, raw=False, name=None, path=None)
@@ -725,11 +737,33 @@ class BudgetFolder:
 
     def _new_id(self):
         """A new id for this computer, for a budget it starts (no save yet) or opens from scratch: a
-        budget started again never counts as the old one's saves."""
+        budget started again never counts as the old one's saves. Its earlier tag is kept, so its
+        backups named by it are still pruned as its own."""
         self._id = uuid.uuid4().hex
-        _write_json(self.db.path.parent / COMPUTER_FILE, {"id": self._id, "machine": self.machine_id()}, self._sleep)
+        kept = self._kept_here()
+        self._keep_here(id=self._id, count=None, earlier=kept.get("earlier", []))
         if getattr(self.db, "backups_in_budget_folder", False):
-            self.db.backup_tag = self._tag()
+            self._name_backups()
+
+    def _kept_here(self):
+        """What computer.json keeps on this machine (one copied from another machine keeps nothing)."""
+        kept = _read_json(self.db.path.parent / COMPUTER_FILE) or {}
+        return kept if kept.get("machine") == self.machine_id() else {}
+
+    def _keep_here(self, **values):
+        kept = {**self._kept_here(), **values, "machine": self.machine_id()}
+        _write_json(self.db.path.parent / COMPUTER_FILE, {k: v for k, v in kept.items() if v is not None}, self._sleep)
+
+    def _name_backups(self):
+        """This computer's backups are named by its tag; the tags it had before (another name, an id from
+        before a budget started again) are remembered, so `prune` deletes those as its own too."""
+        tag, kept = self._tag(), self._kept_here()
+        earlier = [t for t in kept.get("earlier", []) if isinstance(t, str) and t != tag]
+        if isinstance(kept.get("tag"), str) and kept["tag"] != tag and kept["tag"] not in earlier:
+            earlier.append(kept["tag"])
+        if kept.get("tag") != tag or kept.get("earlier", []) != earlier:
+            self._keep_here(tag=tag, earlier=earlier)
+        self.db.backup_tag, self.db.backup_earlier_tags = tag, tuple(earlier)
 
     def _own(self, save):
         """Whether `save` is one this computer made (its last count is in it)."""
@@ -746,8 +780,7 @@ class BudgetFolder:
         kept = _read_json(self.db.path.parent / COMPUTER_FILE) or {}
         last = kept["count"] if kept.get("id") == me and type(kept.get("count")) is int else 0
         count = max(counts.get(me, 0), last) + 1
-        _write_json(self.db.path.parent / COMPUTER_FILE, {"id": me, "machine": self.machine_id(), "count": count},
-                    self._sleep)
+        self._keep_here(id=me, count=count)
         return count
 
     # ── reading the folder ──
@@ -1307,7 +1340,7 @@ class BudgetFolder:
         self._behind = False
         self._reachable = None
         self._noted = None
-        self.db.backup_tag = self._tag()  # two computers' backups in one folder never share a name
+        self._name_backups()  # two computers' backups in one folder never share a name
         self.db.backups_in_budget_folder = True  # a backup never makes the budget folder again (backups._copy_into)
         self._point_backups()
 

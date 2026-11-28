@@ -270,13 +270,14 @@ def months_before(day, months):
     return day.replace(year=year, month=month, day=min(day.day, calendar.monthrange(year, month)[1]))
 
 
-def prune(folder, today, tag=None):
+def prune(folder, today, tag=None, earlier=()):
     """Deletes the backups in `folder` from before the last four months, except the newest one
     from before `today`; the side files of any backup that's gone; and copies left half made. With
     a `tag` (a budget folder every computer backs up into), only this computer's backups are
     looked at, by their names (another computer's clock may be months out from this one's: the
     copies a question kept must never go by this one's), and another's half-made copy only once
-    it's a day old. Returns the backups it deleted."""
+    it's a day old; `earlier`: this computer's tags before (budget_folder.py remembers them), its own
+    too. Returns the backups it deleted."""
     folder = Path(folder)
     try:
         files = [path for path in folder.iterdir() if path.is_file()]
@@ -285,9 +286,11 @@ def prune(folder, today, tag=None):
     cutoff = months_before(today, KEPT_MONTHS)
     for path in files:  # only one copy of the app runs: no copy is being made now
         old_daily = _HALF_MADE.fullmatch(path.name)
-        if (_partial(path) and _ours_or_old(path, tag)) or (old_daily and old_daily[1] < cutoff.isoformat()):
+        ours = _ours_or_old(path, tag) or any(_ours_or_old(path, t) for t in earlier if t)
+        if (_partial(path) and ours) or (old_daily and old_daily[1] < cutoff.isoformat()):
             path.unlink(missing_ok=True)
-    backups = [(when, path) for when, path in found(folder) if tag is None or _is_ones(path.name, tag)]
+    backups = [(when, path) for when, path in found(folder)
+               if tag is None or _is_ones(path.name, tag) or any(_is_ones(path.name, t) for t in earlier if t)]
     before_today = [path for when, path in backups if when.date() < today]
     spare = before_today[-1] if before_today else None
     gone = []
@@ -455,7 +458,8 @@ def _back_up_at_quit(db, now):
 
 def _prune_all(db, now):
     for folder in _folders(db):
-        _try("Deleting old backups", lambda: prune(folder, now.date(), getattr(db, "backup_tag", None)))
+        _try("Deleting old backups", lambda: prune(folder, now.date(), getattr(db, "backup_tag", None),
+                                                   getattr(db, "backup_earlier_tags", ())))
 
 
 def _try(what, step):
