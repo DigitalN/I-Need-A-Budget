@@ -984,6 +984,60 @@ def test_a_data_folder_put_back_from_an_older_backup_never_counts_a_save_twice(t
     assert b.check(wait=False)["took"] and categories(b.db) == categories(a.db)
 
 
+def test_a_data_folder_and_the_budget_folder_put_back_together_ask(tmp_path):
+    """The eighth review: both put back to the moment after PC-A's first save (a disk restored whole,
+    the budget folder a local one), while PC-B, off meanwhile, still has PC-A's second save. PC-A's
+    next save counts what that one counted, with other contents: equal counts with another id aren't
+    included, so PC-B asks, and its Rent survives."""
+    folder = tmp_path / "Budget"
+    a = computer(tmp_path, "PC-A")
+    add_category(a.db, "Groceries")
+    a.move_to(folder)
+    b = computer(tmp_path, "PC-B")
+    b.open_from(folder)
+    with a.db.lock:
+        a.db.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    kept, kept_folder = shutil.copytree(a.data_dir, tmp_path / "Time Machine"), shutil.copytree(folder, tmp_path / "Then")
+    add_category(a.db, "Rent")
+    a.check(wait=False)
+    assert b.check(wait=False)["took"]                   # PC-B has Rent; then it's off
+    a.db.close()
+    for there, back in ((a.data_dir, kept), (folder, kept_folder)):
+        shutil.rmtree(there)
+        shutil.copytree(back, there)
+    a = computer(tmp_path, "PC-A", folder=folder)
+    a.at_launch()
+    add_category(a.db, "Gifts")
+    a.check(wait=False)
+    assert save_in(folder / FILE_NAME)["counts"] == b._mine().counts  # the very counts, used twice
+    state = b.check(wait=False)
+    assert state["state"] == "two_computers" and categories(b.db) == ["Groceries", "Rent"]
+    assert b.keep_this()["state"] == "saved"
+    assert a.check(wait=False)["took"] and categories(a.db) == ["Groceries", "Rent"]
+    assert ["Gifts", "Groceries"] in backups_in(folder)
+
+
+def test_a_budget_opened_from_a_backup_copied_in(tmp_path):
+    """A first budget that's a backup copied in (no save in it): each computer opening it has that
+    file as its save; a save made on it is taken by the other; another backup copied in asks."""
+    folder = tmp_path / "Budget"
+    made = computer(tmp_path, "PC-Z")
+    add_category(made.db, "Groceries")
+    folder.mkdir()
+    shutil.copyfile(backups.make(made.db), folder / FILE_NAME)
+    later = shutil.copyfile(backups.make(made.db), tmp_path / "another.db")
+    add_category(made.db, "Bills")
+    shutil.copyfile(backups.make(made.db), later)
+    a, b = computer(tmp_path, "PC-A"), computer(tmp_path, "PC-B")
+    assert a.open_from(folder)["state"] == b.open_from(folder)["state"] == "saved"
+    assert a._mine().id == b._mine().id == budget_folder.read_save(folder / FILE_NAME).id
+    add_category(a.db, "Rent")
+    a.check(wait=False)
+    assert b.check(wait=False)["took"] and categories(b.db) == ["Groceries", "Rent"]
+    shutil.copyfile(later, folder / FILE_NAME)           # a backup restored: an old save, asked
+    assert a.check(wait=False)["state"] == b.check(wait=False)["state"] == "older"
+
+
 def test_a_data_folder_copied_to_another_machine_counts_as_another_computer(tmp_path):
     """Migration Assistant: the same computer.json on a new machine. Its id there is new, so its
     change is asked about, never put away as an older save of the first one's."""

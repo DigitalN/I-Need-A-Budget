@@ -26,7 +26,10 @@ under a hidden name, then renamed) a few seconds after changes stop, and when it
   ordered by counts (each computer's count of its own saves), never by a clock, and conflicts
   follow five rules, the only ones (decided 2026-11-27, replacing the earlier, longer set). A save
   in the folder is `Budget.inab` or a sync tool's conflict copy of it; one *includes* another when
-  its counts are at least the other's.
+  its counts are at least the other's, and when they're equal only if it's the same save (the
+  same id). Every new save counts more than what it came from, so equal counts with another id
+  only come of counts used twice (a data folder and the budget folder both put back to an earlier
+  day), and that asks (decided on #196's eighth review).
   1. A conflict copy that `Budget.inab` includes, or with its very contents, or that this
      computer's last save or take includes, goes into Backups/ (deleted when Backups/ has its
      contents). Silently. Its contents being in Backups/ settle nothing: a backup isn't a

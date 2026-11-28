@@ -30,8 +30,11 @@ computer's save yet.
 **Counts**: one version vector over computers. Each computer's id → its count, one more for each
 event it makes (a save of a change, a join, an answer), never counted again (`computer.json` keeps
 the last). A save *includes* another when its counts are at least the other's, computer by
-computer. Never by any computer's clock. A budget file nothing is kept about (a backup copied in)
-counts nothing: an old save, which every save includes.
+computer, and when the counts are equal only if it's the same save (the same id): every new save
+counts more, so equal counts with another id only come of counts used twice (a data folder and the
+budget folder both put back to an earlier day), and that asks. Never by any computer's clock. A
+budget file nothing is kept about (a backup copied in) counts nothing: an old save, which every
+save includes.
 
 **The rules** (`_look`), the only ones. A save in the folder is Budget.inab or a sync tool's
 conflict copy of it (OneDrive's `Budget-<computer>.inab`, iCloud's `Budget 2.inab`, Dropbox's
@@ -249,7 +252,10 @@ def this_computer():
 
 
 def includes(save, other):
-    """Whether `save` includes `other`: its counts are at least the other's, computer by computer."""
+    """Whether `save` includes `other`: its counts are at least the other's, computer by computer;
+    the very same counts only for the same save (another id with them means counts used twice)."""
+    if save.counts == other.counts:
+        return save.id == other.id
     return all(save.counts.get(k, 0) >= n for k, n in other.counts.items())
 
 
