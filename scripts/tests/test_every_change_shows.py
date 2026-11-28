@@ -138,11 +138,9 @@ ACTIONS = {
 }
 NOT_THE_BUDGET = {"assign, then undo it", "Appearance", "the Dashboard's months", "the balance typed as it is",
                   "fold a group"}
-NOT_YET = {"fold a group": "backups.digest still counts category_groups.collapsed: #196's next commit leaves it out"}
 
 
-@pytest.mark.parametrize("action", [pytest.param(a, marks=pytest.mark.xfail(strict=True, reason=NOT_YET[a]))
-                                    if a in NOT_YET else a for a in ACTIONS])
+@pytest.mark.parametrize("action", ACTIONS)
 def test_a_change_of_yours_changes_the_budget_only_when_the_window_can_show_it(action, start, tmp_path, monkeypatch):
     path, ids = start
     monkeypatch.setenv("INAB_TODAY", TODAY)

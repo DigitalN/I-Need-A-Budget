@@ -9,9 +9,9 @@ launch, the once-only reads, the re-check), then the page's start and reads, the
 scripts/demo_data.py's made-up one; every computer has its own empty Downloads folder. Throwaway folders only.
 
 What the launch's re-check does change, found on 2026-11-27: a stored inbox reason gone stale during a session
-(only text: Inbox.view works it out again, changes.py never shows it; a strict xfail until #196's next commit leaves
-transactions.reason out of backups.digest), and what "One at a time" leaves for the next re-check to categorize (the
-maintainer's design, 2026-11-09: an accepted cost in ADR 0008, it asks once)."""
+(only text: Inbox.view works it out again, and backups.digest leaves transactions.reason out, so it's no change), and
+what "One at a time" leaves for the next re-check to categorize (the maintainer's design, 2026-11-09: an accepted
+cost in ADR 0008, it asks once). A group folded is no change either (category_groups.collapsed)."""
 
 import importlib.util
 import subprocess
@@ -162,6 +162,27 @@ def still_open(data, name):
     return BudgetService(Database(data / "budget.db"), settings, data, computer_name=name)
 
 
+def test_a_group_folded_here_doesnt_stop_another_computers_save_being_taken(tmp_path, monkeypatch):
+    """Folding a group is how this computer shows the Budget page, not a change to the budget (backups.digest leaves
+    category_groups.collapsed out): B folds one, nothing is saved for it, and A's change saved a minute later is
+    taken unasked."""
+    a, folder = settled(tmp_path, monkeypatch)
+    on_a = launch(a, "PC-A")
+    on_b = launch(opened_on(tmp_path, folder, "PC-B"), "PC-B")
+    the_page_and_the_watchers(on_b)
+    group = next(g["id"] for g in call(on_b, "categories") if g["role"] == "normal")
+    call(on_b, "set_group_collapsed", group, True)
+    state = on_b.budget_folder_look()
+    assert state["state"] == "saved" and not state["unsaved"] and as_saved(on_b, folder)  # nothing to save
+    month, category = assign(on_a, 54321)
+    assert on_a.budget_folder_look(now=True)["state"] == "saved"
+    state = on_b.budget_folder_look()
+    assert state["state"] == "saved" and state["took"]["computer"] == "PC-A"
+    assert assigned(on_b, month, category) == 54321 and call(on_b, "budget_folder_question") is None
+    quit_app(on_a)
+    quit_app(on_b)
+
+
 def b_opened_then_a_saves_a_minute_later(tmp_path, folder, on_a):
     """A has just saved (its session goes on); B is opened on that save and launched; a minute later A saves a
     change. Returns what B's next look finds, whether B has A's change, and B."""
@@ -174,12 +195,10 @@ def b_opened_then_a_saves_a_minute_later(tmp_path, folder, on_a):
     return state, assigned(on_b, month, category) == 54321, on_b
 
 
-@pytest.mark.xfail(strict=True, reason="The launch re-check rewrites a stored inbox reason gone stale in a session "
-                                       "(Inbox._wait, inbox.py), and backups.digest still counts transactions.reason: "
-                                       "#196's next commit leaves it out.")
 def test_a_reason_gone_stale_in_a_session_is_no_change_at_the_next_launch(tmp_path, monkeypatch):
     """The demo build is such a session: an e-transfer in waits as "a 1/2 share of The Keg Steakhouse… Put it in that
-    one's category", written before The Keg was categorized; B's launch re-check rewrites it ("Back to Food?")."""
+    one's category", written before The Keg was categorized; B's launch re-check rewrites it ("Back to Food?"). Only
+    text (backups.NOT_A_CHANGE_COLUMNS), so A's save is still taken."""
     monkeypatch.setenv("INAB_TODAY", TODAY)
     a, folder = tmp_path / "PC-A", tmp_path / "Budget"
     made_up_budget(a)
