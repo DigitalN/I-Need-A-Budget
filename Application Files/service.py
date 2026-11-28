@@ -16,10 +16,12 @@ import os
 import re
 import shutil
 from collections import Counter
+from contextlib import nullcontext
 from datetime import date, datetime
 from pathlib import Path
 
 import banks
+import budget_folder
 import csvlayout
 import figures
 import importer
@@ -36,6 +38,11 @@ from util import add_months, first_day, last_day, money, month_name, month_of, m
 log = logging.getLogger("inab")
 
 EXPOSED = {}
+
+# The budget folder's requests: they don't share the budget with the others (budget_folder.Turns), since
+# they take its lock and may take another computer's save themselves.
+FOLDER_REQUESTS = {"budget_folder", "look_in_budget_folder", "move_budget_folder", "open_budget_folder",
+                   "keep_this_budget", "keep_other_budget", "save_budget_again"}
 
 
 def exposed(fn):
@@ -107,6 +114,13 @@ def _date(value):
         raise UserError("That isn't a date: use year-month-day, like 2026-10-05.") from None
 
 
+def _folder_path(value):
+    """A folder from the window (its folder dialog's), or a UserError."""
+    if not (isinstance(value, str) and value.strip() and Path(value.strip()).expanduser().is_absolute()):
+        raise UserError("That isn't a folder: choose one.")
+    return Path(value.strip()).expanduser()
+
+
 def _rows(cursor):
     return [dict(r) for r in cursor]
 
@@ -126,11 +140,19 @@ def _existing(c, table, row_id, columns="id"):
 
 
 class BudgetService:
-    def __init__(self, db, settings, data_dir, hooks=None):
+    def __init__(self, db, settings, data_dir, hooks=None, computer_name=None):
+        """`computer_name`: this computer's name in saves and notes in the budget folder, a string (by
+        default the system's: budget_folder.this_computer), not main.py's computer.this()."""
         self.db = db
         self.settings = settings
         self.data_dir = Path(data_dir)
         self.hooks = hooks or {}          # window features: choose_files, reveal, updates, app_info
+        self.turns = budget_folder.Turns()  # requests share the budget; taking another computer's save waits for them
+        # The budget folder is written to settings.json before anything is done in a new one (on_folder): a
+        # crash part way through Move… or Open… relaunches on the folder being moved to or opened.
+        self.folder = budget_folder.BudgetFolder(db, self.data_dir, settings.get()["budget_folder"] or None,
+                                                 computer_name=computer_name, app_version=self._app_info().get("version"),
+                                                 turns=self.turns, on_folder=self._keep_folder)
         self._seen_files = {}             # Downloads watcher: path → (mtime, size) already looked at
         self._file_status = {}            # path → ((mtime, size), what it needs or None): see _needs()
         self._status_round = 0            # bumped whenever _file_status is cleared: a need worked out before isn't kept
@@ -144,10 +166,16 @@ class BudgetService:
         it made, so the Undo in its toast reverses exactly that step; None when it made none (it
         changed nothing, it was an undo, or an import cleared undo), so its toast has no Undo (issue
         #139: the step ⌘Z would undo next was then something else you did). A read, or a change
-        that isn't an undo step (a note saved as it's typed), has no `step`."""
+        that isn't an undo step (a note saved as it's typed), has no `step`. Every request but the
+        budget folder's shares the budget (self.turns): another computer's save is never taken between
+        one's read and its write."""
         fn = EXPOSED.get(name)
         if fn is None:
             return {"ok": False, "error": f"Unknown request: {name}"}
+        with nullcontext() if name in FOLDER_REQUESTS else self.turns.shared():
+            return self._run(name, fn, args)
+
+    def _run(self, name, fn, args):
         try:
             self.db.begin_request()
             if isinstance(args, dict):
@@ -218,17 +246,21 @@ class BudgetService:
     # ── files ──
 
     def _archive(self, path):
-        """Moves an imported file out of Downloads into the app's Imported Files folder."""
+        """Moves an imported file out of Downloads into Imported Files: the budget folder's, or this
+        data folder's while there's none or it can't be reached (budget_folder.imports_dir)."""
         path = Path(path)
-        folder = self.data_dir / "Imported Files" / datetime.now().strftime("%Y-%m")
-        folder.mkdir(parents=True, exist_ok=True)
-        target = folder / f"{datetime.now().strftime('%Y-%m-%d %H%M%S')} {path.name}"
-        try:
-            shutil.move(str(path), str(target))
-            return str(target)
-        except OSError as e:
-            log.warning("Couldn't move %s to %s: %s", path, target, e)
-            return None
+        places = list(dict.fromkeys([self.folder.imports_dir(), self.data_dir / budget_folder.IMPORTED_FILES]))
+        for i, imported in enumerate(places):
+            folder = imported / datetime.now().strftime("%Y-%m")
+            target = folder / f"{datetime.now().strftime('%Y-%m-%d %H%M%S')} {path.name}"
+            try:
+                folder.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(path), str(target))
+                return str(target)
+            except OSError as e:
+                log.warning("Couldn't move %s to %s: %s", path, target, e)
+                if not path.exists() or i == len(places) - 1:
+                    return None
 
     def _describe_file(self, path):
         path = Path(path)
@@ -588,12 +620,12 @@ class BudgetService:
         return currency
 
     def _kept_file(self, imp):
-        """The file an import read, kept in Imported Files (where it was moved, or the same place in this data
-        folder), or None: one dropped from another folder was never kept, and one changed since isn't it."""
+        """The file an import read, kept in Imported Files (where it was moved, or the same place in the budget
+        folder, from any computer, or in this data folder), or None: one dropped from another folder was never
+        kept, and one changed since isn't it."""
         if not imp["archived_path"]:
             return None
-        kept = Path(imp["archived_path"])
-        for path in (kept, self.data_dir / "Imported Files" / kept.parent.name / kept.name):
+        for path in self.folder.kept_places(imp["archived_path"]):
             try:
                 if path.is_file() and importer.sha256_of(path) == imp["sha256"]:
                     return path
@@ -611,7 +643,11 @@ class BudgetService:
     def watch_downloads(self):
         """Called every few seconds by the watcher: imports new bank files from Downloads
         (a CSV that needs setting up waits in the Inbox instead). Returns what
-        import_files() did, or None if there was nothing new."""
+        import_files() did, or None if there was nothing new. It shares the budget as a request does."""
+        with self.turns.shared():
+            return self._watch_downloads()
+
+    def _watch_downloads(self):
         s = self.settings.get()
         if not s["auto_import"] or self.db.get_meta("onboarded") != "1":
             return None
@@ -2230,8 +2266,89 @@ class BudgetService:
         if budget:
             with self.db.write(keep_undo=True) as c:
                 save_budget_settings(c, budget)
-        self.settings.update({k: v for k, v in changes.items() if k not in BUDGET_DEFAULTS})
+        # The budget folder changes only by moving the budget or opening one (move_budget_folder, open_budget_folder).
+        self.settings.update({k: v for k, v in changes.items() if k not in BUDGET_DEFAULTS and k != "budget_folder"})
         return self.get_settings()
+
+    # ── the budget folder (budget_folder.py, docs/adr/0008) ──
+
+    @exposed
+    def budget_folder(self):
+        """Where the budget is kept and how it stands (budget_folder.BudgetFolder.state)."""
+        return self.folder.state()
+
+    @exposed
+    def look_in_budget_folder(self, path):
+        """What's in a folder someone chose, before moving the budget there or opening it: {'budget': who saved
+        the budget in it and when, or None; 'moved': who moved one away from it, or None}."""
+        return self.folder.look_in(_folder_path(path))
+
+    @exposed
+    def move_budget_folder(self, path, old_folder_gone=False):
+        """Puts this computer's budget into the folder at `path` (the first time, and Move… later), with its
+        backups and imported files. Refuses a folder that already has a budget, and leaves a budget folder
+        that can't be reached only with `old_folder_gone` (the person says it's gone for good)."""
+        path = _folder_path(path)
+        state = self.folder.move_to(path, old_folder_gone=old_folder_gone is True)
+        self.settings.update({"budget_folder": str(self.folder.folder)})
+        return state
+
+    @exposed
+    def open_budget_folder(self, path):
+        """Opens the budget in the folder at `path` on this computer."""
+        path = _folder_path(path)
+        state = self.folder.open_from(path)
+        self.settings.update({"budget_folder": str(self.folder.folder)})
+        self._took_another_budget()
+        return state
+
+    @exposed
+    def keep_this_budget(self):
+        """Changed on two computers: keeps this computer's budget; the other goes into Backups. For an older
+        budget put back in the folder (state 'older'): Keep the newer one."""
+        return self.folder.keep_this()
+
+    @exposed
+    def keep_other_budget(self):
+        """Changed on two computers: keeps the other computer's budget; this computer's goes into Backups. For
+        an older budget put back in the folder (state 'older'): Use it."""
+        state = self.folder.keep_other()
+        self._took_another_budget()
+        return state
+
+    @exposed
+    def save_budget_again(self):
+        """The budget's file is gone from its folder (state 'missing'): saves this computer's budget there again."""
+        return self.folder.save_again()
+
+    def watch_budget_folder(self):
+        """The budget folder watcher's round (main.py, every few seconds): the state, with 'took' when another
+        computer's save replaced the budget, so the window draws it again. Never from inside a request: a take
+        waits for the requests under way (self.turns)."""
+        state = self.folder.check()
+        if state.get("took"):
+            self._took_another_budget()
+        return state
+
+    def budget_folder_at_launch(self):
+        """At launch, before the window opens: backups.at_launch, then another computer's newer save is taken,
+        or what a session that didn't quit normally changed is saved."""
+        state = self.folder.at_launch()
+        if state.get("took"):
+            self._took_another_budget()
+        return state
+
+    def budget_folder_at_quit(self):
+        """At every quit, instead of backups.at_quit: a backup if needed, then a save if needed."""
+        self.folder.at_quit()
+
+    def _keep_folder(self, folder):
+        self.settings.update({"budget_folder": str(folder) if folder else ""})
+
+    def _took_another_budget(self):
+        """The budget was replaced by another computer's: what was worked out about files in Downloads goes."""
+        self._file_status.clear()
+        self._status_round += 1
 
     @exposed
     def app_info(self):

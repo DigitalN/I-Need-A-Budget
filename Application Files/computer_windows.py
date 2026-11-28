@@ -314,6 +314,17 @@ class Windows(Computer):
     def downloads_dir(self):
         return known_folder(DOWNLOADS)
 
+    def machine_id(self):
+        """Windows' MachineGuid, made when Windows was installed on this PC."""
+        try:
+            import winreg
+
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Cryptography", 0,
+                                winreg.KEY_READ | winreg.KEY_WOW64_64KEY) as key:
+                return str(winreg.QueryValueEx(key, "MachineGuid")[0]) or None
+        except (OSError, ImportError):
+            return None
+
     # ── one copy at a time ──
 
     def lock(self, path):

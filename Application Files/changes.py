@@ -81,10 +81,10 @@ from settings import BUDGET_RAN_ON, validate_budget
 from subscriptions import PRICINGS, looks_foreign, same_price_for
 from util import month_name, short_day
 
-# Meta keys that are the app's own bookkeeping, never a change: backups' (what the last backup
-# was), the budget folder's (`save`, backups.SAVE_KEY: the save this budget is or started from,
-# who saved it, when, the versions), the schema's version, and flags for work done once.
-BOOKKEEPING_META = {*backups.BACKUP_META, "save", "schema_version", "onboarded", "read_imported_files",
+# Meta keys that are the app's own bookkeeping, never a change: backups' and the budget folder's
+# (backups.NOT_A_CHANGE: what the last backup was, the save this budget is or started from and
+# which of this computer's saves is in the folder), the schema's version, and flags for work done once.
+BOOKKEEPING_META = {*backups.NOT_A_CHANGE, "schema_version", "onboarded", "read_imported_files",
                     "currency_read", "last_onboarding_account", "interest_category_id"}
 
 # The budget's own settings and the other meta a person changes, as each is shown.

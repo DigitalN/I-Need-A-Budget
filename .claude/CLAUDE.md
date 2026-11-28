@@ -129,6 +129,31 @@ All in `Application Files/`:
   renamed), `prune` (four months; the `-wal`/`-shm` SQLite leaves beside a backup opened in
   place go with it), `move_old` (the data folder's old `Backups/`).
   `scripts/tests/test_backups.py` covers it, every way of quitting included.
+- `budget_folder.py`: the budget folder ([ADR 0008](../docs/adr/0008-the-budget-lives-in-a-folder-you-choose.md),
+  issue #183; not wired to the window yet, #189 does that). `BudgetFolder` saves the working
+  copy into the folder whole as `Budget.inab` (a copy in the data folder's `Saves/` with meta
+  `save`: id, counts (one version vector over computers, each one's count of its events), computer,
+  time, versions; recorded as this computer's before it goes into the folder under a hidden name,
+  renamed, retried while Windows or a sync tool holds the file; meta `save_landed` names the
+  `Budget.inab` it saves over until it's there), a few seconds after changes stop and at quit,
+  only when `backups.digest` changed. `check` (every few seconds) keeps to ADR 0008's five rules
+  and nothing else: conflict copies `Budget.inab` includes, or with its contents, go into `Backups/`
+  (one only this computer's save includes, once that save is `Budget.inab`);
+  `Budget.inab` is taken only when it includes this computer's last save or take and nothing changed
+  here (after the page's requests under way: `Turns`); a save with this computer's very contents is
+  joined (`_join`, a new event with one count of its own); everything else asks (`older`,
+  `two_computers`; `two_computers()` for `changes.compare`; `keep_this`, `keep_other`, whose answer
+  is a new event after both sides, `_answer`); nothing is written while anything is unsettled. A
+  backup copied in keeps no meta `save`: an old save, which asks. A `Budget.inab` gone once this
+  computer's save was there asks (`missing`); a newer budget format is refused; a folder that can't
+  be reached is waited for; `move_to` (every other budget file in the old folder into the new one's
+  `Backups/`), `open_from`, notes of where it's open. This computer's id in saves is new for each
+  budget and machine (`computer.json`, `computer.machine_id`); its files in the folder are named by
+  its name and the start of that id (`computer_tag`, `tag_in`; its earlier tags kept in
+  `computer.json`, so `prune` deletes backups named by them as its own). `INAB_COMPUTER` names this
+  computer (two previews on one folder). Never by a clock. `scripts/tests/test_budget_folder.py`
+  covers it with two data folders sharing one folder, `test_budget_folder_random.py` on random
+  histories (the arbiter).
 - `importer.py`: detects and parses OFX/QFX/QBO from any bank, Tangerine card and bank
   CSVs, RBC's CSV (every account in one file, so a file has `parts`), CSVs set up once
   (`csvlayout.py`), and Actual Budget's export (learnt from, never imported as

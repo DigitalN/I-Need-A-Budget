@@ -942,8 +942,9 @@ def test_a_second_log_off_after_one_called_off_quits(tmp_path, monkeypatch):
     assert windows_sends(window, QUERY_LOG_OFF) == 1
     windows_sends(window, LOGGING_OFF)
     assert window.IsDisposed
-    newest = sorted(names(main.BACKUP_DIR))[-1]
-    assert categories_in(main.BACKUP_DIR / newest) == ["Groceries"]
+    # Both log-offs may back up in one second: both are kept ("… (2).db"), so the newest isn't the last name
+    newest = max(main.BACKUP_DIR.glob("budget-*.db"), key=lambda p: p.stat().st_mtime_ns)
+    assert categories_in(newest) == ["Groceries"]
 
 
 def test_a_backup_restored_on_another_mac_keeps_the_overspending_choice(app, tmp_path):
