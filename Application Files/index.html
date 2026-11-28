@@ -351,8 +351,18 @@ dialog form { display: flex; flex-direction: column; max-height: calc(100vh - 60
 #toast.show { opacity: 1; transform: translate(-50%, 0); pointer-events: auto; }
 #toast.error { background: #b4001a; }
 #toast button { border: 0; background: rgba(255,255,255,.16); color: #fff; border-radius: 6px; padding: 3px 10px; font-weight: 600; cursor: default; white-space: nowrap; }
-.update-bar { position: sticky; top: 0; z-index: 10; background: var(--accent); color: #fff; padding: 8px 26px; display: flex; gap: 12px; align-items: center; }
+.top-bars { position: sticky; top: 0; z-index: 10; }
+.update-bar { background: var(--accent); color: #fff; padding: 8px 26px; display: flex; gap: 12px; align-items: center; }
 .update-bar .btn { background: #fff; color: var(--accent); }
+/* The budget folder's strip (folderBarHtml): opaque, so the page scrolling under it doesn't show through */
+.folder-bar { background: linear-gradient(var(--warn-soft), var(--warn-soft)), var(--bg); padding: 8px 26px; display: flex; gap: 10px; align-items: center; border-bottom: 1px solid var(--line); }
+/* This budget changed on two computers: each side's changes (askWhichBudget) */
+.which { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 10px; }
+.which > div { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; min-width: 0; }
+.which p { margin: 6px 0; }
+.changes summary { color: var(--accent); font-size: 12px; cursor: default; }
+.changes ul { margin: 2px 0 8px; padding-left: 18px; }
+.path { overflow-wrap: anywhere; }  /* a folder's path wraps wherever it must, not under the buttons beside it */
 .drop-hint { position: fixed; inset: 10px; border: 3px dashed var(--accent); border-radius: 16px; background: var(--accent-soft); z-index: 70; display: none; align-items: center; justify-content: center; font-size: 20px; font-weight: 600; color: var(--accent); pointer-events: none; }
 body.dragging .drop-hint { display: flex; }
 
@@ -399,7 +409,7 @@ body.dragging .drop-hint { display: flex; }
 .kbd-help { color: var(--faint); font-size: 11px; }
 .settings-row { display: flex; align-items: center; gap: 14px; padding: 12px 0; border-bottom: 1px solid var(--line); }
 .settings-row:last-child { border-bottom: 0; }
-.settings-row .what { flex: 1; }
+.settings-row .what { flex: 1; min-width: 0; }
 .settings-row .what b { display: block; font-weight: 600; }
 .settings-row .what span { color: var(--muted); font-size: 12px; }
 .acct-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; }
@@ -881,10 +891,10 @@ async function refresh() {
   }
 }
 
+const updateBarHtml = () => state.update && state.update.status === 'ready'
+  ? `<div class="update-bar"><span>Version ${esc(state.update.version)} is ready. It's installed when you quit.</span><span class="spacer"></span><button class="btn small" data-act="restart-update">Restart now</button></div>` : '';
 function frame(html) {
-  const bar = state.update && state.update.status === 'ready'
-    ? `<div class="update-bar"><span>Version ${esc(state.update.version)} is ready. It's installed when you quit.</span><span class="spacer"></span><button class="btn small" data-act="restart-update">Restart now</button></div>` : '';
-  $('#main').innerHTML = bar + `<div class="page">${html}</div>`;
+  $('#main').innerHTML = `<div class="top-bars">${updateBarHtml()}${folderBarHtml()}</div><div class="page">${html}</div>`;
 }
 
 // ── budget ──────────────────────────────────────────────
@@ -3202,6 +3212,10 @@ async function renderSettings() {
   const row = (title, text, control) => `<div class="settings-row"><div class="what"><b>${title}</b>${text ? `<span>${text}</span>` : ''}</div>${control}</div>`;
   const toggle = key => `<label class="switch"><input type="checkbox" data-setting="${key}" ${settings[key] ? 'checked' : ''}><span></span></label>`;
   const open = what => `<button class="btn" data-act="open" data-what="${what}">Open</button>`;
+  const folder = state.folder || {};
+  const folderRow = folder.folder
+    ? row('Budget folder', `<span class="path">${esc(folder.folder)}</span><br>${esc(folderStatus(folder))}`,`${open('show_budget_folder')}<button class="btn" data-act="folder-move">Move…</button>`)
+    : row('Budget folder', 'Not chosen yet.', '<button class="btn" data-act="folder-place">Choose…</button>');
   frame(`
     <div class="page-head"><h1>Settings</h1></div>
     <div class="stack">
@@ -3219,7 +3233,8 @@ async function renderSettings() {
         ${row('Check for updates', '', '<button class="btn" data-act="check-updates">Check now</button>')}
       </div>
       <div class="card">
-        ${row('Your data', 'Open the folder where all data is stored on this computer.', open('open_data'))}
+        ${folderRow}
+        ${row('Your data', 'Open the folder where this computer keeps its own copy of the budget, and its settings.', open('open_data'))}
         ${row('Imported files', 'Open the folder where all previously imported data is kept.', open('open_imports'))}
         ${row('Log', 'For developer use: open log files for troubleshooting.', open('open_log'))}
       </div>
@@ -3232,12 +3247,8 @@ async function settingsAction(btn) {
   if (act === 'save-token') {
     const st = await call('window_action', ['set_github_token', $('#gh-token').value]);
     state.update = st; toast($('#gh-token').value ? (onWindows() ? 'Token saved' : 'Token saved in the Keychain') : 'Token removed');
-  } else if (act === 'check-updates') {
-    state.checkingByHand = true;  // the answer comes as an 'update' event: see appEvent
-    try { state.update = await call('window_action', ['check_updates']); }
-    catch (e) { state.checkingByHand = false; throw e; }
-    toast('Checking for updates…');
-  } else if (act === 'open') { await call('window_action', [btn.dataset.what]); return; }
+  } else if (act === 'check-updates') await checkForUpdates();
+  else if (act === 'open') { await call('window_action', [btn.dataset.what]); return; }
   else if (act === 'learn-actual') {
     const r = await call('learn_actual_file');
     if (r && r.learnt) toast(r.learnt.examples ? `Learnt ${r.learnt.examples} examples${r.rechecked ? `, and categorized ${r.rechecked} waiting transactions` : ''}`
@@ -3247,19 +3258,32 @@ async function settingsAction(btn) {
 }
 
 // ── onboarding ──────────────────────────────────────────
+// Step -1 comes first while there's no budget folder yet (docs/adr/0008): start a new budget in a folder you choose,
+// or open the one you have from its folder (straight to the Dashboard).
 const ob = { step: 0, files: null, results: null };
 async function showOnboarding() {
   $('#onboard').hidden = false;
+  if (state.folder && state.folder.state === 'none') ob.step = -1;
   await renderOnboarding();
 }
 async function renderOnboarding() {
   const root = $('#onboard');
+  if (ob.step === -1 && !(state.folder && state.folder.state === 'none')) ob.step = 0;
   const steps = ['Files', 'Categories', 'Balances', 'Start'];
   const head = `<div class="row"><svg viewBox="0 0 32 32" width="34" height="34"><rect x="1" y="5" width="30" height="22" rx="5" fill="#1f9d55"/><path d="M3 9l13 9 13-9" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
     <h1>Let's set up your budget</h1></div>
     <div class="steps">${steps.map((s, i) => `<div class="${i <= ob.step ? 'done' : ''}" title="${s}"></div>`).join('')}</div>`;
   let body = '';
-  if (ob.step === 0) {
+  if (ob.step === -1) {
+    body = `<h3>Where your budget lives</h3>
+      <p class="muted">Your budget is kept in a folder you choose, whole, with its backups and imported files. If OneDrive, iCloud Drive or Dropbox syncs that folder, your other computers can open the budget too.</p>
+      <div class="card">
+        <div class="settings-row"><div class="what"><b>Start a new budget</b><span class="mono path">${esc(state.boot.app.suggested_folder)}</span></div>
+          <button class="btn" data-ob="folder-choose">Choose…</button><button class="btn primary" data-ob="folder-new">Start here</button></div>
+        <div class="settings-row"><div class="what"><b>Open my budget</b><span>Already using it on another computer? Choose the folder your budget is in.</span></div>
+          <button class="btn" data-ob="folder-open">Choose…</button></div>
+      </div>`;
+  } else if (ob.step === 0) {
     if (!ob.files) ob.files = await call('scan_downloads');
     const files = ob.files.files;
     body = `<h3>1. Bring in your bank files</h3>
@@ -3313,7 +3337,18 @@ async function renderOnboarding() {
 }
 async function onboardingAction(btn) {
   const a = btn.dataset.ob;
-  if (a === 'rescan') { ob.files = null; ob.results = null; }
+  if (a === 'folder-new' || a === 'folder-choose') {
+    const suggested = state.boot.app.suggested_folder;
+    const path = a === 'folder-new' ? suggested : await pickFolder(suggested);
+    const done = path && await placeBudget(path);
+    if (done !== 'moved') return;  // nothing chosen, or the budget there was opened (openBudget drew what's next)
+  } else if (a === 'folder-open') {
+    const path = await pickFolder(state.boot.app.suggested_folder);
+    if (!path) return;
+    const look = await call('look_in_budget_folder', [path]);
+    if (look.budget) return openBudget(path);
+    return toast(look.moved ? movedAwayText(look.moved) : 'There\'s no budget in this folder.', { error: true });
+  } else if (a === 'rescan') { ob.files = null; ob.results = null; }
   else if (a === 'choose') {
     const r = await call('choose_and_import');
     if (r) {
@@ -3399,9 +3434,321 @@ function summarizeImport(r) {
   return parts.join(' · ') || 'Nothing new';
 }
 
+// ── the budget folder ───────────────────────────────────
+// The folder you choose for your budget (budget_folder.py, docs/adr/0008). This computer works on its own copy and
+// the app saves it there whole. state.folder is the state the app's last look found (service.budget_folder): the
+// watcher sends each new one ('budget_folder' events), and so does every request that changes it. A strip at the top
+// of the page says what stops it being saved; a pop-up asks what only you can decide, never over a pop-up of yours,
+// a drag or a box you're typing in (it waits, as a redraw does).
+const QUESTIONS = ['two_computers', 'older'];
+const WAITING_SHOWN = 10000;  // a file still syncing shows in the strip once it's taken this long: most take a moment
+const folderKey = st => JSON.stringify([st.state, st.other || null]);
+// When another computer saved or opened the budget, in this computer's time: "9:02 AM" today, else "Nov 30 at 9:02 AM".
+function whenAt(iso) {
+  const d = new Date(iso), now = new Date();
+  if (!iso || Number.isNaN(d.getTime())) return '';
+  const time = d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+  if (d.toDateString() === now.toDateString()) return time;
+  return `${d.toLocaleDateString('en-CA', { month: 'short', day: 'numeric', ...(d.getFullYear() === now.getFullYear() ? {} : { year: 'numeric' }) })} at ${time}`;
+}
+const atWhen = iso => { const w = whenAt(iso); return !w ? '' : w.includes(' at ') ? `on ${w}` : `at ${w}`; };
+// The day alone: "today", or "on Nov 30".
+function onDay(iso) {
+  const d = new Date(iso), now = new Date();
+  if (!iso || Number.isNaN(d.getTime())) return '';
+  if (d.toDateString() === now.toDateString()) return 'today';
+  return `on ${d.toLocaleDateString('en-CA', { month: 'short', day: 'numeric', ...(d.getFullYear() === now.getFullYear() ? {} : { year: 'numeric' }) })}`;
+}
+const hasBudgetText = b => b && b.computer ? `This folder already has a budget, saved on ${b.computer} ${onDay(b.saved_at)}.` : 'This folder already has a budget.';
+const movedText = m => `Your budget was moved to another folder${m && m.computer ? ` by ${m.computer}` : ''}${m && m.moved_at ? ` ${onDay(m.moved_at)}` : ''}.`;
+const movedAwayText = m => `The budget in this folder was moved to another one${m && m.computer ? ` by ${m.computer}` : ''}${m && m.moved_at ? ` ${onDay(m.moved_at)}` : ''}: choose the folder it's in now.`;
+
+// The strip: what stops the budget being saved in its folder, and what to do about it.
+function folderBarHtml() {
+  const st = state.folder;
+  if (!st || !state.boot || !state.boot.onboarded) return '';
+  const bar = (text, buttons = '') => `<div class="folder-bar"><span>${esc(text)}</span><span class="spacer"></span>${buttons}</div>`;
+  const find = '<button class="btn small" data-act="folder-find">Choose where it is…</button>';
+  const choose = '<button class="btn small" data-act="folder-ask">Choose…</button>';
+  if (st.state === 'none') return bar('Your budget needs a folder of its own.', '<button class="btn small" data-act="folder-place">Choose a folder…</button>');
+  if (st.state === 'unreachable') return bar('Your budget folder isn\'t available: changes stay on this computer until it is.', find);
+  if (st.state === 'waiting') return state.waitingSince && Date.now() - state.waitingSince >= WAITING_SHOWN
+    ? bar('The budget in its folder is still syncing: changes stay on this computer until it\'s done.') : '';
+  if (st.state === 'missing') return bar('Your budget\'s file is gone from its folder: changes stay on this computer until it\'s back.',
+    '<button class="btn small" data-act="folder-save-again">Save it there again</button>' + find);
+  if (st.state === 'moved') return bar(movedText(st.moved), find);
+  if (st.state === 'newer') return bar('Your budget was saved by a newer version: changes stay on this computer until you update.',
+    '<button class="btn small" data-act="folder-update">Check for updates</button>');
+  if (st.state === 'two_computers') return bar('This budget changed on two computers: nothing is saved until you choose.', choose);
+  if (st.state === 'older') return bar('The budget in the folder is older than this one: nothing is saved until you choose.', choose);
+  return '';
+}
+function drawFolderBar() {
+  const bars = $('#main .top-bars');
+  if (bars) bars.innerHTML = updateBarHtml() + folderBarHtml();
+}
+// What Settings says under the folder.
+function folderStatus(st) {
+  const saved = st.saved || {};
+  if (st.state === 'saved') return saved.computer && saved.computer !== state.boot.app.computer
+    ? `Saved on ${saved.computer} ${atWhen(saved.saved_at)}` : `Saved ${atWhen(saved.saved_at)}`.trim();
+  return { unsaved: 'Changes not saved yet', unreachable: 'Not available just now', waiting: 'Still syncing',
+    missing: 'Its file is gone', moved: 'Moved to another folder', newer: 'Saved by a newer version',
+    two_computers: 'Changed on two computers', older: 'The one in the folder is older' }[st.state] || '';
+}
+
+// A new state from the app: the strip, Settings, a take drawn, and a question asked when you're free.
+function folderChanged(st) {
+  if (!st || !st.state) return;
+  state.folder = st;
+  if (state.questionOpen && state.questionOpen !== folderKey(st)) closePopUp();  // its question is answered or gone
+  if (st.state !== 'waiting') state.waitingSince = null;
+  else if (!state.waitingSince) { state.waitingSince = Date.now(); setTimeout(drawFolderBar, WAITING_SHOWN + 100); }
+  drawFolderBar();
+  if (st.took) tookAnother(st.took);
+  else if (state.page === 'settings' && $('#onboard').hidden) refreshWhenIdle();
+  askWhenIdle();
+}
+const askingNow = () => !!(state.launching || state.asking || busyNow());
+function askWhenIdle() {
+  const st = state.folder;
+  const pending = st && ((st.state === 'newer' && state.newerAsked !== folderKey(st)) ||
+    (QUESTIONS.includes(st.state) && state.folderAsked !== folderKey(st)));
+  if (!pending) return;
+  if (askingNow()) state.folderAskLater = true;
+  else askPending();
+}
+setInterval(() => { if (state.folderAskLater && !askingNow()) askPending(); }, 1500);
+async function askPending() {
+  state.folderAskLater = false;
+  const st = state.folder;
+  if (!st || state.asking) return;
+  state.asking = true;
+  try {
+    if (st.state === 'newer' && state.newerAsked !== folderKey(st)) { state.newerAsked = folderKey(st); await askNewer(st); }
+    else if (QUESTIONS.includes(st.state) && state.folderAsked !== folderKey(st)) {
+      if (await askWhichBudget() === 'unready') state.folderAskLater = true;  // the app's still working out what each changed
+    }
+  } catch (e) {
+    if (!(e instanceof UserFacingError)) logError('Asking about the budget folder', e);
+  } finally { state.asking = false; }
+}
+
+// Another computer's save taken (budget_folder.py's rule 2): the budget is that one now, and ⌘Z can't undo
+// what came before. What's on screen is drawn again once you're free (refreshWhenIdle).
+function tookAnother(took) {
+  toast(took && took.computer ? `Updated with changes saved on ${took.computer}` : 'Updated with the budget in its folder');
+  return budgetReplaced();
+}
+async function budgetReplaced() {
+  try {
+    state.boot = await call('bootstrap');
+    setCounts(state.boot.counts);
+    if (!$('#onboard').hidden) {
+      if (!state.boot.onboarded) return await renderOnboarding();
+      $('#onboard').hidden = true;
+      await loadCategories();
+      return await navigate('dashboard');
+    }
+    if (!state.boot.onboarded) return await showOnboarding();  // one that isn't set up yet
+    await loadCategories();
+    refreshWhenIdle();
+  } catch (e) {
+    if (!(e instanceof UserFacingError)) logError('Drawing the budget again', e);
+  }
+}
+
+// The system's folder dialog (main.py's choose_folder, not a request): a path, or null.
+async function pickFolder(start) {
+  const api = window.pywebview && window.pywebview.api;
+  if (!api || !api.choose_folder) return null;
+  try { return (await api.choose_folder(start || null)) || null; }
+  catch (e) { logError('Choosing a folder', e); return null; }
+}
+const closePopUp = async () => { const d = $('#dlg'); if (d.open) { d.close(); await sleep(0); } };
+
+// The first launch of 1.5.0, before anything else (docs/adr/0008): a 1.4 copy's budget moves into a folder you
+// choose. Until it has one it's kept and backed up as before, and it asks again at the next launch. Also the strip's
+// and Settings' Choose a folder….
+async function askForFolder() {
+  const suggested = state.boot.app.suggested_folder;
+  while (state.folder && state.folder.state === 'none') {
+    const v = await dialog({ title: 'Your budget now lives in a folder you choose',
+      body: `<p>It's saved there whole, with its backups and imported files. If OneDrive, iCloud Drive or Dropbox syncs the folder, your other computers can open the budget too.</p>
+        <div class="field"><label>Suggested</label><div class="mono path">${esc(suggested)}</div></div>`,
+      actions: [{ label: 'Choose…', value: 'choose', left: true }, { label: 'Use this folder', value: 'use', primary: true }] });
+    if (!v) return;
+    const path = v === 'use' ? suggested : await pickFolder(suggested);
+    if (path) await placeBudget(path);
+  }
+}
+
+// This computer's budget into the folder at `path`: the first time, onboarding's Start a new budget, Settings' Move….
+// A folder that already has a budget asks: Open that one, or Choose another folder. While the budget folder can't be
+// reached, it's left only if it's gone for good. Returns 'moved', 'opened' or null (nothing done; an error says why).
+async function placeBudget(path) {
+  try {
+    for (;;) {
+      const look = await call('look_in_budget_folder', [path]);
+      if (!look.budget) break;
+      const v = await dialog({ title: 'A budget is already there',
+        body: `<p>${esc(hasBudgetText(look.budget))}</p><p class="mono small muted path">${esc(path)}</p>`,
+        actions: [{ label: 'Choose another folder', value: 'choose' }, { label: 'Open that one', value: 'open', primary: true }] });
+      if (v === 'open') return await openBudget(path) ? 'opened' : null;
+      if (v !== 'choose' || !(path = await pickFolder(path))) return null;
+    }
+    const st = state.folder || {};
+    let gone = false;
+    if (st.state === 'unreachable') {
+      if (!await confirmBox('Move your budget anyway?', `Your budget folder (${st.folder}) isn't available. Move the budget to ${path} only if that folder is gone for good: a computer still using it wouldn't know.`, 'Move it')) return null;
+      gone = true;
+    }
+    toast('Moving your budget…', { stay: true });
+    folderChanged(await call('move_budget_folder', { path, old_folder_gone: gone }));
+    toast(`Your budget is in ${state.folder.folder || path}`);
+    return 'moved';
+  } catch (e) {
+    if (!(e instanceof UserFacingError)) throw e;
+    return null;  // its message is showing
+  }
+}
+
+// Opens the budget in the folder at `path` on this computer: this computer's own goes into that folder's Backups
+// first (unless it's new and empty). Straight on to it: the Dashboard, or the rest of setting up for one that isn't.
+async function openBudget(path) {
+  toast('Opening the budget…', { stay: true });
+  folderChanged(await call('open_budget_folder', [path]));
+  await budgetReplaced();
+  toast(`Opened the budget in ${state.folder.folder || path}`);
+  return true;
+}
+
+// Choose where it is… (the folder isn't available, its file is gone, another computer moved it): the folder the
+// budget is in now. One without a budget can only take this computer's while the old folder can't be reached.
+async function findBudget() {
+  const st = state.folder || {};
+  const path = await pickFolder(st.folder);
+  if (!path) return;
+  const look = await call('look_in_budget_folder', [path]);
+  if (look.budget) await openBudget(path);
+  else if (look.moved) toast(movedAwayText(look.moved), { error: true });
+  else if (st.state === 'unreachable') await placeBudget(path);
+  else toast('There\'s no budget in this folder.', { error: true });
+}
+
+async function checkForUpdates() {
+  state.checkingByHand = true;  // the answer comes as an 'update' event: see appEvent
+  try { state.update = await call('window_action', ['check_updates']); }
+  catch (e) { state.checkingByHand = false; throw e; }
+  toast('Checking for updates…');
+}
+
+async function folderAction(btn) {
+  const act = btn.dataset.act;
+  if (act === 'folder-place') await askForFolder();
+  else if (act === 'folder-find') await findBudget();
+  else if (act === 'folder-move') { const path = await pickFolder((state.folder || {}).folder); if (path) await placeBudget(path); }
+  else if (act === 'folder-save-again') {
+    const st = await call('save_budget_again');
+    folderChanged(st);
+    if (st.state === 'saved') toast('Saved your budget in its folder again');
+  } else if (act === 'folder-update') await checkForUpdates();
+  else if (act === 'folder-ask') { state.folderAsked = null; state.newerAsked = null; await askPending(); }
+  if (state.page === 'settings') await renderSettings();
+}
+
+// At launch: open on another computer (a heads-up: its note in the folder), or saved by a newer version.
+async function askOpenElsewhere(st) {
+  const others = st.open_elsewhere || [];
+  if (!others.length) return;
+  const since = others.length === 1 && others[0].since ? ` (since ${whenAt(others[0].since)})` : '';
+  const v = await dialog({ title: 'Open on another computer',
+    body: `<p>${esc(`Your budget is open on ${andList(others.map(o => o.computer))}${since}. If it's changed on both, you'll choose one.`)}</p>`,
+    actions: [{ label: 'Quit', value: 'quit' }, { label: 'Open anyway', value: 'open', primary: true }] });
+  if (v === 'quit') quitNow();
+}
+async function askNewer(st) {
+  const by = (st.other || {}).app_version;
+  const v = await dialog({ title: 'Saved by a newer version',
+    body: `<p>${esc(`${by ? `Your budget was saved by version ${by}.` : 'Your budget was saved by a newer version.'} This computer has ${state.boot.app.version}.`)}</p>`,
+    actions: [{ label: 'Quit', value: 'quit' }, { label: 'Check for updates', value: 'check', primary: true }] });
+  if (v === 'quit') quitNow();
+  else if (v === 'check') await checkForUpdates();
+}
+
+// What one computer changed (changes.py's side): its summary, and Show every change (a section of one change that
+// says just what its title does is its title alone).
+const changesHtml = side => !side || !side.changed ? '<p class="muted">Nothing you\'d see.</p>'
+  : `<p>${esc(side.summary)}</p><details class="changes"><summary>Show every change</summary>${side.sections.map(s =>
+    `<div class="small"><b>${esc(s.title)}</b>${s.items.length === 1 && s.items[0].text === s.title ? '' : `<ul>${s.items.map(i =>
+      `<li${i.app ? ' class="muted"' : ''}>${esc(i.text)}</li>`).join('')}</ul>`}</div>`).join('')}</details>`;
+
+// The one question (budget_folder.py's rule 4), about two sides, this computer's budget and the one in the folder:
+// "The budget in the folder is older than this one" or "This budget changed on two computers", with what each side
+// changed. Use it or Keep this; the side that loses goes into Backups. Nothing is saved until you choose: closing it
+// leaves the strip's Choose…. As the app quits, Quit and choose later quits as it is (this computer's changes wait
+// here, and it asks at the next launch). Returns what was chosen, null when closed, or 'unready' while the app is
+// still working out what each side changed.
+async function askWhichBudget({ quitting = false } = {}) {
+  const q = await call('budget_folder_question');
+  if (!q) return 'unready';
+  const key = folderKey(state.folder);
+  state.folderAsked = key;
+  const other = q.other || {}, older = q.state === 'older';
+  const saved = other.computer ? `saved on ${other.computer}${other.saved_at ? ` ${atWhen(other.saved_at)}` : ''}` : '';
+  const cant = q.can_show_changes ? '' : '<p class="muted">This computer doesn\'t have what both started from, so it can\'t show what each changed.</p>';
+  const kept = 'The one you don\'t keep goes into Backups.';
+  const body = older
+    ? `<p>${esc(`${saved ? `The one in the folder was ${saved}. ` : ''}Use it, or keep this one? ${kept}`)}</p>${cant || `<p><b>Changed on this computer since</b></p>${changesHtml(q.this)}`}`
+    : `<p>${esc(`It changed on ${other.computer || 'another computer'} and on this computer. Use the one in the folder, or keep this one? ${kept}`)}</p>${cant ||
+      `<div class="which"><div><b>In the folder</b>${saved ? ` <span class="small muted">${esc(saved)}</span>` : ''}${changesHtml(q.theirs)}</div>
+       <div><b>On this computer</b>${changesHtml(q.this)}</div></div>`}`;
+  let result = null;
+  const keep = (label, name, value) => ({ label, value, check: async () => {
+    state.questionOpen = null;  // what this choice changes doesn't close it (folderChanged)
+    const r = await tryCall(name);
+    if (!r.ok) { state.questionOpen = key; return r.error; }
+    result = r.result;
+    return null;
+  } });
+  if (quitting) window.pywebview.api.asking_before_quit();
+  state.questionOpen = key;  // answered on the other computer meanwhile, or no longer there: it closes (folderChanged)
+  const v = await dialog({ title: older ? 'The budget in the folder is older than this one' : 'This budget changed on two computers',
+    wide: !older, body,
+    actions: [...(quitting ? [{ label: 'Quit and choose later', value: 'later', left: true }] : []),
+      keep('Use it', 'keep_other_budget', 'other'), keep('Keep this', 'keep_this_budget', 'this')] });
+  state.questionOpen = null;
+  if (v === 'later') { quitNow(); return v; }
+  if (!v) { drawFolderBar(); return null; }
+  folderChanged(result);
+  if (v === 'other') {
+    toast('Using the budget in the folder · this computer\'s is in Backups');
+    await budgetReplaced();
+  } else toast('Kept this budget · the one from the folder is in Backups');
+  if (quitting) { await settled(); quitNow(); }
+  return v;
+}
+
+// As the app quits, once what you were typing is saved: the budget is saved into its folder (main.py's
+// look_before_quit). While the one question is asked (older, or changed on two computers), it can't be until you choose, so that's
+// asked first. True when it asks (choosing quits; closing the question doesn't).
+async function askBeforeQuitting() {
+  const api = window.pywebview.api;
+  if (!api.look_before_quit) return false;
+  let st = null;
+  try { st = await Promise.race([api.look_before_quit(), sleep(20000).then(() => null)]); }
+  catch (e) { logError('Saving before quitting', e); }
+  if (!st || !QUESTIONS.includes(st.state)) return false;
+  state.folder = st;
+  drawFolderBar();
+  await closePopUp();
+  return await askWhichBudget({ quitting: true }) !== 'unready';
+}
+
 // ── quitting ────────────────────────────────────────────
 // The close button and ⌘Q ask here first (main.py). What you're typing is saved; only a
-// pop-up with changes, or an entry that can't be saved, asks before the app quits.
+// pop-up with changes, an entry that can't be saved, or a budget changed on two computers
+// asks before the app quits.
 let quitBusy = false;
 window.quitRequested = () => {
   if (!quitBusy) {
@@ -3418,6 +3765,7 @@ async function quitWhenSaved() {
   const a = document.activeElement;
   if (a && a.matches && a.matches('input, textarea, select') && !d.contains(a) && !await commitTyping(a)) return askAboutEntry(a);
   await settled();
+  if (await askBeforeQuitting()) return;  // changed on two computers: which to keep, first
   quitNow();
 }
 
@@ -3479,16 +3827,17 @@ function askInDialog(d) {
 }
 
 // ── events from Python ──────────────────────────────────
-// An import (or an update) redraws the page, but not under a box you're typing in (the Accounts page's
-// balance, rate and payment boxes, the Inbox's balance box and search, the GitHub token box), nor in a
-// pop-up, a drag or a name being typed: it waits, and runs when you leave the box.
+// An import, an update or another computer's budget taken redraws the page, but not under a box you're
+// typing in (the Accounts page's balance, rate and payment boxes, the Inbox's balance box and search, the
+// GitHub token box), nor in a pop-up, a drag or a name being typed: it waits, and runs when you leave the box.
 const typingInMain = () => {
   const el = document.activeElement;
   return !!(el && el.closest && el.closest('#main') && el.matches('input:not([type=checkbox]):not([type=radio]):not([type=button]), textarea, select'));
 };
+const busyNow = () => !!($('#dlg').open || $('.drawer') || $('.popover') || state.dragging || $('#main .inline-name') || typingInMain());
 function refreshWhenIdle() {
-  const busy = $('#dlg').open || $('.drawer') || $('.popover') || state.dragging || $('#main .inline-name') || typingInMain();
-  state.refreshLater = !!busy;
+  const busy = busyNow();
+  state.refreshLater = busy;
   if (!busy) refresh();
 }
 document.addEventListener('focusout', () => setTimeout(() => { if (state.refreshLater) refreshWhenIdle(); }, 60));
@@ -3521,7 +3870,7 @@ window.appEvent = (name, payload) => {
     }
     if (state.page === 'settings') renderSettings();
     else if (payload.status === 'ready') refreshWhenIdle();
-  }
+  } else if (name === 'budget_folder') folderChanged(payload);
 };
 
 // ── wiring ──────────────────────────────────────────────
@@ -3588,6 +3937,7 @@ document.addEventListener('click', async e => {
         if (r.question) { await subscriptionPrompt(r.question); await renderTransactions(); }
       }
     } else if (act === 'add-tx') await addTransaction();
+    else if (act.startsWith('folder-')) await folderAction(btn);
     else if (state.page === 'dashboard') await dashboardAction(btn);
     else if (state.page === 'inbox') await inboxAction(btn, e);
     else if (state.page === 'accounts') await accountAction(btn);
@@ -3686,9 +4036,19 @@ async function start() {
   applyTheme(state.boot.settings.theme);
   setCounts(state.boot.counts);
   state.update = state.boot.app && state.boot.app.updates;
+  state.folder = await call('budget_folder');  // as the look at launch left it (main.py)
   if (!state.boot.onboarded) return showOnboarding();
-  await loadCategories();
-  await navigate('dashboard');
+  state.launching = true;  // a question from the budget folder waits for these
+  try {
+    await loadCategories();
+    if (state.folder.state === 'none') await askForFolder();  // the first launch of 1.5.0: before anything else
+    await navigate('dashboard');
+    if (state.folder.state === 'newer') { state.newerAsked = folderKey(state.folder); await askNewer(state.folder); }
+    else await askOpenElsewhere(state.folder);
+  } catch (e) {
+    if (!(e instanceof UserFacingError)) logError('Starting', e);
+  } finally { state.launching = false; }
+  askWhenIdle();
 }
 if (window.pywebview && window.pywebview.api) start();
 else window.addEventListener('pywebviewready', start);

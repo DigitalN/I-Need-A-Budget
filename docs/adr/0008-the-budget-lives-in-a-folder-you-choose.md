@@ -22,12 +22,61 @@ under a hidden name, then renamed) a few seconds after changes stop, and when it
 - One computer at a time. While the budget is open, the app leaves a note in the folder
   (which computer, since when); opening it elsewhere warns, and you can carry on. A sync
   tool takes a while to deliver the note, so it's a heads-up, not a lock.
-- Each computer keeps a copy of the save it started from, and watches the folder. Another
-  computer's newer save is taken straight away when this computer has changed nothing
-  since; when both have, the budget was changed on two computers: the app shows what each
-  changed, compared with that starting copy, and asks which to keep. The other becomes a
-  backup. A sync tool's own conflict copies in the folder are treated the same way. Taking
-  another computer's save clears ⌘Z, as an import does.
+- Each computer keeps a copy of the save it started from, and watches the folder. Saves are
+  ordered by counts (each computer's count of its own saves), never by a clock, and conflicts
+  follow five rules, the only ones (decided 2026-11-27, replacing the earlier, longer set). A save
+  in the folder is `Budget.inab` or a sync tool's conflict copy of it; one *includes* another when
+  its counts are at least the other's, and when they're equal only if it's the same save (the
+  same id). Every new save counts more than what it came from, so equal counts with another id
+  only come of counts used twice (a data folder and the budget folder both put back to an earlier
+  day), and that asks (decided on #196's eighth review).
+  1. A conflict copy goes into Backups/ (deleted when Backups/ has its contents) silently only on
+     the strength of a `Budget.inab` that includes it or has its very contents. One that only this
+     computer's last save or take includes doesn't stop this computer's own write (rule 5), and
+     goes when that write lands, since the new `Budget.inab` then includes it; until then it stays
+     in the folder, where the other computers see it and ask about it (decided on #196's eighth
+     review: a computer that never comes back must not take its lost conflict with it). Its
+     contents being in Backups/ settle nothing: a backup isn't a decision (every quit backs up
+     before it saves), so such a copy asks under rule 4.
+  2. `Budget.inab` is taken silently only when it includes this computer's last save or take and
+     nothing changed here since; this computer's budget goes into Backups/ first unless its
+     contents are there. Taking it clears ⌘Z, as an import does.
+  3. A save whose contents are exactly this computer's budget asks nothing: this computer's save
+     becomes a new event after both (their counts merged, plus one of its own). Nothing else is
+     taken in that look.
+  4. Everything else asks, one question about two sides: this computer's budget and one other
+     save, `Budget.inab` first. "The budget in the folder is older than this one" when this
+     computer's counts include the other's, otherwise "This budget changed on two computers",
+     shown with what each changed. Use it or Keep this: the side that loses goes into Backups/
+     first, and the answer is a new event of this computer's (both counts merged, plus one of its
+     own), so the other computer takes it under rule 2. Whatever arrived that wasn't one of the
+     two sides shown isn't counted by the answer: it's asked about next.
+  5. This computer writes `Budget.inab` only when nothing in the folder is left unsettled by rules
+     1–3; otherwise it asks first, keeping its change meanwhile.
+- What counts as a change, and as the same contents (rules 2, 3 and 1), is `backups.digest`. It
+  leaves out what's kept about saves and backups, and what only shows the budget, which a launch
+  on a settled budget changes on its own (decided on #196's eighth review): an inbox item's reason
+  (only text to show, written again by the re-check) and a folded group (how this computer shows
+  the Budget page). A change of only those is saved and backed up with the next real one; a take
+  replaces them with the other computer's.
+- Restoring a backup stays copying it in (the maintainer's choice, 2026-11-27): quit the app on
+  every computer and copy it into the folder as `Budget.inab`. A backup keeps nothing about saves,
+  so it's an old save: older than every computer's, it asks (Use it).
+- Accepted costs of keeping to five rules (decided 2026-11-27):
+  - After a restore, the first computer opened asks once (older: Use it), and the others take its
+    answer. If two open before the sync finishes, both ask, and rule 1 or 3 settles the two
+    identical answers.
+  - A backup copied in while another computer saved can become the sync tool's conflict copy;
+    rule 1 then puts it into Backups/ as an older save, so it must be copied in again.
+  - Two computers that made different changes always ask.
+  - An answer made on a restored backup counts only what that computer had (the random test found
+    it): a computer that had only the save the backup was copied over is asked once more.
+  - Move… leaves another computer's saves from the old folder in the new folder's Backups/, and
+    its question waits until that computer follows the move.
+  - A sync tool delivering a new `Budget.inab` between the check and the rename is overwritten;
+    the sync tool's version history keeps it.
+  - A computer opened before the other's last save has synced, whose launch re-check categorizes
+    what One at a time left, asks once (its side shows what the app categorized).
 - The folder holds `Budget.inab`, `Backups/` (from every computer, kept four months as
   before) and `Imported Files/`. Each computer keeps its own settings, logs, working copy
   and starting copy. The budget's own settings (Overspending, Usual's months) were already

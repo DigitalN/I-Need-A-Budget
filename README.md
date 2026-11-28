@@ -122,10 +122,10 @@ copy the backup into the budget folder (Settings → Budget folder → Open) as 
 replacing the one there. The first computer you open asks once, "The budget in the folder is older
 than this one": choose **Use it**, and your other computers take it from there.
 
-Until you've chosen a folder, backups are in **I Need A Budget Backups** in Documents. To restore
-one of those, quit the app, open its data folder (Settings → Your data → Open), delete
-`budget.db-wal` and `budget.db-shm` if they're there, and copy the backup in as `budget.db`,
-replacing the one there.
+Until you've chosen a folder, backups are in **I Need A Budget Backups** in Documents (in the
+app's data folder's Backups while it can't write there, moved over once it can). To restore one of
+those, quit the app, open its data folder (Settings → Your data → Open), delete `budget.db-wal` and
+`budget.db-shm` if they're there, and copy the backup in as `budget.db`, replacing the one there.
 
 ## Install
 

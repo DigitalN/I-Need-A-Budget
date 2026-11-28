@@ -82,12 +82,17 @@ real engine over localhost. Claude's shell can't screenshot the app's own window
 
 All in `Application Files/`:
 
-- `main.py`: launcher. Logging, single-instance lock, where backups go (`BACKUP_DIR`)
-  and every way of quitting (`_before_quit`: the backup, then a waiting update; `_should_quit`
-  for the ways the system asks), the pywebview window, the Downloads watcher thread, the
-  updater, and `Api`, which exposes one method, `call(name, args)`, to the page. Whatever a Mac
-  and a Windows PC do differently it asks `THIS_COMPUTER` (computer.py). `VERSION` here is the
-  app's only version number.
+- `main.py`: launcher. Logging, single-instance lock, where backups go (`BACKUP_DIR`, until a
+  budget folder is chosen) and every way of quitting (`_before_quit`: the backup and the save into
+  the budget folder, `_back_up`, then a waiting update; `_should_quit` for the ways the system
+  asks), the pywebview window, the Downloads watcher thread, the budget folder's watcher thread
+  (`_watch_folder`, issue #189: `service.budget_folder_look` every few seconds, outside any
+  request, telling the page each new state as a `budget_folder` event; it stops at quit), the
+  updater, and `Api`, which exposes `call(name, args)` to the page, and, outside requests,
+  `choose_folder` (the folder dialog) and `look_before_quit` (the save as the page quits). The
+  look at launch (`budget_folder_look(at_launch=True)`) comes before anything else. Whatever a
+  Mac and a Windows PC do differently it asks `THIS_COMPUTER` (computer.py). `VERSION` here is
+  the app's only version number.
 - `computer.py`: what a Mac and a Windows PC do differently, behind one interface (issue #182):
   `computer.this()` picks `computer_mac.Mac` or `computer_windows.Windows`, the one place that
   looks at `sys.platform`. Its methods: this computer's data, log, Documents and Downloads
@@ -143,6 +148,47 @@ All in `Application Files/`:
   renamed), `prune` (four months; the `-wal`/`-shm` SQLite leaves beside a backup opened in
   place go with it), `move_old` (the data folder's old `Backups/`).
   `scripts/tests/test_backups.py` covers it, every way of quitting included.
+- `budget_folder.py`: the budget folder ([ADR 0008](../docs/adr/0008-the-budget-lives-in-a-folder-you-choose.md),
+  issue #183; the window's side is #189's, below). `BudgetFolder` saves the working
+  copy into the folder whole as `Budget.inab` (a copy in the data folder's `Saves/` with meta
+  `save`: id, counts (one version vector over computers, each one's count of its events), computer,
+  time, versions; recorded as this computer's before it goes into the folder under a hidden name,
+  renamed, retried while Windows or a sync tool holds the file; meta `save_landed` names the
+  `Budget.inab` it saves over until it's there), a few seconds after changes stop and at quit,
+  only when `backups.digest` changed. `check` (every few seconds) keeps to ADR 0008's five rules
+  and nothing else: conflict copies `Budget.inab` includes, or with its contents, go into `Backups/`
+  (one only this computer's save includes, once that save is `Budget.inab`);
+  `Budget.inab` is taken only when it includes this computer's last save or take and nothing changed
+  here (after the page's requests under way: `Turns`); a save with this computer's very contents is
+  joined (`_join`, a new event with one count of its own); everything else asks (`older`,
+  `two_computers`; `two_computers()` for `changes.compare`; `keep_this`, `keep_other`, whose answer
+  is a new event after both sides, `_answer`); nothing is written while anything is unsettled. A
+  backup copied in keeps no meta `save`: an old save, which asks. A `Budget.inab` gone once this
+  computer's save was there asks (`missing`); a newer budget format is refused; a folder that can't
+  be reached is waited for; `move_to` (every other budget file in the old folder into the new one's
+  `Backups/`), `open_from`, notes of where it's open. This computer's id in saves is new for each
+  budget and machine (`computer.json`, `computer.machine_id`); its files in the folder are named by
+  its name and the start of that id (`computer_tag`, `tag_in`; its earlier tags kept in
+  `computer.json`, so `prune` deletes backups named by them as its own). `INAB_COMPUTER` names this
+  computer (two previews on one folder). Never by a clock. `scripts/tests/test_budget_folder.py`
+  covers it with two data folders sharing one folder, `test_budget_folder_random.py` on random
+  histories (the arbiter).
+  **In the window** (issue #189): service.py's `budget_folder_look` (at launch, the watcher's
+  round, or `now` as the page quits) works out, once per other save, what each side changed for
+  the one question (`budget_folder_question`, from `changes.compare`). It decides nothing: a side
+  with nothing to show is still asked about. The page (`folderChanged` and its neighbours in
+  index.html) keeps `state.folder`: a strip at the top for what stops a save (no folder yet,
+  unreachable, still syncing after 10 s, missing, moved, newer, and the question while it waits),
+  and pop-ups for what only you decide, never over a pop-up of yours, a drag or a box you're typing
+  in: the first launch of 1.5.0's "Your budget now lives in a folder you choose" before anything
+  else, open on another computer and a newer version at launch, and the question, "The budget in
+  the folder is older than this one" or "This budget changed on two computers" (each side's
+  summary, Show every change; Use it / Keep this), also as the app quits (with Quit and choose
+  later). An open question closes once it's answered on the other computer. Onboarding's first
+  step is Start a new budget or Open my budget; Settings has the folder, Open and Move…. A take
+  toasts "Updated with changes saved on PC-A" and redraws once you're free. The page says "this
+  computer", never which system it is. `scripts/tests/test_budget_folder_window.py` and the quit
+  tests in `test_backups.py` cover it.
 - `importer.py`: detects and parses OFX/QFX/QBO from any bank, Tangerine card and bank
   CSVs, RBC's CSV (every account in one file, so a file has `parts`), CSVs set up once
   (`csvlayout.py`), and Actual Budget's export (learnt from, never imported as
@@ -896,10 +942,16 @@ Don't undo these without asking:
   with the date and time (`budget-2026-11-08-14-32-05.db`). Every one from the last four months is kept,
   before-upgrade copies included, and the newest from before today is never deleted for
   its age. With `INAB_DATA_DIR` they stay inside that folder. If Documents can't be
-  written they go to the data folder's `Backups/` until it can. **To restore one:** quit
-  the app, delete `budget.db-wal` and `budget.db-shm` in the data folder if they're
-  there, and copy the backup in as `budget.db`. (Until 1.3.1: one a day at launch, 14
-  kept, in the data folder's `Backups/`, which the first launch of 1.4.0 moves over.)
+  written they go to the data folder's `Backups/` until it can. With a budget folder (1.5.0)
+  they go into its `Backups/`, every computer's, named for the computer. **To restore one:**
+  quit the app on every computer and copy the backup into the budget folder as
+  `Budget.inab`, replacing the one there: it's an old save, so the first computer opened asks
+  "The budget in the folder is older than this one" (Use it), and the others take its answer
+  (ADR 0008). Without a budget
+  folder (a 1.4 copy that hasn't chosen one): quit the app, delete `budget.db-wal` and
+  `budget.db-shm` in the data folder if they're there, and copy the backup in as `budget.db`.
+  (Until 1.3.1: one a day at launch, 14 kept, in the data folder's `Backups/`, which the first
+  launch of 1.4.0 moves over.)
 - "Eating Out" was renamed **Food** (Actual's old name still matches through `old_names`).
 - **Update checks only at launch and on Check now**, never on a timer while the app is
   open (the maintainer's choice).
@@ -926,7 +978,8 @@ Don't undo these without asking:
   Showing what This month covered as Assigned was offered and declined (2026-11-12).
 - **Settings is kept short** (the maintainer's mock-up): Appearance, Import from
   Downloads, Overspending, Learn from Actual; updates, Release notes,
-  Check now (GitHub access only when needed); Open buttons for the data, imported
+  Check now (GitHub access only when needed); the budget folder (Open, Move…, issue #189);
+  Open buttons for the data, imported
   files and log folders; the license line under them. Budget start, the Usual ("needs")
   look-back and "fill monthly amounts" were removed from it on purpose.
 - **No bill due dates, paydays or safe-to-spend**, ever: that isn't the envelope method
@@ -1027,6 +1080,9 @@ Don't undo these without asking:
 working tree has anything from `.git-denylist` or a card-number shape. No test takes a real copy's
 lock or mutex (`conftest.py`'s `real_copy` fails it): the real data folder's lock would keep the app
 from opening, and while `RUNNING_MUTEX` is held Windows' installer and uninstaller won't run.
+The budget folder's random test (`scripts/tests/test_budget_folder_random.py`) runs the seeds it
+keeps (`FOUND`) plus 100 fresh ones per test; on GitHub's machines (`CI` set) 20 fresh ones, to stay
+inside the 30-minute limit. `INAB_SEEDS` (and `INAB_STEPS`) override both.
 
 GitHub runs the whole suite on macOS and Windows for every pull request into `main` or
 `claude/cross-platform` and every push to them (`.github/workflows/tests.yml`, issue #186):
