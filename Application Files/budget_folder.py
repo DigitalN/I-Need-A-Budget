@@ -40,9 +40,11 @@ save includes.
 conflict copy of it (OneDrive's `Budget-<computer>.inab`, iCloud's `Budget 2.inab`, Dropbox's
 `Budget (… conflicted copy …).inab`). "This computer's save" is its last save or take (meta `save`),
 "its budget" the working copy.
-1. Conflict copies: one that Budget.inab includes, or with Budget.inab's very contents, or that
-   this computer's save includes, goes into Backups/ (or is deleted, when Backups/ has its
-   contents). Silently. Contents in Backups/ alone never settle one: a backup isn't a decision
+1. Conflict copies: one goes into Backups/ (or is deleted, when Backups/ has its contents)
+   silently only on the strength of a Budget.inab that includes it or has its very contents. One
+   that only this computer's save includes doesn't stop this computer's own write (rule 5), and goes
+   when that write lands (the new Budget.inab includes it); till then it stays, so the other
+   computers see it and ask. Contents in Backups/ never settle one: a backup isn't a decision
    (every quit backs up before it saves).
 2. Take: Budget.inab is taken silently only when it includes this computer's save and nothing
    changed here since (`_take`: the working copy becomes it, ⌘Z is cleared, as an import does),
@@ -449,14 +451,15 @@ class BudgetFolder:
         same = [s for s in saves if s.digest == current and not (mine is not None and includes(mine, s))]
         if same:  # 3
             mine = self._join(same, main, current)
-        landed, unsettled = self.db.get_meta(LANDED_KEY), []
+        landed, unsettled, pending = self.db.get_meta(LANDED_KEY), [], []
         for save in saves:
             if save.name == FILE_NAME:
                 if not (save.digest == current or (mine is not None and save.id in (mine.id, landed))):
                     unsettled.append(save)
-            elif (main is not None and (includes(main, save) or save.digest == main.digest)) or \
-                    (mine is not None and includes(mine, save)):  # 1
+            elif main is not None and (includes(main, save) or save.digest == main.digest):  # 1
                 self._put_away(folder, save)
+            elif mine is not None and includes(mine, save):  # 1, once Budget.inab is this computer's save
+                pending.append(save)
             else:
                 unsettled.append(save)
         self._behind = mine is not None and (main is None or main.id != mine.id)
@@ -472,6 +475,9 @@ class BudgetFolder:
             return self._set("missing", **took)  # once this computer's save was there: never made again without asking
         if mine is None or self._behind or (self._changed() and (not wait or self._quiet())):
             self._save(folder)  # 5
+        if not self._behind:  # Budget.inab is this computer's save now, which includes them: till then they're seen
+            for save in pending:
+                self._put_away(folder, save)
         return self._set("unsaved" if self._behind or self._changed() else "saved", **took)
 
     def _join(self, saves, main, digest):

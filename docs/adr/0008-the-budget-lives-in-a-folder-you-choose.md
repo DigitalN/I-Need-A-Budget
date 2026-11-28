@@ -30,10 +30,14 @@ under a hidden name, then renamed) a few seconds after changes stop, and when it
   same id). Every new save counts more than what it came from, so equal counts with another id
   only come of counts used twice (a data folder and the budget folder both put back to an earlier
   day), and that asks (decided on #196's eighth review).
-  1. A conflict copy that `Budget.inab` includes, or with its very contents, or that this
-     computer's last save or take includes, goes into Backups/ (deleted when Backups/ has its
-     contents). Silently. Its contents being in Backups/ settle nothing: a backup isn't a
-     decision (every quit backs up before it saves), so such a copy asks under rule 4.
+  1. A conflict copy goes into Backups/ (deleted when Backups/ has its contents) silently only on
+     the strength of a `Budget.inab` that includes it or has its very contents. One that only this
+     computer's last save or take includes doesn't stop this computer's own write (rule 5), and
+     goes when that write lands, since the new `Budget.inab` then includes it; until then it stays
+     in the folder, where the other computers see it and ask about it (decided on #196's eighth
+     review: a computer that never comes back must not take its lost conflict with it). Its
+     contents being in Backups/ settle nothing: a backup isn't a decision (every quit backs up
+     before it saves), so such a copy asks under rule 4.
   2. `Budget.inab` is taken silently only when it includes this computer's last save or take and
      nothing changed here since; this computer's budget goes into Backups/ first unless its
      contents are there. Taking it clears ⌘Z, as an import does.
