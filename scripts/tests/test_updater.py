@@ -113,7 +113,7 @@ def test_without_a_token_it_asks_anonymously_and_says_when_it_needs_one(monkeypa
 
     monkeypatch.setattr(updater, "_curl", fake_curl)
     u = updater.Updater.__new__(updater.Updater)
-    u._feed, u.needs_access, u._computer = updater.FEED_URL, False, Mac()
+    u._feed, u.needs_access, u._computer, u._current = updater.FEED_URL, False, Mac(), "1.4.3"
     answers[updater.FEED_URL] = 200
     assert u._latest_release(None) == ("9.0.0", "https://x/1", None) and sent == [None] and not u.needs_access
     answers[updater.FEED_URL], answers[updater.REPOSITORY_URL] = 404, 404
@@ -157,14 +157,56 @@ class Computer:
         self.steps.append(("relaunch", app.name))
 
 
-def updater_on(computer, tmp_path):
+def updater_on(computer, tmp_path, current="1.4.3"):
+    import threading
+
     import updater
 
     u = updater.Updater.__new__(updater.Updater)
-    u._computer, u._app, u._current, u._staged = computer, tmp_path / "I Need A Budget.app", "1.4.3", None
+    u._computer, u._app, u._current, u._staged = computer, tmp_path / "I Need A Budget.app", current, None
     u._feed, u._last_check_file, u._on_status = "file:///feed.json", tmp_path / "last-update-check", lambda state: None
     u.status, u.version, u.last_error, u.unavailable_reason, u.needs_access = updater.IDLE, None, None, None, False
+    u._lock = threading.Lock()
     return u
+
+
+def test_a_release_that_isnt_newer_is_up_to_date_whatever_it_has_attached(tmp_path, monkeypatch, caplog):
+    """1.4.3 has only the Mac's disk image: a Windows copy of 1.4.3 or later is up to date, not
+    "The latest release has no installer attached." Only a newer release without this computer's
+    file is worth an error. A Mac reads it the same way."""
+    import json
+
+    import updater
+    from computer_windows import Windows
+
+    class WindowsComputer(Computer):
+        update_file, update_signature, installs_after_quitting = Windows.update_file, Windows.update_signature, True
+
+    def check(computer, current, tag, *assets):
+        release = {"tag_name": tag, "assets": [{"name": name, "url": f"https://x/{name}"} for name in assets]}
+        monkeypatch.setattr(updater, "_curl", lambda *a, **k: (0, json.dumps(release)))
+        u = updater_on(computer, tmp_path, current)
+        caplog.clear()
+        with caplog.at_level("INFO", logger="inab"):
+            u._check()
+        assert u.status == updater.IDLE
+        return u.last_error, [(r.levelname, r.getMessage()) for r in caplog.records]
+
+    mac_only = "I-Need-A-Budget-1.4.3.dmg"
+    windows = WindowsComputer(tmp_path / "download")
+    assert check(windows, "1.4.3", "v1.4.3", mac_only) == (None, [("INFO", "Up to date at 1.4.3")])
+    assert check(windows, "1.5.0", "v1.4.3", mac_only) == (None, [("INFO", "Up to date at 1.5.0")])
+    assert check(windows, "1.5.0", "v1.5.0") == (None, [("INFO", "Up to date at 1.5.0")])
+    error = "The latest release has no installer attached."
+    assert check(windows, "1.5.0", "v1.5.1", "I-Need-A-Budget-1.5.1.dmg") == (
+        error, [("ERROR", f"Update check failed: {error}")])
+    assert check(windows, "1.5.0", "v1.5.1", "I-Need-A-Budget-1.5.1-Setup.exe")[0] == "The latest release's installer isn't signed."
+    assert not windows.steps  # nothing downloaded
+
+    mac = Computer(tmp_path / "download")
+    assert check(mac, "1.5.0", "v1.5.0", "I-Need-A-Budget-1.5.0-Setup.exe") == (None, [("INFO", "Up to date at 1.5.0")])
+    assert check(mac, "1.5.0", "v1.5.1", "I-Need-A-Budget-1.5.1-Setup.exe")[0] == "The latest release has no disk image attached."
+    assert not mac.steps
 
 
 def test_an_update_is_downloaded_then_checked_and_swapped_in_by_the_computer(tmp_path, monkeypatch):
