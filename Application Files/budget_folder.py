@@ -247,10 +247,20 @@ class Turns:
 
 
 def this_computer():
-    """This computer's name as the window shows it ("Saved on …"): INAB_COMPUTER when it's set
-    (the tests, two dev previews sharing one folder), else the name the system has for it."""
-    name = os.environ.get("INAB_COMPUTER") or platform.node() or "This computer"
+    """This computer's name as the window shows it ("Saved on …") and its files in the folder are
+    named by: INAB_COMPUTER when it's set (the tests, two dev previews sharing one folder), else the
+    name the person knows it by from the system's settings (computer.computer_name: a Mac's
+    Computer Name, Windows' device name), else its network name."""
+    name = os.environ.get("INAB_COMPUTER") or computer.this().computer_name() or platform.node() or "This computer"
     return name[:-len(".local")] if name.endswith(".local") else name
+
+
+def saved_by(save):
+    """Which budget `save` is, for the log: "saved on PC-A at …", or a backup copied into the folder,
+    which no computer saved (it keeps no meta `save`)."""
+    if not save.computer:
+        return "copied into the folder (a backup: no computer saved it)"
+    return f"saved on {save.computer} at {save.saved_at}" if save.saved_at else f"saved on {save.computer}"
 
 
 def includes(save, other):
@@ -493,7 +503,7 @@ class BudgetFolder:
         joined = self._event(counts, digest)
         if main is not None and main in saves:
             self._landed(main.id)
-        log.info("The budget saved on %s at %s is the same as this computer's", saves[0].computer, saves[0].saved_at)
+        log.info("The budget %s is the same as this computer's", saved_by(saves[0]))
         return joined
 
     def _event(self, counts, digest):
@@ -745,7 +755,7 @@ class BudgetFolder:
                 return False  # being written: looked at again first
         if not (here.digest == save.digest or here.id == self.db.get_meta(LANDED_KEY) or
                 (mine is not None and here.id == mine.id)):
-            log.info("Not saving over the budget saved on %s at %s: it arrived since", here.computer, here.saved_at)
+            log.info("Not saving over the budget %s: it arrived since", saved_by(here))
             return False
         self._landed(here.id)
         return True
@@ -816,8 +826,7 @@ class BudgetFolder:
             self._set_mine(replace(save, digest=backups.digest(self.db)))  # the upgrade isn't a change
             if save.name == FILE_NAME:
                 self._landed(save.id)
-        log.info("Took the budget saved on %s at %s (%s)", save.computer or "no computer: a backup copied in",
-                 save.saved_at, save.name)
+        log.info("Took the budget %s (%s)", saved_by(save), save.name)
         return True
 
     def _forget(self, save):
@@ -871,7 +880,7 @@ class BudgetFolder:
                 raise UserError("The other computer's budget can't be read just now: try again in a moment.")
             self._keep_a_copy(other)
             self._answer(other, self._mine())
-            log.info("Kept this computer's budget; the one saved on %s is in Backups", other.computer)
+            log.info("Kept this computer's budget; the one %s is in Backups", saved_by(other))
             return self.check(wait=False)
 
     def keep_other(self):
@@ -893,7 +902,7 @@ class BudgetFolder:
                 self._forget(other)
                 self._other = None
                 raise UserError("The other computer's budget can't be read just now: try again in a moment.") from None
-            log.info("Kept the budget saved on %s; this computer's is in %s", other.computer, kept or "Backups")
+            log.info("Kept the budget %s; this computer's is in %s", saved_by(other), kept or "Backups")
             return self.check(wait=False)
 
     def _answer(self, other, before):

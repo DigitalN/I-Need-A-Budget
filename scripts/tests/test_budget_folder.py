@@ -748,6 +748,31 @@ def test_restoring_a_backup_asks_a_computer_with_changes_not_saved_yet(tmp_path)
     assert categories_in(folder / FILE_NAME) == ["Groceries", "Bills", "Rent"]
 
 
+def test_the_log_says_a_backup_copied_in_was_saved_by_no_computer(tmp_path, caplog):
+    """Use it or Keep this about a backup copied in: the log said "saved on None"."""
+    folder = tmp_path / "Budget"
+    a = computer(tmp_path, "PC-A")
+    add_category(a.db, "Groceries")
+    a.move_to(folder)
+    made = backups.make(a.db)
+    add_category(a.db, "Rent")
+    a.check(wait=False)
+    caplog.set_level("INFO", logger="inab")
+    for choose in (a.keep_this, a.keep_other):
+        shutil.copyfile(made, folder / FILE_NAME)
+        assert a.check()["state"] == "older"
+        caplog.clear()
+        choose()
+        assert "copied into the folder (a backup: no computer saved it)" in caplog.text, caplog.text
+        assert "None" not in caplog.text, caplog.text
+    add_category(a.db, "Bills")
+    caplog.clear()
+    a.check(wait=False)
+    b = computer(tmp_path, "PC-B")
+    b.open_from(folder)
+    assert "Took the budget saved on PC-A at 20" in caplog.text, caplog.text  # a save says whose, and when
+
+
 def test_a_backup_restored_as_the_working_copy_asks_instead_of_being_replaced(tmp_path):
     """The way before 1.5 (CLAUDE.md's): with the app closed, the backup copied in as budget.db."""
     folder = tmp_path / "Budget"

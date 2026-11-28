@@ -1,7 +1,8 @@
 # I Need A Budget
 
 An envelope budget (like YNAB or Actual Budget) built around the files banks let you
-download, as a Mac app: Python + pywebview, one window, SQLite. Building, the release checklist, how
+download, as an app for the Mac and Windows 10 or 11 (not Linux): Python + pywebview, one window,
+SQLite, the same code on both. Building, the release checklist, how
 updates work and the dev preview are in @../docs/DEVELOPMENT.md. What it does for the user is in
 README.md. The words for things (categorize, file, transfer vs e-transfer, payment
 category, recurring charge...) are in `docs/CONTEXT.md`: use them in the page, docs, comments
@@ -20,9 +21,14 @@ commits, issues, PRs and release notes can all be read by anyone. That covers ba
 database, account or card digits, people's names (e-transfers), employers, payees
 that are local businesses, category names that reveal finances, and real amounts.
 
-- All data lives outside the repository: `~/Library/Application Support/I Need A Budget`
+- All data lives outside the repository. On a Mac: `~/Library/Application Support/I Need A Budget`
   (database, settings, `Imported Files/`), `~/Library/Logs/I Need A Budget`, and the
-  backups in `~/Documents/I Need A Budget Backups`.
+  backups in `~/Documents/I Need A Budget Backups`. On Windows: `%LOCALAPPDATA%\I Need A Budget`
+  (the same, with `Logs\` inside it) and `I Need A Budget Backups` in Documents (the folder
+  Windows says is Documents: OneDrive may have moved it). From 1.5.0 the budget also lives in the
+  budget folder the person chooses (`Budget.inab`, `Backups/`, `Imported Files/`; suggested:
+  `I Need A Budget` in Documents), which their sync tool may copy to every computer they use:
+  never one inside a checkout.
 - `.gitignore` excludes bank files and databases. `scripts/hooks/pre-commit` (switched on
   with `git config core.hooksPath scripts/hooks`; First Time Setup does it) refuses
   commits with those files, card-number shapes, or any word in `.git-denylist`, a local,
@@ -41,7 +47,8 @@ that are local businesses, category names that reveal finances, and real amounts
 
 ## Debugging
 
-Application logs: `~/Library/Logs/I Need A Budget/app.log` (rotating, 3 × 1 MB). Page
+Application logs: `~/Library/Logs/I Need A Budget/app.log` on a Mac,
+`%LOCALAPPDATA%\I Need A Budget\Logs\app.log` on Windows (rotating, 3 × 1 MB). Page
 (JavaScript) errors are forwarded there too. When the user reports a bug, **read the log
 first**. The updater logs `Automatic updates off: <reason>`, `Up to date at`,
 `Downloading`, `ready to install`, `Installed …` or `Update check failed: …`. On Windows the
@@ -56,10 +63,17 @@ when a file first sets it (issue #76), `… not imported: This file is in USD; y
 at a quit after a change (`No backup made: …` when nothing changed since the newest one),
 and at launch only when no backup holds the budget as it is: after a session that didn't
 quit normally, at the first launch of 1.4.0 (no file named in meta yet), or after the
-newest was deleted by hand.
+newest was deleted by hand. With a budget folder (ADR 0008) those go into its `Backups/`, and it
+logs `Saved the budget to …/Budget.inab`, `Took the budget saved on <computer> at …` (rule 2),
+`The budget saved on … is the same as this computer's` (rule 3), `Kept this computer's budget; …`
+or `Kept the budget saved on …` (an answer to its question; a backup copied in is `the budget copied
+into the folder` in each), `Not saving over the budget saved on …: it arrived since`, `The budget folder … can't be reached` and `… is back`, `Moved the budget
+to …` (1.5.0's first launch, Move…) and `Opened the budget in …` (Open my budget).
 
 To reproduce without touching the user's data: `INAB_DATA_DIR=<tmp folder>` (logs go to
-`<tmp folder>/Logs/`, backups to `<tmp folder>/I Need A Budget Backups/`), and `INAB_TODAY=2026-10-12` to pin "today" (an account added then is added that day: `util.stamp`). To see the interface,
+`<tmp folder>/Logs/`, backups to `<tmp folder>/I Need A Budget Backups/`, and the budget folder
+it suggests is `<tmp folder> budget folder`, beside it), `INAB_COMPUTER=PC-B` to name the computer
+(two copies on one budget folder), and `INAB_TODAY=2026-10-12` to pin "today" (an account added then is added that day: `util.stamp`). To see the interface,
 run the dev preview (`python3 scripts/preview.py`, or the `preview` entry in
 `.claude/launch.json`) and open it in the browser pane: it's the real page driving the
 real engine over localhost. Claude's shell can't screenshot the app's own window.
@@ -83,7 +97,9 @@ All in `Application Files/`:
   `computer.this()` picks `computer_mac.Mac` or `computer_windows.Windows`, the one place that
   looks at `sys.platform`. Its methods: this computer's data, log, Documents and Downloads
   folders (Windows asks for its Known Folders: a Documents OneDrive moved isn't `~/Documents`);
-  the one-copy lock and what a second launch does; the window's first size, remembered frame,
+  its name (`computer_name`, for "saved on …" and its files in the budget folder: a Mac's Computer
+  Name from System Settings, never its network name, which changes with the network; Windows'
+  device name); the one-copy lock and what a second launch does; the window's first size, remembered frame,
   Dark mode and theme; whether it can draw the page (`can_draw_the_page`: Windows without WebView2
   says so and stops); `when_asked_to_quit(should_quit, called_off)` (⌘Q, the Dock, logging out;
   `called_off` when Windows doesn't log off after all), `quit`,
@@ -155,8 +171,9 @@ All in `Application Files/`:
   `Backups/`), `open_from`, notes of where it's open. This computer's id in saves is new for each
   budget and machine (`computer.json`, `computer.machine_id`); its files in the folder are named by
   its name and the start of that id (`computer_tag`, `tag_in`; its earlier tags kept in
-  `computer.json`, so `prune` deletes backups named by them as its own). `INAB_COMPUTER` names this
-  computer (two previews on one folder). Never by a clock. `scripts/tests/test_budget_folder.py`
+  `computer.json`, so `prune` deletes backups named by them as its own). Its name is
+  `this_computer()`: `INAB_COMPUTER` (two previews on one folder), else the system's
+  (`computer_name`). Never by a clock. `scripts/tests/test_budget_folder.py`
   covers it with two data folders sharing one folder, `test_budget_folder_random.py` on random
   histories (the arbiter).
   **In the window** (issue #189): service.py's `budget_folder_look` (at launch, the watcher's
@@ -238,7 +255,7 @@ All in `Application Files/`:
   helper; nothing is installed while Windows logs off (`installs_after_quitting`): the checked download
   waits in the data folder's `Update waiting`, and the next launch checks it again and installs it
   before the window opens (`Updater.take_kept`).
-- `settings.py`: settings, validated on every load and save: this Mac's in `settings.json`
+- `settings.py`: settings, validated on every load and save: this computer's in `settings.json`
   (Appearance, Import from Downloads and its folder, updates, the Dashboard's months), and the
   budget's own, Overspending and Usual's months (`average_months`), in its `meta` (issue #153:
   a backup carries them, and changing one is a change for `backups.changed`). Figures reads
@@ -521,6 +538,7 @@ All in `Application Files/`:
   `AppHelper.callAfter` on a Mac).
 - Every user-facing change should be undoable: wrap it in `db.write("Short label")`.
   Background imports aren't undoable (they're removed from Accounts → Imported files).
+  ⌘Z here means Ctrl+Z on Windows too.
 - **An import or a re-check that changes something clears ⌘Z** (issue #42): undoing an
   earlier step would replay its SQL over what they changed (deleting an account took the
   rows an import had just put in it). `db.write()` without a label watches for a change and
@@ -604,9 +622,9 @@ late with only recent transactions counts as new (the accepted cost).
   set by the PRs themselves, so merging is all the maintainer does. The first PR after a
   release raises it (1.0.1 → 1.0.2 by default, 1.0.x → 1.1.0 only for a change big enough
   to deserve it); the PRs after it leave it alone until that version is released, so PRs
-  made side by side don't clash on it. It's 1.4.3 until 1.4.3 is released: 1.4.2 came out on
-  2026-11-17, and #79's PR, the first after it, raised it. Never leave the bump for a separate
-  PR after the merge.
+  made side by side don't clash on it. It's 1.5.0 until 1.5.0 is released: 1.4.3 came out on
+  2026-11-18, and 1.5.0's pieces went into `claude/cross-platform` without it, until #191 raised
+  it there (issue #181). Never leave the bump for a separate PR after the merge.
 - **A release happens only when the maintainer says it's ready** (their rule since
   2026-11-09, as bugs kept turning up). A merge, a finished list or every session being
   done is never the go-ahead. Then Claude starts the Release workflow
@@ -626,20 +644,22 @@ late with only recent transactions counts as new (the accepted cost).
     (after a `#!` line; an HTML comment after the doctype). `scripts/tests/test_licenses.py`
     fails on one without it, new files included.
   - The app carries `LICENSE.txt`, `NOTICE.txt` and `Third-party licenses.txt` in
-    `Contents/Resources` (the spec adds them). The last is written at build time by
+    `Contents/Resources` on a Mac, `_internal\` on Windows (the spec adds them; the installer
+    puts copies beside the `.exe`). The last is written at build time by
     `scripts/third_party_licenses.py` from the packages whose modules PyInstaller
     collected, plus PyInstaller (its launcher) and Python (the docs' license page, which
     covers OpenSSL and the rest Python incorporates). A bundled package with no license
     file stops the build unless its metadata says MIT (then it gets the MIT text) or its
     text is in `GIVEN`.
   - Finder's Get Info says "© 2026 DigitalN. Free software under the GNU GPL v3."
-    (`NSHumanReadableCopyright`; it said "Private. Not for distribution." until 1.3.1).
+    (`NSHumanReadableCopyright`; it said "Private. Not for distribution." until 1.3.1), and
+    so does the `.exe`'s Properties → Details (its version resource's `LegalCopyright`).
   - Settings ends with "© 2026 DigitalN · Free software under the GNU GPL v3, with no
     warranty · License"; License opens a read-only copy of the app's `LICENSE.txt` in the
-    default text app (TextEdit saving into the app itself would break its signature).
+    default text app, TextEdit or Notepad (saving into the app itself would break its signature).
   The updater asks
   GitHub anonymously, or with a token when there is one (saved from Settings, in the Keychain
-  on a Mac, or the GitHub CLI's login, `gh auth token`). Settings shows the token field
+  on a Mac or Credential Manager on Windows, or the GitHub CLI's login, `gh auth token`). Settings shows the token field
   only when GitHub refused this copy (`needs_access`): it would if the repository went
   private again.
 - Ask once before anything on GitHub (pushing, opening a PR, publishing a release), then
@@ -655,16 +675,36 @@ late with only recent transactions counts as new (the accepted cost).
 ## Testing on the maintainer's Mac
 
 - Their real copy runs from `/Applications` with real data. Don't quit it, reinstall it
-  or touch `~/Library/Application Support/I Need A Budget` without asking.
+  or touch `~/Library/Application Support/I Need A Budget` or their budget folder without asking.
 - Say so before opening windows on screen for a test. For the built app, launch a copy
   against a throwaway folder: `open -n --env INAB_DATA_DIR=/tmp/x "/Applications/I Need A Budget.app"`
   (and point `downloads_dir` in that folder's `settings.json` somewhere harmless, or the
-  watcher will import from the real Downloads).
-- After testing, quit test copies and delete their folders.
+  watcher will import from the real Downloads). Its budget folder is a throwaway too: Start a new
+  budget in the one it suggests (`/tmp/x budget folder`), never Open my budget on the real one.
+- After testing, quit test copies and delete their folders, budget folders included.
 - To try the interface on real data: copy the database with SQLite's backup API (read-only
   source) into `~/Library/Caches/I Need A Budget-preview/`, write a `settings.json` there
   whose `downloads_dir` is an empty folder (the preview sets `<data>/downloads` itself if there isn't one, and refuses `~/Downloads`), run the `preview` launch entry, and delete the
   folder afterwards. The preview loads `service.py` once: restart it after Python changes.
+
+## Testing on Windows
+
+- The maintainer's PC has no real copy or data. Install a build (`scripts/build-windows.sh`, or
+  a Tests run's `Setup.exe`) with `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART`, which doesn't open
+  it, and start `%LOCALAPPDATA%\Programs\I Need A Budget\I Need A Budget.exe` only with
+  `INAB_DATA_DIR` set to a throwaway folder whose `settings.json` points `downloads_dir` at an
+  empty folder. The Start menu entry, opened from a shell with that variable set, reaches the
+  same copy (the one-copy lock is the data folder's). Start a new budget in the budget folder it
+  suggests, `<throwaway> budget folder`.
+- Two computers are two copies, each with its own `INAB_DATA_DIR` and `INAB_COMPUTER`, opening
+  one budget folder: they can run at once. That's two copies on one PC, not a sync tool: OneDrive's
+  delays and conflict copies are only seen on two real computers.
+- To drive the real page, start it with
+  `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9333`: DevTools' protocol on
+  localhost then evaluates script, sends real mouse and key events and screenshots the page alone.
+- Afterwards: the install folder's `unins000.exe /VERYSILENT`, the throwaway folders (budget
+  folders included), and
+  `reg delete "HKCU\Software\I Need A Budget" /f` (the window's frame).
 
 ## Git
 
@@ -792,8 +832,8 @@ Don't undo these without asking:
   it so typing replaces it, also the box Return or Tab moved you to; another click in a box
   you've clicked into places the cursor. It's done on mouse-down, before WebKit places
   the cursor: cancelling the mouse-up (1.0.7–1.2.2) missed a box you were already in, and
-  Chromium (the preview) hid it. Test clicks in WebKit, the Mac app's engine, and in
-  Chromium, Windows' (WebView2). A box
+  Chromium (the preview) hid it. Test clicks in both engines: WebKit, the Mac app's, and
+  Chromium, Windows' (Microsoft Edge's WebView2; the preview in the browser pane is Chromium). A box
   saves when you leave it (Return, Tab, a click elsewhere), never when a redraw replaces
   it mid-typing. Redrawing the Budget page keeps the scroll position and the box you're
   in (it used to jump to the top after every save: `scrollIntoView` on the month strip
@@ -968,7 +1008,7 @@ Don't undo these without asking:
   without data for every account, income. Clicking a figure opens its transactions. No
   by-payee report (the maintainer dropped it: e-transfer payees mix unrelated things).
 - **The top of the repository is kept short** (the maintainer's call): `.claude/` (this file,
-  `launch.json`), `.github/` (the tests' workflow: GitHub only reads workflows from there),
+  `launch.json`), `.github/` (the Tests and Release workflows: GitHub only reads workflows from there),
   `Application Files/`, `docs/` (DEVELOPMENT.md, CONTEXT.md, NOTICE, ADRs,
   pictures), `scripts/` (tools, `First Time Setup.command`, `tests/`, `hooks/`),
   `.gitignore`, `LICENSE`, `README.md`. Nothing else goes there (CITATION.cff, a Build
@@ -1017,7 +1057,8 @@ Don't undo these without asking:
 - Copy is short and plain. The user trims explanations that don't earn their place;
   don't add paragraphs of help text to forms.
 - **Test the interface with the mouse**, not only the keyboard, in the dev preview on a
-  copy of the real data (see Testing). Several bugs only showed up when clicking.
+  copy of the real data (see Testing), in WebKit and in Chromium (Windows' WebView2). Several
+  bugs only showed up when clicking.
 - **The page knows its system** (issue #185): `platform` in the app's info, "mac" or
   "windows" (`computer.this().name`; the page's `onWindows()`; the preview's `--platform` pretends). Keys are named the way it
   does: `undoKey()` (⌘Z / Ctrl+Z) and `returnKey()` (Return / Enter). On Windows nothing in the
@@ -1039,7 +1080,9 @@ Don't undo these without asking:
 ## Tests
 
 `python3 -m pytest` (scripts/tests/, all synthetic data). `scripts/tests/test_privacy.py` fails if the
-working tree has anything from `.git-denylist` or a card-number shape.
+working tree has anything from `.git-denylist` or a card-number shape. No test takes a real copy's
+lock or mutex (`conftest.py`'s `real_copy` fails it): the real data folder's lock would keep the app
+from opening, and while `RUNNING_MUTEX` is held Windows' installer and uninstaller won't run.
 The budget folder's random test (`scripts/tests/test_budget_folder_random.py`) runs the seeds it
 keeps (`FOUND`) plus 100 fresh ones per test; on GitHub's machines (`CI` set) 20 fresh ones, to stay
 inside the 30-minute limit. `INAB_SEEDS` (and `INAB_STEPS`) override both.

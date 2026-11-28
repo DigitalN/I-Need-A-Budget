@@ -195,6 +195,18 @@ A budget that two computers each changed since the save they both started from. 
 shows what each one changed and asks which to keep; the other is kept as a backup.
 _Avoid_: conflict, merge
 
+**Older in the folder**:
+The budget in the budget folder being one this computer's budget already has everything of: a
+backup copied in, or the folder put back to an earlier day. The app asks before using it; the
+one you don't keep is kept as a backup.
+_Avoid_: out of date, stale
+
+**Data folder**:
+This computer's own folder for the app: its settings, its logs and the copy of the budget it
+works on. Nobody needs to open it, except to restore a backup made before there was a budget
+folder.
+_Avoid_: budget folder (that's the one you choose)
+
 **Currency**:
 The one currency a budget's files are in, set by the first file that says one. A file in
 another currency isn't imported. Amounts show as $ whatever it is.

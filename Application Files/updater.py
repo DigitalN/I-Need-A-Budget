@@ -79,6 +79,14 @@ def is_newer(version, other):
     return version_key(version) > version_key(other)
 
 
+def release_version(data):
+    """The version GitHub's latest-release response is for, from its tag: 1.5.0 for v1.5.0."""
+    if not isinstance(data, dict) or not isinstance(data.get("tag_name"), str):
+        raise UpdateError("GitHub's answer didn't describe a release.")
+    tag = data["tag_name"]
+    return tag[1:] if tag.startswith("v") else tag
+
+
 def parse_release(data, update_file, signature=None):
     """(version, URL to download this computer's file, URL of its signature or None) from
     GitHub's latest-release response. `update_file` is the computer's (suffix, what it's
@@ -88,10 +96,7 @@ def parse_release(data, update_file, signature=None):
     anything is downloaded. The API URL of each asset, which works for a private repository
     with a token."""
     suffix, kind = update_file
-    if not isinstance(data, dict) or not isinstance(data.get("tag_name"), str):
-        raise UpdateError("GitHub's answer didn't describe a release.")
-    tag = data["tag_name"]
-    version = tag[1:] if tag.startswith("v") else tag
+    version = release_version(data)
     assets = data.get("assets") or []
     for asset in assets:
         name = str(asset.get("name", ""))
@@ -252,7 +257,7 @@ class Updater:
                     token, _ = find_token(self._computer)  # None: ask anonymously (a public repository)
                 release = self._latest_release(token)
                 self._last_check_file.write_text(date.today().isoformat(), encoding="utf-8")
-                if release is None or not is_newer(release[0], self._current):
+                if release is None:
                     log.info("Up to date at %s", self._current)
                     self._set_status(IDLE)
                     return
@@ -269,6 +274,9 @@ class Updater:
                 self._set_status(IDLE)
 
     def _latest_release(self, token):
+        """parse_release's answer for the latest release when it's newer than this copy; None when
+        there's nothing newer: no release yet, or one that isn't newer, whatever it has attached
+        (1.4.3 has no installer, and a Windows copy of it is up to date all the same)."""
         code, body = _curl(self._feed, "-", max_time=30, token=token, accept="application/vnd.github+json",
                            curl=self._computer.curl, no_window=self._computer.no_window)
         if code == 404:
@@ -293,9 +301,12 @@ class Updater:
             raise UpdateError(f"GitHub answered with an error ({code}).")
         self.needs_access = False
         try:
-            return parse_release(json.loads(body), self._computer.update_file, self._computer.update_signature)
+            data = json.loads(body)
         except ValueError:
             raise UpdateError("GitHub's answer didn't describe a release.") from None
+        if not is_newer(release_version(data), self._current):
+            return None
+        return parse_release(data, self._computer.update_file, self._computer.update_signature)
 
     def _download(self, url, token, signature_url=None):
         folder = self._computer.folder_for_update(self._app)

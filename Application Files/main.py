@@ -32,7 +32,7 @@ from pathlib import Path
 import computer
 
 APP_NAME = "I Need A Budget"
-VERSION = "1.4.3"  # the build reads it from here; see the release checklist in docs/DEVELOPMENT.md
+VERSION = "1.5.0"  # the build reads it from here; see the release checklist in docs/DEVELOPMENT.md
 THIS_COMPUTER = computer.this()  # the Mac's or Windows' side of everything below
 if os.environ.get("INAB_DATA_DIR"):  # for development/testing against a throwaway folder
     DATA_DIR = Path(os.environ["INAB_DATA_DIR"]).expanduser()

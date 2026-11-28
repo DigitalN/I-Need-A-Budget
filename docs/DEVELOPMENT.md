@@ -1,10 +1,12 @@
 # Developing I Need A Budget
 
-Notes for building from source and publishing releases. For using it, see the
-[README](../README.md). The architecture and the rules the code follows are in
+Notes for building from source, on a Mac or a Windows PC, and for releases. For using it, see
+the [README](../README.md). There's no Linux version. The architecture and the rules the code follows are in
 [CLAUDE.md](../.claude/CLAUDE.md).
 
 ## Build from source
+
+### On a Mac
 
 You need Python 3 from [python.org](https://www.python.org/downloads/) and the pinned
 packages in `Application Files/requirements.txt` (`scripts/First Time Setup.command` installs
@@ -37,15 +39,24 @@ cd "Application Files" && INAB_DATA_DIR=/tmp/inab-test python3 main.py
 ```
 
 `INAB_DATA_DIR` points at a throwaway data folder (its backups go in it too, never into
-the real Documents); `INAB_TODAY=YYYY-MM-DD` pins today's
-date; `INAB_DEBUG=1` turns on the web inspector. Tests (`scripts/tests/`): `python3 -m pytest`.
+the real Documents, and the budget folder it suggests is beside it: `/tmp/inab-test budget folder`);
+`INAB_COMPUTER=PC-B` names this computer in the budget folder, for two copies sharing one;
+`INAB_TODAY=YYYY-MM-DD` pins today's date; `INAB_DEBUG=1` turns on the web inspector. Tests (`scripts/tests/`): `python3 -m pytest`.
 
 ### On Windows
 
 Python 3.13, the pinned packages (`python -m pip install -r "Application Files/requirements.txt"`,
 in a virtual environment if you like: on Windows they include pythonnet, which pywebview draws its
-window with) and, for the installer, [Inno Setup](https://jrsoftware.org/isinfo.php) 6.3 or later. Run from
-source as on a Mac (`INAB_DATA_DIR` keeps it off your real data). In Git for Windows' bash:
+window with) and, for the installer, [Inno Setup](https://jrsoftware.org/isinfo.php) 6.3 or later.
+There's no First Time Setup: switch the privacy hook on with `git config core.hooksPath scripts/hooks`
+(Git for Windows' bash runs it). The window is drawn by Microsoft Edge's WebView2, which Windows 11
+has. Run from source as on a Mac, in Git for Windows' bash:
+
+```bash
+cd "Application Files" && INAB_DATA_DIR="$TEMP/inab-test" python main.py
+```
+
+To build:
 
 ```bash
 scripts/build-windows.sh
@@ -92,28 +103,43 @@ On a Windows 10 or 11 PC:
    `I-Need-A-Budget-<version>-Setup.exe` under Artifacts.
 2. Open it. It's unsigned, so Windows says "Windows protected your PC": More info → Run anyway.
    It shouldn't ask for an administrator. Leave Open I Need A Budget ticked and finish.
-3. The app opens on onboarding. Put made-up bank files in Downloads
-   (`python scripts/demo_data.py --files-only` writes two Quicken files there), then Look again:
-   they're listed. Go through the steps to the Dashboard.
+3. The app opens on onboarding. Start a new budget, in the folder it suggests. Put made-up bank
+   files in Downloads (`python scripts/demo_data.py --files-only` writes two Quicken files there),
+   then Look again: they're listed. Go through the steps to the Dashboard.
 4. Start → I Need A Budget is there. With the app open, open it again from Start: the window
    comes forward, and nothing else opens. Minimize it first and try again.
 5. Settings: Light, Dark and System change the title bar too. Each Open button opens File
    Explorer; Release notes your browser; License a read-only copy in Notepad, and again
    on a second click.
 6. Drag a bank file from File Explorer onto the window: it's imported.
-7. Type an amount in an Assigned box and close the window with ✕ before leaving the box: it's
-   saved (it's there when you reopen). Do the same with Alt+F4.
+7. Click into an Assigned box: its amount is selected, and typing replaces it. Click again: the
+   cursor goes where you clicked. Tab goes to the next box, not to a button. Type an amount and
+   close the window with ✕ before leaving the box: it's saved (it's there when you reopen). Do
+   the same with Alt+F4.
 8. Move and resize the window, close it, open it: it's where you left it. Maximize it, close,
    open: maximized.
-9. Settings → Apps → Installed apps → I Need A Budget → Uninstall. Then
-   `%LOCALAPPDATA%\I Need A Budget` is still there, with the budget. Install again: the
+9. Two computers, played by two copies on this PC with data folders of their own. Quit the app,
+   then from Git for Windows' bash start a second copy:
+   `INAB_DATA_DIR="$TEMP/inab-b" INAB_COMPUTER=PC-B "$LOCALAPPDATA/Programs/I Need A Budget/I Need A Budget.exe"`.
+   Choose Open my budget, then the first copy's budget folder (`Documents\I Need A Budget`): it's
+   the same budget. Change something and quit. Open the first copy: it has the change. Now open
+   both (the second says the budget is open on another computer: Open anyway) and change something
+   different in each within a few seconds, before either saves: one asks "This budget changed on
+   two computers", with what each changed. Keep this; the other takes it (once you leave the box
+   you're in). Quit both, copy a backup from the folder's Backups in as `Budget.inab`, and open
+   one: it asks "The budget in the folder is older than this one" once; Use it, and the other
+   opens on it. Quit both, then delete `%TEMP%\inab-b`.
+10. Settings → Apps → Installed apps → I Need A Budget → Uninstall. Then
+   `%LOCALAPPDATA%\I Need A Budget` and the budget folder are still there. Install again: the
    budget's back, without onboarding.
 
-The app icon is drawn by `scripts/make-icon.swift`. To redraw it:
+The app icon is drawn by `scripts/make-icon.swift`. To redraw it, on a Mac:
 
 ```bash
 swift scripts/make-icon.swift /tmp/INeedABudget.iconset && iconutil -c icns /tmp/INeedABudget.iconset -o "Application Files/INeedABudget.icns"
 ```
+
+then `python scripts/make-ico.py` (with Pillow) for Windows' `.ico`.
 
 ## The dev preview
 
@@ -126,7 +152,7 @@ the real page drives the real engine (`BudgetService.dispatch`) over localhost. 
 look at and click through the interface in a browser (Claude: the `preview` entry in
 `.claude/launch.json`, in the browser pane). It's a development tool only, never bundled,
 and it refuses to use the app's real data folder. The default data folder is
-`~/Library/Caches/I Need A Budget-preview`, and its Downloads folder is `downloads` inside
+`~/Library/Caches/I Need A Budget-preview` (that path in your home folder on Windows too), and its Downloads folder is `downloads` inside
 it (created empty; the preview never uses your real `~/Downloads` and refuses to start if its
 `settings.json` points there). Put copies of bank files in it to try onboarding.
 `--platform mac` or `--platform windows` pretends to be that system (it's this computer's by
@@ -156,7 +182,7 @@ python3 scripts/demo_data.py
 
 builds a fictional budget in `~/Library/Caches/I Need A Budget-demo` through the real
 engine; start the `demo` entry in `.claude/launch.json` (the preview on it, port 8766),
-then `python3 scripts/screenshots.py` draws them off screen with WebKit (the list is
+then `python3 scripts/screenshots.py` draws them off screen with WebKit, on a Mac (the list is
 `SHOTS` in the script) and saves the PNGs. Retake them when a page changes noticeably.
 
 ## Release checklist
@@ -312,10 +338,11 @@ release): only the previous release's draft can be left to do, by hand as above.
   `Downloading`, `ready to install`, and on quit `Installed <version>` (on Windows,
   `Installing <version> after quitting`, then `Installed <version>`).
 - [ ] The maintainer's own copy updates the same way (within a day, or Settings → Check
-  now, then quit). Its log shows `Backed up the budget to …/Documents/I Need A Budget
-  Backups/…` on quit (`No backup made: …` if nothing changed since the newest one). If
-  the release raised the schema, it also shows `Upgraded the database`, and that folder
-  has the pre-upgrade copy.
+  now, then quit). Its log shows `Backed up the budget to …` on quit, in the budget folder's
+  `Backups/` (`No backup made: …` if nothing changed since the newest one), and `Saved the
+  budget to …/Budget.inab`. If the release raised the schema, it also shows `Upgraded the
+  database`, and `Backups/` has the pre-upgrade copy. The first launch of 1.5.0 asks once where
+  the budget goes (`Moved the budget to …`).
 - [ ] CLAUDE.md and the README describe what's shipping (new features, decisions, gaps).
 
 **History.** 1.0.0 was installed from a local build and never published. 1.0.1

@@ -5,19 +5,22 @@ Throwaway folders only: nothing here writes to the real data, Documents or Downl
 import inspect
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
 import computer
+import budget_folder
 import computer_mac
+import computer_windows
 from computer_mac import Mac
 from computer_windows import Windows
 
 APP_FILES = Path(__file__).resolve().parents[2] / "Application Files"
 MAC_ONLY = re.compile(r"^\s*(import|from)\s+(AppKit|Foundation|WebKit|Quartz|objc|PyObjCTools|fcntl)\b"
-                      r"|webview\.platforms\.cocoa|/usr/bin/|/usr/libexec/|/bin/sh\b", re.M)
+                      r"|webview\.platforms\.cocoa|/usr/bin/|/usr/sbin/|/usr/libexec/|/bin/sh\b", re.M)
 WINDOWS_ONLY = re.compile(r"^\s*(import|from)\s+(ctypes|msvcrt|winreg|winsound|_winapi)\b|windll", re.M)
 
 
@@ -143,6 +146,51 @@ def test_the_machines_own_id():
     assert computer.this().machine_id() == found  # the same every time
 
 
+def test_the_computers_name_is_the_one_its_settings_show(monkeypatch):
+    """What the window says a budget was "saved on", and what this computer's files in the budget
+    folder are named by: a Mac's Computer Name (System Settings → General → About), never its
+    network name, which changes with the network; a Windows PC's device name."""
+    ran = []
+
+    def scutil(arguments, **kwargs):
+        ran.append(arguments)
+        return subprocess.CompletedProcess(arguments, 0, stdout="Sample's MacBook Air\n")
+
+    monkeypatch.setattr(computer_mac, "_run", scutil)
+    assert Mac().computer_name() == "Sample's MacBook Air"
+    assert ran == [["/usr/sbin/scutil", "--get", "ComputerName"]]
+    monkeypatch.setattr(computer_mac, "_run", lambda a, **k: subprocess.CompletedProcess(a, 1, stdout=""))
+    assert Mac().computer_name() is None
+
+    def missing(arguments, **kwargs):
+        raise FileNotFoundError(arguments[0])
+
+    monkeypatch.setattr(computer_mac, "_run", missing)
+    assert Mac().computer_name() is None
+    monkeypatch.setattr(computer_windows.platform, "node", lambda: "SAMPLE-PC")
+    assert Windows().computer_name() == "SAMPLE-PC"
+
+
+def test_this_computer_has_a_name_of_its_own():
+    name = computer.this().computer_name()
+    assert name is None or (isinstance(name, str) and name and name == name.strip())
+
+
+def test_the_budget_folder_names_this_computer_as_its_settings_do(monkeypatch):
+    """INAB_COMPUTER first (two copies on one budget folder), then the system's settings, then the
+    network's name for it, without a Mac's ".local"."""
+    monkeypatch.delenv("INAB_COMPUTER", raising=False)
+    monkeypatch.setattr(computer.this(), "computer_name", lambda: "Sample's MacBook Air")
+    assert budget_folder.this_computer() == "Sample's MacBook Air"
+    monkeypatch.setenv("INAB_COMPUTER", "PC-B")
+    assert budget_folder.this_computer() == "PC-B"
+    monkeypatch.delenv("INAB_COMPUTER")
+    monkeypatch.setattr(computer.this(), "computer_name", lambda: None)
+    monkeypatch.setattr(budget_folder.platform, "node", lambda: "sample-mac.local")
+    assert budget_folder.this_computer() == "sample-mac"
+    assert budget_folder.computer_tag("Sample's MacBook Air", "abcdef123") == "Sample's MacBook Air abcdef"
+
+
 # ── the Windows app (issue #187) ──
 
 WINDOWS = pytest.mark.skipif(sys.platform != "win32", reason="asks Windows itself")
@@ -221,20 +269,39 @@ def test_windows_keeps_the_window_in_this_computers_settings(windows_for_tests):
 
 
 @WINDOWS
-def test_the_copy_holding_the_lock_tells_the_installer_its_running(tmp_path):
-    """The installer's AppMutex: it waits for the app to be closed rather than replace it while it runs."""
+def test_the_copy_holding_the_lock_tells_the_installer_its_running(tmp_path, real_copy):
+    """The installer's AppMutex: it waits for the app to be closed rather than replace it while it
+    runs. A real copy's mutex is the installer's; a test's copy holds one of its own (conftest.py)."""
     import ctypes
 
     from computer_windows import RUNNING_MUTEX
 
+    assert real_copy.mutex == RUNNING_MUTEX
     windows = Windows()
     held = windows.lock(tmp_path / ".lock")
     kernel32 = ctypes.windll.kernel32
     kernel32.OpenMutexW.restype = ctypes.c_void_p
-    found = kernel32.OpenMutexW(0x00100000, False, RUNNING_MUTEX)  # SYNCHRONIZE: what Inno Setup asks for
+    found = kernel32.OpenMutexW(0x00100000, False, windows._running_mutex)  # SYNCHRONIZE: what Inno Setup asks for
     assert found
     kernel32.CloseHandle(ctypes.c_void_p(found))
     held.close()
+
+
+def test_no_test_takes_a_real_copys_lock_or_mutex(real_copy):
+    """conftest.py's guard. A test holding the real data folder's lock would keep the app from
+    opening; one holding RUNNING_MUTEX keeps Windows' installer and uninstaller from running."""
+    import computer_windows
+
+    this = computer.this()
+    assert real_copy.lock == (this.data_dir() / ".lock").resolve()
+    for system in (Mac, Windows):
+        assert hasattr(system.lock, "__wrapped__")  # guarded, so the real lock is never reached below
+    with pytest.raises(AssertionError, match="real copy's lock"):
+        this.lock(this.data_dir() / ".lock")
+    assert Windows._running_mutex != real_copy.mutex == computer_windows.RUNNING_MUTEX
+    assert hasattr(computer_windows._create_mutex, "__wrapped__")
+    with pytest.raises(AssertionError, match="real copy's mutex"):
+        computer_windows._create_mutex(computer_windows.RUNNING_MUTEX)
 
 
 
