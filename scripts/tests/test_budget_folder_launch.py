@@ -8,9 +8,10 @@ Each computer is launched the way main.py does it (the database with its backups
 launch, the once-only reads, the re-check), then the page's start and reads, then the watchers' looks. The budget is
 scripts/demo_data.py's made-up one; every computer has its own empty Downloads folder. Throwaway folders only.
 
-Two strict xfails are what the launch's re-check does change, found on 2026-11-27 and not decided yet: a stored
-inbox reason gone stale during a session (only text: Inbox.view works it out again, changes.py never shows it), and
-what "One at a time" leaves for the next re-check to categorize (the maintainer's call, 2026-11-09)."""
+What the launch's re-check does change, found on 2026-11-27: a stored inbox reason gone stale during a session
+(only text: Inbox.view works it out again, changes.py never shows it; a strict xfail until #196's next commit leaves
+transactions.reason out of backups.digest), and what "One at a time" leaves for the next re-check to categorize (the
+maintainer's design, 2026-11-09: an accepted cost in ADR 0008, it asks once)."""
 
 import importlib.util
 import subprocess
@@ -163,19 +164,19 @@ def still_open(data, name):
 
 def b_opened_then_a_saves_a_minute_later(tmp_path, folder, on_a):
     """A has just saved (its session goes on); B is opened on that save and launched; a minute later A saves a
-    change. Returns what B's next look finds, and whether B has A's change."""
+    change. Returns what B's next look finds, whether B has A's change, and B."""
     assert on_a.budget_folder_look(now=True)["state"] == "saved"
     on_b = launch(opened_on(tmp_path, folder, "PC-B"), "PC-B")
     the_page_and_the_watchers(on_b)
     month, category = assign(on_a, 54321)
     on_a.budget_folder_look(now=True)
     state = on_b.budget_folder_look()
-    return state, assigned(on_b, month, category) == 54321
+    return state, assigned(on_b, month, category) == 54321, on_b
 
 
 @pytest.mark.xfail(strict=True, reason="The launch re-check rewrites a stored inbox reason gone stale in a session "
-                                       "(Inbox._wait, inbox.py): only text, never shown from there, but a change to "
-                                       "backups.digest, so B asks. Not decided yet: the app or the digest.")
+                                       "(Inbox._wait, inbox.py), and backups.digest still counts transactions.reason: "
+                                       "#196's next commit leaves it out.")
 def test_a_reason_gone_stale_in_a_session_is_no_change_at_the_next_launch(tmp_path, monkeypatch):
     """The demo build is such a session: an e-transfer in waits as "a 1/2 share of The Keg Steakhouse… Put it in that
     one's category", written before The Keg was categorized; B's launch re-check rewrites it ("Back to Food?")."""
@@ -184,16 +185,16 @@ def test_a_reason_gone_stale_in_a_session_is_no_change_at_the_next_launch(tmp_pa
     made_up_budget(a)
     on_a = still_open(a, "PC-A")
     call(on_a, "move_budget_folder", str(folder))
-    state, has_it = b_opened_then_a_saves_a_minute_later(tmp_path, folder, on_a)
+    state, has_it, _ = b_opened_then_a_saves_a_minute_later(tmp_path, folder, on_a)
     assert state["state"] == "saved" and has_it  # taken, unasked
 
 
-@pytest.mark.xfail(strict=True, reason="The launch re-check categorizes what One at a time left (the maintainer's "
-                                       "call, 2026-11-09: they're still the app's): a change of B's own, so a save "
-                                       "of A's delivered later is asked about. Not decided yet.")
-def test_what_one_at_a_time_left_is_no_change_at_the_next_launch(tmp_path, monkeypatch):
-    """In A's session two charges from a new payee arrive and one is categorized One at a time; the other waits with
-    that category as its guess, for the next re-check."""
+def test_what_one_at_a_time_left_asks_once_when_the_other_computers_save_arrives_later(tmp_path, monkeypatch):
+    """ADR 0008's accepted cost: a computer opened before the other's last save has synced, whose launch re-check
+    categorizes what One at a time left (the maintainer's design, 2026-11-09: they're still the app's), asks once.
+    In A's session two charges from a new payee arrive and one is categorized One at a time; the other waits with
+    that category as its guess. B's launch re-check categorizes it: a change of B's own, which B's side of the
+    question lists as the app's."""
     a, folder = settled(tmp_path, monkeypatch)
     spec = importlib.util.spec_from_file_location("demo_data", REPO / "scripts" / "demo_data.py")
     demo = importlib.util.module_from_spec(spec)
@@ -209,5 +210,10 @@ def test_what_one_at_a_time_left_is_no_change_at_the_next_launch(tmp_path, monke
     assert len(waiting) == 2
     household = next(c["id"] for g in call(on_a, "categories") for c in g["categories"] if c["name"] == "Household")
     call(on_a, "categorize", [waiting[0]], household, False)  # One at a time
-    state, has_it = b_opened_then_a_saves_a_minute_later(tmp_path, folder, on_a)
-    assert state["state"] == "saved" and has_it  # taken, unasked
+    state, has_it, on_b = b_opened_then_a_saves_a_minute_later(tmp_path, folder, on_a)
+    assert state["state"] == "two_computers" and not has_it  # asked, nothing taken yet
+    question = call(on_b, "budget_folder_question")
+    assert question["can_show_changes"] and question["this"]["summary"] == "1 categorized"
+    [item] = [i for section in question["this"]["sections"] for i in section["items"]]
+    assert item["app"] and "SAMPLE HARDWARE" in item["text"].upper()  # the app's, and it says so
+    assert "Assigned" in question["theirs"]["summary"]  # A's change

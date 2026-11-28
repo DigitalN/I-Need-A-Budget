@@ -386,6 +386,33 @@ def test_payees_renamed_merged_and_always_ask(budgets):
     assert "edited" not in kinds(side)
 
 
+def test_no_different_to_the_inboxs_same_payee_question(budgets):
+    """"Is Sample Greengrocer the same as Sample Grocer?" answered No, different: a decision kept in the budget (the
+    question isn't asked again), so it's shown, not "Nothing you'd see". Yes, same moves the transaction, shown as
+    that; categorizing it drops the question too, shown as categorized only."""
+    this = budgets.this
+    later = write(this.test_downloads, "chequing-2.ofx",
+                  ofx([("20261008", "-22.00", "SAMPLE GREENGROCER CALGARY AB", "C1")], "2978.00", "20261010"))
+    call(this, "import_files", [str(later)])
+    asked = txn(this, "GREENGROCER")
+    item = next(i for i in call(this, "inbox")["items"] if i["id"] == asked["id"])
+    assert item["similar_payee"]["name"] == "Sample Grocer"
+    start = save(this, budgets.tmp / "asked.inab")
+
+    call(this, "same_payee", asked["id"], False)
+    side = changes.what_changed(start, this.db)
+    assert texts(side) == ["Sample Greengrocer isn't the same as Sample Grocer"]
+    assert side["summary"] == "1 payee isn't the same as another" and kinds(side) == ["payees"]
+
+    call(this, "undo")
+    call(this, "same_payee", asked["id"], True)
+    assert texts(changes.what_changed(start, this.db)) == ["Sample Greengrocer merged into Sample Grocer"]  # its one
+
+    call(this, "undo")
+    call(this, "categorize", [asked["id"]], cat(this, "Food"))
+    assert kinds(changes.what_changed(start, this.db)) == ["categorized"]
+
+
 def test_the_budgets_own_settings(budgets):
     this = budgets.this
     call(this, "save_settings", {"overspending": "carry_over", "average_months": 6, "theme": "dark"})
