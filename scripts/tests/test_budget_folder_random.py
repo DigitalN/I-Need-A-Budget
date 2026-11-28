@@ -58,8 +58,12 @@ NAMES = ("PC-A", "PC-B", "PC-C")
 # 172 Move… made an unchanged budget a new save; 582 a copy put away after a move stayed in the old
 # folder; 1559 a save found on following a move read as put back; 4045 the same contents joined read
 # as older; 306 and 334 Keep this asked again forever about a third computer's save; 66, 1053, 1193,
-# 1236, 1558, 1758 and 2442 this test's own mistakes.
-FOUND = [(seed, 40) for seed in (66, 172, 306, 334, 582, 1053, 1193, 1236, 1558, 1559, 1758, 2442, 4045)]
+# 1236, 1558, 1758 and 2442 this test's own mistakes. On the five rules, with a computer that leaves for good (the
+# eighth review): 537 a newer save lost in a conflict put away because a backup had its contents; 1335, 2506,
+# 2817, 3969, 4956 and 83029 (80) a computer's own save that lost a conflict put away while it asked, so nobody
+# else ever saw it; 257 this test's own mistake.
+FOUND = [(seed, 40) for seed in (66, 172, 257, 306, 334, 537, 582, 1053, 1193, 1236, 1335, 1558, 1559, 1758, 2442,
+                                 2506, 2817, 3969, 4045, 4956)] + [(83029, 80)]
 STEPS = int(os.environ.get("INAB_STEPS", "40"))
 SEEDS = [(seed, STEPS) for seed in range(int(os.environ.get("INAB_SEEDS", "100")))]
 SEEDS += [found for found in FOUND if found not in SEEDS]
@@ -80,10 +84,13 @@ SEEDS += [found for found in FOUND if found not in SEEDS]
 # (80) this test's own mistakes. (Since the seventh review a seed's changes are drawn apart from its steps, so the
 # earlier seeds' histories differ from when they found their bugs: they stay as cases all the same.) On the five
 # rules: 46 a question they ask by design (an answer made on a restore can't count what it was copied over);
-# 3906 this test's own mistake (an answer modelled as counting a third save with the shown side's contents).
+# 3906 this test's own mistake (an answer modelled as counting a third save with the shown side's contents);
+# 1555 and 3499 a computer's own save that lost a conflict put away while it asked; 458, 2552 and 3520 this
+# test's own mistakes.
 FOUND_WITH_RESTORES = [(seed, 40) for seed in (3, 39, 45, 46, 48, 49, 54, 60, 94, 101, 145, 158, 202, 216, 279, 384,
-                                               401, 589, 763, 959, 1053, 1120, 1868, 2216, 3425, 50017, 50057,
-                                               50173, 50947, 51413, 51482, 51662)] + \
+                                               401, 458, 589, 763, 959, 1053, 1120, 1555, 1868, 2216, 2552, 3425,
+                                               3499, 3520, 3906, 50017, 50057, 50173, 50947, 51413, 51482,
+                                               51662)] + \
     [(seed, 80) for seed in (1023, 1532, 1567, 60106, 60169, 60189, 60214, 72024, 74006)]
 RESTORE_SEEDS = [(seed, STEPS) for seed in range(int(os.environ.get("INAB_SEEDS", "100")))]
 RESTORE_SEEDS += [found for found in FOUND_WITH_RESTORES if found not in RESTORE_SEEDS]
@@ -135,6 +142,7 @@ class World:
         self.answered = set()              # versions an answer dropped: they must be in Backups/
         self.drops = []                    # (who, the version that is the drop, dropped, answered) for each
         self.stands_for = {}               # a copy rule 1 put away → the Budget.inab with its very contents then
+        self.restore_copies = set()        # backups copied in that became a conflict copy, put away by rule 1
         self.saved = {}                    # a save's id → the version it is (a save, a join, an answer)
         self.raw = {}                      # a backup's contents → the newest restore of it (copied in)
         self.choices = set()               # versions that are an answer: no contents of their own, only an order
@@ -187,6 +195,11 @@ class World:
             if copy is not None and there is not None and copy != there and \
                     self.versions[copy][0] == self.versions[there][0]:
                 self.stands_for.setdefault(copy, set()).add(there)  # not an order: its counts don't include it
+            # Accepted on the rebuild: a backup copied in (no save in it) that became a conflict copy, put away
+            # because Budget.inab includes it (an older save, to be copied in again). Nothing else.
+            if save.raw and copy is not None and main.is_file() and \
+                    budget_folder.includes(budget_folder.read_save(main), save):
+                self.restore_copies.add(copy)
             return put_away(folder, save)
 
         c._take, c._join, c._answer, c._put_away = took, joined, answered, put
@@ -466,6 +479,8 @@ class World:
         parents = [v for v in (over, again) if v is not None]
         self.raw[digest] = v = self._version(digest, list(dict.fromkeys(parents)))
         self.drops.append((name if name in self.lagging else None, v, {over} - {None}, set()))
+        if name in self.lagging:  # into its copy of the folder: gone with it if that never syncs
+            self.made_by[v] = name
         self.restored.add(v)
         self.restored_into[v] = self.lagging[name][1] if name in self.lagging else folder
 
@@ -648,10 +663,12 @@ class World:
         answered = set().union(*(d[3] for d in counted)) if counted else set()
         kept_contents, kept = {self.versions[u][0] for u in history}, self._kept()
         # A backup copied in is the person's file, not work: outside the history only when it changed nothing (the
-        # very contents of what's kept: the same backup restored over what it already was), or when it went into a
-        # folder the budget moved out of (the move stands: it's in Backups/); with what led into it (a change undone)
+        # very contents of what's kept: the same backup restored over what it already was), when it went into a
+        # folder the budget moved out of (the move stands: it's in Backups/), or when it became a sync tool's conflict
+        # copy that rule 1 put into Backups/ (accepted on the rebuild: it must be copied in again); with what led
+        # into it (a change undone)
         aside = self._ancestry({v for v in self.restored if v not in history and (
-            self.versions[v][0] in kept_contents or
+            self.versions[v][0] in kept_contents or v in self.restore_copies or
             ((self.restored_into[v] / MOVED_NOTE).exists() and self.versions[v][0] in kept))})
         def accounted(v, seen=()):  # in the history, dropped, or the very contents of a Budget.inab that is
             return v in history or v in dropped or v in self.choices or v in aside or self._gone_with(v) or \

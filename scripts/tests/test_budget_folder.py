@@ -1422,6 +1422,38 @@ def test_a_backup_copied_in_as_another_save_lands_becomes_an_older_copy(tmp_path
     assert b.check(wait=False)["state"] == "saved"
 
 
+@pytest.mark.parametrize("answers", ["PC-A", "PC-B"])
+def test_a_computers_own_save_that_lost_a_conflict_stays_while_it_asks(tmp_path, answers):
+    """The random test's computer that leaves for good (seed 4956): PC-B's save loses a conflict and
+    becomes a copy. PC-B asks about Budget.inab, and its own copy stays in the folder until PC-B's
+    save is Budget.inab, so PC-A asks too and can answer it if PC-B never comes back. PC-B's own
+    answer is written with its copy still there, and the copy goes once it is."""
+    folder = tmp_path / "Budget"
+    a = computer(tmp_path, "PC-A")
+    add_category(a.db, "Groceries")
+    a.move_to(folder)
+    b = computer(tmp_path, "PC-B")
+    b.open_from(folder)
+    seen_on_b = _view(b, folder)
+    add_category(b.db, "Rent")
+    b.check(wait=False)
+    add_category(a.db, "Bills")
+    a.check(wait=False)
+    shutil.copyfile(seen_on_b / FILE_NAME, folder / "Budget-PC-B.inab")  # the sync tool keeps PC-A's
+    back_in(b, folder)
+    assert b.check(wait=False)["state"] == "two_computers" and "Budget-PC-B.inab" in names(folder)
+    assert b.check(wait=False)["state"] == "two_computers" and "Budget-PC-B.inab" in names(folder)
+    if answers == "PC-B":
+        assert b.keep_this()["state"] == "saved" and categories_in(folder / FILE_NAME) == ["Groceries", "Rent"]
+        assert "Budget-PC-B.inab" not in names(folder)
+        assert a.check(wait=False)["took"] and categories(a.db) == ["Groceries", "Rent"]
+        return
+    state = a.check(wait=False)                          # PC-B is gone for good, its question unanswered
+    assert state["state"] == "two_computers" and state["other"]["computer"] == "PC-B"
+    assert a.keep_other()["state"] == "saved" and categories(a.db) == ["Groceries", "Rent"]
+    assert "Budget-PC-B.inab" not in names(folder) and ["Bills", "Groceries"] in backups_in(folder)
+
+
 def test_a_save_lost_in_a_conflict_at_quit_is_asked_about_though_its_backup_is_kept(tmp_path):
     """The eighth review: PC-B (sync behind) adds Rent and quits, which backs up its budget and then
     saves it. Its save loses the conflict to PC-A's and becomes a copy; PC-B's backup reaches
