@@ -102,7 +102,7 @@ def main():
 
     name = budget_folder.this_computer()
     folder = settings.get()["budget_folder"]
-    tag = budget_folder.computer_tag(name) if folder else None
+    tag = budget_folder.tag_in(data, name) if folder else None
     service = BudgetService(Database(data / "budget.db", backup_tag=tag), settings, data, computer_name=name, hooks={
         "app_info": lambda: {"version": "preview", "data_dir": str(data), "log_path": "", "updates": None,
                              "platform": args.platform, "computer": name,

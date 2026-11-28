@@ -39,18 +39,20 @@ With INAB_DATA_DIR set, main.py puts the folder inside that folder, so tests, th
 preview and test copies never touch the real Documents. `Database` defaults to there too.
 
 A backup keeps nothing about saves (meta `save`, budget_folder.py, is taken out of every copy):
-restored, it's a budget no computer saved, so it never passes for an older save of one.
+restored, it's an old save, older than every computer's.
 
 To restore one with a budget folder (1.5.0): quit the app on every computer, then copy the backup
-into the budget folder as `Budget.inab`, replacing the one there. Each computer takes it when it
-next opens the budget; one that had changes it hadn't saved yet asks which to keep. Without one:
+into the budget folder as `Budget.inab`, replacing the one there. The first computer that opens the
+budget asks about it (The budget in the folder is older than this one: Use it), and the others take
+its answer. Without one:
 quit the app, delete `budget.db-wal` and `budget.db-shm` in the data folder if they're there, and
 copy the backup in as `budget.db`.
 
 With a budget folder, backups from every computer share its `Backups/`: each computer's names
-end with its own name (`db.backup_tag`: `budget-2026-11-08-14-32-05 on Office PC.db`), so two
-made in the same second never share one, and `prune` only deletes the copies left half made that
-are its own, or a day old.
+end with its own name and the start of its id (`db.backup_tag`, budget_folder.computer_tag:
+`budget-2026-11-08-14-32-05 on Office PC 3f2a9c.db`), so two made in the same second never share
+one, even on two computers with the same name. `prune` deletes only this computer's backups, and
+copies left half made that are its own, or a day old.
 """
 
 import calendar
@@ -76,7 +78,7 @@ DIGEST_KEY = "backed_up"      # meta: `digest` of the budget when the last backu
 FILE_KEY = "backed_up_to"     # meta: the name of the file that backup made
 BACKUP_META = (DIGEST_KEY, FILE_KEY)  # what `make` keeps in meta: not the budget, so not in `digest`
 SAVE_KEY = "save"             # meta: the save in the budget folder this budget is, or started from (budget_folder.py)
-LANDED_KEY = "save_landed"    # meta: the newest of this computer's saves known to be in the budget folder
+LANDED_KEY = "save_landed"    # meta: the save in the budget folder this computer's save is, or saves over
 SAVE_META = (SAVE_KEY, LANDED_KEY)  # what budget_folder.py keeps: not in backups, nor in a save
 NOT_A_CHANGE = BACKUP_META + SAVE_META  # what's kept about backups and saves isn't a change to the budget
 NOT_THE_BUDGET = ("undo_log", "undo_groups", "undo_state")  # this session's undo, cleared at launch
@@ -167,8 +169,11 @@ def save(db, filename, source=None):
 
 
 def _copy_into(db, folder, filename, source=None):
-    folder.mkdir(parents=True, exist_ok=True)
-    target, partial = folder / filename, folder / f".{filename}.partial"
+    # A budget folder's Backups/ (budget_folder.py) is made only inside a budget folder that's there: one
+    # that can't be reached is never made again by a backup (the backup goes to the data folder instead).
+    folder.mkdir(parents=not getattr(db, "backups_in_budget_folder", False), exist_ok=True)
+    target = _unused(folder, filename)  # two made in one second never share a name: one would replace the other
+    partial = folder / f".{target.name}.partial"
     partial.unlink(missing_ok=True)
     try:
         if source is not None:
@@ -184,9 +189,20 @@ def _copy_into(db, folder, filename, source=None):
     return target
 
 
+def _unused(folder, filename):
+    """`filename` in `folder`, or the same with " (2)", " (3)"… before the computer's name when it's taken."""
+    target = folder / filename
+    stem, n = filename[:-len(".db")], 2
+    head, on, tag = stem.partition(" on ")
+    while target.exists():
+        target = folder / (f"{head} ({n}){on}{tag}.db" if on else f"{stem} ({n}).db")
+        n += 1
+    return target
+
+
 def _keep_no_save(path):
     """Takes what's kept about saves (budget_folder.py) out of a backup's copy: restored into the
-    budget folder, it's a budget no computer saved, taken by every computer as a new save."""
+    budget folder, it's an old save, which every computer's includes (so it asks)."""
     with closing(sqlite3.connect(str(path), isolation_level=None)) as c:
         tables = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
         if "meta" not in tables:
@@ -212,19 +228,24 @@ def digest(db):
     """A fingerprint of everything in the budget: every table and its rows, but not this
     session's undo (cleared at each launch) or what `make` keeps in meta about the last backup
     and budget_folder.py about the last save."""
-    h = hashlib.sha256()
     with db.read() as c:
-        tables = [r[0] for r in c.execute(
-            "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite%' ORDER BY name")]
-        for table in tables:
-            if table in NOT_THE_BUDGET:
+        return digest_of(c)
+
+
+def digest_of(conn):
+    """`digest` of the budget on an open connection: a budget file's, the same as its working copy's."""
+    h = hashlib.sha256()
+    tables = [r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite%' ORDER BY name")]
+    for table in tables:
+        if table in NOT_THE_BUDGET:
+            continue
+        rows = conn.execute(f'SELECT * FROM "{table}" ORDER BY rowid')
+        h.update(repr((table, [d[0] for d in rows.description])).encode())
+        for row in rows:
+            if table == "meta" and row[0] in NOT_A_CHANGE:
                 continue
-            rows = c.execute(f'SELECT * FROM "{table}" ORDER BY rowid')
-            h.update(repr((table, [d[0] for d in rows.description])).encode())
-            for row in rows:
-                if table == "meta" and row[0] in NOT_A_CHANGE:
-                    continue
-                h.update(repr(tuple(row)).encode())
+            h.update(repr(tuple(row)).encode())
     return h.hexdigest()
 
 
@@ -249,11 +270,14 @@ def months_before(day, months):
     return day.replace(year=year, month=month, day=min(day.day, calendar.monthrange(year, month)[1]))
 
 
-def prune(folder, today, tag=None):
+def prune(folder, today, tag=None, earlier=()):
     """Deletes the backups in `folder` from before the last four months, except the newest one
-    from before `today`; the side files of any backup that's gone; and copies left half made: with
-    a `tag` (a budget folder every computer backs up into), only this computer's, or another's
-    left a day. Returns the backups it deleted."""
+    from before `today`; the side files of any backup that's gone; and copies left half made. With
+    a `tag` (a budget folder every computer backs up into), only this computer's backups are
+    looked at, by their names (another computer's clock may be months out from this one's: the
+    copies a question kept must never go by this one's), and another's half-made copy only once
+    it's a day old; `earlier`: this computer's tags before (budget_folder.py remembers them), its own
+    too. Returns the backups it deleted."""
     folder = Path(folder)
     try:
         files = [path for path in folder.iterdir() if path.is_file()]
@@ -262,9 +286,11 @@ def prune(folder, today, tag=None):
     cutoff = months_before(today, KEPT_MONTHS)
     for path in files:  # only one copy of the app runs: no copy is being made now
         old_daily = _HALF_MADE.fullmatch(path.name)
-        if (_partial(path) and _ours_or_old(path, tag)) or (old_daily and old_daily[1] < cutoff.isoformat()):
+        ours = _ours_or_old(path, tag) or any(_ours_or_old(path, t) for t in earlier if t)
+        if (_partial(path) and ours) or (old_daily and old_daily[1] < cutoff.isoformat()):
             path.unlink(missing_ok=True)
-    backups = found(folder)
+    backups = [(when, path) for when, path in found(folder)
+               if tag is None or _is_ones(path.name, tag) or any(_is_ones(path.name, t) for t in earlier if t)]
     before_today = [path for when, path in backups if when.date() < today]
     spare = before_today[-1] if before_today else None
     gone = []
@@ -279,6 +305,11 @@ def prune(folder, today, tag=None):
     if gone:
         log.info("Deleted %d backup%s from before %s", len(gone), "" if len(gone) == 1 else "s", cutoff)
     return gone
+
+
+def _is_ones(name, tag):
+    """Whether a backup's name says this computer (its `tag`) made it."""
+    return name.endswith(f"{_on(tag)}.db") or re.search(rf"{re.escape(_on(tag))} \(\d+\)\.db$", name) is not None
 
 
 def _ours_or_old(path, tag):
@@ -427,7 +458,8 @@ def _back_up_at_quit(db, now):
 
 def _prune_all(db, now):
     for folder in _folders(db):
-        _try("Deleting old backups", lambda: prune(folder, now.date(), getattr(db, "backup_tag", None)))
+        _try("Deleting old backups", lambda: prune(folder, now.date(), getattr(db, "backup_tag", None),
+                                                   getattr(db, "backup_earlier_tags", ())))
 
 
 def _try(what, step):

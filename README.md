@@ -96,7 +96,8 @@ Backups are kept for four months. If the app is refused access to Documents, the
 data folder's Backups until it's allowed, then move over. Once your budget is in a folder you
 choose (1.5.0), its backups are in that folder's Backups. To restore one, quit the app on every
 computer and copy the backup into your budget folder (Settings → Budget folder → Open) as
-`Budget.inab`, replacing the one there. Without a budget folder: quit the app, open its data
+`Budget.inab`, replacing the one there; the first computer you open then asks whether to use it.
+Without a budget folder: quit the app, open its data
 folder (Settings → Your data → Open), delete `budget.db-wal` and `budget.db-shm` if they're
 there, and copy the backup in as `budget.db`, replacing the one there.
 

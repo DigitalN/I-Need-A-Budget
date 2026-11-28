@@ -1,11 +1,14 @@
 # SPDX-License-Identifier: GPL-3.0-only
-"""The budget folder as the window sees it (issue #189): what each computer changed, worked out for the
-window's question (service.budget_folder_question, from changes.py), and the cases that need no question.
+"""The budget folder as the window sees it (issue #189): budget_folder.py's one question, "The budget in
+the folder is older than this one" or "This budget changed on two computers", with what each side changed
+(service.budget_folder_question, from changes.py), answered Use it or Keep this. The window decides
+nothing itself: a side with nothing to show is still asked about (ADR 0008's rules are the only ones).
 Two data folders sharing one budget folder stand in for two computers. Made-up data, throwaway folders."""
 
 import json
 import shutil
 
+import backups
 from budget_folder import FILE_NAME, SAVES
 from db import Database
 from helpers import call
@@ -49,7 +52,7 @@ def two_computers(tmp_path):
     return folder, a, b
 
 
-def test_both_changed_asks_with_what_each_changed(tmp_path):
+def test_changed_on_two_computers_asks_with_what_each_side_changed(tmp_path):
     folder, a, b = two_computers(tmp_path)
     add_category(a, "Rent")
     a.budget_folder_look(now=True)
@@ -65,37 +68,40 @@ def test_both_changed_asks_with_what_each_changed(tmp_path):
 
     b.budget_folder_look()  # the next round asks the same question: worked out once
     assert call(b, "budget_folder_question") == question
-    call(b, "keep_other_budget")  # Keep PC-A's
+    call(b, "keep_other_budget")  # Use it
     assert categories(b) == ["Groceries", "Rent"]
     assert call(b, "budget_folder_question") is None
+    assert a.budget_folder_look()["state"] == "saved"  # PC-A takes the answer (rule 2), unasked
 
 
-def test_nothing_to_see_changed_here_takes_the_other_computers_without_asking(tmp_path):
+def test_keep_this_saves_this_side_and_the_other_takes_it(tmp_path):
     folder, a, b = two_computers(tmp_path)
     add_category(a, "Rent")
     a.budget_folder_look(now=True)
-    fold_the_group(b)  # B changed only what the window wouldn't show
-    state = b.budget_folder_look()
-    assert state["state"] == "saved" and state["took"]["computer"] == "PC-A"
-    assert categories(b) == ["Groceries", "Rent"]
-    assert call(b, "budget_folder_question") is None
-    backups = [p.name for p in (folder / "Backups").iterdir()]
-    assert any(n.startswith("budget-not-kept-") for n in backups)  # B's is still kept as a backup
-
-
-def test_nothing_to_see_changed_on_the_other_keeps_this_computers_without_asking(tmp_path):
-    folder, a, b = two_computers(tmp_path)
-    fold_the_group(a)
-    a.budget_folder_look(now=True)  # A saved, having changed nothing the window would show
     add_category(b, "Fuel")
-    state = b.budget_folder_look()
-    assert state["state"] in ("saved", "unsaved") and "took" not in state
-    assert categories(b) == ["Groceries", "Fuel"]
-    assert a.budget_folder_look()["took"]["computer"] == "PC-B"  # and A takes it
+    assert b.budget_folder_look()["state"] == "two_computers"
+    call(b, "keep_this_budget")
+    assert call(b, "budget_folder_question") is None
+    assert a.budget_folder_look()["took"]["computer"] == "PC-B"
     assert categories(a) == ["Groceries", "Fuel"]
 
 
-def test_when_the_save_both_started_from_is_gone_it_asks_without_the_changes(tmp_path):
+def test_a_side_with_nothing_to_show_is_still_asked_about(tmp_path):
+    """The window adds no rule of its own: a change changes.py doesn't list (a group folded) on one side
+    still makes it changed on two computers, shown as nothing to see on that side."""
+    folder, a, b = two_computers(tmp_path)
+    add_category(a, "Rent")
+    a.budget_folder_look(now=True)
+    fold_the_group(b)
+    assert b.budget_folder_look()["state"] == "two_computers"
+    question = call(b, "budget_folder_question")
+    assert question["can_show_changes"] and not question["this"]["changed"] and question["theirs"]["changed"]
+    assert categories(b) == ["Groceries"]  # nothing taken until you choose
+    call(b, "keep_other_budget")  # Use it
+    assert categories(b) == ["Groceries", "Rent"]
+
+
+def test_when_what_both_started_from_is_gone_it_asks_without_the_changes(tmp_path):
     folder, a, b = two_computers(tmp_path)
     add_category(a, "Rent")
     a.budget_folder_look(now=True)
@@ -106,24 +112,27 @@ def test_when_the_save_both_started_from_is_gone_it_asks_without_the_changes(tmp
     assert question["can_show_changes"] is False and question["this"] is None and question["theirs"] is None
 
 
-def test_an_older_budget_put_back_always_asks(tmp_path):
-    """Use it, or Keep the newer one: going back is never decided without asking, even with nothing to see."""
+def test_a_backup_copied_in_asks_older_once_and_the_others_take_the_answer(tmp_path):
+    """Restoring: quit everywhere, copy a backup in as Budget.inab. It's an old save: the first computer
+    to look asks "older" (Use it), with what this computer changed since; the other takes the answer."""
     folder, a, b = two_computers(tmp_path)
-    older = tmp_path / "older.inab"
-    shutil.copyfile(folder / FILE_NAME, older)
-    fold_the_group(b)
-    b.budget_folder_look(now=True)  # B's newer save, different only in what the window wouldn't show
-    shutil.copyfile(older, folder / FILE_NAME)  # a sync tool's "restore previous version"
-    assert b.budget_folder_look()["state"] == "older"
-    question = call(b, "budget_folder_question")
-    assert question["state"] == "older" and question["other"]["computer"] == "PC-A"
-    assert question["can_show_changes"] and not question["this"]["changed"]
-    call(b, "keep_this_budget")  # Keep the newer one
-    assert call(b, "budget_folder_question") is None and b.budget_folder_look()["state"] == "saved"
+    backup = backups.at_quit(a.db)  # PC-A quits with Groceries
+    add_category(a, "Rent")
+    a.budget_folder_look(now=True)
+    assert b.budget_folder_look()["state"] == "saved" and categories(b) == ["Groceries", "Rent"]
+    shutil.copyfile(backup, folder / FILE_NAME)  # the backup put back
+
+    assert a.budget_folder_look()["state"] == "older"
+    question = call(a, "budget_folder_question")
+    assert question["state"] == "older" and question["other"]["computer"] is None  # nothing kept about saves
+    assert question["can_show_changes"] and "Rent" in json.dumps(question["this"])
+    call(a, "keep_other_budget")  # Use it
+    assert categories(a) == ["Groceries"]
+    assert b.budget_folder_look()["took"] and categories(b) == ["Groceries"]
 
 
 def test_the_question_is_none_until_it_is_worked_out(tmp_path):
-    """The window asks only once the look that found it has worked out what each changed."""
+    """The window asks only once the look that found it has worked out what each side changed."""
     folder, a, b = two_computers(tmp_path)
     assert call(b, "budget_folder_question") is None
     add_category(a, "Rent")

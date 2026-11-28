@@ -153,7 +153,7 @@ class BudgetApp:
         self._settings = Settings(DATA_DIR / "settings.json")
         folder = self._settings.get()["budget_folder"]
         self._db = Database(DATA_DIR / "budget.db", backup_dir=_backups_before_the_folder_says(folder),
-                            backup_tag=budget_folder.computer_tag(self._computer_name) if folder else None)
+                            backup_tag=budget_folder.tag_in(DATA_DIR, self._computer_name) if folder else None)
         self._app_path = self._computer.installed_app()
         self._updater = Updater(self._app_path, VERSION, settings=self._settings, data_dir=DATA_DIR,
                                 on_status=self._on_update_status, computer=self._computer)
@@ -246,8 +246,8 @@ class BudgetApp:
         return True
 
     def _open_license(self):
-        """The license shipped with the app, as a read-only copy in the default text app:
-        TextEdit saving into the app itself would break its signature."""
+        """The license shipped with the app, as a read-only copy in the default text app
+        (TextEdit, Notepad): saving into the app itself would break its signature."""
         import shutil
         import tempfile
 
@@ -255,6 +255,8 @@ class BudgetApp:
         source = _app_files_dir() / "LICENSE.txt" if frozen else _app_files_dir().parent / "LICENSE"
         copy = Path(tempfile.gettempdir()) / APP_NAME / "LICENSE.txt"
         copy.parent.mkdir(parents=True, exist_ok=True)
+        if copy.exists():
+            copy.chmod(0o644)  # Windows refuses to delete a read-only file: the second click would fail
         copy.unlink(missing_ok=True)
         shutil.copyfile(source, copy)
         copy.chmod(0o444)
@@ -309,13 +311,14 @@ class BudgetApp:
     # ── Downloads watcher ──
 
     def _watch(self):
-        while not self._quitting:
-            try:
-                outcome = self._service.watch_downloads()
-                if outcome:
-                    self._send("imported", outcome)
-            except Exception:
-                log.exception("Watching Downloads failed")
+        while True:
+            if not self._quitting:  # a log-off Windows calls off carries on watching (_quit_called_off)
+                try:
+                    outcome = self._service.watch_downloads()
+                    if outcome:
+                        self._send("imported", outcome)
+                except Exception:
+                    log.exception("Watching Downloads failed")
             time.sleep(WATCH_EVERY)
 
     # ── the budget folder's watcher ──
@@ -452,14 +455,31 @@ class BudgetApp:
 
     def _should_quit(self, logging_out):
         """⌘Q (or Quit in the Dock) goes the close button's way, through the page. Logging
-        out, restarting or shutting down quits straight away: holding it up would stop the
-        computer. True quits now."""
+        out, restarting or shutting down (on Windows Task Manager and installers too) quits
+        straight away: holding it up would stop the computer. True quits now."""
         if self._quitting:
             return True
         if logging_out or self._ask_page_to_quit():
             self._before_quit(logging_out=logging_out)
             return True
         return False
+
+    def _quit_called_off(self):
+        """Windows asked to quit for a log-off or shutdown, the app said it may (backed up and
+        quitting), then another app stopped it and the person cancelled: the app carries on as it
+        was. The backup stays; the next quit makes another only after a change. An update the
+        log-off kept for the next launch goes in at the next quit again (Updater.log_off_called_off).
+        The budget folder's watcher looks again (its next look leaves this computer's note again)."""
+        if not self._quitting:
+            return
+        log.info("The log-off or shutdown was called off: carrying on")
+        self._quitting = False
+        self._quit_asked = None
+        self._folder_watching = True
+        try:
+            self._updater.log_off_called_off()
+        except Exception:
+            log.exception("Taking back the update the log-off kept failed")
 
     def run(self):
         import webview
@@ -470,13 +490,17 @@ class BudgetApp:
             self._back_up()            # as Restart now does it
             if self._updater.install(relaunch_after=True):
                 return                 # the app reopens once its installer is done
-        self._computer.when_asked_to_quit(self._should_quit)
+        if not self._computer.can_draw_the_page():
+            return  # it has said what's missing
+        self._computer.when_asked_to_quit(self._should_quit, self._quit_called_off)
         html = (_app_files_dir() / "index.html").read_text(encoding="utf-8")
         width, height = self._computer.first_window_size(MIN_SIZE, WINDOW_SHARE)
         self._window = webview.create_window(
             APP_NAME, html=html, js_api=Api(self), width=width, height=height,
             min_size=MIN_SIZE, background_color=self._background_color(), text_select=True)
         self._window.events.before_show += self._restore_frame
+        if self._computer.name == "windows":  # its title bar is drawn before the page: in the chosen Appearance
+            self._window.events.before_show += lambda: self._apply_theme(self._settings.get()["theme"])
         self._window.events.closing += self._on_closing
         self._window.events.loaded += self._on_loaded
         threading.Thread(target=self._watch, name="downloads-watcher", daemon=True).start()

@@ -356,7 +356,7 @@ dialog form { display: flex; flex-direction: column; max-height: calc(100vh - 60
 .update-bar .btn { background: #fff; color: var(--accent); }
 /* The budget folder's strip (folderBarHtml): opaque, so the page scrolling under it doesn't show through */
 .folder-bar { background: linear-gradient(var(--warn-soft), var(--warn-soft)), var(--bg); padding: 8px 26px; display: flex; gap: 10px; align-items: center; border-bottom: 1px solid var(--line); }
-/* Changed on two computers: each side's changes (askWhichBudget) */
+/* This budget changed on two computers: each side's changes (askWhichBudget) */
 .which { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 10px; }
 .which > div { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; min-width: 0; }
 .which p { margin: 6px 0; }
@@ -3443,8 +3443,6 @@ function summarizeImport(r) {
 const QUESTIONS = ['two_computers', 'older'];
 const WAITING_SHOWN = 10000;  // a file still syncing shows in the strip once it's taken this long: most take a moment
 const folderKey = st => JSON.stringify([st.state, st.other || null]);
-const thisComputer = () => onWindows() ? 'this PC' : 'this Mac';
-const capital = s => s.charAt(0).toUpperCase() + s.slice(1);
 // When another computer saved or opened the budget, in this computer's time: "9:02 AM" today, else "Nov 30 at 9:02 AM".
 function whenAt(iso) {
   const d = new Date(iso), now = new Date();
@@ -3481,8 +3479,8 @@ function folderBarHtml() {
   if (st.state === 'moved') return bar(movedText(st.moved), find);
   if (st.state === 'newer') return bar('Your budget was saved by a newer version: changes stay on this computer until you update.',
     '<button class="btn small" data-act="folder-update">Check for updates</button>');
-  if (st.state === 'two_computers') return bar('Your budget was changed on two computers: nothing is saved until you choose which to keep.', choose);
-  if (st.state === 'older') return bar('An older budget was put back in its folder: nothing is saved until you choose.', choose);
+  if (st.state === 'two_computers') return bar('This budget changed on two computers: nothing is saved until you choose.', choose);
+  if (st.state === 'older') return bar('The budget in the folder is older than this one: nothing is saved until you choose.', choose);
   return '';
 }
 function drawFolderBar() {
@@ -3496,7 +3494,7 @@ function folderStatus(st) {
     ? `Saved on ${saved.computer} ${atWhen(saved.saved_at)}` : `Saved ${atWhen(saved.saved_at)}`.trim();
   return { unsaved: 'Changes not saved yet', unreachable: 'Not available just now', waiting: 'Still syncing',
     missing: 'Its file is gone', moved: 'Moved to another folder', newer: 'Saved by a newer version',
-    two_computers: 'Changed on two computers', older: 'An older budget was put back' }[st.state] || '';
+    two_computers: 'Changed on two computers', older: 'The one in the folder is older' }[st.state] || '';
 }
 
 // A new state from the app: the strip, Settings, a take drawn, and a question asked when you're free.
@@ -3536,10 +3534,10 @@ async function askPending() {
   } finally { state.asking = false; }
 }
 
-// Another computer's save taken, or a backup restored in the folder: the budget is that one now, and ⌘Z can't undo
+// Another computer's save taken (budget_folder.py's rule 2): the budget is that one now, and ⌘Z can't undo
 // what came before. What's on screen is drawn again once you're free (refreshWhenIdle).
 function tookAnother(took) {
-  toast(took && took.computer ? `Updated with changes saved on ${took.computer}` : 'Updated with the budget restored in its folder');
+  toast(took && took.computer ? `Updated with changes saved on ${took.computer}` : 'Updated with the budget in its folder');
   return budgetReplaced();
 }
 async function budgetReplaced() {
@@ -3685,29 +3683,26 @@ const changesHtml = side => !side || !side.changed ? '<p class="muted">Nothing y
     `<div class="small"><b>${esc(s.title)}</b>${s.items.length === 1 && s.items[0].text === s.title ? '' : `<ul>${s.items.map(i =>
       `<li${i.app ? ' class="muted"' : ''}>${esc(i.text)}</li>`).join('')}</ul>`}</div>`).join('')}</details>`;
 
-// Changed on two computers, or an older budget put back in its folder: what each changed and which to keep; the one
-// not kept goes into Backups. Nothing is saved until you choose: closing it leaves the strip's Choose…. As the app
-// quits, Quit and choose later quits as it is (this computer's changes wait here, and it asks at the next launch).
-// Returns what was chosen, null when closed, or 'unready' while the app is still working out what each changed.
+// The one question (budget_folder.py's rule 4), about two sides, this computer's budget and the one in the folder:
+// "The budget in the folder is older than this one" or "This budget changed on two computers", with what each side
+// changed. Use it or Keep this; the side that loses goes into Backups. Nothing is saved until you choose: closing it
+// leaves the strip's Choose…. As the app quits, Quit and choose later quits as it is (this computer's changes wait
+// here, and it asks at the next launch). Returns what was chosen, null when closed, or 'unready' while the app is
+// still working out what each side changed.
 async function askWhichBudget({ quitting = false } = {}) {
   const q = await call('budget_folder_question');
   if (!q) return 'unready';
   const key = folderKey(state.folder);
   state.folderAsked = key;
-  const other = q.other || {}, here = thisComputer();
-  const older = q.state === 'older';
-  const theirs = other.computer ? `${other.computer}'s` : 'the backup';
-  const cant = q.can_show_changes ? '' : '<p class="muted">This computer no longer has the save both started from, so it can\'t show what each changed.</p>';
-  let body;
-  if (older) {
-    body = `<p>${esc(`The budget in its folder is an older one${other.computer ? `, saved on ${other.computer}` : ''}${other.saved_at ? ` ${atWhen(other.saved_at)}` : ''}: a sync tool may have put it back. Use it, or keep the newer one? The other is kept as a backup.`)}</p>
-      ${cant || `<p><b>${esc(capital(here))}'s has since:</b></p>${changesHtml(q.this)}`}`;
-  } else {
-    const intro = other.computer ? `Your budget was changed on ${other.computer} and on ${here}.` : `A backup was put back in your budget folder, and ${here} has changes that aren't saved yet.`;
-    body = `<p>${esc(`${intro} Which do you want to keep? The other is kept as a backup.`)}</p>${cant ||
-      `<div class="which"><div><b>${esc(other.computer || 'The backup')}</b>${other.saved_at ? ` <span class="small muted">${esc(`saved ${atWhen(other.saved_at)}`)}</span>` : ''}${changesHtml(q.theirs)}</div>
-       <div><b>${esc(capital(here))}</b>${changesHtml(q.this)}</div></div>`}`;
-  }
+  const other = q.other || {}, older = q.state === 'older';
+  const saved = other.computer ? `saved on ${other.computer}${other.saved_at ? ` ${atWhen(other.saved_at)}` : ''}` : '';
+  const cant = q.can_show_changes ? '' : '<p class="muted">This computer doesn\'t have what both started from, so it can\'t show what each changed.</p>';
+  const kept = 'The one you don\'t keep goes into Backups.';
+  const body = older
+    ? `<p>${esc(`${saved ? `The one in the folder was ${saved}. ` : ''}Use it, or keep this one? ${kept}`)}</p>${cant || `<p><b>Changed on this computer since</b></p>${changesHtml(q.this)}`}`
+    : `<p>${esc(`It changed on ${other.computer || 'another computer'} and on this computer. Use the one in the folder, or keep this one? ${kept}`)}</p>${cant ||
+      `<div class="which"><div><b>In the folder</b>${saved ? ` <span class="small muted">${esc(saved)}</span>` : ''}${changesHtml(q.theirs)}</div>
+       <div><b>On this computer</b>${changesHtml(q.this)}</div></div>`}`;
   let result = null;
   const keep = (label, name, value) => ({ label, value, check: async () => {
     state.questionOpen = null;  // what this choice changes doesn't close it (folderChanged)
@@ -3717,25 +3712,25 @@ async function askWhichBudget({ quitting = false } = {}) {
     return null;
   } });
   if (quitting) window.pywebview.api.asking_before_quit();
-  state.questionOpen = key;  // decided on the other computer meanwhile, or no longer there: it closes (folderChanged)
-  const v = await dialog({ title: older ? 'An older budget is in its folder' : 'Changed on two computers', wide: !older, body,
+  state.questionOpen = key;  // answered on the other computer meanwhile, or no longer there: it closes (folderChanged)
+  const v = await dialog({ title: older ? 'The budget in the folder is older than this one' : 'This budget changed on two computers',
+    wide: !older, body,
     actions: [...(quitting ? [{ label: 'Quit and choose later', value: 'later', left: true }] : []),
-      keep(older ? 'Use it' : `Keep ${theirs}`, 'keep_other_budget', 'other'),
-      keep(older ? 'Keep the newer one' : `Keep ${here}'s`, 'keep_this_budget', 'this')] });
+      keep('Use it', 'keep_other_budget', 'other'), keep('Keep this', 'keep_this_budget', 'this')] });
   state.questionOpen = null;
   if (v === 'later') { quitNow(); return v; }
   if (!v) { drawFolderBar(); return null; }
   folderChanged(result);
   if (v === 'other') {
-    toast(older ? 'Using the older budget · the newer one is kept as a backup' : `Kept ${theirs} budget · ${here}'s is kept as a backup`);
+    toast('Using the budget in the folder · this computer\'s is in Backups');
     await budgetReplaced();
-  } else toast(older ? `Kept ${here}'s budget · the older one is kept as a backup` : `Kept ${here}'s budget · ${theirs} is kept as a backup`);
+  } else toast('Kept this budget · the one from the folder is in Backups');
   if (quitting) { await settled(); quitNow(); }
   return v;
 }
 
 // As the app quits, once what you were typing is saved: the budget is saved into its folder (main.py's
-// look_before_quit). Changed on two computers, or an older one put back, it can't be until you choose, so that's
+// look_before_quit). While the one question is asked (older, or changed on two computers), it can't be until you choose, so that's
 // asked first. True when it asks (choosing quits; closing the question doesn't).
 async function askBeforeQuitting() {
   const api = window.pywebview.api;

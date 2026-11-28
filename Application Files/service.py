@@ -148,9 +148,11 @@ class BudgetService:
         self.data_dir = Path(data_dir)
         self.hooks = hooks or {}          # window features: choose_files, reveal, updates, app_info
         self.turns = budget_folder.Turns()  # requests share the budget; taking another computer's save waits for them
+        # The budget folder is written to settings.json before anything is done in a new one (on_folder): a
+        # crash part way through Move… or Open… relaunches on the folder being moved to or opened.
         self.folder = budget_folder.BudgetFolder(db, self.data_dir, settings.get()["budget_folder"] or None,
                                                  computer_name=computer_name, app_version=self._app_info().get("version"),
-                                                 turns=self.turns)
+                                                 turns=self.turns, on_folder=self._keep_folder)
         self._seen_files = {}             # Downloads watcher: path → (mtime, size) already looked at
         self._file_status = {}            # path → ((mtime, size), what it needs or None): see _needs()
         self._status_round = 0            # bumped whenever _file_status is cleared: a need worked out before isn't kept
@@ -2340,6 +2342,9 @@ class BudgetService:
         """At every quit, instead of backups.at_quit: a backup if needed, then a save if needed."""
         self.folder.at_quit()
 
+    def _keep_folder(self, folder):
+        self.settings.update({"budget_folder": str(folder) if folder else ""})
+
     def _took_another_budget(self):
         """The budget was replaced by another computer's: what was worked out about files in Downloads goes."""
         self._file_status.clear()
@@ -2351,10 +2356,10 @@ class BudgetService:
         """One look at the budget folder for the window, never from inside a request (a take waits for them):
         at launch, before the window opens (budget_folder_at_launch); every few seconds from main.py's watcher
         (watch_budget_folder); or `now`, saving straight away whether or not changes have stopped (as the app
-        quits, so the window can ask first when the budget can't be saved). Changed on two computers, or an
-        older budget put back in the folder: what each changed is worked out for the window's question
-        (budget_folder_question), and when one side of two computers has nothing to show, the other is kept
-        without asking. Returns the state, with 'took' when another computer's budget replaced this one's."""
+        quits, so the window can ask first when the budget can't be saved). When it asks (`older` or
+        `two_computers`, budget_folder.py's rule 4), what each side changed is worked out for the window's
+        question (budget_folder_question). Returns the state, with 'took' when another computer's budget
+        replaced this one's."""
         if at_launch:
             state = self.budget_folder_at_launch()
         elif now:
@@ -2371,12 +2376,11 @@ class BudgetService:
         return state.get("state"), tuple(sorted((state.get("other") or {}).items()))
 
     def _what_each_changed(self, state):
-        """Changed on two computers (or an older one put back): each side's changes since the save both started
-        from (changes.compare), worked out once per other save and kept for budget_folder_question. A side with
-        nothing to show loses nothing, so the other is kept without asking: this computer's changed nothing anyone
-        would see, and the other computer's is taken (it saved, say, only after its re-check rewrote the Inbox's
-        reasons); or the other changed nothing to see, and this one's is kept. Not for an older one put back:
-        going back to it, or not, is always asked (docs/adr/0008)."""
+        """A question asked (`older`: the budget in the folder is older than this one; `two_computers`: this
+        budget changed on two computers): what each side changed since what both started from (changes.compare),
+        worked out once per other save and kept for budget_folder_question. Only for the window: it decides
+        nothing (budget_folder.py's rules are the only ones), and a side with nothing to show is still asked
+        about."""
         import changes
 
         if state.get("state") not in ("two_computers", "older"):
@@ -2394,20 +2398,7 @@ class BudgetService:
             try:
                 sides = changes.compare(found["started_from"], found["this"], found["other"])
             except Exception:
-                log.warning("Couldn't work out what each computer changed", exc_info=True)
-        if state["state"] == "two_computers" and sides and not (sides["this"]["changed"] and sides["other"]["changed"]):
-            other = found["other_save"].get("computer") or "the budget restored in the folder"
-            try:
-                if not sides["this"]["changed"]:
-                    log.info("Changed on two computers, but nothing to see changed here: keeping %s's", other)
-                    kept = self.folder.keep_other()
-                    self._took_another_budget()
-                    return self._what_each_changed({**kept, "took": found["other_save"]})
-                log.info("Changed on two computers, but nothing to see changed on %s: keeping this computer's", other)
-                return self._what_each_changed(self.folder.keep_this())
-            except UserError as e:
-                log.info("Couldn't keep one without asking (%s): asking", e)
-                return state
+                log.warning("Couldn't work out what each side changed", exc_info=True)
         self._folder_question = {"key": key, "state": state["state"], "other": found["other_save"],
                                  "can_show_changes": sides is not None,
                                  "this": sides and sides["this"], "theirs": sides and sides["other"]}
@@ -2415,11 +2406,12 @@ class BudgetService:
 
     @exposed
     def budget_folder_question(self):
-        """What the window asks when the budget was changed on two computers, or an older one was put back in
-        its folder: {'state', 'other' (who saved it, when), 'can_show_changes', 'this' and 'theirs' (what each
-        changed, changes.compare's sides; None when the save both started from is gone)}. None while it isn't
-        worked out yet (the next look does it, and tells the window) or there's nothing to ask. Never looks in
-        the folder itself, so it can share the budget like any request."""
+        """What the window asks, "The budget in the folder is older than this one" (`older`) or "This budget
+        changed on two computers" (`two_computers`), answered Use it (keep_other_budget) or Keep this
+        (keep_this_budget): {'state', 'other' (who saved the one in the folder, when), 'can_show_changes',
+        'this' and 'theirs' (what each side changed, changes.compare's sides; None when what both started from
+        is gone)}. None while it isn't worked out yet (the next look does it, and tells the window) or there's
+        nothing to ask. Never looks in the folder itself, so it can share the budget like any request."""
         question = getattr(self, "_folder_question", None)
         if not question or question["key"] != self._question_key(self.folder.state()):
             return None

@@ -16,7 +16,7 @@ When: once, a few seconds after each launch (unless "Check for updates at launch
 in Settings), and when you press Check now. Never in between: the maintainer's choice.
 
 What: the repository's latest release (not drafts or pre-releases), tagged `v<version>`,
-with this computer's file attached: a Mac's .dmg from scripts/package.sh, Windows'
+with this computer's file attached: a Mac's .dmg from scripts/make-dmg.py, Windows'
 `I-Need-A-Budget-<version>-Setup.exe` with its signature beside it (`….exe.sig`). It's
 downloaded, and this computer checks it's this app, intact, from the same developer (on a
 Mac, `codesign --verify`: signed by the same team as this copy, for the same bundle
@@ -354,13 +354,15 @@ class Updater:
         return True
 
     def _keep(self, version, folder):
-        shutil.rmtree(self._kept, ignore_errors=True)
-        try:
-            shutil.move(str(folder), str(self._kept))
-        except OSError as e:
-            shutil.rmtree(folder, ignore_errors=True)
-            log.warning("Not installing %s while logging out, and couldn't keep it for the next launch: %s", version, e)
-            return False
+        if Path(folder) != self._kept:  # it is when a called-off log-off took it back (log_off_called_off)
+            shutil.rmtree(self._kept, ignore_errors=True)
+            try:
+                shutil.move(str(folder), str(self._kept))
+            except OSError as e:
+                shutil.rmtree(folder, ignore_errors=True)
+                log.warning("Not installing %s while logging out, and couldn't keep it for the next launch: %s",
+                            version, e)
+                return False
         log.info("Not installing %s while logging out: it's checked again and installed at the next launch", version)
         return False
 
@@ -369,8 +371,31 @@ class Updater:
         as a download is, and has to be newer than this copy. True when it passed: it's ready to
         install now, the way quitting installs it, and to reopen the app. One that doesn't pass
         is deleted."""
-        if self.unavailable_reason or not self._kept.is_dir():
+        version = self._take_back()
+        if version is None:
             return False
+        log.info("Installing %s, kept from logging out, before the window opens", version)
+        return True
+
+    def log_off_called_off(self):
+        """The log-off that kept the update (install) didn't happen after all, and the app carries
+        on (main._quit_called_off): it's checked again, as at the next launch, and waits to go in
+        at the next quit or with Restart now, as before the log-off. Taken back from where it was
+        kept, so the next launch doesn't install it a second time; never lost, as one kept that
+        way stays kept (_keep). Gone when it no longer passes, and then nothing's waiting."""
+        if self._staged is not None or not self._kept.is_dir():
+            return
+        version = self._take_back()
+        if version is not None:
+            log.info("The log-off was called off: %s goes in at the next quit again", version)
+        elif self.status == READY:
+            self._set_status(IDLE)
+
+    def _take_back(self):
+        """The kept update, checked again and staged as a download is: its version, or None (one
+        that doesn't pass is deleted)."""
+        if self.unavailable_reason or not self._kept.is_dir():
+            return None
         try:
             download = self._kept / f"update{self._computer.update_file[0]}"
             version, update = self._computer.take_update(download, self._app, self._kept)
@@ -379,10 +404,9 @@ class Updater:
         except Exception as e:
             log.warning("Not installing the update kept from logging out: %s", e)
             shutil.rmtree(self._kept, ignore_errors=True)
-            return False
-        log.info("Installing %s, kept from logging out, before the window opens", version)
+            return None
         self._staged = (version, update, self._kept)
-        return True
+        return version
 
     def save_token(self, token):
         """Settings' token: saved where this computer keeps it, or with "" removed."""

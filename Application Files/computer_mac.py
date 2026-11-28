@@ -6,7 +6,7 @@ Where the app runs from: it has to run from an Applications folder to update its
 from a disk image or Downloads, macOS runs a temporary hidden copy ("app translocation") that
 can't be replaced, so on launch from anywhere else it offers to move.
 
-Updates: each release has a .dmg (scripts/package.sh). The app is copied out of it, and
+Updates: each release has a .dmg (scripts/make-dmg.py, in the release run). The app is copied out of it, and
 `codesign --verify` must show it's signed by the same team as this copy, for the same bundle
 identifier. The two are swapped in one step at quit. The token is in the Keychain (service
 "I Need A Budget", account "GitHub"), through `security`, and goes to it on stdin.
@@ -159,10 +159,14 @@ class Mac(Computer):
         name = {"light": AppKit.NSAppearanceNameAqua, "dark": AppKit.NSAppearanceNameDarkAqua}.get(theme)
         native.setAppearance_(AppKit.NSAppearance.appearanceNamed_(name) if name else None)
 
-    def when_asked_to_quit(self, should_quit):
+    def can_draw_the_page(self):
+        return True  # WebKit is part of macOS
+
+    def when_asked_to_quit(self, should_quit, called_off):
         """macOS asks the app's delegate (applicationShouldTerminate_), with the Apple event the
         quit came with: logging out, restarting or shutting down gives a reason, ⌘Q none, and
-        Quit in the Dock an event without one."""
+        Quit in the Dock an event without one. Once the app says it may, it quits: nothing is
+        called off."""
         import AppKit
         import objc
 
