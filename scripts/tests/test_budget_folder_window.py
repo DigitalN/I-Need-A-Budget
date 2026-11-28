@@ -28,11 +28,13 @@ def add_category(service, name):
         c.execute("INSERT INTO categories (group_id, name) VALUES (?, ?)", (group, name))
 
 
-def fold_the_group(service):
-    """A change the window has nothing to show for (changes.py never lists a group folded)."""
-    with service.db.read() as c:
-        group = c.execute("SELECT id FROM category_groups WHERE name = 'Everyday'").fetchone()[0]
-    call(service, "set_group_collapsed", group, True)
+def remember_a_csv_layout(service):
+    """A change the window has nothing to show for: what the app keeps for itself, here a set-up CSV's columns
+    (changes.py never lists them; backups.digest counts them). None of your own actions is like that any more
+    (test_every_change_shows.py): a group folded isn't a change at all."""
+    with service.db.write(keep_undo=True) as c:
+        c.execute("INSERT INTO csv_layouts (signature, date_col, desc_cols, amount_col) "
+                  "VALUES ('date,description,amount', 0, '1', 2)")
 
 
 def categories(service):
@@ -87,12 +89,12 @@ def test_keep_this_saves_this_side_and_the_other_takes_it(tmp_path):
 
 
 def test_a_side_with_nothing_to_show_is_still_asked_about(tmp_path):
-    """The window adds no rule of its own: a change changes.py doesn't list (a group folded) on one side
-    still makes it changed on two computers, shown as nothing to see on that side."""
+    """The window adds no rule of its own: a change changes.py doesn't list (the app's own memory of a CSV's columns)
+    on one side still makes it changed on two computers, shown as nothing to see on that side."""
     folder, a, b = two_computers(tmp_path)
     add_category(a, "Rent")
     a.budget_folder_look(now=True)
-    fold_the_group(b)
+    remember_a_csv_layout(b)
     assert b.budget_folder_look()["state"] == "two_computers"
     question = call(b, "budget_folder_question")
     assert question["can_show_changes"] and not question["this"]["changed"] and question["theirs"]["changed"]
