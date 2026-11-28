@@ -137,7 +137,7 @@ All in `Application Files/`:
   renamed, retried while Windows or a sync tool holds the file; meta `save_landed` names the
   `Budget.inab` it saves over until it's there), a few seconds after changes stop and at quit,
   only when `backups.digest` changed. `check` (every few seconds) keeps to ADR 0008's five rules
-  and nothing else: conflict copies a save includes, or whose contents are kept, go into `Backups/`;
+  and nothing else: conflict copies a save includes, or with `Budget.inab`'s contents, go into `Backups/`;
   `Budget.inab` is taken only when it includes this computer's last save or take and nothing changed
   here (after the page's requests under way: `Turns`); a save with this computer's very contents is
   joined (`_join`, a new event with one count of its own); everything else asks (`older`,

@@ -81,6 +81,10 @@ SAVE_KEY = "save"             # meta: the save in the budget folder this budget 
 LANDED_KEY = "save_landed"    # meta: the save in the budget folder this computer's save is, or saves over
 SAVE_META = (SAVE_KEY, LANDED_KEY)  # what budget_folder.py keeps: not in backups, nor in a save
 NOT_A_CHANGE = BACKUP_META + SAVE_META  # what's kept about backups and saves isn't a change to the budget
+NOT_A_CHANGE_COLUMNS = {  # nor what only shows the budget: a launch on a settled budget changes these alone
+    ("transactions", "reason"),        # only text to show, never read back (the re-check writes it again)
+    ("category_groups", "collapsed"),  # a group folded: how this computer shows the Budget page
+}
 NOT_THE_BUDGET = ("undo_log", "undo_groups", "undo_state")  # this session's undo, cleared at launch
 SIDE_FILES = ("-wal", "-shm", "-journal")  # what SQLite leaves beside a database someone opened
 
@@ -226,8 +230,9 @@ def make(db, now=None):
 
 def digest(db):
     """A fingerprint of everything in the budget: every table and its rows, but not this
-    session's undo (cleared at each launch) or what `make` keeps in meta about the last backup
-    and budget_folder.py about the last save."""
+    session's undo (cleared at each launch), what `make` keeps in meta about the last backup
+    and budget_folder.py about the last save, or what only shows the budget (NOT_A_CHANGE_COLUMNS).
+    It's what a change is: for a backup at quit, a save, and the budget folder's same contents."""
     with db.read() as c:
         return digest_of(c)
 
@@ -241,11 +246,13 @@ def digest_of(conn):
         if table in NOT_THE_BUDGET:
             continue
         rows = conn.execute(f'SELECT * FROM "{table}" ORDER BY rowid')
-        h.update(repr((table, [d[0] for d in rows.description])).encode())
+        names = [d[0] for d in rows.description]
+        keep = [i for i, name in enumerate(names) if (table, name) not in NOT_A_CHANGE_COLUMNS]
+        h.update(repr((table, [names[i] for i in keep])).encode())
         for row in rows:
             if table == "meta" and row[0] in NOT_A_CHANGE:
                 continue
-            h.update(repr(tuple(row)).encode())
+            h.update(repr(tuple(row[i] for i in keep)).encode())
     return h.hexdigest()
 
 
