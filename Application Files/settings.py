@@ -22,6 +22,7 @@ import os
 import threading
 from pathlib import Path
 
+import computer
 from budget import OVERSPENDING
 
 log = logging.getLogger("inab")
@@ -34,9 +35,10 @@ USUAL_MONTHS = (3, 6, 12)
 DEFAULTS = {
     "theme": "system",
     "auto_import": True,          # import bank files that land in Downloads
-    "downloads_dir": "",          # '' means ~/Downloads
+    "downloads_dir": "",          # '' means the system's Downloads folder
     "update_automatically": True,
     "dashboard_months": 6,        # the Dashboard's months: one of DASHBOARD_MONTHS
+    "budget_folder": "",          # where the budget is kept (docs/adr/0008): '' until one is chosen
 }
 
 # What a copy ran on for a setting its settings.json had no value for (one added after it
@@ -49,6 +51,7 @@ RAN_ON = {
     "downloads_dir": "",
     "update_automatically": True,
     "dashboard_months": 6,
+    "budget_folder": "",          # 1.5.0: none yet, so it asks once (docs/adr/0008)
 }
 
 # The budget's own settings (in its meta), as a new budget starts them. Next month is the
@@ -82,8 +85,9 @@ def validate(raw, missing=DEFAULTS):
     for key in ("auto_import", "update_automatically"):
         if isinstance(raw.get(key), bool):
             s[key] = raw[key]
-    if isinstance(raw.get("downloads_dir"), str):
-        s["downloads_dir"] = raw["downloads_dir"].strip()
+    for key in ("downloads_dir", "budget_folder"):
+        if isinstance(raw.get(key), str):
+            s[key] = raw[key].strip()
     if raw.get("dashboard_months") in DASHBOARD_MONTHS and not isinstance(raw["dashboard_months"], bool):
         s["dashboard_months"] = raw["dashboard_months"]
     return s
@@ -179,7 +183,7 @@ class Settings:
 
     def downloads_dir(self):
         custom = self.get()["downloads_dir"]
-        return Path(custom).expanduser() if custom else Path.home() / "Downloads"
+        return Path(custom).expanduser() if custom else computer.this().downloads_dir()
 
 
 # ── the budget's own ──

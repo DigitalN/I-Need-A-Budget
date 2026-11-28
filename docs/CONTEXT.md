@@ -174,9 +174,38 @@ _Avoid_: refile
 ## Budget
 
 **Budget**:
-Everything one copy of the app keeps: accounts, categories, payees and the money
-assigned. Starting over means starting a new budget. The Budget page shows its
-categories month by month.
+Everything kept in one budget folder: accounts, categories, payees and the money
+assigned. Any computer with the app can open it from there, one at a time. Starting over
+means starting a new budget. The Budget page shows its categories month by month.
+
+**Budget folder**:
+The folder you choose for your budget, on any computer. Whatever syncs or backs up that
+folder (OneDrive, iCloud Drive, Dropbox, a drive of your own) takes the budget to your
+other computers and keeps it safe: the app never goes online for it.
+_Avoid_: data folder (that's this computer's own), sync folder, library
+
+**Save**:
+The app putting the budget, whole, into its budget folder: a few seconds after you stop
+making changes, and when it quits. What you do is kept on the computer straight away;
+saving is what lets your other computers see it.
+_Avoid_: sync, upload
+
+**Changed on two computers**:
+A budget that two computers each changed since the save they both started from. The app
+shows what each one changed and asks which to keep; the other is kept as a backup.
+_Avoid_: conflict, merge
+
+**Older in the folder**:
+The budget in the budget folder being one this computer's budget already has everything of: a
+backup copied in, or the folder put back to an earlier day. The app asks before using it; the
+one you don't keep is kept as a backup.
+_Avoid_: out of date, stale
+
+**Data folder**:
+This computer's own folder for the app: its settings, its logs and the copy of the budget it
+works on. Nobody needs to open it, except to restore a backup made before there was a budget
+folder.
+_Avoid_: budget folder (that's the one you choose)
 
 **Currency**:
 The one currency a budget's files are in, set by the first file that says one. A file in
@@ -192,9 +221,10 @@ The first month the budget counts. Months before it still teach the app and coun
 towards Usual.
 
 **Backup**:
-A copy of the whole budget, made when the app quits after something changed and kept for
-four months. Restoring one puts the budget back as it was then, its Overspending and
-Usual's months included.
+A copy of the whole budget, made when the app quits after something changed, or of the
+one you didn't keep when it was changed on two computers. Backups are kept in the budget
+folder for four months. Restoring one puts the budget back as it was then, its
+Overspending and Usual's months included.
 _Avoid_: export, snapshot
 
 **Cash**:

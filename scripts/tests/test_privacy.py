@@ -12,7 +12,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts" / "hooks"))
-import privacy_check  # noqa: E402  (the checks the hooks and release.sh run)
+import privacy_check  # noqa: E402  (the checks the hooks and the release run make)
 
 
 def tracked_files():
@@ -23,14 +23,19 @@ def tracked_files():
 
 def test_gitignore_keeps_out_bank_files_and_databases():
     ignored = subprocess.run(["git", "check-ignore", "--no-index", "x.CSV", "x.csv", "x.qfx", "x.ofx", "budget.db",
-                              "budget.db-wal", "budget.db-shm", "budget.db-journal", "budget-2026-10-12.tmp", "app.log",
-                              "Imported Files/a.CSV", "Backups/budget-2026-10-12.db", ".git-denylist"],
+                              "budget.db-wal", "budget.db-shm", "budget.db-journal", "budget-2026-10-12.tmp", "app.log", "Budget.inab",
+                              "Budget.inab-wal", "Budget.inab-shm", "Budget.inab-journal", ".Budget.inab.PC-A.partial",
+                              ".saving-0.partial", ".saving-0.partial-journal", ".reading-0.partial-wal",
+                              "Imported Files/a.CSV", "Backups/budget-2026-10-12.db", ".git-denylist",
+                              "Certificates.p12", "release.PFX"],
                              cwd=ROOT, capture_output=True, text=True).stdout.split()
-    assert len(ignored) == 14  # 13 paths, one of them with a space
+    assert len(ignored) == 24  # 23 paths, one of them with a space
 
 
 def test_no_bank_files_or_databases_would_be_committed():
-    bad = [p for p in tracked_files() if p.suffix.lower() in (".csv", ".ofx", ".qfx", ".qbo", ".db", ".sqlite")]
+    bad = [p for p in tracked_files() if p.suffix.lower() in (".csv", ".ofx", ".qfx", ".qbo", ".db", ".sqlite", ".inab", ".inab-wal",
+                                                                    ".inab-shm", ".inab-journal", ".partial", ".partial-journal",
+                                                                    ".partial-wal", ".partial-shm", ".p12", ".pfx")]
     assert bad == []
 
 

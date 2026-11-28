@@ -66,9 +66,9 @@ def test_an_upgrade_leaves_every_saved_setting_alone(tmp_path):
     (tmp_path / "settings.json").write_text(json.dumps(OLD_FILE))
     _old_budget(tmp_path)
     app = _launch(tmp_path)
-    mine = {k: v for k, v in OLD_FILE.items() if k in DEFAULTS}
+    mine = {**{k: v for k, v in OLD_FILE.items() if k in DEFAULTS}, "budget_folder": ""}  # 1.5.0's: none yet, it asks
     assert app.settings.get() == mine
-    assert _file(tmp_path) == OLD_FILE  # the two stay where 1.4.0 reads them
+    assert _file(tmp_path) == {**OLD_FILE, "budget_folder": ""}  # the two stay where 1.4.0 reads them
     assert call(app, "get_settings") == {**mine, "overspending": "carry_over", "average_months": 6}
     assert call(app, "month", "2026-10")["overspending"] == "carry_over"
     # The next launch changes nothing: it's the budget's now, and this Mac's file stays as it is.
@@ -125,7 +125,7 @@ def test_what_copies_ran_on_never_changes():
     """A copy that skips versions keeps what it was using: these are frozen, whatever the defaults become."""
     assert set(RAN_ON) == set(DEFAULTS) and set(BUDGET_RAN_ON) == set(BUDGET_DEFAULTS)
     assert RAN_ON == {"theme": "system", "auto_import": True, "downloads_dir": "", "update_automatically": True,
-                      "dashboard_months": 6}
+                      "dashboard_months": 6, "budget_folder": ""}
     assert BUDGET_RAN_ON == {"overspending": "this_month", "average_months": 3}
 
 

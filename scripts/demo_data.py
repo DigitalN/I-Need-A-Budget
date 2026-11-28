@@ -3,6 +3,7 @@
 """A made-up budget for screenshots and demos: nothing in it is anyone's real data.
 
     python3 scripts/demo_data.py [FOLDER] [--today 2026-10-14]
+    python3 scripts/demo_data.py --files-only [FOLDER]  # only the made-up bank files: into FOLDER, or Downloads
 
 then the `demo` entry in .claude/launch.json (the preview on that folder, port 8766), and
 scripts/screenshots.py for the README's pictures. FOLDER defaults to
@@ -129,12 +130,39 @@ def made_up_history(today):
     return cheq, card
 
 
+def bank_files(today):
+    """The made-up Quicken files, as (name, text)."""
+    sys.path.insert(0, str(ROOT / "scripts" / "tests"))
+    from helpers import card_number
+
+    cheq, card = made_up_history(today)
+    opening = 1_250_00
+    return [
+        ("Chequing.qfx", ofx([(d, c, n, f"C{i}") for i, (d, c, n) in enumerate(cheq)], False, "000123456789",
+                             opening + sum(c for _, c, _ in cheq), today - timedelta(days=1))),
+        ("Mastercard.qfx", ofx([(d, c, n, f"M{i}") for i, (d, c, n) in enumerate(card)], True, card_number("4417"),
+                               sum(c for _, c, _ in card), today - timedelta(days=1))),
+    ]
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("folder", nargs="?", default=str(Path.home() / "Library" / "Caches" / "I Need A Budget-demo"))
+    parser.add_argument("folder", nargs="?")
     parser.add_argument("--today", default="2026-10-14")
+    parser.add_argument("--files-only", action="store_true",
+                        help="only write the made-up bank files, into FOLDER or this computer's Downloads (to try "
+                             "onboarding); nothing else there is touched")
     args = parser.parse_args()
-    data = Path(args.folder).expanduser().resolve()
+    if args.files_only:
+        sys.path.insert(0, str(ROOT / "Application Files"))
+        import computer
+
+        folder = Path(args.folder).expanduser() if args.folder else computer.this().downloads_dir()
+        for name, text in bank_files(date.fromisoformat(args.today)):
+            (folder / name).write_text(text, encoding="utf-8")
+            print(folder / name)
+        return
+    data = Path(args.folder or Path.home() / "Library" / "Caches" / "I Need A Budget-demo").expanduser().resolve()
     if data == REAL_DATA.resolve() or data in REAL_DATA.resolve().parents:
         sys.exit("Never the app's real data folder. Pass a throwaway folder.")
     if data.exists():
@@ -147,7 +175,7 @@ def main():
     sys.path.insert(0, str(ROOT / "Application Files"))
     sys.path.insert(0, str(ROOT / "scripts" / "tests"))
     from db import Database
-    from helpers import call, card_number
+    from helpers import call
     from service import BudgetService
     from settings import Settings
 
@@ -155,16 +183,8 @@ def main():
     settings.update({"downloads_dir": str(downloads)})
     app = BudgetService(Database(data / "budget.db"), settings, data, hooks={})
 
-    cheq, card = made_up_history(today)
-    opening = 1_250_00
-    files = [
-        ("Chequing.qfx", ofx([(d, c, n, f"C{i}") for i, (d, c, n) in enumerate(cheq)], False, "000123456789",
-                             opening + sum(c for _, c, _ in cheq), today - timedelta(days=1))),
-        ("Mastercard.qfx", ofx([(d, c, n, f"M{i}") for i, (d, c, n) in enumerate(card)], True, card_number("4417"),
-                               sum(c for _, c, _ in card), today - timedelta(days=1))),
-    ]
     paths = []
-    for name, text in files:
+    for name, text in bank_files(today):
         (downloads / name).write_text(text, encoding="utf-8")
         paths.append(str(downloads / name))
     out = call(app, "import_files", paths)
@@ -221,6 +241,7 @@ def main():
             call(app, "track_subscription", candidate=candidate, name=names[candidate["name"]])
         else:
             call(app, "dismiss_subscription", candidate)
+    cheq, card = made_up_history(today)
     print(f"Made-up budget in {data}: {len(cheq)} chequing and {len(card)} card transactions, "
           f"{len(call(app, 'inbox')['items'])} left in the Inbox.")
 

@@ -8,16 +8,21 @@ import importlib.util
 import os
 import shutil
 import sqlite3
+import sys
 from datetime import date, datetime
 from pathlib import Path
 
 import pytest
 
 import backups
+import computer
 from db import SCHEMA_VERSION, Database
 
 MAIN = Path(__file__).resolve().parents[2] / "Application Files" / "main.py"
 QUIT = datetime(2026, 11, 8, 14, 32, 5)
+PERMISSIONS = pytest.mark.skipif(sys.platform == "win32", reason="a folder's permissions don't stop access on Windows")
+MAC = pytest.mark.skipif(sys.platform != "darwin", reason="macOS asks the app's delegate")
+WINDOWS = pytest.mark.skipif(sys.platform != "win32", reason="Windows closes pywebview's WinForms window")
 
 
 def open_db(folder):
@@ -321,6 +326,7 @@ def test_a_backup_that_fails_at_quit_doesnt_stop_the_rest(tmp_path, monkeypatch,
     assert wal.stat().st_size == 0                             # and the log is still folded in
 
 
+@PERMISSIONS
 def test_a_backups_folder_that_cant_be_read_makes_a_quit_back_up_in_the_data_folder(tmp_path):
     """Documents access refused after a backup was made there: none can be seen, so none holds
     the budget as it is. That's not an error, and not a reason to skip."""
@@ -544,6 +550,7 @@ def test_moving_to_another_disk_never_leaves_half_a_file_under_a_backups_name(tm
     assert all((new / n).read_bytes() == n.encode() for n in OLD)
 
 
+@PERMISSIONS
 def test_a_backups_folder_that_cant_be_written_falls_back_to_the_data_folder(tmp_path, caplog):
     """Documents access refused in System Settings: the backup still happens, in the old
     folder, and moves over at a launch once Documents can be written again."""
@@ -566,6 +573,7 @@ def test_a_backups_folder_that_cant_be_written_falls_back_to_the_data_folder(tmp
     assert not (tmp_path / "data" / "Backups").exists()
 
 
+@PERMISSIONS
 def test_the_first_launch_of_1_4_with_documents_refused_then_allowed(tmp_path, caplog):
     """Don't Allow: the copy before the upgrade and the launch backup wait in the data folder's
     Backups/ with 1.3.1's, one line in the log each. Allowed later: the next launch moves them all
@@ -615,7 +623,9 @@ def load_main(monkeypatch, home, data=None):
 
 def test_backups_go_to_documents(tmp_path, monkeypatch):
     main = load_main(monkeypatch, tmp_path / "home")
-    assert main.BACKUP_DIR == tmp_path / "home" / "Documents" / backups.FOLDER_NAME
+    assert main.BACKUP_DIR == computer.this().documents_dir() / backups.FOLDER_NAME  # the system's Documents
+    if sys.platform == "darwin":
+        assert main.BACKUP_DIR == tmp_path / "home" / "Documents" / backups.FOLDER_NAME
     assert not (tmp_path / "home").exists()  # working it out writes nothing
 
 
@@ -626,23 +636,48 @@ def test_with_inab_data_dir_backups_stay_inside_that_folder(tmp_path, monkeypatc
 
 
 class FakeUpdater:
-    def __init__(self, folder):
-        self.folder, self.installs = folder, []
+    kept = False  # an update a log-off kept, which passed its checks again at this launch
 
-    def install(self, relaunch_after=False):
+    def __init__(self, folder):
+        self.folder, self.installs, self.logging_out = folder, [], []
+        self.saved = None    # the budget folder's Budget.inab, when there is one
+        self.in_folder = []  # what it held as each update went in
+
+    def take_kept(self):
+        return self.kept
+
+    def log_off_called_off(self):
+        self.taken_back = getattr(self, "taken_back", 0) + 1
+
+    def install(self, relaunch_after=False, logging_out=False):
         self.installs.append((relaunch_after, names(self.folder)))  # what was backed up by then
+        self.logging_out.append(logging_out)  # Windows installs nothing then: test_windows_update.py
+        if self.saved is not None:
+            self.in_folder.append(categories_in(self.saved) if self.saved.exists() else None)
         return True
 
 
-class FakeNSApp:
+class FakeComputer:
+    """This computer, as far as quitting goes: what's sent to the window's thread runs straight away."""
     terminated = False
 
-    def terminate_(self, sender):
+    def on_main_thread(self, fn, *args):
+        fn(*args)
+
+    def quit(self):
         self.terminated = True
 
 
-ROUTES = ["close button", "⌘Q", "Quit in the Dock", "Restart now", "quit to install an update",
-          "logging out or shutting down"]
+ROUTES = ["close button", pytest.param("⌘Q", marks=MAC), pytest.param("Quit in the Dock", marks=MAC), "Restart now",
+          "quit to install an update", pytest.param("logging out or shutting down", marks=MAC),
+          pytest.param("✕ or Alt+F4", marks=WINDOWS), pytest.param("logging off or shutting down", marks=WINDOWS),
+          pytest.param("Task Manager", marks=WINDOWS)]
+# What Windows sends the window for each: (message, wParam, lParam).
+SC_CLOSE = (0x0112, 0xF060, 0)                  # WM_SYSCOMMAND: ✕, Alt+F4, the taskbar's Close window
+WM_CLOSE = (0x0010, 0, 0)                       # without SC_CLOSE first: Task Manager, taskkill
+QUERY_LOG_OFF = (0x0011, 0, 0x80000000)         # WM_QUERYENDSESSION, ENDSESSION_LOGOFF: may the session end?
+LOGGING_OFF = (0x0016, 1, 0x80000000)           # WM_ENDSESSION: it does
+LOG_OFF_CALLED_OFF = (0x0016, 0, 0x80000000)    # WM_ENDSESSION: another app stopped it
 
 
 class AppleEvent:
@@ -657,9 +692,12 @@ class AppleEvent:
 
 def the_mac_asks_to_quit(monkeypatch, app, event):
     """What macOS does for ⌘Q, Quit in the Dock, logging out and shutting down: it asks the app's
-    delegate (main.py's applicationShouldTerminate_), with the Apple event the quit came with."""
-    AppKit = pytest.importorskip("AppKit")
-    cocoa = pytest.importorskip("webview.platforms.cocoa")
+    delegate (computer_mac's applicationShouldTerminate_, which asks main.py's _should_quit), with
+    the Apple event the quit came with."""
+    import AppKit
+    from webview.platforms import cocoa
+
+    from computer_mac import Mac
 
     class Events:
         @staticmethod
@@ -669,55 +707,148 @@ def the_mac_asks_to_quit(monkeypatch, app, event):
         def currentAppleEvent(self):
             return event
 
-    app._install_quit_handler()
+    Mac().when_asked_to_quit(app._should_quit, app._quit_called_off)
     monkeypatch.setattr(AppKit, "NSAppleEventManager", Events)
     return cocoa.BrowserView.AppDelegate.alloc().init().applicationShouldTerminate_(None)
 
 
-def start_app(monkeypatch, tmp_path):
-    """The app as main.py builds it, without its window: a budget in a throwaway folder."""
-    AppKit = pytest.importorskip("AppKit")
-    from PyObjCTools import AppHelper
+def a_windows_window(monkeypatch, app):
+    """The app's window as Windows has it: a real WinForms form, whose closing goes the way
+    pywebview's does (FormClosing → computer_windows' on_closing → pywebview's own, which raises
+    the closing event main.py's _on_closing listens to, and cancels the close when it says so),
+    its messages watched as restore_window watches them. Windows.quit() closes it as pywebview's
+    destroy() does, with Close()."""
+    from types import SimpleNamespace
+
+    import webview
+    from webview.event import Event
+    from webview.platforms import winforms
+
+    import System.Windows.Forms as WinForms
+    from computer_windows import Windows
+
+    form = winforms.BrowserView.BrowserForm
+    monkeypatch.setattr(form, "on_closing", form.on_closing)  # pywebview's own again after the test
+    monkeypatch.setattr(form, "_pywebview_on_closing", None, raising=False)
+
+    class ThisWindows(Windows):  # the window's thread is the test's
+        def on_main_thread(self, fn, *args):
+            fn(*args)
+
+    app._computer = ThisWindows()
+    app._computer.when_asked_to_quit(app._should_quit, app._quit_called_off)
+    window = WinForms.Form()
+    pywebview_side = SimpleNamespace(closing=Event(None, True), pywebview_window=SimpleNamespace(confirm_close=False))
+    pywebview_side.closing += app._on_closing
+    window.FormClosing += lambda sender, args: form.on_closing(pywebview_side, sender, args)
+    app._computer._watch_window(window)
+    monkeypatch.setattr(webview, "windows", [SimpleNamespace(destroy=window.Close)])
+    monkeypatch.setattr(logging.getLogger("pywebview"), "setLevel", lambda level: None)
+    return window
+
+
+def windows_sends(window, message):
+    """Windows' message to the window, on its thread (the test's); returns the window's answer."""
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.windll.user32
+    user32.SendMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+    user32.SendMessageW.restype = ctypes.c_ssize_t
+    return user32.SendMessageW(window.Handle.ToInt64(), *message)
+
+
+def start_app(monkeypatch, tmp_path, budget_folder=None):
+    """The app as main.py builds it, without its window: a budget in a throwaway folder, kept in
+    `budget_folder` when there's one (moved there as the window's first pop-up does it)."""
+    import threading
+
+    from helpers import call
+    from service import BudgetService
+    from settings import Settings
 
     main = load_main(monkeypatch, tmp_path / "home", tmp_path / "data")
     app = main.BudgetApp.__new__(main.BudgetApp)
+    app._computer = FakeComputer()
+    app._computer_name = "PC-A"
     app._db = Database(main.DATA_DIR / "budget.db", backup_dir=main.BACKUP_DIR)
     app._updater = FakeUpdater(main.BACKUP_DIR)
+    app._settings = Settings(main.DATA_DIR / "settings.json")
+    app._service = BudgetService(app._db, app._settings, main.DATA_DIR, computer_name="PC-A")
     app._window, app._quitting, app._quit_asked = None, False, None
-    ns_app = FakeNSApp()
-    monkeypatch.setattr(AppKit, "NSApp", ns_app)
-    monkeypatch.setattr(AppHelper, "callAfter", lambda fn, *args: fn(*args))
-    return main, app, ns_app
+    app._folder_round, app._folder_watching = threading.Lock(), True
+    if budget_folder is not None:
+        call(app._service, "move_budget_folder", str(budget_folder))
+        app._updater.folder, app._updater.saved = budget_folder / "Backups", budget_folder / "Budget.inab"
+    return main, app, app._computer
 
 
-def quit_by(route, main, app, ns_app, monkeypatch):
-    import AppKit
-
+def quit_by(route, main, app, this_computer, monkeypatch):
     asked = []
     monkeypatch.setattr(app, "_ask_page_to_quit", lambda: asked.append(route) or False)  # a page that's there
     if route == "close button":
         assert app._on_closing() is False and asked  # the page saves what you were typing, then quits
         main.Api(app).quit()
-        assert ns_app.terminated
+        assert this_computer.terminated
     elif route in ("⌘Q", "Quit in the Dock"):  # the Dock's comes as an Apple event with no reason
+        import AppKit
+
         event = AppleEvent(None) if route == "Quit in the Dock" else None
         assert the_mac_asks_to_quit(monkeypatch, app, event) == AppKit.NSTerminateCancel
         assert asked and not app._updater.installs  # nothing until the page answers
         main.Api(app).quit()
-        assert ns_app.terminated
+        assert this_computer.terminated
     elif route == "Restart now":
         app._restart_into_update()
-        assert ns_app.terminated
+        assert this_computer.terminated
     elif route == "logging out or shutting down":  # straight away, without asking the page: the Mac is waiting
+        import AppKit
+
         assert the_mac_asks_to_quit(monkeypatch, app, AppleEvent("logging out")) == AppKit.NSTerminateNow
         assert not asked
+    elif route == "✕ or Alt+F4":  # the close button's way
+        window = a_windows_window(monkeypatch, app)
+        windows_sends(window, SC_CLOSE)
+        assert not window.IsDisposed  # open while the page saves what you were typing
+        assert asked and not app._updater.installs  # nothing until the page answers
+        main.Api(app).quit()  # Windows.quit(): Close() comes back through FormClosing, which lets it close
+        assert window.IsDisposed and asked == [route]
+    elif route == "Task Manager":  # straight away, without asking the page: Windows is waiting
+        window = a_windows_window(monkeypatch, app)
+        windows_sends(window, WM_CLOSE)
+        assert window.IsDisposed and not asked
+    elif route == "logging off or shutting down":  # straight away: the backup's made before Windows is answered
+        window = a_windows_window(monkeypatch, app)
+        assert windows_sends(window, QUERY_LOG_OFF) == 1  # it may end
+        assert names(app._updater.folder) and not asked  # this app's backups: Documents', or the budget folder's
+        windows_sends(window, LOGGING_OFF)
+        assert window.IsDisposed
     else:
         app._before_quit()
     app._before_quit()  # asked again while quitting: nothing more
 
 
+def test_an_update_kept_from_a_log_off_goes_in_before_the_window_opens(tmp_path, monkeypatch):
+    """As Restart now does it: a backup with the latest changes first, then the update, and the
+    app reopens once it's in (Windows: test_windows_update.py)."""
+    import types
+
+    main, app, this_computer = start_app(monkeypatch, tmp_path)
+    add_category(app._db, "Groceries")
+    app._app_path, app._updater.kept = None, True
+
+    def window(*args, **kwargs):
+        raise AssertionError("the window opened")
+
+    monkeypatch.setitem(sys.modules, "webview", types.SimpleNamespace(create_window=window))
+    app.run()
+    made = names(main.BACKUP_DIR)
+    assert len(made) == 1 and categories_in(main.BACKUP_DIR / made[0]) == ["Groceries"]
+    assert app._updater.installs == [(True, made)]
+
+
 def test_the_close_button_with_no_page_to_ask_quits_straight_away(tmp_path, monkeypatch):
-    main, app, ns_app = start_app(monkeypatch, tmp_path)
+    main, app, this_computer = start_app(monkeypatch, tmp_path)
     add_category(app._db, "Groceries")
     assert app._on_closing() is True  # the window closes, and the app quits
     made = names(main.BACKUP_DIR)
@@ -726,29 +857,222 @@ def test_the_close_button_with_no_page_to_ask_quits_straight_away(tmp_path, monk
 
 @pytest.mark.parametrize("route", ROUTES)
 def test_every_way_of_quitting_leaves_a_backup_with_the_latest_changes(route, tmp_path, monkeypatch):
-    main, app, ns_app = start_app(monkeypatch, tmp_path)
+    main, app, this_computer = start_app(monkeypatch, tmp_path)
     add_category(app._db, "Groceries")
-    quit_by(route, main, app, ns_app, monkeypatch)
+    quit_by(route, main, app, this_computer, monkeypatch)
 
     made = names(main.BACKUP_DIR)
     assert len(made) == 1 and categories_in(main.BACKUP_DIR / made[0]) == ["Groceries"]
     relaunch = route == "Restart now"
     assert app._updater.installs[0] == (relaunch, made)  # the update goes in after the backup
+    straight_away = ("logging out or shutting down", "logging off or shutting down", "Task Manager")
+    assert any(app._updater.logging_out) == (route in straight_away)  # the updater is told: nothing installs then
     assert not (tmp_path / "home").exists()  # nothing near the real Documents
 
 
 @pytest.mark.parametrize("route", ROUTES)
 def test_every_way_of_quitting_with_nothing_changed_makes_no_backup_and_the_update_still_goes_in(
         route, tmp_path, monkeypatch):
-    main, app, ns_app = start_app(monkeypatch, tmp_path)
+    main, app, this_computer = start_app(monkeypatch, tmp_path)
     add_category(app._db, "Groceries")
     earlier = backups.at_quit(app._db, QUIT)  # the last time the app quit
-    quit_by(route, main, app, ns_app, monkeypatch)
+    quit_by(route, main, app, this_computer, monkeypatch)
 
     assert names(main.BACKUP_DIR) == [earlier.name]
     relaunch = route == "Restart now"
     assert app._updater.installs[0] == (relaunch, [earlier.name])
     assert not (tmp_path / "home").exists()  # nothing near the real Documents
+
+
+@pytest.mark.parametrize("route", ROUTES)
+def test_every_way_of_quitting_saves_the_budget_into_its_folder(route, tmp_path, monkeypatch):
+    """Issue #189: with a budget folder, every quit backs up into the folder's Backups/ (named for this
+    computer) and saves the budget there with the latest changes, both before an update goes in, and takes
+    this computer's note out of the folder. The watcher looks no more."""
+    folder = tmp_path / "Budget folder"
+    main, app, this_computer = start_app(monkeypatch, tmp_path, folder)
+    assert categories_in(folder / "Budget.inab") == []
+    add_category(app._db, "Groceries")
+    assert categories_in(folder / "Budget.inab") == []  # not saved yet: changes hadn't stopped
+    quit_by(route, main, app, this_computer, monkeypatch)
+
+    assert categories_in(folder / "Budget.inab") == ["Groceries"]
+    made = names(folder / "Backups")
+    assert len(made) == 1 and " on PC-A " in made[0] and categories_in(folder / "Backups" / made[0]) == ["Groceries"]
+    assert app._updater.installs[0] == (route == "Restart now", made)  # after the backup
+    assert app._updater.in_folder[0] == ["Groceries"]                  # and after the save
+    assert not [n for n in names(folder) if n.startswith(".Budget open on")]
+    assert not app._folder_watching
+    assert not (tmp_path / "home").exists()  # nothing near the real Documents
+
+
+def _another_computer(tmp_path, folder, name="PC-B"):
+    """A second computer on the same budget folder, as test_budget_folder.py's are."""
+    from helpers import call
+    from service import BudgetService
+    from settings import Settings
+
+    data = tmp_path / name
+    service = BudgetService(Database(data / "budget.db"), Settings(data / "settings.json"), data, computer_name=name)
+    call(service, "open_budget_folder", str(folder))
+    return service
+
+
+def _add(db, group, name):
+    with db.write("Add category") as c:
+        found = c.execute("SELECT id FROM category_groups WHERE name = ?", (group,)).fetchone()
+        gid = found[0] if found else c.execute("INSERT INTO category_groups (name) VALUES (?)", (group,)).lastrowid
+        c.execute("INSERT INTO categories (group_id, name) VALUES (?, ?)", (gid, name))
+
+
+def test_quitting_saves_first_and_asks_when_it_was_changed_on_two_computers(tmp_path, monkeypatch):
+    """The page's last look as it quits (Api.look_before_quit): the budget is saved straight away, whether
+    or not changes have stopped. Changed on two computers it can't be, so the page asks which to keep
+    before quitting, with each side's changes ready (budget_folder_question)."""
+    import json
+
+    from helpers import call
+
+    folder = tmp_path / "Budget folder"
+    main, app, _ = start_app(monkeypatch, tmp_path, folder)
+    _add(app._db, "Everyday", "Groceries")
+    assert main.Api(app).look_before_quit()["state"] == "saved"
+    assert categories_in(folder / "Budget.inab") == ["Groceries"]
+
+    other = _another_computer(tmp_path, folder)
+    _add(other.db, "Everyday", "Rent")
+    assert other.budget_folder_look(now=True)["state"] == "saved"
+    _add(app._db, "Everyday", "Fuel")
+    state = main.Api(app).look_before_quit()
+    assert state["state"] == "two_computers" and state["other"]["computer"] == "PC-B"
+    assert categories_in(folder / "Budget.inab") == ["Groceries", "Rent"]  # nothing saved over
+    question = call(app._service, "budget_folder_question")
+    assert question["state"] == "two_computers" and question["can_show_changes"]
+    assert "Fuel" in json.dumps(question["this"]) and "Rent" not in json.dumps(question["this"])
+    assert "Rent" in json.dumps(question["theirs"]) and "Fuel" not in json.dumps(question["theirs"])
+
+    call(app._service, "keep_this_budget")  # what the page's Keep this PC's does
+    assert categories_in(folder / "Budget.inab") == ["Groceries", "Fuel"]
+    assert call(app._service, "budget_folder_question") is None
+
+
+class _Stop(Exception):
+    pass
+
+
+def test_the_budget_folder_watcher_tells_the_page_and_stops_looking_at_quit(tmp_path, monkeypatch):
+    """Its round takes another computer's save and tells the page (`took`: who saved it). Once a quit has
+    saved and taken this computer's note out of the folder, a round doesn't look again (it would leave the
+    note there after the app had gone)."""
+    import types
+
+    folder = tmp_path / "Budget folder"
+    main, app, _ = start_app(monkeypatch, tmp_path, folder)
+    other = _another_computer(tmp_path, folder)
+    _add(other.db, "Everyday", "Rent")
+    other.budget_folder_look(now=True)
+
+    sent, rounds = [], []
+    monkeypatch.setattr(app, "_send", lambda event, payload: sent.append((event, payload)))
+
+    def sleep(seconds):
+        rounds.append(seconds)
+        if len(rounds) == 1:
+            app._back_up()  # quitting
+        elif len(rounds) == 3:
+            raise _Stop
+
+    monkeypatch.setattr(main, "time", types.SimpleNamespace(sleep=sleep, monotonic=lambda: 0.0))
+    with pytest.raises(_Stop):
+        app._watch_folder()
+    assert [event for event, _ in sent] == ["budget_folder"]  # one look, none after the quit's
+    assert sent[0][1]["took"]["computer"] == "PC-B" and categories_in(main.DATA_DIR / "budget.db") == ["Rent"]
+    assert not [n for n in names(folder) if n.startswith(".Budget open on PC-A")]
+    assert rounds == [main.WATCH_EVERY] * 3
+
+
+@WINDOWS
+def test_a_log_off_another_app_stops_is_called_off_and_the_app_carries_on(tmp_path, monkeypatch):
+    """Another app stops the log-off and the person cancels: Windows tells the app the session
+    isn't ending after all. It carries on: the next ✕ asks the page again and makes a backup with
+    what changed since, and Downloads is watched again."""
+    main, app, this_computer = start_app(monkeypatch, tmp_path)
+    window = a_windows_window(monkeypatch, app)
+    add_category(app._db, "Groceries")
+    assert windows_sends(window, QUERY_LOG_OFF) == 1
+    assert app._quitting and len(names(main.BACKUP_DIR)) == 1
+    windows_sends(window, LOG_OFF_CALLED_OFF)
+    assert not window.IsDisposed and not app._quitting  # still open, and not quitting
+    assert app._updater.taken_back == 1  # an update the log-off kept waits for the next quit again
+
+    assert app._folder_watching  # the budget folder's watcher looks again too (issue #189)
+    watched, service = [], app._service
+    app._service = type("Service", (), {"watch_downloads": lambda self: watched.append(1)})()
+    monkeypatch.setattr(main.time, "sleep", lambda seconds: (_ for _ in ()).throw(SystemExit))
+    with pytest.raises(SystemExit):
+        app._watch()
+    assert watched  # the watcher's next look
+    app._service = service
+
+    add_category(app._db, "Rent")
+    real_at_quit = backups.at_quit
+    # a later second than the first (the budget folder's at_quit passes its own time: issue #189)
+    monkeypatch.setattr(backups, "at_quit", lambda db, now=None: real_at_quit(db, QUIT))
+    asked = []
+    monkeypatch.setattr(app, "_ask_page_to_quit", lambda: asked.append("✕") or False)
+    windows_sends(window, SC_CLOSE)
+    assert asked and not window.IsDisposed  # through the page, as before the log-off
+    main.Api(app).quit()
+    assert window.IsDisposed
+    assert len(names(main.BACKUP_DIR)) == 2
+    assert categories_in(main.BACKUP_DIR / backups.name(QUIT)) == ["Groceries", "Rent"]
+    assert app._updater.logging_out == [True, False]  # the next quit installs what's waiting
+
+
+@WINDOWS
+def test_task_manager_after_a_close_that_was_cancelled_still_quits_straight_away(tmp_path, monkeypatch):
+    """✕, then Keep editing: WinForms' CloseReason stays UserClosing, so Task Manager's close (a
+    WM_CLOSE on its own) would read as the person's and wait for the page while Task Manager is
+    about to end the app. Who's closing comes from the message instead."""
+    main, app, this_computer = start_app(monkeypatch, tmp_path)
+    window = a_windows_window(monkeypatch, app)
+    add_category(app._db, "Groceries")
+    asked = []
+    monkeypatch.setattr(app, "_ask_page_to_quit", lambda: asked.append("✕") or False)
+    windows_sends(window, SC_CLOSE)
+    assert asked == ["✕"] and not window.IsDisposed  # the page asks; you keep editing
+    windows_sends(window, WM_CLOSE)
+    assert window.IsDisposed and asked == ["✕"]  # straight away, without asking the page again
+    made = names(main.BACKUP_DIR)
+    assert len(made) == 1 and categories_in(main.BACKUP_DIR / made[0]) == ["Groceries"]
+
+
+@WINDOWS
+def test_a_close_after_a_called_off_log_off_is_the_persons_again(tmp_path, monkeypatch):
+    main, app, this_computer = start_app(monkeypatch, tmp_path)
+    window = a_windows_window(monkeypatch, app)
+    windows_sends(window, QUERY_LOG_OFF)
+    windows_sends(window, LOG_OFF_CALLED_OFF)
+    asked = []
+    monkeypatch.setattr(app, "_ask_page_to_quit", lambda: asked.append("✕") or False)
+    windows_sends(window, SC_CLOSE)
+    assert asked and not window.IsDisposed  # the page asks, not a log-off's straight quit
+    window.Dispose()
+
+
+@WINDOWS
+def test_a_second_log_off_after_one_called_off_quits(tmp_path, monkeypatch):
+    main, app, this_computer = start_app(monkeypatch, tmp_path)
+    window = a_windows_window(monkeypatch, app)
+    windows_sends(window, QUERY_LOG_OFF)
+    windows_sends(window, LOG_OFF_CALLED_OFF)
+    add_category(app._db, "Groceries")
+    assert windows_sends(window, QUERY_LOG_OFF) == 1
+    windows_sends(window, LOGGING_OFF)
+    assert window.IsDisposed
+    # Both log-offs may back up in one second: both are kept ("… (2).db"), so the newest isn't the last name
+    newest = max(main.BACKUP_DIR.glob("budget-*.db"), key=lambda p: p.stat().st_mtime_ns)
+    assert categories_in(newest) == ["Groceries"]
 
 
 def test_a_backup_restored_on_another_mac_keeps_the_overspending_choice(app, tmp_path):

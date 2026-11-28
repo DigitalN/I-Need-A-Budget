@@ -1,6 +1,7 @@
 #!/bin/bash
 # SPDX-License-Identifier: GPL-3.0-only
-# Builds "I Need A Budget.app" and prints its path. Used by install.sh and package.sh.
+# Builds "I Need A Budget.app" and prints its path. Used by install.sh, and by the release run
+# (.github/workflows/release.yml), which builds with --adhoc and signs afterwards (scripts/sign-mac.sh).
 #
 #   scripts/build.sh            sign with your Apple Development certificate, if you have one
 #   scripts/build.sh --adhoc    sign locally only (the app then can't update itself)

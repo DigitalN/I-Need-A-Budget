@@ -1,11 +1,17 @@
 # Pinned so setup never silently pulls in newer (unreviewed) versions.
+# The pyobjc packages are the Mac's only. pywebview needs all six there: its Cocoa side
+# imports AppKit, Foundation and WebKit, its file dialog UniformTypeIdentifiers, and it
+# requires Quartz and Security, which pip would otherwise install unpinned.
 pywebview==6.1
-pyobjc-core==12.1
-pyobjc-framework-Cocoa==12.1
-pyobjc-framework-Quartz==12.1
-pyobjc-framework-WebKit==12.1
-pyobjc-framework-Security==12.1
-pyobjc-framework-UniformTypeIdentifiers==12.1
+pyobjc-core==12.1; sys_platform == "darwin"
+pyobjc-framework-Cocoa==12.1; sys_platform == "darwin"
+pyobjc-framework-Quartz==12.1; sys_platform == "darwin"
+pyobjc-framework-WebKit==12.1; sys_platform == "darwin"
+pyobjc-framework-Security==12.1; sys_platform == "darwin"
+pyobjc-framework-UniformTypeIdentifiers==12.1; sys_platform == "darwin"
+# Windows' only: pywebview reaches WinForms and WebView2 (Edge's engine) through .NET with these.
+pythonnet==3.2.1; sys_platform == "win32"
+clr_loader==0.3.1; sys_platform == "win32"
 rapidfuzz==3.14.3
 pyinstaller==6.19.0
 pytest==9.0.2

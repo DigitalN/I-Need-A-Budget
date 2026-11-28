@@ -1,0 +1,814 @@
+# SPDX-License-Identifier: GPL-3.0-only
+"""What each of two computers changed since the save both started from (issue #184, docs/adr/0008).
+
+Made-up budgets, built through BudgetService in throwaway folders: a start, then two copies of it
+standing in for two computers, each changed on its own and compared with the start."""
+
+import os
+import shutil
+import sqlite3
+import sys
+from pathlib import Path
+
+import pytest
+
+import backups
+import changes
+from db import Database
+from helpers import call, write
+from service import BudgetService
+from settings import Settings
+
+
+def ofx(rows, balance, as_of, acct_id="000111222333", kind="CHECKING"):
+    """A made-up OFX download. rows: (YYYYMMDD, amount, name, fitid)"""
+    trn = "".join(f"<STMTTRN><TRNTYPE>OTHER<DTPOSTED>{d}<TRNAMT>{a}<FITID>{f}<NAME>{n}</STMTTRN>\n" for d, a, n, f in rows)
+    return ("OFXHEADER:100\nDATA:OFXSGML\nVERSION:102\n\n<OFX><SIGNONMSGSRSV1><SONRS><FI><ORG>SAMPLE CU"
+            "<FID>00000</FI></SONRS></SIGNONMSGSRSV1><BANKMSGSRSV1><STMTTRNRS><STMTRS><CURDEF>CAD\n"
+            f"<BANKACCTFROM><BANKID>0000<ACCTID>{acct_id}<ACCTTYPE>{kind}</BANKACCTFROM>\n<BANKTRANLIST>\n{trn}"
+            f"</BANKTRANLIST><LEDGERBAL><BALAMT>{balance}<DTASOF>{as_of}</LEDGERBAL></STMTRS></STMTTRNRS></BANKMSGSRSV1></OFX>\n")
+
+
+FIRST = [("20260901", "2000.00", "PAYROLL SAMPLE CO", "A1"), ("20260903", "-4.50", "SAMPLE CAFE CALGARY AB", "A2"),
+         ("20260905", "-60.00", "SAMPLE GROCER CALGARY AB", "A3")]
+SECOND = [("20261002", "-12.00", "SAMPLE BAKERY CALGARY AB", "B1"), ("20261004", "-30.00", "SAMPLE BOOKS CALGARY AB", "B2"),
+          ("20261006", "-8.25", "SAMPLE DELI CALGARY AB", "B3")]
+
+
+def open_service(folder):
+    downloads = folder / "Downloads"
+    downloads.mkdir(parents=True, exist_ok=True)
+    store = Settings(folder / "settings.json")
+    store.update({"downloads_dir": str(downloads)})
+    service = BudgetService(Database(folder / "budget.db"), store, folder / "data")
+    service.test_downloads = downloads
+    return service
+
+
+def save(service, path):
+    """The whole budget in one file, as a save or a backup is made (VACUUM INTO)."""
+    with service.db.lock:
+        service.db.conn.execute("VACUUM INTO ?", (str(path),))
+    return path
+
+
+class Budgets:
+    """The save both computers started from, and the two computers."""
+
+    def __init__(self, tmp_path, start):
+        self.tmp = tmp_path
+        self.start = save(start, tmp_path / "start.inab")
+        self.this, self.other = self.computer("this"), self.computer("other")
+
+    def computer(self, name):
+        folder = self.tmp / name
+        folder.mkdir()
+        shutil.copyfile(self.start, folder / "budget.db")
+        return open_service(folder)
+
+    def compare(self):
+        return changes.compare(self.start, self.this.db, self.other.db)
+
+    def this_side(self):
+        """This computer's changes, checking the other computer (which changed nothing) lists none."""
+        both = self.compare()
+        assert both["other"] == {"changed": False, "summary": "", "sections": []}
+        return both["this"]
+
+
+@pytest.fixture
+def budgets(app, tmp_path):
+    """A budget set up in September 2026 (today is Oct 12): Chequing from a file, three categories, two
+    transactions waiting in the inbox (the payroll's Income too, as the app guesses nothing)."""
+    first = write(app.test_downloads, "chequing-1.ofx", ofx(FIRST, "3000.00", "20260915"))
+    call(app, "import_files", [str(first)])
+    groups = {"Everyday": ["Food", "Fun"], "Bills": ["Rent"]}
+    for group, names in groups.items():
+        gid = call(app, "add_group", group)
+        for n in names:
+            call(app, "add_category", gid, n)
+    call(app, "finish_onboarding", "2026-09")
+    call(app, "set_assigned", "2026-10", cat(app, "Food"), 30000)
+    return Budgets(tmp_path, app)
+
+
+def cat(service, name):
+    return {c["name"]: c["id"] for g in call(service, "categories") for c in g["categories"]}[name]
+
+
+def group_id(service, name):
+    return {g["name"]: g["id"] for g in call(service, "categories")}[name]
+
+
+def txn(service, name, account_name="SAMPLE CU Chequing"):
+    """The transaction in `account_name` whose payee or bank wording has `name` in it."""
+    found = [t for t in call(service, "transactions", {})["items"] if t["account_name"] == account_name
+             and name.lower() in f"{t['payee_name']} {t['raw_name']}".lower()]
+    assert len(found) == 1, found
+    return found[0]
+
+
+def account(service, name):
+    return next(a for a in call(service, "accounts") if a["name"] == name)
+
+
+def texts(side, kind=None):
+    return [item["text"] for s in side["sections"] if kind in (None, s["kind"]) for item in s["items"]]
+
+
+def kinds(side):
+    return [s["kind"] for s in side["sections"]]
+
+
+# ── nothing to list ──
+
+def test_nothing_changed_lists_nothing(budgets):
+    assert budgets.compare() == {"this": {"changed": False, "summary": "", "sections": []},
+                                 "other": {"changed": False, "summary": "", "sections": []}}
+
+
+def test_bookkeeping_is_never_a_change(budgets, monkeypatch):
+    """This session's undo, backups' own meta, what the budget folder keeps about saves, the inbox's
+    reasons and a group folded are never listed."""
+    this = budgets.this
+    monkeypatch.setattr(changes, "BOOKKEEPING_META", changes.BOOKKEEPING_META | {"saved_by", "save_id"})
+    call(this, "add_group", "Gifts")
+    call(this, "undo")                              # an undo step made and undone: only undo's tables
+    call(this, "set_group_collapsed", group_id(this, "Everyday"), True)
+    backups.make(this.db)                            # backed_up, backed_up_to
+    this.db.set_meta("saved_by", "Sample Computer")  # what a save keeps (issue #183 adds its keys)
+    this.db.set_meta("save_id", "0001")
+    with this.db.write(keep_undo=True) as c:
+        c.execute("UPDATE transactions SET reason = 'Only text to show'")
+        c.execute("INSERT INTO undo_groups (label) VALUES ('Something')")
+    assert budgets.this_side() == {"changed": False, "summary": "", "sections": []}
+
+
+def test_a_meta_key_nobody_described_is_seen(budgets):
+    budgets.this.db.set_meta("a_later_versions_setting", "1")
+    side = budgets.this_side()
+    assert side["summary"] == "Something else in the budget changed"
+
+
+# ── files and the inbox ──
+
+def test_a_file_imported_and_categorized(budgets):
+    """The issue's example: an import from Downloads, some of it categorized."""
+    this = budgets.this
+    second = write(this.test_downloads, "chequing-2.ofx", ofx(SECOND, "2949.75", "20261010"))
+    call(this, "import_files", [str(second)])
+    call(this, "categorize", [txn(this, "BAKERY")["id"]], cat(this, "Food"))
+    call(this, "categorize", [txn(this, "CAFE")["id"]], cat(this, "Food"))
+    call(this, "set_assigned", "2026-10", cat(this, "Food"), 35000)
+    side = budgets.this_side()
+    assert side["changed"]
+    assert side["summary"] == ("1 file imported (3 transactions) · 2 categorized · "
+                               "Food's Assigned for October 2026 $300.00 → $350.00")
+    assert texts(side, "imported") == ["chequing-2.ofx into SAMPLE CU Chequing: 3 new transactions"]
+    assert texts(side, "categorized") == ["Sample Cafe, Sep 3, −$4.50: categorized as Food",
+                                          "Sample Bakery, Oct 2, −$12.00: categorized as Food"]
+    assert all(not item["app"] for s in side["sections"] for item in s["items"])
+
+
+def test_what_the_app_categorized_on_its_own_says_so(budgets):
+    this = budgets.this
+    call(this, "categorize", [txn(this, "CAFE")["id"]], cat(this, "Food"))
+    start = save(this, budgets.tmp / "after-cafe.inab")
+    again = write(this.test_downloads, "chequing-2.ofx",
+                  ofx([("20261002", "-4.50", "SAMPLE CAFE CALGARY AB", "B9")], "2995.50", "20261010"))
+    call(this, "import_files", [str(again)])
+    side = changes.what_changed(start, this.db)
+    item = next(s for s in side["sections"] if s["kind"] == "categorized")["items"][0]
+    assert item == {"text": "Sample Cafe, Oct 2, −$4.50: categorized as Food by the app", "app": True}
+
+
+def test_an_import_removed(budgets):
+    this = budgets.this
+    call(this, "undo_import", call(this, "imports")[0]["id"])
+    side = budgets.this_side()
+    assert side["sections"][0] == {
+        "kind": "import_removed", "title": "1 import removed (3 transactions)",
+        "items": [{"text": "chequing-1.ofx (SAMPLE CU Chequing): 3 transactions removed", "app": False}]}
+    assert "deleted" not in kinds(side)
+
+
+def test_a_removed_import_whose_transaction_another_file_has(budgets):
+    this = budgets.this
+    second = write(this.test_downloads, "chequing-2.ofx", ofx([FIRST[2], SECOND[0]], "2928.00", "20261010"))
+    call(this, "import_files", [str(second)])
+    first = next(i for i in call(this, "imports") if i["filename"] == "chequing-1.ofx")
+    call(this, "undo_import", first["id"])
+    side = budgets.this_side()
+    assert side["summary"] == "1 file imported (1 transaction) · 1 import removed (2 transactions)"
+    assert texts(side, "import_removed") == [
+        "chequing-1.ofx (SAMPLE CU Chequing): 2 transactions removed; 1 stays: another file has it"]
+
+
+def test_sent_back_split_and_recategorized(budgets):
+    this = budgets.this
+    cafe, grocer = txn(this, "CAFE")["id"], txn(this, "GROCER")["id"]
+    call(budgets.this, "categorize", [cafe], cat(this, "Food"))
+    start = save(this, budgets.tmp / "categorized.inab")
+    call(this, "update_transaction", cafe, {"category_id": cat(this, "Fun")})
+    call(this, "split_transaction", grocer, [{"category_id": cat(this, "Food"), "amount": -4000},
+                                             {"category_id": cat(this, "Fun"), "amount": -2000}])
+    side = changes.what_changed(start, this.db)
+    assert texts(side, "categorized") == ["Sample Cafe, Sep 3, −$4.50: Food → Fun"]
+    assert texts(side, "split") == ["Sample Grocer, Sep 5, −$60.00: split into Food −$40.00 + Fun −$20.00"]
+    start = save(this, budgets.tmp / "split.inab")
+    call(this, "unsplit_transaction", grocer)
+    side = changes.what_changed(start, this.db)
+    assert side["summary"] == "1 sent back"
+    assert texts(side) == ["Sample Grocer, Sep 5, −$60.00: sent back to the Inbox"]
+
+
+def test_added_by_hand_edited_and_deleted(budgets):
+    this = budgets.this
+    wallet = call(this, "add_account", "Wallet", "cash", 5000, "2026-10-01")
+    added = call(this, "add_transaction", wallet, "2026-10-03", "Sample Market", -1500, cat(this, "Food"))["id"]
+    start = save(this, budgets.tmp / "added.inab")
+    call(this, "update_transaction", added, {"date": "2026-10-04", "amount": -1750, "note": "Made-up note"})
+    call(this, "update_transaction", txn(this, "GROCER")["id"], {"note": "Another note"})
+    call(this, "delete_transaction", txn(this, "CAFE")["id"])
+    side = changes.what_changed(start, this.db)
+    assert side["summary"] == "2 edited · 1 deleted"
+    assert texts(side, "edited") == [
+        "Sample Grocer, Sep 5, −$60.00: note “Another note”",
+        "Sample Market, Oct 3, −$15.00: date Oct 3 → Oct 4; amount −$15.00 → −$17.50; note “Made-up note”"]
+    assert texts(side, "deleted") == ["Sample Cafe, Sep 3, −$4.50 in SAMPLE CU Chequing: deleted"]
+    side = budgets.this_side()  # from the start: the Wallet and its transaction are new
+    assert texts(side, "added") == ["Sample Market, Oct 4, −$17.50 in Wallet: added by hand (Food)"]
+    assert "Added account Wallet (Wallet)" in texts(side, "accounts")
+    assert "Wallet's balance set: $50.00 on Oct 1, 2026" in texts(side, "accounts")
+
+
+def test_a_transfer_is_one_change(budgets):
+    this = budgets.this
+    savings = call(this, "add_account", "Savings", "savings", 0, "2026-09-01")
+    start = save(this, budgets.tmp / "savings.inab")
+    call(this, "update_transaction", txn(this, "GROCER")["id"], {"transfer_account_id": savings})
+    side = changes.what_changed(start, this.db)
+    assert side["summary"] == "1 marked as a transfer"
+    assert texts(side) == ["$60.00 from SAMPLE CU Chequing to Savings, Sep 5: marked as a transfer"]
+    start = save(this, budgets.tmp / "transfer.inab")
+    call(this, "update_transaction", txn(this, "GROCER")["id"], {"transfer_account_id": None})
+    side = changes.what_changed(start, this.db)
+    assert side["summary"] == "1 sent back"  # the half the app added to Savings went with the transfer
+
+
+def test_a_balance_adjustment_from_check_balance(budgets):
+    this = budgets.this
+    chequing = account(this, "SAMPLE CU Chequing")
+    call(this, "reconcile", chequing["id"], chequing["balance"] - 1000)
+    side = budgets.this_side()
+    assert texts(side, "balance_adjustment") == [
+        "Balance adjustment in SAMPLE CU Chequing, Oct 12, −$10.00: added by Check balance…"]
+    assert next(s for s in side["sections"] if s["kind"] == "balance_adjustment")["title"] == "1 balance adjustment added"
+
+
+# ── the budget ──
+
+def test_assigned_and_budgeted(budgets):
+    this = budgets.this
+    call(this, "move_money", "2026-10", cat(this, "Food"), cat(this, "Fun"), 5000)
+    call(this, "set_monthly_budget", cat(this, "Rent"), 120000)
+    call(this, "set_monthly_budget", cat(this, "Food"), 40000)
+    side = budgets.this_side()
+    assert side["summary"] == "2 Assigned amounts changed · 2 Budgeted amounts changed"
+    assert texts(side, "assigned") == ["Food's Assigned for October 2026 $300.00 → $250.00",
+                                       "Fun's Assigned for October 2026 $0.00 → $50.00"]
+    assert texts(side, "budgeted") == ["Food's Budgeted none → $400.00", "Rent's Budgeted none → $1,200.00"]
+
+
+def test_categories_and_groups(budgets):
+    this = budgets.this
+    everyday, bills = group_id(this, "Everyday"), group_id(this, "Bills")
+    call(this, "add_category", everyday, "Gifts")
+    call(this, "rename_category", cat(this, "Fun"), "Going Out")
+    call(this, "set_category_hidden", cat(this, "Rent"), True)
+    call(this, "set_category_note", cat(this, "Food"), "Groceries and takeout")
+    call(this, "rename_group", bills, "Monthly Bills")
+    call(this, "move_group", bills, everyday)
+    call(this, "add_group", "Savings Goals")
+    side = budgets.this_side()
+    assert texts(side, "categories") == [
+        "Added category group Savings Goals", "Renamed category group Bills → Monthly Bills",
+        "Moved category group Monthly Bills", "Added category Gifts in Everyday", "Changed the notes for Food",
+        "Renamed category Fun → Going Out", "Hid category Rent"]
+    assert side["summary"] == "7 changes to categories"
+    start = save(this, budgets.tmp / "categories.inab")
+    call(this, "set_category_hidden", cat(this, "Rent"), False)
+    call(this, "delete_group", group_id(this, "Savings Goals"))
+    side = changes.what_changed(start, this.db)
+    assert texts(side) == ["Deleted category group Savings Goals", "Showed category Rent again"]
+
+
+def test_a_category_moved_once_is_one_move(budgets):
+    this = budgets.this
+    everyday, bills = group_id(this, "Everyday"), group_id(this, "Bills")
+    call(this, "add_category", everyday, "Gifts")
+    call(this, "add_category", everyday, "Household")
+    start = save(this, budgets.tmp / "four.inab")
+    call(this, "move_category", cat(this, "Household"), everyday, cat(this, "Food"))  # to the top
+    call(this, "move_category", cat(this, "Fun"), bills)
+    side = changes.what_changed(start, this.db)
+    assert texts(side) == ["Moved category Fun from Everyday to Bills", "Moved category Household in Everyday"]
+    assert side["summary"] == "2 categories moved"
+
+
+def test_the_same_id_added_on_both_sides_is_two_things(budgets):
+    call(budgets.this, "add_category", group_id(budgets.this, "Everyday"), "Gifts")
+    call(budgets.other, "add_category", group_id(budgets.other, "Everyday"), "Pets")
+    assert cat(budgets.this, "Gifts") == cat(budgets.other, "Pets")
+    both = budgets.compare()
+    assert texts(both["this"]) == ["Added category Gifts in Everyday"]
+    assert texts(both["other"]) == ["Added category Pets in Everyday"]
+
+
+# ── accounts, recurring charges, payees, settings ──
+
+def test_accounts_edited_closed_and_merged(budgets):
+    this = budgets.this
+    card = call(this, "add_account", "Sample Card", "credit_card", 50000, "2026-10-01")
+    copy = call(this, "add_account", "Sample Card Copy", "credit_card")
+    call(this, "add_transaction", copy, "2026-10-02", "Sample Bookshop", -2500)
+    start = save(this, budgets.tmp / "cards.inab")
+    chequing = account(this, "SAMPLE CU Chequing")["id"]
+    call(this, "update_account", chequing, {"name": "Everyday Chequing", "bank": "Sample Credit Union"})
+    call(this, "update_account", card, {"apr": 19.99, "planned_payment": 10000})
+    call(this, "set_balance", card, 45000, "2026-10-10")
+    call(this, "merge_accounts", copy, card)
+    savings = call(this, "add_account", "Savings", "savings")
+    start_2 = save(this, budgets.tmp / "savings.inab")
+    call(this, "update_account", savings, {"closed": True})
+    side = changes.what_changed(start, this.db)
+    assert texts(side, "accounts") == [
+        "Added account Savings (Savings)", "Merged Sample Card Copy into Sample Card",
+        "SAMPLE CU Chequing: renamed to Everyday Chequing; bank SAMPLE CU → Sample Credit Union",
+        "Sample Card: interest rate none → 19.99%; planned payment none → $100.00",
+        "Sample Card's balance set: $450.00 owing on Oct 10, 2026"]
+    assert "categories" not in kinds(side)  # the cards' payment categories come and go with them
+    assert changes.what_changed(start_2, this.db)["summary"] == "1 account closed"
+    start_3 = save(this, budgets.tmp / "closed.inab")
+    call(this, "update_account", savings, {"closed": False})
+    assert changes.what_changed(start_3, this.db)["summary"] == "1 account reopened"
+
+
+def test_recurring_charges(budgets):
+    this = budgets.this
+    sub = call(this, "add_subscription", payee="Sample Stream", name="Sample Stream", amount=1199,
+               category_id=cat(this, "Fun"))
+    side = budgets.this_side()
+    assert texts(side, "recurring_charges") == ["Started tracking Sample Stream: $11.99 a month"]
+    start = save(this, budgets.tmp / "stream.inab")
+    call(this, "update_subscription", sub, {"amount": 1299, "pricing": "varies", "category_id": cat(this, "Food")})
+    call(this, "cancel_subscription", sub, "2026-10-12")
+    side = changes.what_changed(start, this.db)
+    assert texts(side) == ["Sample Stream: price $11.99 → $12.99; price type Same Price → Fluctuates Every Time; "
+                           "category Fun → Food; marked cancelled"]
+    assert side["summary"] == "1 recurring charge changed"
+    start = save(this, budgets.tmp / "cancelled.inab")
+    call(this, "delete_subscription", sub)
+    assert changes.what_changed(start, this.db)["summary"] == "Stopped tracking 1 recurring charge"
+
+
+def test_payees_renamed_merged_and_always_ask(budgets):
+    this = budgets.this
+    cafe, grocer = txn(this, "CAFE"), txn(this, "GROCER")
+    call(this, "rename_payee", cafe["payee_id"], "Corner Cafe")
+    call(this, "set_always_ask", grocer["payee_id"], True)
+    side = budgets.this_side()
+    assert texts(side, "payees") == ["Renamed payee Sample Cafe → Corner Cafe", "Always ask on for Sample Grocer"]
+    start = save(this, budgets.tmp / "renamed.inab")
+    call(this, "rename_payee", grocer["payee_id"], "Corner Cafe")  # the same name: one payee now
+    side = changes.what_changed(start, this.db)
+    assert texts(side) == ["Sample Grocer merged into Corner Cafe"]
+    assert "edited" not in kinds(side)
+
+
+def test_no_different_to_the_inboxs_same_payee_question(budgets):
+    """"Is Sample Greengrocer the same as Sample Grocer?" answered No, different: a decision kept in the budget (the
+    question isn't asked again), so it's shown, not "Nothing you'd see". Yes, same moves the transaction, shown as
+    that; categorizing it drops the question too, shown as categorized only."""
+    this = budgets.this
+    later = write(this.test_downloads, "chequing-2.ofx",
+                  ofx([("20261008", "-22.00", "SAMPLE GREENGROCER CALGARY AB", "C1")], "2978.00", "20261010"))
+    call(this, "import_files", [str(later)])
+    asked = txn(this, "GREENGROCER")
+    item = next(i for i in call(this, "inbox")["items"] if i["id"] == asked["id"])
+    assert item["similar_payee"]["name"] == "Sample Grocer"
+    start = save(this, budgets.tmp / "asked.inab")
+
+    call(this, "same_payee", asked["id"], False)
+    side = changes.what_changed(start, this.db)
+    assert texts(side) == ["Sample Greengrocer isn't the same as Sample Grocer"]
+    assert side["summary"] == "1 payee isn't the same as another" and kinds(side) == ["payees"]
+
+    call(this, "undo")
+    call(this, "same_payee", asked["id"], True)
+    assert texts(changes.what_changed(start, this.db)) == ["Sample Greengrocer merged into Sample Grocer"]  # its one
+
+    call(this, "undo")
+    call(this, "categorize", [asked["id"]], cat(this, "Food"))
+    assert kinds(changes.what_changed(start, this.db)) == ["categorized"]
+
+
+def test_the_budgets_own_settings(budgets):
+    this = budgets.this
+    call(this, "save_settings", {"overspending": "carry_over", "average_months": 6, "theme": "dark"})
+    side = budgets.this_side()
+    assert texts(side) == ["Overspending Next month → Carry over", "Usual's months 3 → 6"]
+    assert side["summary"] == "2 settings changed"
+
+
+def test_the_budget_start(budgets):
+    call(budgets.this, "set_budget_start", "2026-10")
+    assert budgets.this_side()["summary"] == "Budget start September 2026 → October 2026"
+
+
+# ── each side, on its own ──
+
+def test_each_side_lists_only_its_own_changes(budgets):
+    this, other = budgets.this, budgets.other
+    call(this, "categorize", [txn(this, "CAFE")["id"]], cat(this, "Food"))
+    call(other, "categorize", [txn(other, "CAFE")["id"]], cat(other, "Fun"))
+    call(other, "set_assigned", "2026-10", cat(other, "Rent"), 100000)
+    both = budgets.compare()
+    assert both["this"]["summary"] == "1 categorized"
+    assert texts(both["this"]) == ["Sample Cafe, Sep 3, −$4.50: categorized as Food"]
+    assert both["other"]["summary"] == "1 categorized · Rent's Assigned for October 2026 $0.00 → $1,000.00"
+    assert texts(both["other"], "categorized") == ["Sample Cafe, Sep 3, −$4.50: categorized as Fun"]
+
+
+def test_a_transaction_under_a_reused_id_is_a_new_one(budgets):
+    """SQLite gives a deleted newest row's id to the next one: made at another time, it's another transaction."""
+    this = budgets.this
+    wallet = call(this, "add_account", "Wallet", "cash", 5000, "2026-10-01")
+    first = call(this, "add_transaction", wallet, "2026-10-03", "Sample Market", -1500)["id"]
+    start = save(this, budgets.tmp / "market.inab")
+    call(this, "delete_transaction", first)
+    again = call(this, "add_transaction", wallet, "2026-10-05", "Sample Kiosk", -300)["id"]
+    assert again == first
+    with this.db.write(keep_undo=True) as c:  # added a moment later than the one deleted
+        c.execute("UPDATE transactions SET created_at = '2026-10-12 23:59:59' WHERE id = ?", (again,))
+    side = changes.what_changed(start, this.db)
+    assert side["summary"] == "1 added by hand · 1 deleted"
+
+
+def test_a_payee_under_a_reused_id_is_another_payee(budgets):
+    """The newest payee merged into another, then an import's new payee given its id: no rename."""
+    this = budgets.this
+    second = write(this.test_downloads, "chequing-2.ofx", ofx([SECOND[0], SECOND[2]], "2979.75", "20261010"))
+    call(this, "import_files", [str(second)])
+    start = save(this, budgets.tmp / "deli.inab")
+    deli = txn(this, "DELI")["payee_id"]
+    call(this, "rename_payee", deli, "Sample Bakery")  # the same name as another: one payee now
+    third = write(this.test_downloads, "chequing-3.ofx",
+                  ofx([("20261011", "-20.00", "SAMPLE FLORIST CALGARY AB", "C1")], "2959.75", "20261011"))
+    call(this, "import_files", [str(third)])
+    assert txn(this, "FLORIST")["payee_id"] == deli
+    side = changes.what_changed(start, this.db)
+    assert side["summary"] == "1 file imported (1 transaction) · 1 payee merged into another"
+    assert texts(side, "payees") == ["Sample Deli merged into Sample Bakery"]
+
+
+def test_a_category_under_a_reused_id_is_another_one(budgets):
+    this = budgets.this
+    gifts = call(this, "add_category", group_id(this, "Everyday"), "Gifts")
+    start = save(this, budgets.tmp / "gifts.inab")
+    call(this, "delete_category", gifts)
+    assert call(this, "add_category", group_id(this, "Everyday"), "Pets") == gifts
+    side = changes.what_changed(start, this.db)
+    assert texts(side) == ["Added category Pets in Everyday", "Deleted category Gifts"]
+
+
+def test_a_category_group_under_the_same_id_is_the_same_group(budgets):
+    """Nothing a group keeps tells one deleted and another added apart from one renamed: it's renamed."""
+    this = budgets.this
+    spare = call(this, "add_group", "Spare")  # the newest group, empty
+    start = save(this, budgets.tmp / "spare.inab")
+    call(this, "rename_group", spare, "Holidays")
+    assert texts(changes.what_changed(start, this.db)) == ["Renamed category group Spare → Holidays"]
+    call(this, "delete_group", spare)
+    assert call(this, "add_group", "Holidays") == spare
+    assert texts(changes.what_changed(start, this.db)) == ["Renamed category group Spare → Holidays"]
+
+
+def test_a_group_emptied_and_renamed_is_still_there(budgets):
+    this = budgets.this
+    bills = group_id(this, "Bills")
+    call(this, "move_category", cat(this, "Rent"), group_id(this, "Everyday"))
+    call(this, "rename_group", bills, "Later")
+    assert texts(budgets.this_side()) == ["Renamed category group Bills → Later",
+                                          "Moved category Rent from Bills to Everyday"]
+
+
+# ── what the app did on its own ──
+
+def test_the_balance_checks_adjustments_are_the_apps(budgets):
+    this = budgets.this
+    second = write(this.test_downloads, "chequing-2.ofx", ofx(SECOND, "2949.25", "20261010"))  # 50¢ short
+    call(this, "import_files", [str(second)])
+    side = budgets.this_side()
+    assert next(s for s in side["sections"] if s["kind"] == "balance_adjustment")["items"] == [
+        {"text": "Balance adjustment in SAMPLE CU Chequing, Oct 10, −$0.50: added by the app", "app": True}]
+    start = save(this, budgets.tmp / "short.inab")
+    call(this, "undo_import", next(i for i in call(this, "imports") if i["filename"] == "chequing-2.ofx")["id"])
+    side = changes.what_changed(start, this.db)
+    assert texts(side, "balance_adjustment") == [
+        "Balance adjustment in SAMPLE CU Chequing, Oct 10, −$0.50: removed by the app"]
+
+
+def test_a_price_that_follows_its_charge_is_the_apps(budgets):
+    this = budgets.this
+    first = write(this.test_downloads, "chequing-2.ofx",
+                  ofx([("20261003", "-11.99", "SAMPLE STREAM", "S1")], "2988.01", "20261003"))
+    call(this, "import_files", [str(first)])
+    stream = txn(this, "STREAM")["id"]
+    call(this, "subscription_from_transaction", txn_id=stream, name="Sample Stream", pricing="currency")
+    start = save(this, budgets.tmp / "stream.inab")
+    later = write(this.test_downloads, "chequing-3.ofx",
+                  ofx([("20261011", "-12.13", "SAMPLE STREAM", "S2")], "2975.88", "20261011"))
+    call(this, "import_files", [str(later)])
+    side = changes.what_changed(start, this.db)
+    assert next(s for s in side["sections"] if s["kind"] == "recurring_charges")["items"] == [
+        {"text": "Sample Stream: price $11.99 → $12.13 by the app, from its charge on Oct 11", "app": True}]
+    start = save(this, budgets.tmp / "followed.inab")
+    sub = call(this, "subscriptions")
+    sub_id = next(s["id"] for group in sub.values() if isinstance(group, list) for s in group
+                  if isinstance(s, dict) and s.get("name") == "Sample Stream")
+    call(this, "update_subscription", sub_id, {"name": "Sample Stream Plus", "amount": 1499})
+    side = changes.what_changed(start, this.db)
+    assert side["summary"] == "1 recurring charge changed"
+    assert next(s for s in side["sections"] if s["kind"] == "recurring_charges")["items"] == [
+        {"text": "Sample Stream: renamed to Sample Stream Plus; price $12.13 → $14.99", "app": False}]
+
+
+def test_new_price_for_is_yours_whoever_decides_the_charge(budgets):
+    """"New price for…" is only asked about a charge outside its price type's tolerance; the app follows one inside
+    it. The charge's category (by_you) says nothing about who moved the price."""
+    this = budgets.this
+    first = write(this.test_downloads, "chequing-2.ofx",
+                  ofx([("20261003", "-11.99", "SAMPLE STREAM", "S1")], "2988.01", "20261003"))
+    call(this, "import_files", [str(first)])
+    sub = call(this, "subscription_from_transaction", txn_id=txn(this, "STREAM")["id"], name="Sample Stream")
+    start = save(this, budgets.tmp / "stream.inab")
+    later = write(this.test_downloads, "chequing-3.ofx",
+                  ofx([("20261011", "-14.99", "SAMPLE STREAM", "S2")], "2973.02", "20261011"))
+    call(this, "import_files", [str(later)])
+    charge = next(t for t in call(this, "transactions", {})["items"] if t["amount"] == -1499)
+    call(this, "link_subscription", charge["id"], sub["subscription_id"])  # New price for Sample Stream
+    side = changes.what_changed(start, this.db)
+    assert next(s for s in side["sections"] if s["kind"] == "recurring_charges")["items"] == [
+        {"text": "Sample Stream: price $11.99 → $14.99", "app": False}]
+
+
+def test_a_price_the_app_followed_stays_the_apps_after_you_categorize_its_charge(budgets):
+    this = budgets.this
+    first = write(this.test_downloads, "chequing-2.ofx",
+                  ofx([("20261003", "-11.99", "SAMPLE STREAM", "S1")], "2988.01", "20261003"))
+    call(this, "import_files", [str(first)])
+    call(this, "subscription_from_transaction", txn_id=txn(this, "STREAM")["id"], name="Sample Stream",
+         pricing="currency")
+    start = save(this, budgets.tmp / "stream.inab")
+    later = write(this.test_downloads, "chequing-3.ofx",
+                  ofx([("20261011", "-12.13", "SAMPLE STREAM", "S2")], "2975.88", "20261011"))
+    call(this, "import_files", [str(later)])
+    charge = next(t for t in call(this, "transactions", {})["items"] if t["amount"] == -1213)
+    call(this, "update_transaction", charge["id"], {"category_id": cat(this, "Fun")})  # the charge follows you there
+    side = changes.what_changed(start, this.db)
+    assert next(s for s in side["sections"] if s["kind"] == "recurring_charges")["items"] == [
+        {"text": "Sample Stream: price $11.99 → $12.13 by the app, from its charge on Oct 11; category none → Fun",
+         "app": False}]  # partly yours
+
+
+def test_an_accounts_bank_from_its_file_is_the_apps(budgets):
+    this = budgets.this
+    chequing = account(this, "SAMPLE CU Chequing")["id"]
+    call(this, "update_account", chequing, {"bank": ""})
+    start = save(this, budgets.tmp / "no-bank.inab")
+    second = write(this.test_downloads, "chequing-2.ofx", ofx(SECOND, "2949.75", "20261010"))
+    call(this, "import_files", [str(second)])
+    side = changes.what_changed(start, this.db)
+    assert next(s for s in side["sections"] if s["kind"] == "accounts")["items"] == [
+        {"text": "SAMPLE CU Chequing: bank none → SAMPLE CU by the app, from its file", "app": True}]
+
+
+def test_a_balance_adjustment_under_a_removed_import_doesnt_stay_as_a_transaction(budgets):
+    this = budgets.this
+    short = write(this.test_downloads, "chequing-2.ofx", ofx(SECOND, "2948.75", "20261010"))  # $1.00 short
+    call(this, "import_files", [str(short)])
+    kiosk = write(this.test_downloads, "chequing-3.ofx",
+                  ofx([("20261011", "-5.00", "SAMPLE KIOSK CALGARY AB", "C1")], "2943.75", "20261011"))
+    call(this, "import_files", [str(kiosk)])
+    start = save(this, budgets.tmp / "kiosk.inab")
+    call(this, "undo_import", next(i for i in call(this, "imports") if i["filename"] == "chequing-3.ofx")["id"])
+    side = changes.what_changed(start, this.db)
+    assert texts(side, "import_removed") == ["chequing-3.ofx (SAMPLE CU Chequing): 1 transaction removed"]
+
+
+def test_a_transfer_undone_and_the_half_left_to_decide_again(budgets):
+    this = budgets.this
+    savings = call(this, "add_account", "Savings", "savings", 0, "2026-09-01")
+    half = call(this, "add_transaction", savings, "2026-09-05", "Sample Grocer", 6000)["id"]
+    grocer = txn(this, "GROCER")["id"]
+    call(this, "update_transaction", grocer, {"transfer_account_id": savings})
+    assert txn(this, "GROCER")["transfer_id"] == half  # paired with the one there, not a half added
+    start = save(this, budgets.tmp / "paired.inab")
+    call(this, "update_transaction", grocer, {"transfer_account_id": None})
+    side = changes.what_changed(start, this.db)
+    assert side["summary"] == "1 sent back"
+    assert texts(side) == ["$60.00 from SAMPLE CU Chequing to Savings, Sep 5: not a transfer, both sent back to the Inbox"]
+    call(this, "update_transaction", grocer, {"transfer_account_id": savings})
+    start = save(this, budgets.tmp / "paired-again.inab")
+    call(this, "delete_transaction", grocer)
+    side = changes.what_changed(start, this.db)
+    assert side["summary"] == "1 back in the Inbox · 1 deleted"
+    item = next(s for s in side["sections"] if s["kind"] == "back_in_inbox")["items"][0]
+    assert item == {"text": "Sample Grocer, Sep 5, $60.00: not a transfer, back in the Inbox to decide again",
+                    "app": True}
+
+
+def test_one_added_by_hand_as_a_transfers_other_half_is_listed_once(budgets):
+    this = budgets.this
+    savings = call(this, "add_account", "Savings", "savings", 0, "2026-09-01")
+    start = save(this, budgets.tmp / "savings.inab")
+    half = call(this, "add_transaction", savings, "2026-09-05", "Sample Grocer", 6000)["id"]
+    call(this, "update_transaction", half, {"transfer_account_id": account(this, "SAMPLE CU Chequing")["id"]})
+    side = changes.what_changed(start, this.db)
+    assert texts(side) == ["Sample Grocer, Sep 5, $60.00 in Savings: added by hand (a transfer from SAMPLE CU Chequing)"]
+
+
+def test_split_notes_are_an_edit(budgets):
+    this = budgets.this
+    grocer = txn(this, "GROCER")["id"]
+    lines = lambda note: [{"category_id": cat(this, "Food"), "amount": -4000, "note": note},
+                          {"category_id": cat(this, "Fun"), "amount": -2000}]
+    call(this, "split_transaction", grocer, lines(""))
+    start = save(this, budgets.tmp / "split.inab")
+    call(this, "split_transaction", grocer, lines("Made-up note"))
+    side = changes.what_changed(start, this.db)
+    assert texts(side) == ["Sample Grocer, Sep 5, −$60.00: notes on its split lines changed"]
+
+
+# ── balances ──
+
+def test_check_balance_on_a_typed_balances_day_isnt_a_balance_set(budgets):
+    this = budgets.this
+    wallet = call(this, "add_account", "Wallet", "cash", 5000)  # today, Oct 12
+    start = save(this, budgets.tmp / "wallet.inab")
+    call(this, "reconcile", wallet, 4000)
+    side = changes.what_changed(start, this.db)
+    assert side["summary"] == "1 balance adjustment added"
+
+
+def test_a_typed_balance_remove_import_puts_back_isnt_a_balance_set(budgets):
+    this = budgets.this
+    chequing = account(this, "SAMPLE CU Chequing")["id"]
+    call(this, "set_balance", chequing, 299000, "2026-09-20")  # not the $3,000.00 the app has for that day
+    second = write(this.test_downloads, "chequing-2.ofx", ofx(SECOND, "2949.75", "20261010"))
+    call(this, "import_files", [str(second)])
+    start = save(this, budgets.tmp / "replaced.inab")
+    call(this, "undo_import", next(i for i in call(this, "imports") if i["filename"] == "chequing-2.ofx")["id"])
+    assert account(this, "SAMPLE CU Chequing")["anchor_source"] == "typed"
+    assert changes.what_changed(start, this.db)["summary"] == "1 import removed (3 transactions)"
+
+
+def test_one_you_added_that_goes_back_isnt_another_files(budgets):
+    """Remove import's message: what another file has stays, and one you added goes back to what you entered."""
+    this = budgets.this
+    chequing = account(this, "SAMPLE CU Chequing")["id"]
+    call(this, "add_transaction", chequing, "2026-10-02", "Sample Bakery", -1200)
+    second = write(this.test_downloads, "chequing-2.ofx", ofx(SECOND, "2949.75", "20261010"))
+    call(this, "import_files", [str(second)])
+    start = save(this, budgets.tmp / "took-its-place.inab")
+    call(this, "undo_import", next(i for i in call(this, "imports") if i["filename"] == "chequing-2.ofx")["id"])
+    assert texts(changes.what_changed(start, this.db), "import_removed") == [
+        "chequing-2.ofx (SAMPLE CU Chequing): 2 transactions removed; 1 you added stays"]
+
+
+def test_assigned_typed_after_a_merge_of_cards(budgets):
+    this = budgets.this
+    card = call(this, "add_account", "Sample Card", "credit_card")
+    copy = call(this, "add_account", "Sample Card Copy", "credit_card")
+    call(this, "add_transaction", copy, "2026-10-02", "Sample Bookshop", -2500)
+    call(this, "set_assigned", "2026-10", cat(this, "Sample Card payment"), 5000)
+    call(this, "set_assigned", "2026-10", cat(this, "Sample Card Copy payment"), 10000)
+    start = save(this, budgets.tmp / "two-cards.inab")
+    call(this, "merge_accounts", copy, card)
+    assert "assigned" not in kinds(changes.what_changed(start, this.db))  # the merge put them together
+    call(this, "set_assigned", "2026-10", cat(this, "Sample Card payment"), 20000)
+    assert texts(changes.what_changed(start, this.db), "assigned") == [
+        "Sample Card payment's Assigned for October 2026 $150.00 → $200.00"]
+
+
+# ── the rest of the kinds ──
+
+def test_a_file_not_to_import_an_account_deleted_and_not_recurring(budgets):
+    this = budgets.this
+    spare = call(this, "add_account", "Spare", "savings")
+    start = save(this, budgets.tmp / "spare.inab")
+    junk = write(this.test_downloads, "notes.csv", "Not,a,bank,file\n")
+    call(this, "ignore_file", str(junk))
+    call(this, "delete_account", spare)
+    assert call(this, "not_a_subscription", txn(this, "CAFE")["id"])
+    side = changes.what_changed(start, this.db)
+    assert side["summary"] == "1 file you said not to import · 1 account deleted · 1 charge isn't recurring"
+    assert texts(side) == ["notes.csv", "Deleted account Spare", "Sample Cafe at $4.50 isn't recurring"]
+
+
+def test_learn_from_actual_and_the_currency(budgets):
+    this = budgets.this
+    with this.db.write(keep_undo=True) as c:
+        c.execute("DELETE FROM meta WHERE key = 'currency'")
+    start = save(this, budgets.tmp / "no-currency.inab")
+    payee = txn(this, "CAFE")["payee_id"]
+    with this.db.write("Learn from Actual") as c:  # what learning from a made-up Actual export keeps
+        for day in ("2026-08-03", "2026-08-10"):
+            c.execute("INSERT INTO examples (payee_id, category_id, amount, date, source) VALUES (?, ?, -450, ?, 'actual')",
+                      (payee, cat(this, "Food"), day))
+        c.execute("INSERT INTO meta (key, value) VALUES ('currency', 'CAD')")
+    side = changes.what_changed(start, this.db)
+    assert side["summary"] == "The budget's currency is CAD · Learnt categories from an Actual export (2 examples)"
+
+
+# ── reading ──
+
+def test_it_only_reads(budgets):
+    """Files are read through a read-only connection: nothing written, nothing left beside them."""
+    call(budgets.this, "add_group", "Gifts")
+    this_file = save(budgets.this, budgets.tmp / "this.inab")
+    other_file = save(budgets.other, budgets.tmp / "other.inab")
+    before = {p.name: p.read_bytes() for p in budgets.tmp.iterdir() if p.is_file()}
+    both = changes.compare(budgets.start, this_file, other_file)
+    assert both["this"]["summary"] == "1 category group added" and not both["other"]["changed"]
+    assert {p.name: p.read_bytes() for p in budgets.tmp.iterdir() if p.is_file()} == before
+
+
+def test_any_way_of_passing_a_budget(budgets):
+    call(budgets.this, "add_group", "Gifts")
+    conn = sqlite3.connect(str(budgets.this.db.path))
+    try:
+        by_conn = changes.what_changed(budgets.start, conn)
+    finally:
+        conn.close()
+    by_db = changes.what_changed(str(budgets.start), budgets.this.db)
+    assert by_conn == by_db and by_db["summary"] == "1 category group added"
+
+
+def test_a_copy_still_in_wal_mode_is_read_without_leaving_files_beside_it(budgets):
+    """A copy made with the backup API keeps WAL mode: read immutable, no -wal or -shm appears beside it."""
+    call(budgets.this, "add_group", "Gifts")
+    folder = budgets.tmp / "a folder #1"
+    folder.mkdir()
+    copy = folder / "this copy.inab"
+    target = sqlite3.connect(str(copy))
+    with budgets.this.db.lock:
+        budgets.this.db.conn.backup(target)
+    target.close()
+    check = sqlite3.connect(str(copy))
+    assert check.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+    check.close()
+    assert [p.name for p in folder.iterdir()] == ["this copy.inab"]
+    assert changes.what_changed(budgets.start, copy)["summary"] == "1 category group added"
+    assert [p.name for p in folder.iterdir()] == ["this copy.inab"]
+
+
+def test_a_file_still_being_written_is_refused(budgets):
+    """Changes still in its -wal: the file alone isn't the budget, so its connection has to be passed."""
+    live = budgets.tmp / "this" / "budget.db"
+    call(budgets.this, "add_group", "Gifts")
+    assert Path(f"{live}-wal").stat().st_size
+    with pytest.raises(ValueError, match="-wal"):
+        changes.what_changed(budgets.start, live)
+    own = sqlite3.connect(str(live))  # a connection only this thread uses: it reads what's in the -wal
+    try:
+        assert changes.what_changed(budgets.start, own)["summary"] == "1 category group added"
+    finally:
+        own.close()
+
+
+def test_no_save_to_start_from(budgets):
+    with pytest.raises(ValueError, match="no save both computers started from"):
+        changes.compare(None, budgets.this.db, budgets.other.db)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="a Windows network path")
+def test_a_budget_on_a_network_share(budgets):
+    """\\\\server\\share\\… (the computer's own administrative share stands in for a NAS)."""
+    start = str(budgets.start.resolve())
+    unc = f"\\\\localhost\\{start[0].lower()}$" + start[2:]
+    if not os.path.exists(unc):
+        pytest.skip("no administrative share here")
+    call(budgets.this, "add_group", "Gifts")
+    assert changes.what_changed(unc, budgets.this.db)["summary"] == "1 category group added"
+
+
+def test_a_budget_that_isnt_there(budgets):
+    with pytest.raises(FileNotFoundError):
+        changes.what_changed(budgets.tmp / "nowhere.inab", budgets.this.db)
+
+
+def test_money_as_the_page_writes_it():
+    assert [changes.money(c) for c in (0, 450, -450, 123456789, -100)] == \
+        ["$0.00", "$4.50", "−$4.50", "$1,234,567.89", "−$1.00"]

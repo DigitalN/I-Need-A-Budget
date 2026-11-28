@@ -288,7 +288,7 @@ def _run(script):
     node = shutil.which("node")
     if not node:
         pytest.skip("needs Node")
-    return json.loads(subprocess.run([node, "-e", script], capture_output=True, text=True, check=True).stdout)
+    return json.loads(subprocess.run([node, "-e", script], capture_output=True, encoding="utf-8", check=True).stdout)
 
 
 def test_command_z_on_a_big_step_asks_and_cancel_changes_nothing():

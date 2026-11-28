@@ -1,10 +1,12 @@
 # Developing I Need A Budget
 
-Notes for building from source and publishing releases. For using it, see the
-[README](../README.md). The architecture and the rules the code follows are in
+Notes for building from source, on a Mac or a Windows PC, and for releases. For using it, see
+the [README](../README.md). There's no Linux version. The architecture and the rules the code follows are in
 [CLAUDE.md](../.claude/CLAUDE.md).
 
 ## Build from source
+
+### On a Mac
 
 You need Python 3 from [python.org](https://www.python.org/downloads/) and the pinned
 packages in `Application Files/requirements.txt` (`scripts/First Time Setup.command` installs
@@ -24,7 +26,7 @@ select your **Personal Team** → Manage Certificates… → **+** → **Apple D
 Builds go to `~/Library/Caches/I Need A Budget-build`, not the repository: folders synced
 by iCloud Drive (such as `~/Documents`) add Finder metadata to app bundles, and codesign
 rejects bundles that have it. Every checkout and worktree shares that folder, so
-`build.sh`, `package.sh`, `install.sh` and `release.sh` take one lock
+`build.sh` and `install.sh` take one lock
 (`scripts/build-lock.sh`): a second build waits, saying so. PyInstaller's binary cache is
 the build's own (`PYINSTALLER_CONFIG_DIR` inside that folder), because another project's
 `--clean` build empties the shared one in `~/Library/Application Support/pyinstaller`,
@@ -37,19 +39,112 @@ cd "Application Files" && INAB_DATA_DIR=/tmp/inab-test python3 main.py
 ```
 
 `INAB_DATA_DIR` points at a throwaway data folder (its backups go in it too, never into
-the real Documents); `INAB_TODAY=YYYY-MM-DD` pins today's
-date; `INAB_DEBUG=1` turns on the web inspector. Tests (`scripts/tests/`): `python3 -m pytest`.
+the real Documents, and the budget folder it suggests is beside it: `/tmp/inab-test budget folder`);
+`INAB_COMPUTER=PC-B` names this computer in the budget folder, for two copies sharing one;
+`INAB_TODAY=YYYY-MM-DD` pins today's date; `INAB_DEBUG=1` turns on the web inspector. Tests (`scripts/tests/`): `python3 -m pytest`.
 
-The app icon is drawn by `scripts/make-icon.swift`. To redraw it:
+### On Windows
+
+Python 3.13, the pinned packages (`python -m pip install -r "Application Files/requirements.txt"`,
+in a virtual environment if you like: on Windows they include pythonnet, which pywebview draws its
+window with) and, for the installer, [Inno Setup](https://jrsoftware.org/isinfo.php) 6.3 or later.
+There's no First Time Setup: switch the privacy hook on with `git config core.hooksPath scripts/hooks`
+(Git for Windows' bash runs it). The window is drawn by Microsoft Edge's WebView2, which Windows 11
+has. Run from source as on a Mac, in Git for Windows' bash:
+
+```bash
+cd "Application Files" && INAB_DATA_DIR="$TEMP/inab-test" python main.py
+```
+
+To build:
+
+```bash
+scripts/build-windows.sh
+```
+
+This builds `I Need A Budget.exe` with PyInstaller and the installer,
+`I-Need-A-Budget-<version>-Setup.exe` (`scripts/installer.iss`), in
+`%LOCALAPPDATA%\I Need A Budget-build`, outside the repository (which OneDrive may sync).
+The installer is per-user and unsigned: no administrator, into
+`%LOCALAPPDATA%\Programs\I Need A Budget`. The Windows icon, `Application Files/INeedABudget.ico`,
+is made from the Mac's by `scripts/make-ico.py` (it needs Pillow, which the app doesn't).
+
+Python from the Microsoft Store keeps its registry writes in a copy of its own: run from source
+with it, the window's size and place (`HKEY_CURRENT_USER\Software\I Need A Budget`) aren't the
+ones `reg query` or the installed app see.
+
+### Checks on GitHub
+
+Every pull request into `main` or `claude/cross-platform`, and every push to them, runs the
+whole suite on macOS and on Windows (`.github/workflows/tests.yml`): Python 3.13, the pinned
+packages (pyobjc's are the Mac's only), node for the page tests, the privacy hooks switched on.
+The pull request shows both checks, and its Checks tab has each test's output. Both count: a
+failure on either system fails the run. The tests use only made-up data and nothing needs
+a secret, so a pull request from someone else's copy runs the same way. GitHub's machines have
+no `.git-denylist`, so there the privacy test and the hooks check card numbers, bank files and
+databases, not your private words: those are only checked on your own computer. Making the
+checks required for merging into `main` is the maintainer's setting (Settings → Branches).
+
+The same run builds both apps, unsigned, to try: Build (Windows) makes the installer and Build
+(macOS) the Mac app, signed ad hoc and zipped (it can't update itself). Both are in the run's
+Summary, under Artifacts, for 30 days. The Mac's disk image and the signed builds are the
+release's.
+
+A pull request or push that changes how a release is built or checked (the workflow, the build,
+signing and checking scripts, the spec, the updater: the paths in `.github/workflows/release.yml`)
+also runs a dry run of the release, Release in its Checks: everything a release does but publish,
+signed with throwaway identities made in the run (*Release checklist*).
+
+### Trying a pull request's Windows installer
+
+On a Windows 10 or 11 PC:
+
+1. Open the pull request's Checks tab → Tests → Summary, and download
+   `I-Need-A-Budget-<version>-Setup.exe` under Artifacts.
+2. Open it. It's unsigned, so Windows says "Windows protected your PC": More info → Run anyway.
+   It shouldn't ask for an administrator. Leave Open I Need A Budget ticked and finish.
+3. The app opens on onboarding. Start a new budget, in the folder it suggests. Put made-up bank
+   files in Downloads (`python scripts/demo_data.py --files-only` writes two Quicken files there),
+   then Look again: they're listed. Go through the steps to the Dashboard.
+4. Start → I Need A Budget is there. With the app open, open it again from Start: the window
+   comes forward, and nothing else opens. Minimize it first and try again.
+5. Settings: Light, Dark and System change the title bar too. Each Open button opens File
+   Explorer; Release notes your browser; License a read-only copy in Notepad, and again
+   on a second click.
+6. Drag a bank file from File Explorer onto the window: it's imported.
+7. Click into an Assigned box: its amount is selected, and typing replaces it. Click again: the
+   cursor goes where you clicked. Tab goes to the next box, not to a button. Type an amount and
+   close the window with ✕ before leaving the box: it's saved (it's there when you reopen). Do
+   the same with Alt+F4.
+8. Move and resize the window, close it, open it: it's where you left it. Maximize it, close,
+   open: maximized.
+9. Two computers, played by two copies on this PC with data folders of their own. Quit the app,
+   then from Git for Windows' bash start a second copy:
+   `INAB_DATA_DIR="$TEMP/inab-b" INAB_COMPUTER=PC-B "$LOCALAPPDATA/Programs/I Need A Budget/I Need A Budget.exe"`.
+   Choose Open my budget, then the first copy's budget folder (`Documents\I Need A Budget`): it's
+   the same budget. Change something and quit. Open the first copy: it has the change. Now open
+   both (the second says the budget is open on another computer: Open anyway) and change something
+   different in each within a few seconds, before either saves: one asks "This budget changed on
+   two computers", with what each changed. Keep this; the other takes it (once you leave the box
+   you're in). Quit both, copy a backup from the folder's Backups in as `Budget.inab`, and open
+   one: it asks "The budget in the folder is older than this one" once; Use it, and the other
+   opens on it. Quit both, then delete `%TEMP%\inab-b`.
+10. Settings → Apps → Installed apps → I Need A Budget → Uninstall. Then
+   `%LOCALAPPDATA%\I Need A Budget` and the budget folder are still there. Install again: the
+   budget's back, without onboarding.
+
+The app icon is drawn by `scripts/make-icon.swift`. To redraw it, on a Mac:
 
 ```bash
 swift scripts/make-icon.swift /tmp/INeedABudget.iconset && iconutil -c icns /tmp/INeedABudget.iconset -o "Application Files/INeedABudget.icns"
 ```
 
+then `python scripts/make-ico.py` (with Pillow) for Windows' `.ico`.
+
 ## The dev preview
 
 ```bash
-python3 scripts/preview.py [--data FOLDER] [--today 2026-10-12]
+python3 scripts/preview.py [--data FOLDER] [--port 8765] [--today 2026-10-12] [--platform windows] [--computer PC-B]
 ```
 
 Serves `index.html` on http://127.0.0.1:8765 with a stand-in for pywebview's bridge, so
@@ -57,9 +152,24 @@ the real page drives the real engine (`BudgetService.dispatch`) over localhost. 
 look at and click through the interface in a browser (Claude: the `preview` entry in
 `.claude/launch.json`, in the browser pane). It's a development tool only, never bundled,
 and it refuses to use the app's real data folder. The default data folder is
-`~/Library/Caches/I Need A Budget-preview`, and its Downloads folder is `downloads` inside
+`~/Library/Caches/I Need A Budget-preview` (that path in your home folder on Windows too), and its Downloads folder is `downloads` inside
 it (created empty; the preview never uses your real `~/Downloads` and refuses to start if its
 `settings.json` points there). Put copies of bank files in it to try onboarding.
+`--platform mac` or `--platform windows` pretends to be that system (it's this computer's by
+default): the page's wording and keys follow it. A browser draws it with this computer's fonts,
+and Chromium (Chrome, Edge, Claude's browser pane) is the engine the Windows app uses.
+
+The budget folder works as in the app (issue #189): a look at launch, the watcher every few
+seconds (the page asks `/events` for what main.py would send it), and a save when the page
+quits, which then stops the preview (start it again to reopen). Two computers sharing a budget
+folder are two previews on two ports, each with its own `--data` and `--computer` name (add
+temporary entries to `.claude/launch.json`, and take them out before committing). There's no
+folder dialog: Choose… answers with the folder on the first line of `<data>/choose-folder.txt`,
+every time until it's changed. The folder suggested is `<data> budget folder`, beside the data
+folder. To try a 1.4 copy's first launch of 1.5.0, use `scripts/demo_data.py FOLDER` (a set-up
+budget with no budget folder). A sync tool's doings, and a person's, are files changed by hand: a
+backup, or an older save from a data folder's `Saves/`, copied over `Budget.inab` (older); the file
+deleted (missing); the folder renamed away and back.
 
 ## README screenshots
 
@@ -72,38 +182,180 @@ python3 scripts/demo_data.py
 
 builds a fictional budget in `~/Library/Caches/I Need A Budget-demo` through the real
 engine; start the `demo` entry in `.claude/launch.json` (the preview on it, port 8766),
-then `python3 scripts/screenshots.py` draws them off screen with WebKit (the list is
+then `python3 scripts/screenshots.py` draws them off screen with WebKit, on a Mac (the list is
 `SHOTS` in the script) and saves the PNGs. Retake them when a page changes noticeably.
 
 ## Release checklist
 
-Go through all of it for every release. Installed copies update themselves from the
-latest release, so a mistake reaches every copy. Merging a pull request doesn't release
-anything.
+Go through all of it for every release. Installed copies update themselves from the latest
+release, so a mistake reaches every copy. Merging a pull request doesn't release anything.
 
-**Who does what.** The maintainer only merges PRs (`VERSION` already says the next
-release's version). Claude releases from this Mac, where the signing certificate is, only
-when the maintainer says it's ready (one release for everything merged since the last),
-with **`scripts/release.sh NOTES.md`** (notes written outside the repo).
-It does every step below that a script can: main matches GitHub, version newer than the
-latest release, tests, certificate valid 30+ days, build, `hdiutil verify`,
-`scripts/check-update.py` (the installed copy's own updater code, from its tag, accepts
-the image), publish from the exact commit, check what installed copies see, draft the
-previous release. `scripts/release.sh --dry-run` runs all of it except publishing, on any
-branch. The maintainer never builds anything.
+**Who does what.** The maintainer only merges PRs (`VERSION` already says the next release's
+version) and approves the release run. Claude starts the run only when the maintainer says it's
+ready (one release for everything merged since the last), from a computer that has the
+maintainer's `.git-denylist` (the Mac: the PC has none), because only there can the notes be
+checked for private words before they go to GitHub. GitHub's
+machines build, sign, check and publish both apps (`.github/workflows/release.yml`,
+[ADR 0009](adr/0009-both-apps-are-built-and-signed-on-github.md)); nobody builds a release on
+their own computer.
+
+**What the run does**, stopping at the first problem. Publish needs every job before it to have
+passed, on both systems, so a failure in any of them publishes nothing. Only Publish itself can
+stop half-way (*If publishing stops half-way*).
+
+1. **What's going out** (Ubuntu): started on `main`; `VERSION` newer than the latest release (the
+   one installed copies see); no tag `v<version>` yet; the notes without card numbers.
+2. **Tests and builds**, on macOS and Windows, with no secret in reach: the whole suite; the Mac
+   app (`scripts/build.sh --adhoc`), which `scripts/check-mac-app.py` checks will start on every
+   Mac it says it does: no program or library in it needs a macOS newer than 12
+   (`LSMinimumSystemVersion`), whatever macOS, Python and PyInstaller GitHub's Macs have, and each
+   is built for the main program's processors; the Windows installer (`scripts/build-windows.sh`),
+   with `release-key.pub` in it.
+3. **Sign**, after the **Approve**. This is the only job with the `release` environment, so it
+   waits until the maintainer approves it (GitHub emails them: the run → Review deployments →
+   Approve), and it's the only one whose steps get the secrets (*Release secrets*). It runs only
+   the repository's own scripts, Apple's tools and OpenSSL:
+   - `scripts/sign-mac.sh`: the certificate into a temporary keychain, the app signed as
+     `build.sh` signs, then checked with the requirement installed copies use (team
+     `XT4LT7MS6Y`, Apple's chain); the certificate must have 30 or more days left.
+   - `scripts/sign-windows.sh`: the installer signed with `RELEASE_KEY`, once its public half is
+     known to be `release-key.pub`; the `.sig` then passes the app's own check.
+   - The keychain and the key are deleted before the job ends (two `always()` steps too). The log
+     shows the certificate's team, fingerprint and end date, never its owner's name.
+   - The tests and builds must pass within 7 days of the Approve being asked for: the builds wait
+     for Sign that long (otherwise start again).
+4. **The disk image** (macOS), made without Finder (`scripts/make-dmg.py`, with dmgbuild): the
+   app and Applications with the arrow, on the background, with the app's icon as the disk's, in
+   the window 1.4.3 had. `hdiutil verify`, then `make-dmg.py --check` reads it back: the window,
+   what's in it, the app's version and its signature.
+5. **Updates.** The previous release is installed on GitHub's Mac. The new app must be built for
+   every processor its app is (`check-mac-app.py --previous`: an Intel Mac must never get an app it
+   can't start; 1.4.3's is arm64 only, and so are GitHub's builds). Then `scripts/check-update.py`
+   runs that version's own updater, from its tag, on the new disk image, as if it had just
+   downloaded it: it must pick it out of the release's three files and accept it. On Windows the
+   same, once a release has a Windows installer to install first (1.5.0 is the first). And the
+   new installer is installed quietly, as a person would: that copy must have the release key
+   and be able to update itself.
+6. **Publish** (Ubuntu, `scripts/publish-release.py`): `v<version>`, from the exact commit the run
+   built, with the `.dmg`, the `Setup.exe` and its `.sig`. Then the API installed copies read must
+   show that tag, at that commit, with exactly those three files, byte for byte (each asset's
+   digest; it asks a few times, as GitHub can lag just after). If it never does, the release goes
+   back to a draft and the run fails. Then the previous release becomes a draft.
+
+**A dry run** does all of it but publish. Started on `main` (`-f dry_run=true`) it signs with the
+real secrets, after the Approve, which proves them without releasing, and like a release it needs
+a `VERSION` newer than the latest release. Anywhere else it signs with throwaway identities made in
+the run, through the same scripts and the same steps as the real ones, and never reaches the
+`release` environment. Only these differ: nobody trusts the self-signed certificate, so it isn't a
+"valid" identity; its own team (`DRYRUN0000`) and fingerprint stand in for Apple's chain and
+`XT4LT7MS6Y`; and a throwaway key's public half stands in for `release-key.pub`. Such a dry run
+whose `VERSION` isn't newer than the latest release builds as the next version (1.4.4 for 1.4.3),
+so the update checks have something newer to check. A dry run's files are in the run's Summary for
+7 days.
+
+**Before the first real release**, once `VERSION` is raised in `main`, Claude runs
+`gh workflow run release.yml --ref main -f dry_run=true` and the maintainer approves it. Throwaway
+identities can't prove what only the real secrets go through: the certificate's chain to Apple
+(the intermediate on GitHub's Mac), the real certificate's subject as macOS's LibreSSL prints it,
+its validity in the keychain, and `RELEASE_KEY` matching `release-key.pub`.
+
+`gh workflow run` only works for a workflow that's on `main`, so until 1.5.0 is merged the dry
+runs come from pull requests and pushes (*Checks on GitHub*).
+
+### Before starting
+
+- [ ] Everything going out is merged into `main`: the run builds `main` as GitHub has it.
+- [ ] `VERSION` in `Application Files/main.py` is higher than the latest release (the
+  first PR after a release raises it: by 0.0.1, or 0.1 for a big change). The build
+  copies it into the app's `Info.plist` and the installer; installed copies only update to a
+  higher version.
+- [ ] `main`'s Tests checks passed on GitHub (the run runs them again).
+- [ ] If the database schema changed: `SCHEMA_VERSION` is raised and `db._migrate` upgrades
+  an existing database (test it on a copy of a real one in a throwaway folder).
+- [ ] If the updater, packaging or signing changed: a test copy updates to a higher-version
+  build and refuses bad ones (*Testing the updater*), and a dry run passed.
+- [ ] Release notes: what's new since the last release (every PR merged since), in
+  plain words. **No private details**:
+  no amounts, payee or people's names, categories or account digits from the
+  maintainer's data, even as examples. Write them outside the repository (e.g. the
+  scratchpad), not as a file in it, and check them on the computer you start from, before they
+  reach GitHub (a run's inputs are public):
+  ```bash
+  python3 scripts/hooks/privacy_check.py --need-denylist --what "In the release notes" NOTES.md
+  ```
+  A release needs `.git-denylist` on the computer it's started from: without one (the PC, today)
+  this says the private words can't be checked there and fails, so start the release from the
+  Mac. Never add a denylist to the repository. GitHub's machines have none either: the run checks
+  the notes again there, for card numbers only, and reads them from its event, so they never show
+  in its log.
+
+### Start it
+
+```bash
+gh workflow run release.yml --repo DigitalN/I-Need-A-Budget --ref main -F notes=@NOTES.md
+gh run watch --repo DigitalN/I-Need-A-Budget "$(gh run list --repo DigitalN/I-Need-A-Budget --workflow release.yml --limit 1 --json databaseId --jq '.[0].databaseId')"
+```
+
+`-F notes=@NOTES.md` reads the file (in PowerShell, quote it: `-F "notes=@NOTES.md"`). The run
+stops at Sign until the maintainer approves it: tell them it's waiting. To try it first:
+`gh workflow run release.yml --ref main -f dry_run=true`. A run waiting for the Approve can be
+cancelled (`gh run cancel <id>`), and nothing is published.
+
+If a job before Publish fails, nothing was published: fix it in a pull request, merge it, and
+start again.
+
+### If publishing stops half-way
+
+Publish says what it did and what's left. Re-run just that job, which keeps the run's checked files
+for 7 days and needs no second Approve:
+
+```bash
+gh run rerun <run id> --repo DigitalN/I-Need-A-Budget --failed
+```
+
+`publish-release.py` picks up from what it finds: a draft `v<version>` an earlier try left at the
+run's commit is given the run's files and published, a release it already published is checked
+again, and the previous release is made a draft. It never makes a second release. It stops, changing
+nothing, if `v<version>` is a tag at another commit, or a published release with other files. To
+do it by hand instead:
+
+- `v<version>` is out and the previous release isn't a draft yet:
+  `gh release edit v<previous> --repo DigitalN/I-Need-A-Budget --draft=true`.
+- `v<version>` is a draft (GitHub never showed it right, or the run stopped while uploading), and
+  you'd rather start again: `gh release delete v<version> --repo DigitalN/I-Need-A-Budget --cleanup-tag --yes`,
+  then start a new run. Installed copies see only published releases, so they're still on the
+  previous one.
+- A tag `v<version>` left over with no release: `gh api -X DELETE repos/DigitalN/I-Need-A-Budget/git/refs/tags/v<version>`.
+
+A new run after `v<version>` went out stops at once (`VERSION` isn't newer than the latest
+release): only the previous release's draft can be left to do, by hand as above.
+
+### After publishing
+
+- [ ] The run's Summary says Published v<version>, and the release page lists only it, with
+  the `.dmg`, the `Setup.exe` and the `.sig`.
+- [ ] An older installed copy picks it up: Settings → Check now. `app.log` shows
+  `Downloading`, `ready to install`, and on quit `Installed <version>` (on Windows,
+  `Installing <version> after quitting`, then `Installed <version>`).
+- [ ] The maintainer's own copy updates the same way (within a day, or Settings → Check
+  now, then quit). Its log shows `Backed up the budget to …` on quit, in the budget folder's
+  `Backups/` (`No backup made: …` if nothing changed since the newest one), and `Saved the
+  budget to …/Budget.inab`. If the release raised the schema, it also shows `Upgraded the
+  database`, and `Backups/` has the pre-upgrade copy. The first launch of 1.5.0 asks once where
+  the budget goes (`Moved the budget to …`).
+- [ ] CLAUDE.md and the README describe what's shipping (new features, decisions, gaps).
 
 **History.** 1.0.0 was installed from a local build and never published. 1.0.1
 (2026-10-13) was the first release, and 1.0.0 → 1.0.1 the first update installed through
-the updater: `Downloading`, `ready to install`, `Installed 1.0.1; relaunching`, then the
-schema upgrade with its backup. Until a release is published, Check now just says the app
-is up to date (1.0.0 and 1.0.1 also said that when the token couldn't see the repository;
-1.0.2 reports that as an error).
+the updater. Until 1.4.3 releases were built and published from the maintainer's Mac by a
+script (`scripts/release.sh`); 1.5.0 is the first from the release run. Until a release is
+published, Check now just says the app is up to date.
 
-**Lessons from 1.0.1:**
+**Lessons:**
 - Merging isn't releasing. No release on GitHub means nothing to update to.
-- Several Apple Development certificates can be in the keychain; an expired one is
-  harmless. What matters is the one `security find-identity -v -p codesigning` lists
-  (team `XT4LT7MS6Y`, valid until 2027-10-05 as of 1.0.1). Renew it before then.
+- What matters on a Mac is the team (`XT4LT7MS6Y`), not the certificate: a renewed
+  certificate from the same Apple account goes on updating every copy (*Release secrets*
+  says how to replace it, before it expires on 2027-10-05).
 - To launch a built copy for a test: it must be in an Applications folder (elsewhere it
   offers to move itself), so ditto it into `~/Applications/<test folder>/`, start its
   binary directly with `INAB_DATA_DIR=<throwaway>` (not `open`: the same bundle identifier
@@ -111,80 +363,79 @@ is up to date (1.0.0 and 1.0.1 also said that when the token couldn't see the re
 - The installed copy runs its own version's updater, which is why `check-update.py`
   checks with the code at the installed version's tag.
 
-### Before building
+## Release secrets
 
-- [ ] Everything going out is merged into `main`, and the local `main` matches GitHub
-  (`git pull`).
-- [ ] `VERSION` in `Application Files/main.py` is higher than the latest release (the
-  first PR after a release raises it: by 0.0.1, or 0.1 for a big change). The build
-  copies it into the app's `Info.plist`; installed copies only update to a higher version.
-- [ ] `python3 -m pytest` passes (including `test_privacy.py`).
-- [ ] The signing certificate is valid and not about to expire:
-  `security find-identity -v -p codesigning` lists an *Apple Development* identity from
-  team `XT4LT7MS6Y`. Installed copies refuse updates signed by any other team.
-- [ ] If the database schema changed: `SCHEMA_VERSION` is raised and `db._migrate` upgrades
-  an existing database (test it on a copy of a real one in a throwaway folder).
+Release runs (#190) sign both apps on GitHub ([ADR 0009](adr/0009-both-apps-are-built-and-signed-on-github.md))
+with secrets kept in a protected GitHub environment. `scripts/release-secrets.sh` sets them up.
+Only the maintainer runs it, in their own terminal. It never prints a secret, writes one into the
+repository or passes one on a command line, so Claude never sees one.
 
-### Build and check the disk image
+| Name | What it is | Format |
+|---|---|---|
+| Environment `release` | Holds the secrets. A run reaches them only after the maintainer's Approve | Required reviewer DigitalN; self-reviews allowed, because Claude starts runs with the maintainer's own `gh` login; administrators can't bypass it; deploys from `main` only |
+| `RELEASE_KEY` | Our Ed25519 release key, which signs the Windows installer | The raw 32-byte private key (RFC 8032's seed), base64, one line of 44 characters |
+| `Application Files/release-key.pub` | Its public half. It's built into the app, and Windows copies check updates with it. Not secret, so it's in the repository | The raw 32-byte public key, base64, one line |
+| `MAC_CERTIFICATE` | The Apple Development identity (certificate and private key, team `XT4LT7MS6Y`) | Keychain Access's `.p12` export, base64, one line |
+| `MAC_CERTIFICATE_PASSWORD` | The `.p12`'s password | Made up by the script; it exists only on GitHub |
 
-- [ ] `scripts/package.sh` makes `~/Library/Caches/I Need A Budget-dmg/I-Need-A-Budget-<version>.dmg`
-  (outside the repository, and only the newest). That's the only file a release has. The
-  first time, macOS asks to let Terminal control Finder (it lays out the disk image
-  window): allow it.
-- [ ] Open the DMG: the app and Applications with the arrow between them.
-- [ ] The app inside has the new version, a valid signature, and the right team:
-  ```bash
-  M=$(hdiutil attach -nobrowse -readonly -noautoopen ~/Library/Caches/"I Need A Budget-dmg"/I-Need-A-Budget-1.0.0.dmg | grep -o '/Volumes/.*$')
-  defaults read "$M/I Need A Budget.app/Contents/Info" CFBundleShortVersionString
-  codesign --verify --deep --strict "$M/I Need A Budget.app" && codesign -dvv "$M/I Need A Budget.app" 2>&1 | grep TeamIdentifier
-  hdiutil detach "$M"
-  ```
+The signature beside a Windows installer, `I-Need-A-Budget-<version>-Setup.exe.sig`, is Ed25519
+(RFC 8032, not pre-hashed) over the installer's exact bytes: the 64-byte signature in base64, one
+line. Python's `cryptography` takes the raw keys as they are (`Ed25519PrivateKey.from_private_bytes`,
+`Ed25519PublicKey.from_public_bytes`). OpenSSL 3 takes them as DER, with hex
+`302e020100300506032b657004220420` before the private key and `302a300506032b6570032100` before the
+public one. The release run makes its temporary keychain's password itself, so that isn't a secret.
 
-### Test updating, if the updater, packaging or signing changed
+- `scripts/release-secrets.sh` (or `check`) shows what's set up and what's left. It shows no
+  secret, and GitHub never returns their values anyway.
+- `scripts/release-secrets.sh key`, on any computer: creates the environment (or fixes its
+  settings) and makes the release key with OpenSSL 3 (Git for Windows has it; on a Mac, `brew
+  install openssl@3`). The key is made in memory. It goes onto the clipboard, never shown, for the
+  password manager's item "I Need A Budget release key". The maintainer pastes the saved copy back
+  (hidden) to check it. Only then does the key go into `RELEASE_KEY` and its public half into the
+  repository, and Claude commits that. The private key never touches a file, so nothing can be
+  synced or left behind. The clipboard is cleared afterwards. Before anything secret is copied,
+  Windows' Clipboard history and Clipboard history across your devices (which uploads it) have to
+  be off: the script asks for them to be turned off when they're on. Without a clipboard tool it
+  shows the key once on a screen of its own, and only on a terminal (never into `| tee` or a file).
+  With `RELEASE_KEY` on GitHub, `key` never makes a new key: see below.
+- `scripts/release-secrets.sh certificate`, on the Mac, with macOS's own tools: checks
+  that the keychain has a valid Apple Development certificate of team `XT4LT7MS6Y` and that it has
+  30 or more days left. Keychain Access then exports it as a `.p12` into a folder of its own,
+  outside iCloud, with a password the script makes up and puts on the clipboard. The script checks
+  the `.p12` (the same certificate, with its private key), puts it and its password into the
+  environment, then deletes it, and the folder too if you stop. If Keychain Access saved it
+  somewhere else (⌘⇧G missed), the script shows where and offers to delete it. A `.p12` or `.pfx`
+  can't be committed: `.gitignore` and the pre-commit hook refuse them.
+- `scripts/release-secrets.sh selftest` checks the formats: RFC 8032's test vector, and a
+  throwaway key that signs a file, a changed file and another key refused. No GitHub, no
+  secrets.
 
-- [ ] A test copy updates to a higher-version build from a stand-in release (see
-  *Testing the updater* below).
-- [ ] It refuses a build changed after signing, one signed ad hoc or by another team, and
-  a release whose tag is newer than the app inside it.
-- [ ] Afterwards, the test copy, its data folder and the test disk images are deleted.
+**Renewing the certificate** before it expires on 2027-10-05 (release runs refuse one with fewer
+than 30 days left). On the Mac: Xcode → Settings → Accounts → the Apple ID → Manage Certificates… →
+**+** → Apple Development. Then run `scripts/release-secrets.sh certificate`, which replaces both
+secrets. Installed Mac copies keep updating, because they check the team, not the certificate. An
+expired certificate left in the keychain is harmless.
 
-### Publish
-
-- [ ] Release notes: what's new since the last release (every PR merged since), in
-  plain words. **No private details**:
-  no amounts, payee or people's names, categories or account digits from the
-  maintainer's data, even as examples. Write them outside the repository (e.g. the
-  scratchpad), not as a file in it.
-- [ ] Publish it, tagged `v<version>`, from the commit it was built from:
-  ```bash
-  gh release create v1.0.0 ~/Library/Caches/"I Need A Budget-dmg"/I-Need-A-Budget-1.0.0.dmg --title "I Need A Budget 1.0.0" --notes-file notes.md
-  ```
-  Drafts and pre-releases are skipped by the updater.
-- [ ] Turn the previous release into a draft so the page lists only the current one:
-  `gh release edit v0.9.0 --draft=true`.
-
-### After publishing
-
-- [ ] The API the updater reads shows the new tag with only the `.dmg`:
-  ```bash
-  gh api repos/DigitalN/I-Need-A-Budget/releases/latest --jq '.tag_name, [.assets[].name]'
-  ```
-- [ ] An older installed copy picks it up: Settings → Check now. `app.log` shows
-  `Downloading`, `ready to install`, and on quit `Installed <version>`.
-- [ ] The maintainer's own copy updates the same way (within a day, or Settings → Check
-  now, then quit). Its log shows `Backed up the budget to …/Documents/I Need A Budget
-  Backups/…` on quit (`No backup made: …` if nothing changed since the newest one). If
-  the release raised the schema, it also shows `Upgraded the database`, and that folder
-  has the pre-upgrade copy.
-- [ ] CLAUDE.md and the README describe what's shipping (new features, decisions, gaps).
+**The release key** is kept in the maintainer's password manager as well as on GitHub. If the
+environment loses it, `scripts/release-secrets.sh key` puts the password manager's copy back,
+checking it against `release-key.pub` first. With `RELEASE_KEY` set and `release-key.pub` missing,
+`key` stops (get the file back with git). If both copies were lost, Windows copies could never
+update again on their own. You'd run `scripts/release-secrets.sh key --new`, commit the new public
+half and release, and every Windows copy would need that release installed by hand once. Never
+make a new key otherwise: every Windows copy refuses a release signed with a key it doesn't have.
+Mac copies aren't affected.
 
 ## How updates work
 
 `Application Files/updater.py`, ported from Pythonflow's, changed for a windowed app
-and for a repository that was private at first:
+and for a repository that was private at first. The Mac's own steps (the Keychain, the disk
+image, `codesign`, swapping the app in, relaunching) are in `computer_mac.py`; Windows' (the
+release key, the installer, Credential Manager) in `computer_windows.py` and
+`windows_update.py`:
 
-- **Access:** a request carries a token when there is one: the one saved in the Keychain
-  from Settings (service "I Need A Budget", account "GitHub"), else the GitHub CLI's
+- **Access:** a request carries a token when there is one: the one saved from Settings (on a
+  Mac in the Keychain, service "I Need A Budget", account "GitHub"; on Windows in Credential
+  Manager, a generic credential "I Need A Budget", user name "GitHub"), else the GitHub CLI's
   (`gh auth token`). Without one it asks anonymously, which is all a public repository
   needs. If GitHub refuses a copy (the repository made private again), it gets "the app's
   repository is private" and Settings shows the GitHub access row (hidden otherwise). A
@@ -194,19 +445,59 @@ and for a repository that was private at first:
 - **When:** once, a few seconds after each launch (Settings → "Check for updates at
   launch" turns that off), and when you press Check now. Never on a timer while the app
   is open: the maintainer's choice.
-- **What:** the latest release (not drafts or pre-releases) via the GitHub API; its `.dmg`
-  is downloaded through the asset's API URL (curl drops the token when GitHub redirects
-  to storage).
-- **Checks:** the app is copied out of the disk image and `codesign --verify --deep
+- **What:** the latest release (not drafts or pre-releases) via the GitHub API. Each system
+  picks its own file, downloaded through the asset's API URL (curl drops the token when
+  GitHub redirects to storage): a Mac the `.dmg` (copies on 1.4.x take the first `.dmg` in a
+  release, so a release keeps one), Windows `I-Need-A-Budget-<version>-Setup.exe` and its
+  signature `I-Need-A-Budget-<version>-Setup.exe.sig`. A release whose installer has no
+  signature is refused before anything is downloaded.
+- **Where releases come from:** the release run (*Release checklist*), which builds and signs
+  the three files on GitHub's machines and, before publishing them, makes every check below
+  itself, with the previous release's own updater code (`scripts/check-update.py`), so a
+  release installed copies would refuse never goes out.
+- **Checks on a Mac:** the app is copied out of the disk image and `codesign --verify --deep
   --strict` must pass with the requirement
   `identifier "com.digitaln.ineedabudget" and anchor apple generic and certificate leaf[subject.OU] = "<this copy's team>"`.
   The version inside must also be newer.
-- **Installing:** when the user quits (close button or ⌘Q), with one `replaceItemAtURL`
-  swap, or straight away with "Restart now" in the banner.
-- **Off** for copies run from source, not team-signed, not in an Applications folder, or
-  unable to replace themselves. Settings says why.
+- **Checks on Windows:** the installer's signature must be our release key's (Ed25519 over
+  its exact bytes: the formats are in *Release secrets*), checked with the public half built
+  into the app, `release-key.pub` (read at launch; a key of small order, such as a
+  placeholder of zeros, is no key, and updates are off). The check is our own short Ed25519
+  verify (`windows_update.py`, tested against RFC 8032's vectors), so there's no dependency
+  to pin or license to bundle. Nothing in the installer runs before that. Its version is the
+  one in its version resource (the signature covers it), not the release's tag, and it must
+  be newer; the banner shows that version. Both are read while the file is held so nobody
+  can change it, and again just before it runs, on the file that runs.
+- **Installing on a Mac:** when the user quits (close button or ⌘Q), with one
+  `replaceItemAtURL` swap, or straight away with "Restart now" in the banner. Logging out
+  installs it too.
+- **Installing on Windows:** at the same moments, but the installer can't replace a running
+  app's files: the app logs `Installing 9.9.0 after quitting`, starts a small PowerShell
+  script (`windows_update.HELPER_SCRIPT`, no window) and quits. The script waits for it to
+  exit (a minute at most), runs the installer with `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART`,
+  adds `Installed 9.9.0` (or `Couldn't install 9.9.0: its installer failed (exit code N)`) to
+  `app.log`, and for Restart now opens the app again with the same environment,
+  `INAB_DATA_DIR` included. An app still running after that minute gets no installer and no
+  second copy. The installer itself must not open the app when run quietly.
+- **Logging off on Windows:** the installer never starts while Windows logs off or shuts
+  down, which could stop it half-way. The checked download waits in the data folder's
+  `Update waiting` instead. At the next launch it's checked again (its signature, a version
+  newer than the app's) and, before the window opens, installed the way quitting installs it,
+  and the app reopens. One that doesn't pass is deleted.
+- **Off** for copies run from source; on a Mac, not team-signed, not in an Applications
+  folder, or unable to replace themselves; on Windows, without a usable release key, or not
+  in `%LOCALAPPDATA%\Programs\I Need A Budget`, where the installer always installs it. A
+  copy that can't tell (Windows didn't say where its Programs folder is) is off too, and
+  still opens. Settings says why.
 
 ## Testing the updater
+
+`python -m pytest scripts/tests/test_updater.py scripts/tests/test_windows_update.py` runs the
+checks with stand-ins on any system, and on Windows the whole update too: a stand-in installer
+(made with Windows' own C# compiler, so it has a version resource) signed with a throwaway key,
+a stand-in feed, and the real helper, at quit and with Restart now. To try it with the real app:
+
+### On a Mac
 
 Use a separate copy with its own bundle identifier, so it can't touch the installed app.
 
@@ -244,3 +535,54 @@ Use a separate copy with its own bundle identifier, so it can't touch the instal
    identifier. Each should log `Update check failed` and leave the test copy alone.
 5. Clean up: quit the test copy, then delete it, `/tmp/inab-data`, `/tmp/inab-update`
    and `/tmp/inab-feed`.
+
+### On Windows
+
+A throwaway test key stands in for the release key, so nothing needs the real one. Use a PC
+where nobody uses the app for real: the test installs over the copy in your Programs folder
+(the data stays apart, in `INAB_DATA_DIR`). In Git Bash, which has OpenSSL 3:
+
+1. A throwaway key, outside the repository, and its public half as the app reads it:
+   ```bash
+   T="$(cygpath -m "$TEMP")/inab-test"; mkdir -p "$T/feed" "$T/data/empty"
+   openssl genpkey -algorithm ed25519 -out "$T/test-key.pem"
+   openssl pkey -in "$T/test-key.pem" -pubout -outform DER | tail -c 32 | base64 > "$T/test-key.pub"
+   ```
+2. Build a low version (1.0, say: the version is `VERSION` in `main.py`), install it with its
+   installer, then give that copy the throwaway key in place of its own:
+   ```bash
+   APP="$(cygpath -m "$LOCALAPPDATA")/Programs/I Need A Budget"
+   cp "$T/test-key.pub" "$(find "$APP" -name release-key.pub)"
+   ```
+3. Build a higher version's installer (9.9) and sign it with the throwaway key, as the release
+   run signs with the real one:
+   ```bash
+   cp <the 9.9 installer> "$T/feed/I-Need-A-Budget-9.9-Setup.exe"
+   openssl pkeyutl -sign -rawin -inkey "$T/test-key.pem" -in "$T/feed/I-Need-A-Budget-9.9-Setup.exe" \
+     | base64 -w0 > "$T/feed/I-Need-A-Budget-9.9-Setup.exe.sig"
+   ```
+4. A stand-in for GitHub's answer, `$T/feed/latest.json`:
+   ```bash
+   cat > "$T/feed/latest.json" <<EOF
+   {"tag_name": "v9.9", "assets": [
+     {"name": "I-Need-A-Budget-9.9-Setup.exe", "url": "file:///$T/feed/I-Need-A-Budget-9.9-Setup.exe"},
+     {"name": "I-Need-A-Budget-9.9-Setup.exe.sig", "url": "file:///$T/feed/I-Need-A-Budget-9.9-Setup.exe.sig"}]}
+   EOF
+   ```
+5. Run the test copy on its own data folder (`downloads_dir` somewhere harmless) and the
+   stand-in feed:
+   ```bash
+   echo "{\"downloads_dir\": \"$T/data/empty\"}" > "$T/data/settings.json"
+   INAB_DATA_DIR="$T/data" INAB_UPDATE_FEED="file:///$T/feed/latest.json" "$APP/I Need A Budget.exe" &
+   ```
+   Settings → Check now. `$T/data/Logs/app.log` shows `Downloading 9.9` and
+   `9.9.0 is ready to install`. Quit: it shows `Installing 9.9.0 after quitting`, then
+   `Installed 9.9.0`, and Settings → Apps lists 9.9. Do it again from 1.0 with Restart now:
+   the app comes back by itself, on `$T/data`. And once more, signing out of Windows with the
+   app open: the log says `Not installing 9.9.0 while logging out`, and the next launch
+   installs it before the window opens, then reopens.
+6. To check bad updates are refused: change the installer after signing (`printf x >>
+   "$T/feed/I-Need-A-Budget-9.9-Setup.exe"`), sign it with another throwaway key, leave its
+   `.sig` out of `latest.json`, or give the feed a newer tag than the installer's own version.
+   Each logs `Update check failed: …`, and nothing is installed.
+7. Clean up: uninstall the test copy (Settings → Apps), then delete `$T`.

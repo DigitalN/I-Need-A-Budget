@@ -1,7 +1,8 @@
 # I Need A Budget
 
 An envelope budget (like YNAB or Actual Budget) built around the files banks let you
-download, as a Mac app: Python + pywebview, one window, SQLite. Building, the release checklist, how
+download, as an app for the Mac and Windows 10 or 11 (not Linux): Python + pywebview, one window,
+SQLite, the same code on both. Building, the release checklist, how
 updates work and the dev preview are in @../docs/DEVELOPMENT.md. What it does for the user is in
 README.md. The words for things (categorize, file, transfer vs e-transfer, payment
 category, recurring charge...) are in `docs/CONTEXT.md`: use them in the page, docs, comments
@@ -20,9 +21,14 @@ commits, issues, PRs and release notes can all be read by anyone. That covers ba
 database, account or card digits, people's names (e-transfers), employers, payees
 that are local businesses, category names that reveal finances, and real amounts.
 
-- All data lives outside the repository: `~/Library/Application Support/I Need A Budget`
+- All data lives outside the repository. On a Mac: `~/Library/Application Support/I Need A Budget`
   (database, settings, `Imported Files/`), `~/Library/Logs/I Need A Budget`, and the
-  backups in `~/Documents/I Need A Budget Backups`.
+  backups in `~/Documents/I Need A Budget Backups`. On Windows: `%LOCALAPPDATA%\I Need A Budget`
+  (the same, with `Logs\` inside it) and `I Need A Budget Backups` in Documents (the folder
+  Windows says is Documents: OneDrive may have moved it). From 1.5.0 the budget also lives in the
+  budget folder the person chooses (`Budget.inab`, `Backups/`, `Imported Files/`; suggested:
+  `I Need A Budget` in Documents), which their sync tool may copy to every computer they use:
+  never one inside a checkout.
 - `.gitignore` excludes bank files and databases. `scripts/hooks/pre-commit` (switched on
   with `git config core.hooksPath scripts/hooks`; First Time Setup does it) refuses
   commits with those files, card-number shapes, or any word in `.git-denylist`, a local,
@@ -41,21 +47,33 @@ that are local businesses, category names that reveal finances, and real amounts
 
 ## Debugging
 
-Application logs: `~/Library/Logs/I Need A Budget/app.log` (rotating, 3 × 1 MB). Page
+Application logs: `~/Library/Logs/I Need A Budget/app.log` on a Mac,
+`%LOCALAPPDATA%\I Need A Budget\Logs\app.log` on Windows (rotating, 3 × 1 MB). Page
 (JavaScript) errors are forwarded there too. When the user reports a bug, **read the log
 first**. The updater logs `Automatic updates off: <reason>`, `Up to date at`,
-`Downloading`, `ready to install`, `Installed …` or `Update check failed: …`. "Up to date"
-also when no release has been published yet: merging isn't releasing.
+`Downloading`, `ready to install`, `Installed …` or `Update check failed: …`. On Windows the
+app logs `Installing … after quitting`, and its installer, once the app has gone, `Installed …`
+or `Couldn't install …: its installer failed (exit code N)`; at a log-off `Not installing …
+while logging out`, and at the next launch `Installing …, kept from logging out, before the
+window opens`. "Up to date" also when no release has been published yet: merging isn't
+releasing.
 `Page connected` means the window loaded and reached Python. `The budget's currency is USD, from …`
 when a file first sets it (issue #76), `… not imported: This file is in USD; your budget is in CAD.` and
 `… skipped: it's in USD; your budget is in CAD` for what doesn't fit. `Backed up the budget to …`
 at a quit after a change (`No backup made: …` when nothing changed since the newest one),
 and at launch only when no backup holds the budget as it is: after a session that didn't
 quit normally, at the first launch of 1.4.0 (no file named in meta yet), or after the
-newest was deleted by hand.
+newest was deleted by hand. With a budget folder (ADR 0008) those go into its `Backups/`, and it
+logs `Saved the budget to …/Budget.inab`, `Took the budget saved on <computer> at …` (rule 2),
+`The budget saved on … is the same as this computer's` (rule 3), `Kept this computer's budget; …`
+or `Kept the budget saved on …` (an answer to its question; a backup copied in is `the budget copied
+into the folder` in each), `Not saving over the budget saved on …: it arrived since`, `The budget folder … can't be reached` and `… is back`, `Moved the budget
+to …` (1.5.0's first launch, Move…) and `Opened the budget in …` (Open my budget).
 
 To reproduce without touching the user's data: `INAB_DATA_DIR=<tmp folder>` (logs go to
-`<tmp folder>/Logs/`, backups to `<tmp folder>/I Need A Budget Backups/`), and `INAB_TODAY=2026-10-12` to pin "today" (an account added then is added that day: `util.stamp`). To see the interface,
+`<tmp folder>/Logs/`, backups to `<tmp folder>/I Need A Budget Backups/`, and the budget folder
+it suggests is `<tmp folder> budget folder`, beside it), `INAB_COMPUTER=PC-B` to name the computer
+(two copies on one budget folder), and `INAB_TODAY=2026-10-12` to pin "today" (an account added then is added that day: `util.stamp`). To see the interface,
 run the dev preview (`python3 scripts/preview.py`, or the `preview` entry in
 `.claude/launch.json`) and open it in the browser pane: it's the real page driving the
 real engine over localhost. Claude's shell can't screenshot the app's own window.
@@ -64,10 +82,50 @@ real engine over localhost. Claude's shell can't screenshot the app's own window
 
 All in `Application Files/`:
 
-- `main.py`: launcher. Logging, single-instance lock, where backups go (`BACKUP_DIR`)
-  and every way of quitting (`_before_quit`: the backup, then a waiting update), the pywebview
-  window, the Downloads watcher thread, the updater, and `Api`, which exposes one method,
-  `call(name, args)`, to the page. `VERSION` here is the app's only version number.
+- `main.py`: launcher. Logging, single-instance lock, where backups go (`BACKUP_DIR`, until a
+  budget folder is chosen) and every way of quitting (`_before_quit`: the backup and the save into
+  the budget folder, `_back_up`, then a waiting update; `_should_quit` for the ways the system
+  asks), the pywebview window, the Downloads watcher thread, the budget folder's watcher thread
+  (`_watch_folder`, issue #189: `service.budget_folder_look` every few seconds, outside any
+  request, telling the page each new state as a `budget_folder` event; it stops at quit), the
+  updater, and `Api`, which exposes `call(name, args)` to the page, and, outside requests,
+  `choose_folder` (the folder dialog) and `look_before_quit` (the save as the page quits). The
+  look at launch (`budget_folder_look(at_launch=True)`) comes before anything else. Whatever a
+  Mac and a Windows PC do differently it asks `THIS_COMPUTER` (computer.py). `VERSION` here is
+  the app's only version number.
+- `computer.py`: what a Mac and a Windows PC do differently, behind one interface (issue #182):
+  `computer.this()` picks `computer_mac.Mac` or `computer_windows.Windows`, the one place that
+  looks at `sys.platform`. Its methods: this computer's data, log, Documents and Downloads
+  folders (Windows asks for its Known Folders: a Documents OneDrive moved isn't `~/Documents`);
+  its name (`computer_name`, for "saved on …" and its files in the budget folder: a Mac's Computer
+  Name from System Settings, never its network name, which changes with the network; Windows'
+  device name); the one-copy lock and what a second launch does; the window's first size, remembered frame,
+  Dark mode and theme; whether it can draw the page (`can_draw_the_page`: Windows without WebView2
+  says so and stops); `when_asked_to_quit(should_quit, called_off)` (⌘Q, the Dock, logging out;
+  `called_off` when Windows doesn't log off after all), `quit`,
+  `bring_forward`, `on_main_thread`; opening a folder, file or web page; where the app is
+  installed, moving it there and relaunching; the update token's keeper, `curl`, `gh`, and the
+  update's steps (`why_updates_off`, `folder_for_update`, `take_update`: on a Mac the disk image
+  and codesign, `swap_in`). `computer_mac.py` is the only file using AppKit, Foundation, objc,
+  PyObjCTools, fcntl or the Mac's own tools; `computer_windows.py` the only one using Windows'
+  APIs. Both import anywhere (each system's modules are imported in its methods), so their pure
+  parts are tested on either. On Windows (#187) the window is pywebview's WinForms form drawing
+  the page with WebView2 (Edge's engine, through pythonnet); `when_asked_to_quit` replaces
+  pywebview's FormClosing handler before the window is made, to tell the person's closes from
+  Windows' own by the message being handled (a comctl32 subclass from when the window is made:
+  WinForms' CloseReason stays stale after a cancelled close), which also sees WM_ENDSESSION say a
+  log-off is called off; the window's frame is kept in the registry (`HKCU\Software\I Need A Budget`); the
+  copy holding the lock keeps the mutex (`RUNNING_MUTEX`) the installer's AppMutex waits for. Its
+  updates and the token are #188's (`windows_update.py`).
+  `scripts/tests/test_computer.py` checks each keeps to its own file.
+- `INeedABudget.spec`: the PyInstaller build on either system, each with its own side of pywebview
+  and computer.py only. A Mac makes `I Need A Budget.app` (`scripts/build.sh`); Windows a folder
+  with `I Need A Budget.exe` (its `.ico` from `scripts/make-ico.py`, a version resource with the
+  copyright), which `scripts/installer.iss` (Inno Setup 6.3 or later) installs: `scripts/build-windows.sh`
+  makes `I-Need-A-Budget-<version>-Setup.exe`. Per-user, no administrator, into
+  `%LOCALAPPDATA%\Programs\I Need A Budget`, a Start menu entry, an uninstaller that leaves the
+  data, a check for WebView2, unsigned (ADR 0009). Never change its `AppId`: an update installs
+  over the copy it finds by it. `scripts/tests/test_windows_app.py` checks both.
 - `service.py`: everything the page can ask for. `BudgetService.dispatch()` runs only
   methods marked `@exposed`; results are `{"ok": true, "result": …, "step": …}` (`step`, on a
   change or an undo: the undo step it made, so a toast's Undo reverses exactly its own; None
@@ -92,6 +150,48 @@ All in `Application Files/`:
   renamed), `prune` (four months; the `-wal`/`-shm` SQLite leaves beside a backup opened in
   place go with it), `move_old` (the data folder's old `Backups/`).
   `scripts/tests/test_backups.py` covers it, every way of quitting included.
+- `budget_folder.py`: the budget folder ([ADR 0008](../docs/adr/0008-the-budget-lives-in-a-folder-you-choose.md),
+  issue #183; the window's side is #189's, below). `BudgetFolder` saves the working
+  copy into the folder whole as `Budget.inab` (a copy in the data folder's `Saves/` with meta
+  `save`: id, counts (one version vector over computers, each one's count of its events), computer,
+  time, versions; recorded as this computer's before it goes into the folder under a hidden name,
+  renamed, retried while Windows or a sync tool holds the file; meta `save_landed` names the
+  `Budget.inab` it saves over until it's there), a few seconds after changes stop and at quit,
+  only when `backups.digest` changed. `check` (every few seconds) keeps to ADR 0008's five rules
+  and nothing else: conflict copies `Budget.inab` includes, or with its contents, go into `Backups/`
+  (one only this computer's save includes, once that save is `Budget.inab`);
+  `Budget.inab` is taken only when it includes this computer's last save or take and nothing changed
+  here (after the page's requests under way: `Turns`); a save with this computer's very contents is
+  joined (`_join`, a new event with one count of its own); everything else asks (`older`,
+  `two_computers`; `two_computers()` for `changes.compare`; `keep_this`, `keep_other`, whose answer
+  is a new event after both sides, `_answer`); nothing is written while anything is unsettled. A
+  backup copied in keeps no meta `save`: an old save, which asks. A `Budget.inab` gone once this
+  computer's save was there asks (`missing`); a newer budget format is refused; a folder that can't
+  be reached is waited for; `move_to` (every other budget file in the old folder into the new one's
+  `Backups/`), `open_from`, notes of where it's open. This computer's id in saves is new for each
+  budget and machine (`computer.json`, `computer.machine_id`); its files in the folder are named by
+  its name and the start of that id (`computer_tag`, `tag_in`; its earlier tags kept in
+  `computer.json`, so `prune` deletes backups named by them as its own). Its name is
+  `this_computer()`: `INAB_COMPUTER` (two previews on one folder), else the system's
+  (`computer_name`). Never by a clock. `scripts/tests/test_budget_folder.py`
+  covers it with two data folders sharing one folder, `test_budget_folder_random.py` on random
+  histories (the arbiter).
+  **In the window** (issue #189): service.py's `budget_folder_look` (at launch, the watcher's
+  round, or `now` as the page quits) works out, once per other save, what each side changed for
+  the one question (`budget_folder_question`, from `changes.compare`). It decides nothing: a side
+  with nothing to show is still asked about. The page (`folderChanged` and its neighbours in
+  index.html) keeps `state.folder`: a strip at the top for what stops a save (no folder yet,
+  unreachable, still syncing after 10 s, missing, moved, newer, and the question while it waits),
+  and pop-ups for what only you decide, never over a pop-up of yours, a drag or a box you're typing
+  in: the first launch of 1.5.0's "Your budget now lives in a folder you choose" before anything
+  else, open on another computer and a newer version at launch, and the question, "The budget in
+  the folder is older than this one" or "This budget changed on two computers" (each side's
+  summary, Show every change; Use it / Keep this), also as the app quits (with Quit and choose
+  later). An open question closes once it's answered on the other computer. Onboarding's first
+  step is Start a new budget or Open my budget; Settings has the folder, Open and Move…. A take
+  toasts "Updated with changes saved on PC-A" and redraws once you're free. The page says "this
+  computer", never which system it is. `scripts/tests/test_budget_folder_window.py` and the quit
+  tests in `test_backups.py` cover it.
 - `importer.py`: detects and parses OFX/QFX/QBO from any bank, Tangerine card and bank
   CSVs, RBC's CSV (every account in one file, so a file has `parts`), CSVs set up once
   (`csvlayout.py`), and Actual Budget's export (learnt from, never imported as
@@ -143,10 +243,19 @@ All in `Application Files/`:
   makes the changes and arranges the figures for the page. Working one of these figures
   out anywhere else (service.py, index.html) is a bug. `scripts/tests/test_figures.py` checks
   it on random databases.
-- `updater.py`, `launch.py`: updates from the repo's GitHub releases (anonymously, or
-  with a token if there is one); moving into Applications;
-  relaunching.
-- `settings.py`: settings, validated on every load and save: this Mac's in `settings.json`
+- `updater.py`: updates from the repo's GitHub releases (anonymously, or with a token if
+  there is one): when to check, GitHub's answers, the token's shape, downloading. Checking,
+  swapping in and relaunching are the computer's (moving into Applications too:
+  `computer_mac.py`, which was `launch.py` until 1.5.0). `scripts/check-update.py` reads both
+  layouts from a tag.
+- `windows_update.py`: pure. Windows updates (issue #188, ADR 0009): the Ed25519 check of an
+  installer's `.sig` with our release key (`release-key.pub`, built in; tested against RFC 8032's
+  vectors), and the PowerShell helper that runs the installer once the app has quit and, for
+  Restart now, opens it again. `computer_windows.py` reads the installer's version and starts the
+  helper; nothing is installed while Windows logs off (`installs_after_quitting`): the checked download
+  waits in the data folder's `Update waiting`, and the next launch checks it again and installs it
+  before the window opens (`Updater.take_kept`).
+- `settings.py`: settings, validated on every load and save: this computer's in `settings.json`
   (Appearance, Import from Downloads and its folder, updates, the Dashboard's months), and the
   budget's own, Overspending and Usual's months (`average_months`), in its `meta` (issue #153:
   a backup carries them, and changing one is a change for `backups.changed`). Figures reads
@@ -425,9 +534,11 @@ All in `Application Files/`:
   sets `connect-src 'none'`. A future Tangerine sync would be the second network access:
   it must be our own code (see Roadmap).
 - pywebview exposes every public attribute of `Api` to JavaScript; keep internals behind a
-  leading underscore. AppKit calls run on the main thread (`AppHelper.callAfter`).
+  leading underscore. The window's calls run on the main thread (`THIS_COMPUTER.on_main_thread`;
+  `AppHelper.callAfter` on a Mac).
 - Every user-facing change should be undoable: wrap it in `db.write("Short label")`.
   Background imports aren't undoable (they're removed from Accounts → Imported files).
+  ⌘Z here means Ctrl+Z on Windows too.
 - **An import or a re-check that changes something clears ⌘Z** (issue #42): undoing an
   earlier step would replay its SQL over what they changed (deleting an account took the
   rows an import had just put in it). `db.write()` without a label watches for a change and
@@ -454,10 +565,14 @@ All in `Application Files/`:
   recurring charge, payee or import) says "That category no longer exists." and so on, changes
   nothing and has no Undo (`service._existing`): it said "Saved", or its toast's Undo took back
   the step before it.
+- On Windows the repository may be in OneDrive: `scripts/build-windows.sh` builds in
+  `%LOCALAPPDATA%\I Need A Budget-build`. The maintainer's Windows PC runs Python from the
+  Microsoft Store, whose registry writes are kept in a copy of its own: what the app run from
+  source keeps in the registry isn't what `reg query` (or the installed app) sees.
 - `~/Documents` is iCloud-synced on this machine; `scripts/build.sh` builds in
   `~/Library/Caches` and runs `xattr -cr` before signing. One build at a time from any
-  checkout or worktree (`scripts/build-lock.sh`, taken by build, package, install and
-  release), with its own PyInstaller cache: other projects on this Mac build with
+  checkout or worktree (`scripts/build-lock.sh`, taken by build and install), with its own
+  PyInstaller cache: other projects on this Mac build with
   PyInstaller `--clean`, which empties the shared one.
 
 ## Budget rules (summary; budget.py has the detail)
@@ -507,14 +622,19 @@ late with only recent transactions counts as new (the accepted cost).
   set by the PRs themselves, so merging is all the maintainer does. The first PR after a
   release raises it (1.0.1 → 1.0.2 by default, 1.0.x → 1.1.0 only for a change big enough
   to deserve it); the PRs after it leave it alone until that version is released, so PRs
-  made side by side don't clash on it. It's 1.4.3 until 1.4.3 is released: 1.4.2 came out on
-  2026-11-17, and #79's PR, the first after it, raised it. Never leave the bump for a separate
-  PR after the merge.
+  made side by side don't clash on it. It's 1.5.0 until 1.5.0 is released: 1.4.3 came out on
+  2026-11-18, and 1.5.0's pieces went into `claude/cross-platform` without it, until #191 raised
+  it there (issue #181). Never leave the bump for a separate PR after the merge.
 - **A release happens only when the maintainer says it's ready** (their rule since
   2026-11-09, as bugs kept turning up). A merge, a finished list or every session being
-  done is never the go-ahead. Then Claude runs `scripts/release.sh NOTES.md` (notes
-  outside the repo), covering every PR merged since the last release. The maintainer
-  never builds. Installed copies only update when a release is published on GitHub.
+  done is never the go-ahead. Then Claude starts the Release workflow
+  (`.github/workflows/release.yml`, issue #190) from a computer that has `.git-denylist` (today
+  the Mac): `gh workflow run release.yml --ref main -F notes=@NOTES.md`, the notes written
+  outside the repo and checked with `scripts/hooks/privacy_check.py --need-denylist` first
+  (GitHub's machines can't check private words), covering every PR merged since the last release.
+  It builds, signs and checks both apps on GitHub's machines and publishes only once the
+  maintainer approves its `release` environment and every check passed. The maintainer never
+  builds. Installed copies only update when a release is published on GitHub.
 - The repository is **public** (it was private at first). It's
   **GPL-3.0-only**, the maintainer's choice, made knowing the GPL allows selling: what
   they want is that nobody builds a closed product from it. `docs/NOTICE` is a section 7(b)
@@ -524,42 +644,67 @@ late with only recent transactions counts as new (the accepted cost).
     (after a `#!` line; an HTML comment after the doctype). `scripts/tests/test_licenses.py`
     fails on one without it, new files included.
   - The app carries `LICENSE.txt`, `NOTICE.txt` and `Third-party licenses.txt` in
-    `Contents/Resources` (the spec adds them). The last is written at build time by
+    `Contents/Resources` on a Mac, `_internal\` on Windows (the spec adds them; the installer
+    puts copies beside the `.exe`). The last is written at build time by
     `scripts/third_party_licenses.py` from the packages whose modules PyInstaller
     collected, plus PyInstaller (its launcher) and Python (the docs' license page, which
     covers OpenSSL and the rest Python incorporates). A bundled package with no license
     file stops the build unless its metadata says MIT (then it gets the MIT text) or its
     text is in `GIVEN`.
   - Finder's Get Info says "© 2026 DigitalN. Free software under the GNU GPL v3."
-    (`NSHumanReadableCopyright`; it said "Private. Not for distribution." until 1.3.1).
+    (`NSHumanReadableCopyright`; it said "Private. Not for distribution." until 1.3.1), and
+    so does the `.exe`'s Properties → Details (its version resource's `LegalCopyright`).
   - Settings ends with "© 2026 DigitalN · Free software under the GNU GPL v3, with no
     warranty · License"; License opens a read-only copy of the app's `LICENSE.txt` in the
-    default text app (TextEdit saving into the app itself would break its signature).
+    default text app, TextEdit or Notepad (saving into the app itself would break its signature).
   The updater asks
-  GitHub anonymously, or with a token when there is one (saved in the Keychain from
-  Settings, or the GitHub CLI's login, `gh auth token`). Settings shows the token field
+  GitHub anonymously, or with a token when there is one (saved from Settings, in the Keychain
+  on a Mac or Credential Manager on Windows, or the GitHub CLI's login, `gh auth token`). Settings shows the token field
   only when GitHub refused this copy (`needs_access`): it would if the repository went
   private again.
 - Ask once before anything on GitHub (pushing, opening a PR, publishing a release), then
   do all of it. Check each step's result before the next one that can't be undone.
-- Releases are signed with the maintainer's Apple Development certificate (team
-  `XT4LT7MS6Y`); installed copies refuse updates from any other team. No Developer ID or
-  notarization.
-- Releases have only the `.dmg`.
+- Releases are signed on GitHub ([ADR 0009](../docs/adr/0009-both-apps-are-built-and-signed-on-github.md)):
+  the Mac app with the maintainer's Apple Development certificate (team `XT4LT7MS6Y`;
+  installed copies refuse updates from any other team; no Developer ID or notarization), the
+  Windows installer with our own Ed25519 release key. Both are secrets of the `release`
+  environment, which only a run on main reaches, after the maintainer's Approve; every other run
+  is a dry run with throwaway identities.
+- Releases have the `.dmg`, `I-Need-A-Budget-<version>-Setup.exe` and its `.sig`, nothing else.
 
 ## Testing on the maintainer's Mac
 
 - Their real copy runs from `/Applications` with real data. Don't quit it, reinstall it
-  or touch `~/Library/Application Support/I Need A Budget` without asking.
+  or touch `~/Library/Application Support/I Need A Budget` or their budget folder without asking.
 - Say so before opening windows on screen for a test. For the built app, launch a copy
   against a throwaway folder: `open -n --env INAB_DATA_DIR=/tmp/x "/Applications/I Need A Budget.app"`
   (and point `downloads_dir` in that folder's `settings.json` somewhere harmless, or the
-  watcher will import from the real Downloads).
-- After testing, quit test copies and delete their folders.
+  watcher will import from the real Downloads). Its budget folder is a throwaway too: Start a new
+  budget in the one it suggests (`/tmp/x budget folder`), never Open my budget on the real one.
+- After testing, quit test copies and delete their folders, budget folders included.
 - To try the interface on real data: copy the database with SQLite's backup API (read-only
   source) into `~/Library/Caches/I Need A Budget-preview/`, write a `settings.json` there
   whose `downloads_dir` is an empty folder (the preview sets `<data>/downloads` itself if there isn't one, and refuses `~/Downloads`), run the `preview` launch entry, and delete the
   folder afterwards. The preview loads `service.py` once: restart it after Python changes.
+
+## Testing on Windows
+
+- The maintainer's PC has no real copy or data. Install a build (`scripts/build-windows.sh`, or
+  a Tests run's `Setup.exe`) with `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART`, which doesn't open
+  it, and start `%LOCALAPPDATA%\Programs\I Need A Budget\I Need A Budget.exe` only with
+  `INAB_DATA_DIR` set to a throwaway folder whose `settings.json` points `downloads_dir` at an
+  empty folder. The Start menu entry, opened from a shell with that variable set, reaches the
+  same copy (the one-copy lock is the data folder's). Start a new budget in the budget folder it
+  suggests, `<throwaway> budget folder`.
+- Two computers are two copies, each with its own `INAB_DATA_DIR` and `INAB_COMPUTER`, opening
+  one budget folder: they can run at once. That's two copies on one PC, not a sync tool: OneDrive's
+  delays and conflict copies are only seen on two real computers.
+- To drive the real page, start it with
+  `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9333`: DevTools' protocol on
+  localhost then evaluates script, sends real mouse and key events and screenshots the page alone.
+- Afterwards: the install folder's `unins000.exe /VERYSILENT`, the throwaway folders (budget
+  folders included), and
+  `reg delete "HKCU\Software\I Need A Budget" /f` (the window's frame).
 
 ## Git
 
@@ -687,7 +832,8 @@ Don't undo these without asking:
   it so typing replaces it, also the box Return or Tab moved you to; another click in a box
   you've clicked into places the cursor. It's done on mouse-down, before WebKit places
   the cursor: cancelling the mouse-up (1.0.7–1.2.2) missed a box you were already in, and
-  Chromium (the preview) hid it. Test clicks in WebKit, the app's engine. A box
+  Chromium (the preview) hid it. Test clicks in both engines: WebKit, the Mac app's, and
+  Chromium, Windows' (Microsoft Edge's WebView2; the preview in the browser pane is Chromium). A box
   saves when you leave it (Return, Tab, a click elsewhere), never when a redraw replaces
   it mid-typing. Redrawing the Budget page keeps the scroll position and the box you're
   in (it used to jump to the top after every save: `scrollIntoView` on the month strip
@@ -779,7 +925,14 @@ Don't undo these without asking:
   quitting" (with the reason for an entry), then Keep editing or Go back / Quit anyway / for
   a pop-up "<its own button> and quit". The maintainer's wording: "finish", never "save",
   which would suggest the rest might not be saved. Logging out or shutting down quits
-  straight away. A downloaded update installs on quit.
+  straight away. On Windows ✕ and Alt+F4 are the close button (there's no ⌘Q); logging off,
+  shutting down, Task Manager and an installer's Restart Manager quit straight away, the
+  backup made before Windows is told it may go on. When another app stops the log-off and the
+  person cancels, Windows says the session isn't ending: the app carries on as it was
+  (`main._quit_called_off`: not quitting, Downloads watched; the next ✕ asks the page again; an
+  update the log-off kept for the next launch goes in at the next quit instead,
+  `Updater.log_off_called_off`).
+  A downloaded update installs on quit.
 - **A backup at a quit after a change, into Documents** (issues #21 and #133,
   [ADR 0004](../docs/adr/0004-live-budget-stays-out-of-synced-folders.md)):
   `~/Documents/I Need A Budget Backups`, which iCloud Drive can back up; the live budget
@@ -792,10 +945,16 @@ Don't undo these without asking:
   with the date and time (`budget-2026-11-08-14-32-05.db`). Every one from the last four months is kept,
   before-upgrade copies included, and the newest from before today is never deleted for
   its age. With `INAB_DATA_DIR` they stay inside that folder. If Documents can't be
-  written they go to the data folder's `Backups/` until it can. **To restore one:** quit
-  the app, delete `budget.db-wal` and `budget.db-shm` in the data folder if they're
-  there, and copy the backup in as `budget.db`. (Until 1.3.1: one a day at launch, 14
-  kept, in the data folder's `Backups/`, which the first launch of 1.4.0 moves over.)
+  written they go to the data folder's `Backups/` until it can. With a budget folder (1.5.0)
+  they go into its `Backups/`, every computer's, named for the computer. **To restore one:**
+  quit the app on every computer and copy the backup into the budget folder as
+  `Budget.inab`, replacing the one there: it's an old save, so the first computer opened asks
+  "The budget in the folder is older than this one" (Use it), and the others take its answer
+  (ADR 0008). Without a budget
+  folder (a 1.4 copy that hasn't chosen one): quit the app, delete `budget.db-wal` and
+  `budget.db-shm` in the data folder if they're there, and copy the backup in as `budget.db`.
+  (Until 1.3.1: one a day at launch, 14 kept, in the data folder's `Backups/`, which the first
+  launch of 1.4.0 moves over.)
 - "Eating Out" was renamed **Food** (Actual's old name still matches through `old_names`).
 - **Update checks only at launch and on Check now**, never on a timer while the app is
   open (the maintainer's choice).
@@ -806,7 +965,12 @@ Don't undo these without asking:
 - **The window** opens at 85% of the screen the first time on a Mac, then the size and
   place it was left: AppKit's frame autosave (`main.WINDOW_FRAME_NAME`, kept in the app's
   macOS defaults, saved on every change), moved and shrunk onto a screen if it no longer
-  fits one. The log says `Window <w>×<h>` at launch.
+  fits one. The log says `Window <w>×<h>` at launch. On Windows likewise: 85% of the main
+  screen less the taskbar, in its middle, the first time; then as it was left, maximized again
+  if it was, kept in this computer's settings in the registry (`HKCU\Software\I Need A Budget`,
+  value `Main window`: `x y width height[ maximized]`), saved after a move or resize, a maximize
+  and at close. Its smallest size is the page's: pywebview's minimum there is the whole window,
+  frame and title bar included. Appearance colours the title bar too.
 - Budget can start months back; past months are caught up with one click ("Catch up").
 - **Overspending** is a setting with three choices (the maintainer wanted to choose how
   the rollover works): Next month (YNAB; a new budget's default since 1.4.1, issue #166),
@@ -817,7 +981,8 @@ Don't undo these without asking:
   Showing what This month covered as Assigned was offered and declined (2026-11-12).
 - **Settings is kept short** (the maintainer's mock-up): Appearance, Import from
   Downloads, Overspending, Learn from Actual; updates, Release notes,
-  Check now (GitHub access only when needed); Open buttons for the data, imported
+  Check now (GitHub access only when needed); the budget folder (Open, Move…, issue #189);
+  Open buttons for the data, imported
   files and log folders; the license line under them. Budget start, the Usual ("needs")
   look-back and "fill monthly amounts" were removed from it on purpose.
 - **No bill due dates, paydays or safe-to-spend**, ever: that isn't the envelope method
@@ -843,12 +1008,14 @@ Don't undo these without asking:
   without data for every account, income. Clicking a figure opens its transactions. No
   by-payee report (the maintainer dropped it: e-transfer payees mix unrelated things).
 - **The top of the repository is kept short** (the maintainer's call): `.claude/` (this file,
-  `launch.json`), `Application Files/`, `docs/` (DEVELOPMENT.md, CONTEXT.md, NOTICE, ADRs,
+  `launch.json`), `.github/` (the Tests and Release workflows: GitHub only reads workflows from there),
+  `Application Files/`, `docs/` (DEVELOPMENT.md, CONTEXT.md, NOTICE, ADRs,
   pictures), `scripts/` (tools, `First Time Setup.command`, `tests/`, `hooks/`),
   `.gitignore`, `LICENSE`, `README.md`. Nothing else goes there (CITATION.cff, a Build
   .command, `.gitattributes` and `pytest.ini` were removed). `scripts/` keeps its name:
-  every copy's privacy hook is `core.hooksPath scripts/hooks`. Disk images are made in
-  `~/Library/Caches/I Need A Budget-dmg`, never in the repository (iCloud syncs it).
+  every copy's privacy hook is `core.hooksPath scripts/hooks`. Disk images are made by the
+  Release workflow on GitHub's Mac (`scripts/make-dmg.py`), never in the repository (iCloud
+  syncs it).
 
 ## Roadmap (future chats)
 
@@ -890,7 +1057,19 @@ Don't undo these without asking:
 - Copy is short and plain. The user trims explanations that don't earn their place;
   don't add paragraphs of help text to forms.
 - **Test the interface with the mouse**, not only the keyboard, in the dev preview on a
-  copy of the real data (see Testing). Several bugs only showed up when clicking.
+  copy of the real data (see Testing), in WebKit and in Chromium (Windows' WebView2). Several
+  bugs only showed up when clicking.
+- **The page knows its system** (issue #185): `platform` in the app's info, "mac" or
+  "windows" (`computer.this().name`; the page's `onWindows()`; the preview's `--platform` pretends). Keys are named the way it
+  does: `undoKey()` (⌘Z / Ctrl+Z) and `returnKey()` (Return / Enter). On Windows nothing in the
+  page mentions the Mac, Finder, the Keychain or ⌘; "on this computer" on both (`test_page.py`
+  checks: a Mac word may only be the Mac's side of `onWindows() ? … : …`). Windows' fonts apply only on
+  Windows (`:root[data-platform="windows"]`), so the Mac's stay as they were. A one-key shortcut ignores a key pressed
+  with Ctrl, Alt or ⌘ (`withModifier`; AltGr types a character, so it's the key). On Windows the
+  browser's own keys (F5, Ctrl+R, Ctrl+P, Ctrl+F, zooming, Ctrl and the mouse wheel) never reach the
+  window (`keepBrowserKeysOut`), and scrollbars are thin. WebView2 tabs to buttons where WebKit
+  doesn't: a button beside amount boxes that only the mouse uses is `tabindex="-1"`, so Tab goes
+  from box to box.
 
 ## Working style
 
@@ -901,7 +1080,21 @@ Don't undo these without asking:
 ## Tests
 
 `python3 -m pytest` (scripts/tests/, all synthetic data). `scripts/tests/test_privacy.py` fails if the
-working tree has anything from `.git-denylist` or a card-number shape.
+working tree has anything from `.git-denylist` or a card-number shape. No test takes a real copy's
+lock or mutex (`conftest.py`'s `real_copy` fails it): the real data folder's lock would keep the app
+from opening, and while `RUNNING_MUTEX` is held Windows' installer and uninstaller won't run.
+The budget folder's random test (`scripts/tests/test_budget_folder_random.py`) runs the seeds it
+keeps (`FOUND`) plus 100 fresh ones per test; on GitHub's machines (`CI` set) 20 fresh ones, to stay
+inside the 30-minute limit. `INAB_SEEDS` (and `INAB_STEPS`) override both.
+
+GitHub runs the whole suite on macOS and Windows for every pull request into `main` or
+`claude/cross-platform` and every push to them (`.github/workflows/tests.yml`, issue #186):
+Python 3.13, the pinned packages, node for the page tests, no secrets. Both checks count: a
+failure on either system fails the run (since #182 made the suite pass on Windows). GitHub's
+machines have no `.git-denylist`: there the privacy checks look for card numbers, bank files and
+databases only. The same run builds both apps to try (issue #187), unsigned: the Windows installer
+and the Mac app zipped (signed ad hoc), downloadable from the run's Summary. Making the checks required for merging into `main` is the maintainer's setting
+on GitHub: ask before changing it.
 
 ## Agent skills
 

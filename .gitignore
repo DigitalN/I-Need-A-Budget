@@ -15,6 +15,8 @@
 *.sqlite
 *.sqlite3
 *.sqlite-*
+*.inab
+*.inab-*
 *.zip
 Personal/
 private/
@@ -23,14 +25,20 @@ Backups/
 Imported Files/
 .git-denylist
 .env
+# Certificate exports (a .p12 holds the signing certificate's private key: scripts/release-secrets.sh)
+*.p12
+*.P12
+*.pfx
+*.PFX
 
-# Logs, and unfinished copies (settings, backups)
+# Logs, and unfinished copies (settings, backups, saves: whole budgets)
 *.log
 Logs/
 *.tmp
 *.partial
+*.partial-*
 
-# Build output, should any land here: scripts/build.sh and package.sh work in ~/Library/Caches
+# Build output, should any land here: scripts/build.sh works in ~/Library/Caches
 Application Files/build/
 Application Files/dist/
 *.app/

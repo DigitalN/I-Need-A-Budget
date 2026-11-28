@@ -1,5 +1,9 @@
 # The live budget stays out of synced folders; only backups go there
 
+_Superseded by [ADR 0008](0008-the-budget-lives-in-a-folder-you-choose.md) (2026-11-27):
+the budget now lives in a folder you choose, saved there whole. The two dangers below are
+why it's saved whole and never worked on there._
+
 The maintainer wants the budget backed up off the computer, by iCloud Drive (or OneDrive),
 which sync the Documents folder. The live database stays where it was, in Application
 Support: it's written as you work (SQLite in WAL mode, so three files), and a sync can

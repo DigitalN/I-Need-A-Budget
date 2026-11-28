@@ -99,16 +99,23 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--denylist", help="the denylist (default: .git-denylist in the main checkout)")
     parser.add_argument("--what", default="text", help="what is being checked, for the message")
+    parser.add_argument("--need-denylist", action="store_true",
+                        help="fail without a .git-denylist (release notes: they go to GitHub as they are)")
     parser.add_argument("file", nargs="?", help="the text to check (default: standard input)")
     args = parser.parse_args(argv)
     text = Path(args.file).read_text(encoding="utf-8", errors="replace") if args.file else sys.stdin.read()
     denylist = args.denylist or repository_denylist()
-    if not (denylist and Path(denylist).is_file()):
+    missing = not (denylist and Path(denylist).is_file())
+    if missing:
         where = f" at {denylist}" if denylist else ""
         print(f"No .git-denylist found{where}: private words weren't checked, card numbers were.", file=sys.stderr)
     found = problems(text, read_denylist(denylist))
     for line, why in found:
         print(f"✗ {args.what}: {why}\n    {line.strip()[:200]}", file=sys.stderr)
+    if missing and args.need_denylist:
+        print(f"✗ {args.what}: the private words in .git-denylist can't be checked on this computer, which has"
+              f" none. Check them on one that has it (never add it to the repository).", file=sys.stderr)
+        return 1
     return 1 if found else 0
 
 

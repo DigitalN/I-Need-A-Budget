@@ -75,9 +75,20 @@ def test_a_full_card_number_is_refused(repo):
 
 def test_database_side_files_and_logs_are_refused(repo):
     for name in ("budget.db-wal", "budget.db-shm", "budget.db-journal", "Backups/budget-2026-10-12.tmp", "budget.tmp",
-                 "app.log", "Logs/app.log", "budget.db"):
+                 "app.log", "Logs/app.log", "budget.db", "Budget.inab", "Budget.inab-wal", "Budget.inab-shm",
+                 "Budget.inab-journal", ".Budget.inab.PC-A.partial", "Saves/.saving-0.partial",
+                 "Saves/.saving-0.partial-journal", "Saves/.reading-0.partial-wal"):
         assert _refused(_commit(repo, name, "x", force=True)), name
         repo.git("reset", "-q")
+
+
+def test_certificate_exports_are_refused(repo):
+    """A .p12 (or .pfx) holds a signing certificate's private key: scripts/release-secrets.sh
+    exports one, and a missed step in Keychain Access's Save dialog could put it in the repository."""
+    for name in ("Certificates.p12", "scripts/Apple Development.P12", "release.pfx", "Application Files/key.PFX"):
+        assert _refused(_commit(repo, name, "x", force=True)), name
+        repo.git("reset", "-q")
+    assert _commit(repo, "docs/p12-notes.md", "Made-up notes about a .p12 export.\n").returncode == 0
 
 
 def test_a_private_word_is_refused_even_on_a_line_that_starts_with_plus(repo):
@@ -105,7 +116,23 @@ def test_the_release_notes_are_checked_with_the_same_rules(repo):
     assert subprocess.run(check, capture_output=True, text=True).returncode == 1
     notes.write_text(f"Card {card_number('9999')} was charged twice.\n")
     assert subprocess.run(check, capture_output=True, text=True).returncode == 1
-    assert "privacy_check.py" in (ROOT / "scripts" / "release.sh").read_text()
+    assert "privacy_check.py" in (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+
+
+def test_release_notes_checked_where_there_is_no_denylist_say_so_and_fail(repo):
+    """The PC (and GitHub's machines) have no .git-denylist: --need-denylist, which the release
+    checklist uses before notes go to GitHub, fails there rather than pass unchecked notes."""
+    notes = repo.path.parent / f"{repo.path.name}-notes.md"
+    notes.write_text("Fixes the way amounts are read.\n")
+    nowhere = str(repo.path.parent / "no-such-denylist")
+    plain = [sys.executable, str(HOOKS / "privacy_check.py"), "--denylist", nowhere, str(notes)]
+    assert subprocess.run(plain, capture_output=True, text=True).returncode == 0  # as the hooks have it
+    needed = subprocess.run([*plain[:2], "--need-denylist", *plain[2:]], capture_output=True, text=True)
+    assert needed.returncode == 1 and "can't be checked on this computer" in needed.stderr
+    found = [*plain[:2], "--need-denylist", "--denylist", str(repo / ".git-denylist"), str(notes)]
+    assert subprocess.run(found, capture_output=True, text=True).returncode == 0
+    guide = (ROOT / "docs" / "DEVELOPMENT.md").read_text(encoding="utf-8")
+    assert 'privacy_check.py --need-denylist --what "In the release notes" NOTES.md' in guide
 
 
 def test_luhn_and_the_shapes_it_looks_at():
