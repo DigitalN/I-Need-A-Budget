@@ -1016,7 +1016,8 @@ def test_a_log_off_another_app_stops_is_called_off_and_the_app_carries_on(tmp_pa
 
     add_category(app._db, "Rent")
     real_at_quit = backups.at_quit
-    monkeypatch.setattr(backups, "at_quit", lambda db: real_at_quit(db, QUIT))  # a later second than the first
+    # a later second than the first (the budget folder's at_quit passes its own time: issue #189)
+    monkeypatch.setattr(backups, "at_quit", lambda db, now=None: real_at_quit(db, QUIT))
     asked = []
     monkeypatch.setattr(app, "_ask_page_to_quit", lambda: asked.append("✕") or False)
     windows_sends(window, SC_CLOSE)
