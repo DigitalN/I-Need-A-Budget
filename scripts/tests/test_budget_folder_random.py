@@ -98,6 +98,9 @@ class World:
         self.saved = {}                    # a save's id → the version it was made from
         self.made = {}                     # a save's id → (its version, the save)
         self.choices = set()               # versions that are an answer: no contents of their own, only an order
+        self.repeats = set()               # a backup restored again: what it was copied over doesn't count for questions
+        self.restored = set()              # backups copied in: the person's own files, never the app's to keep
+        self.restored_into = {}            # a backup copied in → the budget folder it went into (through a lagging copy)
         self.cur = {}                      # computer → the version its budget is
         self.base = {}                     # computer → the version its budget started from (taken, or saved)
         self.computers = {}
@@ -157,18 +160,12 @@ class World:
             self.base[name] = taken
         if taken is not None and self.versions[taken][0] == d:
             cur = self.cur[name]
-            restore = started.id.startswith(budget_folder.RESTORED)
-            if cur != taken and cur not in self._ancestry([taken]) and taken not in self._ancestry([cur]):
-                if restore:
-                    # It took a restore, whose history is its own from now (nothing it had is joined in): what it had,
-                    # the person restored a backup over, kept in Backups/ first unless it's the very same contents
-                    self.dropped.add(cur)
-                    if self.versions[cur][0] != d:
-                        self.answered.add(cur)
-                elif self.versions[cur][0] == d:
-                    # Its own change came to the very contents of another's save: the two are joined
-                    self.versions[taken][1].append(cur)
-                    self.children.setdefault(cur, set()).add(taken)
+            if cur != taken and cur not in self._ancestry([taken]) and taken not in self._ancestry([cur]) and                     self.versions[cur][0] == d:
+                # Its own change came to the very contents of another's save (the app joins the two): one event after
+                # both. Anything else it had and the take replaced must be in the history (a restore comes after
+                # what the folder held) or dropped by a person: judged at the end, never dropped here.
+                self.versions[taken][1].append(cur)
+                self.children.setdefault(cur, set()).add(taken)
             self.cur[name] = taken  # its budget is that save exactly (taken, or the same contents adopted)
         elif d != self.versions[self.cur[name]][0]:
             assert d in self.by_digest, f"seed {self.seed}: {name}'s budget is contents nobody made\n" + self._trail()
@@ -213,30 +210,15 @@ class World:
             return self._of_file(save.path)
         return self.by_digest[save.digest][-1] if save.digest in self.by_digest else None
 
-    def _same_as(self, v, among):
-        """Whether another version with `v`'s very contents, one `v` didn't come from (two computers
-        making the same change), is `among` these: then what `v` holds is there too. One it came from
-        doesn't count: a change back to contents once had is a change of its own."""
-        came_from = self._ancestry([v])
-        return any(u != v and u not in came_from and u in among for u in self.by_digest[self.versions[v][0]])
-
-    def _with_the_same(self, versions):
-        """`versions`, and every version with the very contents of one of them (made apart, or a restore
-        of them), with what it came from: dropping those contents, or keeping them, is the same for it."""
-        versions = set(versions)
-        while True:
-            more = {v for v in range(len(self.versions)) if v not in versions and self._same_as(v, versions)}
-            if not more:
-                return versions
-            versions |= self._ancestry(more)
-
-    def _ancestry(self, starts):
+    def _ancestry(self, starts, without=()):
+        """Every version `starts` came from; not through the parents of those `without`."""
         seen, todo = set(), list(starts)
         while todo:
             v = todo.pop()
             if v not in seen:
                 seen.add(v)
-                todo.extend(self.versions[v][1])
+                if v not in without:
+                    todo.extend(self.versions[v][1])
         return seen
 
     # ── what can happen ──
@@ -336,11 +318,22 @@ class World:
         folder = self.lagging[name][0] if name in self.lagging else self.home[name]
         if not self.pool or name in self.unplugged or not folder.is_dir() or (folder / MOVED_NOTE).exists():
             return
-        if (folder / FILE_NAME).exists() and (over := self._of_file(folder / FILE_NAME)) is not None:
+        over = self._of_file(folder / FILE_NAME) if (folder / FILE_NAME).exists() else None
+        if over is not None:
             self.dropped.add(over)  # what the person copied over, on purpose
         shutil.copyfile(self.r.choice(self.pool), folder / FILE_NAME)
         digest = self._digest_file(folder / FILE_NAME)
-        self.saved[f"restored-{digest[:24]}"] = self._version(digest, ())  # what every computer makes of it
+        # It comes after what the folder held (a computer with nothing of its own since takes it, unasked), and
+        # it's what every computer makes of that file. The same backup restored again is the same save for the app:
+        # after the first too, and a question that comes of it is fine (`repeats`, decided on #196's review).
+        rid = f"{budget_folder.RESTORED}{digest[:24]}"
+        again = self.saved.get(rid)
+        parents = [v for v in (over, again) if v is not None]
+        self.saved[rid] = self._version(digest, list(dict.fromkeys(parents)))
+        self.restored.add(self.saved[rid])
+        self.restored_into[self.saved[rid]] = self.lagging[name][1] if name in self.lagging else folder
+        if again is not None:
+            self.repeats.add(self.saved[rid])
 
     def answer(self, c, name, keep_this=None):
         state = c.state()["state"]
@@ -348,14 +341,17 @@ class World:
             return
         keep_this = self.r.random() < 0.5 if keep_this is None else keep_this
         self._follow(name)
-        if keep_this:  # the other, and whatever else in the folder this one didn't come from, are dropped
+        if keep_this:  # the side shown is dropped (its file may be gone since: put away by the computer that has it)
             mine = self._ancestry([self.cur[name]])
-            # What it was asked about (its file may be gone since: put away by the computer that has it)
-            asked = [self._of_save(c._other)] + [self._of_file(p) for p in _budgets(c.folder)]
-            dropping = {v for v in asked if v is not None and v not in mine}
+            asked = self._of_save(c._other)
+            dropping = {asked} if asked is not None and asked not in mine else set()
+            started = c._mine().id
             try:
                 c.keep_this()
             except UserError:  # refused before it looked (the folder can't be reached), or it looked again
+                return
+            if c._mine().id == started:  # asked again (a save it wasn't shown arrived): nothing chosen yet
+                self.looked = name
                 return
             self.looked = name
             self.dropped |= dropping
@@ -460,7 +456,7 @@ class World:
         found now; another's may be from before a change it made since, gone at its next look)."""
         kept = self._kept()
         for v, (digest, _) in enumerate(self.versions):
-            if v not in self.children and v not in self.dropped and v not in self.choices and                     not self._same_as(v, self.children):
+            if v not in self.children and v not in self.dropped and v not in self.choices and v not in self.restored:
                 assert digest in kept, f"seed {self.seed}: version {v} lost\n" + self._trail()
         for name, c in self.computers.items():
             if name != asked:
@@ -471,7 +467,7 @@ class World:
                 if other is None or (state == "older" and c._other.raw):
                     continue  # the same backup restored again, older by now: asked (decided on #196's review)
                 mine = self.cur[name]
-                assert other not in self._ancestry([mine]) and mine not in self._ancestry([other]), \
+                assert other not in self._ancestry([mine], self.repeats) and                     mine not in self._ancestry([other], self.repeats), \
                     f"seed {self.seed}: {name} asked ({state}) though one side has everything: it's v{mine}, " \
                     f"{c._other.name} v{other}\n" + self._trail()
 
@@ -505,10 +501,16 @@ class World:
         final = {self.versions[self.cur[n]][0] for n in NAMES}
         assert set(states.values()) == {"saved"} and len(final) == 1, \
             f"seed {self.seed}: never agree: {states}\n" + self._trail()
-        history = self._with_the_same(self._ancestry(self.by_digest[final.pop()]))
-        dropped = self._with_the_same(self._ancestry(self.dropped))
+        history = self._ancestry({self.cur[n] for n in NAMES})  # events: what the computers' budgets came from
+        dropped = self._ancestry(self.dropped)
+        kept_contents, kept = {self.versions[u][0] for u in history}, self._kept()
         for v in range(len(self.versions)):
-            assert v in history or v in dropped or v in self.choices, \
+            # A backup copied in is the person's file, not work: outside the history only when it changed nothing
+            # (the very contents of what's kept: the same backup restored over what it already was), or when it went
+            # into a folder the budget moved out of (the move stands: it's in Backups/)
+            no_op = v in self.restored and self.versions[v][0] in kept_contents
+            moved_over = v in self.restored and (self.restored_into[v] / MOVED_NOTE).exists() and                 self.versions[v][0] in kept
+            assert v in history or v in dropped or v in self.choices or no_op or moved_over, \
                 f"seed {self.seed}: version {v} is in no budget and nobody chose to drop it\n" + self._trail()
         kept = self._kept()
         for v in self.answered:

@@ -828,11 +828,10 @@ def test_keeping_this_one_looks_again_first(tmp_path):
     b.check(wait=False)
     add_category(a.db, "Gifts")
     a.check(wait=False)  # PC-A saved again after PC-B was asked
-    state = b.keep_this()  # what PC-B's person never saw is asked about, not put away (#196's sixth review)
-    assert state["state"] == "two_computers" and not not_kept(folder)
-    assert categories_in(b.two_computers()["other"]) == ["Groceries", "Gifts"]
+    state = b.keep_this()  # what PC-B's person never saw is kept beside it and asked about next (#196's sixth review)
+    assert state["state"] == "two_computers" and categories_in(b.two_computers()["other"]) == ["Groceries", "Gifts"]
     assert b.keep_this()["state"] == "saved"
-    assert sorted(sorted(categories_in(p)) for p in not_kept(folder)) == [["Gifts", "Groceries"]]
+    assert sorted(sorted(categories_in(p)) for p in not_kept(folder)) == [["Gifts", "Groceries"], ["Groceries"]]
     assert a.check()["took"]["computer"] == "PC-B" and categories(a.db) == ["Rent"]
 
     folder, a, b = _changed_on_both(tmp_path / "newer")

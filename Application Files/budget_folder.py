@@ -536,10 +536,11 @@ class BudgetFolder:
             return self._set("newer", other=newer.about(), message=newer_message(newer))
         mine, current = self._mine(), self._working_digest()
         others, publish = [], False
-        # This computer's own save as a sync tool's copy: it didn't land (in flight when a backup was restored there),
-        # so a save that comes after this computer's only by a restore it missed isn't taken unasked: the others are
-        # asked about that save too.
-        in_flight = mine is not None and any(s.id == mine.id and s.name != FILE_NAME for s in saves)
+        # This computer's own save not known to have landed here (a sync tool's copy of it, a save that didn't land, the
+        # old folder's after following a move): in flight, so a save that comes after this computer's only by a restore
+        # it missed isn't taken unasked (the others are asked about this computer's save, where it turns up).
+        in_flight = mine is not None and (mine.id != self.db.get_meta(LANDED_KEY) or
+                                          any(s.id == mine.id and s.name != FILE_NAME for s in saves))
         for save in saves:  # Budget.inab first
             kind = arriving(save, mine)
             if kind in (NEWER, APART) and save.schema_version == SCHEMA_VERSION and \
@@ -555,6 +556,9 @@ class BudgetFolder:
             if kind == SAME and save.name == FILE_NAME:
                 self._landed(save.id)
                 publish = publish or self._differs(save)
+            elif kind == SAME and save.name != FILE_NAME and main is not None and save.digest != main.digest and \
+                    relation(save, main) not in (SAME, OLDER):
+                pass  # this computer's own save, in flight: stays for the others to see, and its question to stand
             elif kind in (SAME, OLDER) and save.name != FILE_NAME:
                 self._put_away(folder, save, "a sync tool's copy of a save this computer came after", main)
             elif not ((kind == OLDER or put_back(save, mine)) and save.name == FILE_NAME):
@@ -987,10 +991,11 @@ class BudgetFolder:
 
     def keep_this(self):
         """Changed on two computers (or an older one put back: Keep the newer one): keeps this
-        computer's budget. The folder is looked at again first: a save that arrived since the question
-        with other contents, after neither side shown, is asked about instead (the state says so); the
-        other one, and whatever else this computer's budget didn't come after, goes into Backups/, and
-        this one is saved over them, coming after them all. Returns the state."""
+        computer's budget. The folder is looked at again first. The other one, and whatever it or this
+        computer's came after, goes into Backups/, and this one is saved over them, coming after them
+        all; a save apart from both sides, with other contents (one that arrived since the question, a
+        third computer's), is never put away or saved over unseen: it stays, as a copy if it was
+        Budget.inab, and is asked about next (`_keep_visible`). Returns the state."""
         with self._lock:
             other = self._decision()
             folder = self.folder
@@ -1006,13 +1011,10 @@ class BudgetFolder:
                 self._other = None
                 raise UserError(newer_message(newer))
             mine, current = self._mine(), self._working_digest()
-            unseen = [s for s in saves if s.id != other.id and relation(s, mine) not in (SAME, OLDER) and
-                      relation(s, other) not in (SAME, OLDER) and s.digest not in (other.digest, current, mine.digest)]
-            if unseen:  # one that arrived since the question, with other contents: asked about, never put away unseen
-                self._other = unseen[0]
-                log.info("Asked again: the budget saved on %s arrived since the question", unseen[0].computer)
-                return self._set("two_computers", other=unseen[0].about())
-            over = [other] + [s for s in saves if s.id != other.id and relation(s, mine) not in (SAME, OLDER)]
+            apart = self._apart(saves, mine, other, current)
+            self._keep_visible(folder, apart)
+            over = [other] + [s for s in saves if s.id != other.id and s.id not in {a.id for a in apart} and
+                              relation(s, mine) not in (SAME, OLDER)]
             for save in over:
                 self._keep_a_copy(save)
             for save in over:
@@ -1040,6 +1042,7 @@ class BudgetFolder:
                 self._other = None
                 raise UserError(newer_message(newer))
             target = next((s for s in saves if s.id != other.id and relation(s, other) == NEWER), other)
+            apart = self._apart(saves, self._mine(), target, self._working_digest())
             try:
                 with self.turns.alone(), self.db.lock:  # nothing you do slips in between backing up and taking
                     read_save(target.path)
@@ -1050,6 +1053,7 @@ class BudgetFolder:
                 self._other = None
                 raise UserError("The other computer's budget can't be read just now: try again in a moment.") from None
             self._other = None
+            self._keep_visible(folder, apart)  # before Budget.inab is written: one apart from both, asked about next
             if target.name != FILE_NAME:  # a conflict copy: the folder holds it from now
                 _remove(folder / target.name, self._sleep)
                 self._saved_choice(folder)
@@ -1057,6 +1061,28 @@ class BudgetFolder:
                 self._saved_choice(folder, as_is=self._as_is(target))
             log.info("Kept the budget saved on %s; this computer's is in %s", target.computer, kept or "Backups")
             return self.check(wait=False)
+
+    @staticmethod
+    def _apart(saves, mine, other, current):
+        """The saves in the folder apart from both sides of a question, with other contents: the person
+        never saw them (one that arrived since, a third computer's)."""
+        return [s for s in saves if mine is not None and s.id not in (other.id, mine.id) and
+                relation(s, mine) not in (SAME, OLDER) and relation(s, other) not in (SAME, OLDER) and
+                s.digest not in (other.digest, current, mine.digest)]
+
+    def _keep_visible(self, folder, apart):
+        """A save the person didn't see that a choice would save over (Budget.inab) is kept as a copy
+        beside it first, so it's asked about next, here and on the other computers."""
+        for save in apart:
+            if save.name == FILE_NAME and save.path is not None and save.path.is_file():
+                target = folder / f"Budget-{_slug(self._tag())}-{save.id[:6]}{EXTENSION}"
+                partial = folder / f".{target.name}.partial"
+                try:
+                    _copy(save.path, partial)
+                    _replace(partial, target, self._sleep)
+                finally:
+                    _discard(partial)
+                log.info("Kept the budget saved on %s beside it as %s: it's asked about next", save.computer, target.name)
 
     def _saved_choice(self, folder, over=(), as_is=False):
         """The save a choice makes. It's recorded before the folder is written (`_save`), so when the
