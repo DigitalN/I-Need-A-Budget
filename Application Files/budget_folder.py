@@ -145,6 +145,7 @@ REPLACE_TRIES = 40            # × REPLACE_WAIT: how long a file Windows or a sy
 REPLACE_WAIT = 0.25
 SAVE_KEY = backups.SAVE_KEY   # meta: the save this budget is, or started from
 LANDED_KEY = backups.LANDED_KEY  # meta: the save in the folder this computer's last save is or replaces
+FOUND_KEY = backups.FOUND_KEY    # meta: the save found in a folder this computer opened
 RESTORE = "restore:"          # a restored backup's key in counts: restore:<its contents' digest>
 RESTORED = "restored-"        # a restored backup's id: restored-<its contents' digest>, saved back as itself
 MOVED_NOTE = ".Budget moved.json"
@@ -536,11 +537,12 @@ class BudgetFolder:
             return self._set("newer", other=newer.about(), message=newer_message(newer))
         mine, current = self._mine(), self._working_digest()
         others, publish = [], False
-        # This computer's own save not known to have landed here (a sync tool's copy of it, a save that didn't land, the
+        # This computer's own save not known to have landed here (a sync tool's copy of it, one whose write failed, the
         # old folder's after following a move): in flight, so a save that comes after this computer's only by a restore
-        # it missed isn't taken unasked (the others are asked about this computer's save, where it turns up).
-        in_flight = mine is not None and (mine.id != self.db.get_meta(LANDED_KEY) or
-                                          any(s.id == mine.id and s.name != FILE_NAME for s in saves))
+        # it missed isn't taken unasked (the others are asked about this computer's save, where it turns up). One it
+        # took from another computer landed where it took it from.
+        in_flight = mine is not None and (any(s.id == mine.id and s.name != FILE_NAME for s in saves) or
+                                          (mine.id != self.db.get_meta(LANDED_KEY) and self._own(mine)))
         for save in saves:  # Budget.inab first
             kind = arriving(save, mine)
             if kind in (NEWER, APART) and save.schema_version == SCHEMA_VERSION and \
@@ -581,7 +583,10 @@ class BudgetFolder:
             self._other = None
             return self._set("waiting")
         landed = self.db.get_meta(LANDED_KEY)  # after the loop: Budget.inab adopted just now has landed
-        if main is not None and (relation(main, mine) == OLDER or put_back(main, mine)) and main.id != landed and \
+        # This computer's own newer save beside an older Budget.inab: a sync tool kept the older side of a conflict
+        # (never a person going back to it), so this computer's save goes back in, as itself, unasked
+        own_newer = main is not None and relation(main, mine) == OLDER and             any(s.id == mine.id and s.name != FILE_NAME for s in saves)
+        if main is not None and (relation(main, mine) == OLDER or put_back(main, mine)) and not own_newer and                 main.id not in (landed, self.db.get_meta(FOUND_KEY)) and \
                 main.digest not in (current, mine.digest):
             self._other = main  # an older one put back: never saved over, nor gone back to, without asking
             self._prune_saves()
@@ -589,7 +594,9 @@ class BudgetFolder:
         self._other = None
         if main is None and landed:
             return self._set("missing")  # once this computer's save was there: never made again without asking
-        behind = main is None or arriving(main, mine) == OLDER  # not there yet, this computer's save didn't land, or older
+        # Not there yet, this computer's save didn't land, or an older one; never over a backup copied in with this
+        # computer's very contents (nothing to save, and the others see the restore for what it is)
+        behind = main is None or (arriving(main, mine) == OLDER and not (main.raw and main.digest == mine.digest))
         self._behind = behind and mine is not None
         if behind or publish or (self._changed() and (not wait or self._quiet())):
             # Nothing changed: as itself (a restore taken, or this computer's save over an older one), or the counts it
@@ -700,6 +707,13 @@ class BudgetFolder:
         _write_json(self.db.path.parent / COMPUTER_FILE, {"id": self._id, "machine": self.machine_id()}, self._sleep)
         if getattr(self.db, "backups_in_budget_folder", False):
             self.db.backup_tag = self._tag()
+
+    def _own(self, save):
+        """Whether `save` is one this computer made (its last count is in it)."""
+        me = self.computer_id()
+        kept = _read_json(self.db.path.parent / COMPUTER_FILE) or {}
+        last = kept["count"] if kept.get("id") == me and type(kept.get("count")) is int else 0
+        return last > 0 and save.counts.get(me) == last
 
     def _next_count(self, counts):
         """This computer's count for its next save: after any it ever gave one in this budget (kept
@@ -1070,12 +1084,12 @@ class BudgetFolder:
                 relation(s, mine) not in (SAME, OLDER) and relation(s, other) not in (SAME, OLDER) and
                 s.digest not in (other.digest, current, mine.digest)]
 
-    def _keep_visible(self, folder, apart):
+    def _keep_visible(self, folder, apart, name=None):
         """A save the person didn't see that a choice would save over (Budget.inab) is kept as a copy
         beside it first, so it's asked about next, here and on the other computers."""
         for save in apart:
             if save.name == FILE_NAME and save.path is not None and save.path.is_file():
-                target = folder / f"Budget-{_slug(self._tag())}-{save.id[:6]}{EXTENSION}"
+                target = folder / (name or f"Budget-{_slug(self._tag())}-{save.id[:6]}{EXTENSION}")
                 partial = folder / f".{target.name}.partial"
                 try:
                     _copy(save.path, partial)
@@ -1225,7 +1239,7 @@ class BudgetFolder:
                     _try(f"Leaving {old}", lambda: _remove(old / self._note_name(), self._sleep))
                 self._use(target)
                 if shared and not (old is not None and _same(old, target)):
-                    self._landed(save.id)  # what's there on arriving was never put back: older is saved over
+                    self.db.set_meta(FOUND_KEY, save.id)  # what's there on arriving was never put back: older is saved over
                     if following:
                         self._bring_from(old, target)  # what reached the old folder since the move comes too
                 if not shared:
@@ -1381,15 +1395,20 @@ class BudgetFolder:
         """What went into the folder the budget moved out of after the move, from a computer that
         hadn't heard of it yet (a copy a question put away, a file it imported, a backup copied in to
         restore it there), follows the budget: a budget there goes into Backups/ (the move stands)."""
-        _try(f"Keeping the budget left in {old}", lambda: self._keep_left(old / FILE_NAME))
+        _try(f"Keeping the budget left in {old}", lambda: self._keep_left(old / FILE_NAME, folder))
         _try(f"Moving the backups left in {old}", lambda: backups.move_old(old / BACKUPS, folder / BACKUPS))
         _try(f"Moving the imported files left in {old}", lambda: _move_tree(
             old / IMPORTED_FILES, folder / IMPORTED_FILES))
 
-    def _keep_left(self, path):
+    def _keep_left(self, path, folder):
+        """A budget left in the old folder: this computer's own save, written there after the move (its sync
+        was behind), comes into the new folder as a copy beside Budget.inab, in flight, so it's asked about
+        there and on the other computers; anything else it didn't come after goes into Backups/."""
         if path.is_file():
             save, mine = self._read(path)[0], self._mine()
-            if relation(save, mine) not in (SAME, OLDER) and save.digest != (mine and mine.digest):
+            if relation(save, mine) == SAME:
+                self._keep_visible(folder, [replace(save, name=FILE_NAME)], name=f"Budget-{_slug(self._tag())}{EXTENSION}")
+            elif relation(save, mine) != OLDER and save.digest != (mine and mine.digest):
                 self._keep_a_copy(save)
 
     def _saves_dir(self):

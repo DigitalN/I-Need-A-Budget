@@ -51,17 +51,23 @@ NAMES = ("PC-A", "PC-B", "PC-C")
 # (seed, steps) that found a bug once, in the app or in this test, kept as they were (without restores):
 # 172 Move… made an unchanged budget a new save; 582 a copy put away after a move stayed in the old
 # folder; 1559 a save found on following a move read as put back; 4045 the same contents joined read
-# as older; 66, 1053, 1193, 1236, 1558 and 2442 this test's own mistakes.
-FOUND = [(seed, 40) for seed in (66, 172, 582, 1053, 1193, 1236, 1558, 1559, 2442, 4045)]
+# as older; 306 and 334 Keep this asked again forever about a third computer's save; 66, 1053, 1193,
+# 1236, 1558 and 2442 this test's own mistakes.
+FOUND = [(seed, 40) for seed in (66, 172, 306, 334, 582, 1053, 1193, 1236, 1558, 1559, 2442, 4045)]
 STEPS = int(os.environ.get("INAB_STEPS", "40"))
 SEEDS = [(seed, STEPS) for seed in range(int(os.environ.get("INAB_SEEDS", "100")))]
 SEEDS += [found for found in FOUND if found not in SEEDS]
 # The same, with backups restored by hand: 3, 45 and 54 following a move after a restore counted nothing
 # known; 145 a change on top of a restore's very contents forgot what it was built on; 401 a computer that
 # missed the restore of its very contents was asked; 2216 a budget saved again unchanged, and counts joined
-# after a take, each counted one more of its own; 959 a save built on the same change made apart was asked
-# about; 49, 60, 216, 763, 1053, 1120 and 3425 this test's own mistakes.
-FOUND_WITH_RESTORES = [(seed, 40) for seed in (3, 45, 49, 54, 60, 145, 216, 401, 763, 959, 1053, 1120, 2216, 3425)]
+# after a take, each counted one more of its own; 959 and 51662 a save built on the same change made apart
+# was asked about; 48 and 202 a save in flight (left in the old folder, its copy put away) was taken over by
+# a restore unasked; 384 one with nothing of its own was asked after following a move; 50173 an older
+# Budget.inab beside this computer's own newer copy, and a restore hidden by a save of the same contents;
+# 60106 (80 steps) a change back to a restore's contents overridden (the sixth review's); 39, 49, 60, 94,
+# 101, 158, 216, 279, 763, 1053, 1120 and 3425 this test's own mistakes.
+FOUND_WITH_RESTORES = [(seed, 40) for seed in (3, 39, 45, 48, 49, 54, 60, 94, 101, 145, 158, 202, 216, 279, 384,
+                                               401, 763, 959, 1053, 1120, 2216, 3425, 50173, 51662)] + [(60106, 80)]
 RESTORE_SEEDS = [(seed, STEPS) for seed in range(int(os.environ.get("INAB_SEEDS", "100")))]
 RESTORE_SEEDS += [found for found in FOUND_WITH_RESTORES if found not in RESTORE_SEEDS]
 START = datetime(2026, 11, 27, 9, 0, tzinfo=timezone(timedelta(hours=-7)))
@@ -69,6 +75,14 @@ START = datetime(2026, 11, 27, 9, 0, tzinfo=timezone(timedelta(hours=-7)))
 
 class Crash(BaseException):
     """The power going off in the middle of a save."""
+
+
+def _free(folder, stem):
+    """A conflict copy's name the sync tool hasn't used yet: it never overwrites one of its own."""
+    path, n = folder / f"{stem}.inab", 2
+    while path.exists():
+        path, n = folder / f"{stem}-{n}.inab", n + 1
+    return path
 
 
 def categories(db):
@@ -299,9 +313,9 @@ class World:
                     (folder / rel).unlink()
             elif changed_there and rel == FILE_NAME and rel in now_there:
                 if self.r.random() < 0.5:  # a conflict: the sync tool keeps one, makes the other a copy
-                    shutil.copyfile(view / rel, folder / f"Budget-{name}.inab")
+                    shutil.copyfile(view / rel, _free(folder, f"Budget-{name}"))
                 else:
-                    shutil.copyfile(folder / rel, folder / f"Budget-cloud-{self.n}.inab")
+                    shutil.copyfile(folder / rel, _free(folder, f"Budget-cloud-{self.n}"))
                     shutil.copyfile(view / rel, folder / rel)
             elif not changed_there or rel not in now_there:
                 (folder / rel).parent.mkdir(parents=True, exist_ok=True)
@@ -504,13 +518,14 @@ class World:
         history = self._ancestry({self.cur[n] for n in NAMES})  # events: what the computers' budgets came from
         dropped = self._ancestry(self.dropped)
         kept_contents, kept = {self.versions[u][0] for u in history}, self._kept()
+        # A backup copied in is the person's file, not work: outside the history only when it changed nothing (the
+        # very contents of what's kept: the same backup restored over what it already was), or when it went into a
+        # folder the budget moved out of (the move stands: it's in Backups/); with what led into it (a change undone)
+        aside = self._ancestry({v for v in self.restored if v not in history and (
+            self.versions[v][0] in kept_contents or
+            ((self.restored_into[v] / MOVED_NOTE).exists() and self.versions[v][0] in kept))})
         for v in range(len(self.versions)):
-            # A backup copied in is the person's file, not work: outside the history only when it changed nothing
-            # (the very contents of what's kept: the same backup restored over what it already was), or when it went
-            # into a folder the budget moved out of (the move stands: it's in Backups/)
-            no_op = v in self.restored and self.versions[v][0] in kept_contents
-            moved_over = v in self.restored and (self.restored_into[v] / MOVED_NOTE).exists() and                 self.versions[v][0] in kept
-            assert v in history or v in dropped or v in self.choices or no_op or moved_over, \
+            assert v in history or v in dropped or v in self.choices or v in aside, \
                 f"seed {self.seed}: version {v} is in no budget and nobody chose to drop it\n" + self._trail()
         kept = self._kept()
         for v in self.answered:
