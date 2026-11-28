@@ -132,6 +132,7 @@ _TITLES = {
     ("payees", "moved"): ("Transactions moved to another payee", "Transactions moved between payees ({n})"),
     ("payees", "renamed"): ("1 payee renamed", "{n} payees renamed"),
     ("payees", "always ask"): ("Always ask changed for 1 payee", "Always ask changed for {n} payees"),
+    ("payees", "not the same"): ("1 payee isn't the same as another", "{n} payees aren't the same as others"),
 }
 _THINGS = {"balance_adjustment": "balance adjustments", "categories": "categories", "accounts": "accounts",
            "recurring_charges": "recurring charges", "payees": "payees"}
@@ -243,7 +244,9 @@ class _Budget:
             ("raw_name", "CASE WHEN payee_id IS NULL THEN raw_name END", ("raw_name", "payee_id")),
             # what a recurring charge's price type is worked out from (subscriptions.effective_pricing)
             ("bank_category", "CASE WHEN subscription_id IS NOT NULL THEN bank_category END",
-             ("bank_category", "subscription_id"))))
+             ("bank_category", "subscription_id")),
+            # the payee with a similar name the Inbox asks about ("Is X the same as Y?"), until it's answered
+            ("similar_payee_id", "similar_payee_id", ("similar_payee_id",))))
         self.keys = {}  # payee id → the bank wording that finds it (payee_keys)
         if have("payee_keys"):
             for key, payee_id in conn.execute("SELECT key, payee_id FROM payee_keys"):
@@ -902,6 +905,16 @@ class _Side:
                 self.add("payees", f"Renamed payee {b['name']} → {s['name']}", verb="renamed")
             if b["always_ask"] != s["always_ask"]:
                 self.add("payees", f"Always ask {'on' if s['always_ask'] else 'off'} for {s['name']}", verb="always ask")
+        # "No, different" to the Inbox's "Is X the same as Y?": the question is gone and nothing else about the
+        # transaction changed (Yes, same moves it to Y, above; categorizing it drops the question, shown as categorized)
+        apart = set()
+        for b, s in self.t_both:
+            if b["similar_payee_id"] and not s["similar_payee_id"] and s["payee_id"] is not None and \
+                    all(b[k] == s[k] for k in ("payee_id", "category_id", "status", "by_you")):
+                apart.add((s["payee_id"], b["similar_payee_id"]))
+        for payee_id, similar_id in sorted(apart, key=lambda p: (self.payee(p[0]).lower(), p)):
+            self.add("payees", f"{self.payee(payee_id)} isn't the same as {self.payee(similar_id, start)}",
+                     verb="not the same")
 
     # ── settings ──
 

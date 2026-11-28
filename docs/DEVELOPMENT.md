@@ -118,7 +118,7 @@ swift scripts/make-icon.swift /tmp/INeedABudget.iconset && iconutil -c icns /tmp
 ## The dev preview
 
 ```bash
-python3 scripts/preview.py [--data FOLDER] [--today 2026-10-12] [--platform windows]
+python3 scripts/preview.py [--data FOLDER] [--port 8765] [--today 2026-10-12] [--platform windows] [--computer PC-B]
 ```
 
 Serves `index.html` on http://127.0.0.1:8765 with a stand-in for pywebview's bridge, so
@@ -132,6 +132,18 @@ it (created empty; the preview never uses your real `~/Downloads` and refuses to
 `--platform mac` or `--platform windows` pretends to be that system (it's this computer's by
 default): the page's wording and keys follow it. A browser draws it with this computer's fonts,
 and Chromium (Chrome, Edge, Claude's browser pane) is the engine the Windows app uses.
+
+The budget folder works as in the app (issue #189): a look at launch, the watcher every few
+seconds (the page asks `/events` for what main.py would send it), and a save when the page
+quits, which then stops the preview (start it again to reopen). Two computers sharing a budget
+folder are two previews on two ports, each with its own `--data` and `--computer` name (add
+temporary entries to `.claude/launch.json`, and take them out before committing). There's no
+folder dialog: Choose… answers with the folder on the first line of `<data>/choose-folder.txt`,
+every time until it's changed. The folder suggested is `<data> budget folder`, beside the data
+folder. To try a 1.4 copy's first launch of 1.5.0, use `scripts/demo_data.py FOLDER` (a set-up
+budget with no budget folder). A sync tool's doings, and a person's, are files changed by hand: a
+backup, or an older save from a data folder's `Saves/`, copied over `Budget.inab` (older); the file
+deleted (missing); the folder renamed away and back.
 
 ## README screenshots
 
