@@ -324,9 +324,8 @@ class Database:
 
     def _start_undo(self):
         with self.lock:
-            self.conn.execute("DELETE FROM undo_log")
-            self.conn.execute("DELETE FROM undo_groups")
-            self.conn.execute("UPDATE undo_state SET active = 0, grp = NULL")
+            self.conn.executescript("BEGIN; DELETE FROM undo_log; DELETE FROM undo_groups; "
+                                    "UPDATE undo_state SET active = 0, grp = NULL; COMMIT;")
 
     def replace_with(self, path):
         """Makes the budget the one in the budget file at `path` (another computer's save:
@@ -361,7 +360,12 @@ class Database:
             version = int(version[0]) if version else None
             if version is not None and version < SCHEMA_VERSION:
                 self._backup_before_upgrade(version)
-            self.conn.executescript(SCHEMA)
+            try:  # one transaction: a new budget's tables made with one commit, not one each (slow on Windows)
+                self.conn.executescript(f"BEGIN;\n{SCHEMA}\nCOMMIT;")
+            except BaseException:
+                if self.conn.in_transaction:
+                    self.conn.execute("ROLLBACK")
+                raise
             if version is None:  # a new budget: Overspending and Usual's months are kept in it (issue #153)
                 settings.new_budget(self.conn)
                 # Nothing imported to read the currency from (service.read_currency, issue #76): the first file that
@@ -509,32 +513,43 @@ class Database:
         without a label: the first change that really changes something marks it (_CHANGED), and
         write() then clears the log. An update that changes no column is neither: a step of only
         those is no step, so its toast has no Undo (issue #139). Columns are compared exactly
-        (COLLATE BINARY): a payee's name is NOCASE, and its new case was missed."""
+        (COLLATE BINARY): a payee's name is NOCASE, and its new case was missed. One transaction: a
+        commit for each of the hundred statements made every launch, and every take of another
+        computer's save (budget_folder.py), wait on the disk a hundred times (slow on Windows)."""
         with self.lock:
-            active = "(SELECT active FROM undo_state WHERE id = 1)"
-            for table in UNDO_TABLES:
-                columns = [r["name"] for r in self.conn.execute(f"PRAGMA table_info({table})")]
-                for suffix in ("ins", "upd", "del"):
-                    self.conn.execute(f"DROP TRIGGER IF EXISTS undo_{table}_{suffix}")
+            self.conn.execute("BEGIN")
+            try:
+                self._create_undo_triggers()
+                self.conn.execute("COMMIT")
+            except BaseException:
+                self.conn.execute("ROLLBACK")
+                raise
 
-                def trigger(suffix, when, timing, reverse_sql):
-                    self.conn.execute(
-                        f"CREATE TRIGGER undo_{table}_{suffix} {timing} ON {table} WHEN {when} BEGIN "
-                        f"INSERT INTO undo_log (grp, sql) SELECT grp, {reverse_sql} FROM undo_state "
-                        f"WHERE id = 1 AND active = {_RECORDING}; "
-                        f"UPDATE undo_state SET active = {_CHANGED} WHERE id = 1 AND active = {_WATCHING}; END")
+    def _create_undo_triggers(self):
+        active = "(SELECT active FROM undo_state WHERE id = 1)"
+        for table in UNDO_TABLES:
+            columns = [r["name"] for r in self.conn.execute(f"PRAGMA table_info({table})")]
+            for suffix in ("ins", "upd", "del"):
+                self.conn.execute(f"DROP TRIGGER IF EXISTS undo_{table}_{suffix}")
 
-                either = f"{active} IN ({_RECORDING}, {_WATCHING})"
-                trigger("ins", either, "AFTER INSERT", f"'DELETE FROM {table} WHERE rowid = ' || NEW.rowid")
-                changed = " || ".join(
-                    f"CASE WHEN OLD.{c} IS NOT NEW.{c} COLLATE BINARY THEN ', {c} = ' || quote(OLD.{c}) ELSE '' END"
-                    for c in columns)
-                differs = " OR ".join(f"OLD.{c} IS NOT NEW.{c} COLLATE BINARY" for c in columns)
-                trigger("upd", f"({either} AND ({differs}))", "AFTER UPDATE",
-                        f"'UPDATE {table} SET rowid = rowid' || {changed} || ' WHERE rowid = ' || OLD.rowid")
-                values = " || ', ' || ".join(f"quote(OLD.{c})" for c in columns)
-                trigger("del", either, "BEFORE DELETE",
-                        f"'INSERT INTO {table} (rowid, {', '.join(columns)}) VALUES (' || OLD.rowid || ', ' || {values} || ')'")
+            def trigger(suffix, when, timing, reverse_sql):
+                self.conn.execute(
+                    f"CREATE TRIGGER undo_{table}_{suffix} {timing} ON {table} WHEN {when} BEGIN "
+                    f"INSERT INTO undo_log (grp, sql) SELECT grp, {reverse_sql} FROM undo_state "
+                    f"WHERE id = 1 AND active = {_RECORDING}; "
+                    f"UPDATE undo_state SET active = {_CHANGED} WHERE id = 1 AND active = {_WATCHING}; END")
+
+            either = f"{active} IN ({_RECORDING}, {_WATCHING})"
+            trigger("ins", either, "AFTER INSERT", f"'DELETE FROM {table} WHERE rowid = ' || NEW.rowid")
+            changed = " || ".join(
+                f"CASE WHEN OLD.{c} IS NOT NEW.{c} COLLATE BINARY THEN ', {c} = ' || quote(OLD.{c}) ELSE '' END"
+                for c in columns)
+            differs = " OR ".join(f"OLD.{c} IS NOT NEW.{c} COLLATE BINARY" for c in columns)
+            trigger("upd", f"({either} AND ({differs}))", "AFTER UPDATE",
+                    f"'UPDATE {table} SET rowid = rowid' || {changed} || ' WHERE rowid = ' || OLD.rowid")
+            values = " || ', ' || ".join(f"quote(OLD.{c})" for c in columns)
+            trigger("del", either, "BEFORE DELETE",
+                    f"'INSERT INTO {table} (rowid, {', '.join(columns)}) VALUES (' || OLD.rowid || ', ' || {values} || ')'")
 
     # ── access ──
 

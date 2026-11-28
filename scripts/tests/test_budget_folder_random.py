@@ -34,7 +34,8 @@ versions, never on what a computer says:
   doesn't come back: what it had and never got into the budget folder goes with it, but every
   version it did get there must be in the others' history too, or dropped by a person.
 
-INAB_SEEDS and INAB_STEPS run more (5,000+ locally); a seed that ever found a bug stays in FOUND.
+INAB_SEEDS and INAB_STEPS run more (5,000+ locally); a seed that ever found a bug stays in FOUND. On
+GitHub's machines (CI set) the default is FOUND and 20 fresh seeds per test, within the jobs' time.
 Made-up data only."""
 
 import os
@@ -65,7 +66,8 @@ NAMES = ("PC-A", "PC-B", "PC-C")
 FOUND = [(seed, 40) for seed in (66, 172, 257, 306, 334, 537, 582, 1053, 1193, 1236, 1335, 1558, 1559, 1758, 2442,
                                  2506, 2817, 3969, 4045, 4956)] + [(83029, 80)]
 STEPS = int(os.environ.get("INAB_STEPS", "40"))
-SEEDS = [(seed, STEPS) for seed in range(int(os.environ.get("INAB_SEEDS", "100")))]
+FRESH = int(os.environ.get("INAB_SEEDS", "20" if os.environ.get("CI") else "100"))  # fresh seeds per test
+SEEDS = [(seed, STEPS) for seed in range(FRESH)]
 SEEDS += [found for found in FOUND if found not in SEEDS]
 # The same, with backups restored by hand: 3, 45 and 54 following a move after a restore counted nothing
 # known; 145 a change on top of a restore's very contents forgot what it was built on; 401 a computer that
@@ -92,7 +94,7 @@ FOUND_WITH_RESTORES = [(seed, 40) for seed in (3, 39, 45, 46, 48, 49, 54, 60, 94
                                                3499, 3520, 3906, 50017, 50057, 50173, 50947, 51413, 51482,
                                                51662)] + \
     [(seed, 80) for seed in (1023, 1532, 1567, 60106, 60169, 60189, 60214, 72024, 74006)]
-RESTORE_SEEDS = [(seed, STEPS) for seed in range(int(os.environ.get("INAB_SEEDS", "100")))]
+RESTORE_SEEDS = [(seed, STEPS) for seed in range(FRESH)]
 RESTORE_SEEDS += [found for found in FOUND_WITH_RESTORES if found not in RESTORE_SEEDS]
 START = datetime(2026, 11, 27, 9, 0, tzinfo=timezone(timedelta(hours=-7)))
 
