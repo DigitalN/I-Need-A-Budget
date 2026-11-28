@@ -39,11 +39,15 @@ under a hidden name, then renamed) a few seconds after changes stop, and when it
 - Asking at the update keeps ADR 0007: the person chooses, and nothing moves until they do.
 - Restoring a backup stays copying it in (the maintainer's choice, 2026-11-27): quit the app on
   every computer and copy it into the folder as `Budget.inab`. No computer saved it, so it comes
-  after whatever doesn't count it yet: each computer that changed nothing takes it, its own budget
-  going into Backups/ first, and one with changes not saved yet asks. As a sync tool's conflict
-  copy it's apart from the save it conflicts with, so it asks unless the contents are the same;
-  Keep this over it comes after it, so the computers that took it take that.
-- An older save put back in the folder (a sync tool's "restore previous version") is never saved
-  over, nor gone back to, without asking: Use it, or Keep the newer one; the other goes into
-  Backups/. Only this computer's own last save, when its newer one didn't land, is saved over.
+  after whatever doesn't count it yet, and so does a save made on it: each computer with nothing
+  of its own since its last save takes it, a laptop closed during the restore included, its own
+  budget going into Backups/ first; one with changes not saved yet, or a save of its own in flight,
+  asks. As a sync tool's conflict copy it's apart from the save it conflicts with, so it asks
+  unless the contents are the same; Keep this over it comes after it, so the computers that took
+  it take that. One copied into a folder the budget moved out of isn't taken: the move stands,
+  and it goes into the new folder's Backups/.
+- An older save put back in the folder (a sync tool's "restore previous version", of a restore
+  saved back as itself too) is never saved over, nor gone back to, without asking: Use it, or Keep
+  the newer one; the other goes into Backups/. Only this computer's own last save, when its newer
+  one didn't land or sits beside it as the sync tool's copy, is saved over.
 - Decided 2026-11-27, for 1.5.0.

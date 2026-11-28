@@ -35,20 +35,23 @@ Every budget in the folder is a save: Budget.inab, and a sync tool's conflict co
 `Budget-<computer>.inab`, iCloud's `Budget 2.inab`, Dropbox's `Budget (… conflicted copy
 …).inab`) the same way. Watching (`check`, every few seconds, the Downloads watcher's rhythm):
 - this computer's save, or one it came after: nothing new (a conflict copy goes into Backups/);
-- one that came after this computer's (or counts a restore of this computer's very contents):
-  taken straight away when this computer has changed nothing since the save it started from (the
-  working copy becomes it, ⌘Z is cleared, as an import does); otherwise the budget was **changed
-  on two computers**;
+- one that came after this computer's: taken straight away when this computer has changed
+  nothing since the save it started from (the working copy becomes it, ⌘Z is cleared, as an
+  import does); otherwise the budget was **changed on two computers**;
 - neither (each computer saved on top of the same save, before seeing the other's): changed on
   two computers;
-- an older one than this computer's in the folder, other than its own last save (a sync tool's
-  "restore previous version", the same backup restored again): never saved over and never gone
-  back to without asking (`older`).
+- an older one than this computer's in the folder, or one its history counted already (`seen`:
+  from before a restore it took since), other than its own last save (a sync tool's "restore
+  previous version", the same backup restored again): never saved over and never gone back to
+  without asking (`older`). Not when this computer's own newer save is beside it as a sync tool's
+  copy: the sync tool kept the older side of a conflict, and this computer's goes back in.
 A save this computer didn't come after, with the very contents of its budget, is the same save
-(it's recorded as coming after both, and its counts kept as alike: `Save.alike`, so a save that
-came after it is taken by a computer that changed nothing, unasked). Whenever what this computer records differs from the
-folder's save (a restore taken, Keep the other one, the same contents adopted), it saves, so the
-other computers see it counted; a restore taken is saved as itself, not as one more save.
+(it's recorded as coming after both, and its counts kept in `Save.alike` until the budget
+changes: a save that came after one of those is taken by a computer that changed nothing; a join
+is never a change of its own). Contents alone never order saves. Whenever what this computer
+records differs from the folder's save (a restore taken, Keep the other one, the same contents
+adopted), it saves, so the other computers see it counted, adding no count of its own when
+nothing changed; a restore taken, or a budget unchanged, is saved as itself, not as one more save.
 
 **The rule** (`_replacing`, `_put_away`, `keep_this`, `_leave`, `_keep_a_copy`): a file in the
 folder is saved over or removed without a copy in Backups/ only when the save written comes after
@@ -61,8 +64,10 @@ Changed on two computers, nothing is saved or taken until you choose: `two_compu
 three budgets the window shows each side's changes from (the save both started from, when this
 computer still has it; this computer's working copy; the other computer's save), and
 `keep_this` / `keep_other` decide, each looking at the folder again first. The one not kept goes
-into Backups/ (with whatever else it would overwrite), and the save kept comes after both sides,
-so each computer sees it came after its own and takes it.
+into Backups/ (with whatever either side came after), and the save kept comes after both sides,
+so each computer sees it came after its own and takes it. A save apart from both, with other
+contents (one that arrived since the question, a third computer's), is never put away or saved
+over unseen: it stays, beside Budget.inab as a copy if it was that, and is asked about next.
 
 A budget saved by a newer version of the budget's format is never taken, nor saved over
 (`newer`): this copy needs the update. An older one is upgraded as at launch, its
@@ -83,19 +88,24 @@ after it. **Opening** one (`open_from`, a new computer): this computer's budget,
 and empty, goes into that folder's Backups/ first. The same budget opened in another folder
 (following a move) carries on as `check` does; the save found there was never put back, so one
 older than this computer's is saved over, and what reached the old folder after the move (a copy
-a question put away, a file imported while this computer's sync was behind) follows.
+a question put away, a file imported or a backup restored while this computer's sync was behind)
+follows: this computer's own save left there comes as a copy beside Budget.inab, still a question,
+and any other budget into Backups/ (the move stands).
 
 **Restoring a backup** (backups.py; the maintainer's choice on #196): quit the app on every
 computer, then copy the backup into the budget folder as `Budget.inab`. Backups keep nothing about
 saves, so it's one no computer saved (`raw`): its id and counts come from its contents, so
-every computer makes the same of it, and as Budget.inab it comes after whatever doesn't count it
-already (`arriving`). Each computer that changed nothing takes it when it next looks: its own
-budget goes into Backups/ first (once for those contents), and its counts are then the restore's
-alone, nothing it had joined in; the first saves it back as itself. One with changes not saved
-yet asks. Keep this over it counts both, so a computer that only took the restore takes that. As a
-sync tool's conflict copy a restore is apart from the save it conflicts with, and so is a save in
-flight when the backup was restored: each asks unless the contents are the same. The same backup
-restored again is older by then than what came after it: `older` asks.
+every computer makes the same of it. A Budget.inab that counts a restore this computer's history
+never had (the restore, or a save made on it: `unseen_restore`) comes after this computer's
+(`arriving`): a computer with nothing of its own since its last save takes it, its budget into
+Backups/ first (once for those contents), its counts then that save's alone, nothing it had
+joined in (the first saves a raw one back as itself). One with changes not saved yet asks, and so
+does one whose own save is in flight (not known to have landed in this folder: a sync tool's copy
+of it there, a write that failed), which stays for the others to see. Keep this over a restore
+counts both, so a computer that only took the restore takes that. As a sync tool's conflict copy a
+restore is apart from the save it conflicts with, and so is a save in flight when the backup was
+restored: each asks unless the contents are the same. A restore its history had and went past (the
+same backup restored again, or the sync tool's previous version of one) is older: `older` asks.
 
 **A Budget.inab that's gone** once this computer's save was in the folder (`save_landed`) is never
 made again without asking (`missing`): the window offers to save it again (`save_again`) or to
@@ -545,6 +555,8 @@ class BudgetFolder:
                                           (mine.id != self.db.get_meta(LANDED_KEY) and self._own(mine)))
         for save in saves:  # Budget.inab first
             kind = arriving(save, mine)
+            if kind == APART and save.name != FILE_NAME and put_back(save, mine):
+                kind = OLDER  # a sync tool's copy of a save this computer's history counted: put away (Backups/ first)
             if kind in (NEWER, APART) and save.schema_version == SCHEMA_VERSION and \
                     save.digest in (current, mine and mine.digest):
                 # The very contents of this computer's budget, or of the save it started from: nothing in it is new here
@@ -1395,17 +1407,19 @@ class BudgetFolder:
         """What went into the folder the budget moved out of after the move, from a computer that
         hadn't heard of it yet (a copy a question put away, a file it imported, a backup copied in to
         restore it there), follows the budget: a budget there goes into Backups/ (the move stands)."""
-        _try(f"Keeping the budget left in {old}", lambda: self._keep_left(old / FILE_NAME, folder))
+        _try(f"Keeping the budgets left in {old}", lambda: self._keep_left(old, folder))
         _try(f"Moving the backups left in {old}", lambda: backups.move_old(old / BACKUPS, folder / BACKUPS))
         _try(f"Moving the imported files left in {old}", lambda: _move_tree(
             old / IMPORTED_FILES, folder / IMPORTED_FILES))
 
-    def _keep_left(self, path, folder):
-        """A budget left in the old folder: this computer's own save, written there after the move (its sync
-        was behind), comes into the new folder as a copy beside Budget.inab, in flight, so it's asked about
-        there and on the other computers; anything else it didn't come after goes into Backups/."""
-        if path.is_file():
-            save, mine = self._read(path)[0], self._mine()
+    def _keep_left(self, old, folder):
+        """The budgets left in the old folder (Budget.inab, a sync tool's copies): this computer's own save,
+        written there after the move (its sync was behind), comes into the new folder as a copy beside
+        Budget.inab, in flight, so it's asked about there and on the other computers; anything else it
+        didn't come after goes into Backups/."""
+        mine = self._mine()
+        for path in _budget_files(old):
+            save = self._read(path)[0]
             if relation(save, mine) == SAME:
                 self._keep_visible(folder, [replace(save, name=FILE_NAME)], name=f"Budget-{_slug(self._tag())}{EXTENSION}")
             elif relation(save, mine) != OLDER and save.digest != (mine and mine.digest):

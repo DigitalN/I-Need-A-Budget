@@ -140,14 +140,16 @@ All in `Application Files/`:
   seconds) takes another computer's save built on this one's when nothing changed here (after
   the page's requests under way: `Turns`), or finds it changed on two computers
   (`two_computers()` for `changes.compare`; `keep_this`, `keep_other`; the other goes into
-  `Backups/`). Sync tools' conflict copies count the same. A `Budget.inab` no computer saved (a
-  backup copied in to restore it: backups keep no meta `save`) is taken by each computer that changed
-  nothing, its budget into `Backups/` first and its counts then the restore's alone, and asked about
-  by one that did; as a conflict copy it's apart. An older save put back, or a
-  `Budget.inab` gone once this computer's save was there, asks (`older`, `missing`); a newer
-  budget format is refused; a folder that can't be reached is waited for; `move_to`,
-  `open_from`, notes of where it's open. This computer's id in saves is new for each budget and
-  machine (`computer.json`, `computer.machine_id`).
+  `Backups/`; a save apart from both sides is asked about next, never put away unseen). Sync
+  tools' conflict copies count the same. A `Budget.inab` that counts a restore this computer never
+  had (a backup copied in, backups keep no meta `save`, or a save made on one) is taken by each
+  computer with nothing of its own since its last save, its budget into `Backups/` first and its
+  counts then that save's alone, and asked about by one with changes or a save in flight; as a
+  conflict copy it's apart. An older save put back, or a `Budget.inab` gone once this computer's
+  save was there, asks (`older`, `missing`); a newer budget format is refused; a folder that can't
+  be reached is waited for; `move_to`, `open_from`, notes of where it's open. This computer's id
+  in saves is new for each budget and machine (`computer.json`, `computer.machine_id`); its files
+  in the folder are named by its name and the start of that id (`computer_tag`, `tag_in`).
   `INAB_COMPUTER` names this computer (two previews on one folder).
   The rule: a file in the folder is saved over or removed without a copy in `Backups/` only when
   the save written comes after it, has its very contents, or a copy with them is in `Backups/`
