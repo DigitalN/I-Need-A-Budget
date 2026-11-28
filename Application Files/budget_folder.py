@@ -597,8 +597,10 @@ class BudgetFolder:
         landed = self.db.get_meta(LANDED_KEY)  # after the loop: Budget.inab adopted just now has landed
         # This computer's own newer save beside an older Budget.inab: a sync tool kept the older side of a conflict
         # (never a person going back to it), so this computer's save goes back in, as itself, unasked
-        own_newer = main is not None and relation(main, mine) == OLDER and             any(s.id == mine.id and s.name != FILE_NAME for s in saves)
-        if main is not None and (relation(main, mine) == OLDER or put_back(main, mine)) and not own_newer and                 main.id not in (landed, self.db.get_meta(FOUND_KEY)) and \
+        own_newer = main is not None and relation(main, mine) == OLDER and \
+                any(s.id == mine.id and s.name != FILE_NAME for s in saves)
+        if main is not None and (relation(main, mine) == OLDER or put_back(main, mine)) and not own_newer and \
+                main.id not in (landed, self.db.get_meta(FOUND_KEY)) and \
                 main.digest not in (current, mine.digest):
             self._other = main  # an older one put back: never saved over, nor gone back to, without asking
             self._prune_saves()
@@ -618,6 +620,14 @@ class BudgetFolder:
                                                       (behind and not publish and mine is not None)),
                        count=changed)
         return self._set("unsaved" if self._behind or self._changed() else "saved")
+
+    def _joined_id(self, save):
+        """An id for a save joined with this computer's (counts it never had): never another save's, so a
+        file of it saved as itself is never taken for that save. Its copy in Saves/ is kept by it too."""
+        joined = uuid.uuid4().hex
+        if save.path is not None and save.path.is_file():
+            _try("Keeping the joined save's copy", lambda: shutil.copyfile(save.path, self._saves_dir() / f"{joined}{EXTENSION}"))
+        return joined
 
     def _differs(self, save):
         """Whether the folder's `save` doesn't say what this computer records about it (a restored
@@ -642,7 +652,8 @@ class BudgetFolder:
             counts = _merge(save.counts, mine.counts if mine else {})
             alike = _alike(counts, save.alike, [save.counts], mine.alike if same else [], [mine.counts] if same else [])
         seen = _merge(known(save), known(mine) if mine else {})
-        adopted = replace(save, counts=counts, alike=alike, seen=seen, raw=False, name=None, path=None)
+        adopted = replace(save, id=save.id if counts == save.counts else self._joined_id(save), counts=counts,
+                          alike=alike, seen=seen, raw=False, name=None, path=None)
         self._set_mine(adopted)
         if save.name == FILE_NAME:
             self._landed(save.id)
@@ -966,7 +977,8 @@ class BudgetFolder:
             same = not (fresh or restore) and mine is not None and mine.digest == found.digest
             alike = _alike(counts, save.alike, mine.alike if same else [], [mine.counts] if same else [])
             seen = known(save) if fresh or mine is None else _merge(known(save), known(mine))
-            self._set_mine(replace(save, counts=counts, alike=alike, seen=seen, raw=False, digest=backups.digest(self.db)))
+            self._set_mine(replace(save, id=save.id if counts == save.counts else self._joined_id(save), counts=counts,
+                                   alike=alike, seen=seen, raw=False, digest=backups.digest(self.db)))
             if save.name == FILE_NAME:
                 self._landed(save.id)
             elif landed and not fresh:

@@ -66,11 +66,12 @@ SEEDS += [found for found in FOUND if found not in SEEDS]
 # Budget.inab beside this computer's own newer copy, and a restore hidden by a save of the same contents;
 # 60106 (80 steps) a change back to a restore's contents overridden (the sixth review's); 50057 a save of
 # its own left as a copy in the old folder wasn't brought; 51413 and 60214 (80) a copy its own change came
-# after was asked about; 39, 49, 60, 94, 101, 158, 216, 279, 763, 1053, 1120, 3425, 51482, 60169 (80) and
-# 60189 (80) this test's own mistakes.
+# after was asked about; 50017 a save joined with this computer's kept the other's id; 39, 49, 60, 94, 101,
+# 158, 216, 279, 763, 1053, 1120, 1868, 3425, 50947, 51482, 60169 (80) and 60189 (80) this test's own mistakes.
 FOUND_WITH_RESTORES = [(seed, 40) for seed in (3, 39, 45, 48, 49, 54, 60, 94, 101, 145, 158, 202, 216, 279, 384,
-                                               401, 763, 959, 1053, 1120, 2216, 3425, 50057, 50173, 51413, 51482,
-                                               51662)] + [(seed, 80) for seed in (60106, 60169, 60189, 60214)]
+                                               401, 763, 959, 1053, 1120, 1868, 2216, 3425, 50017, 50057, 50173,
+                                               50947, 51413, 51482, 51662)] + \
+    [(seed, 80) for seed in (60106, 60169, 60189, 60214)]
 RESTORE_SEEDS = [(seed, STEPS) for seed in range(int(os.environ.get("INAB_SEEDS", "100")))]
 RESTORE_SEEDS += [found for found in FOUND_WITH_RESTORES if found not in RESTORE_SEEDS]
 START = datetime(2026, 11, 27, 9, 0, tzinfo=timezone(timedelta(hours=-7)))
@@ -147,6 +148,15 @@ class World:
             return took
 
         c._take = take
+        adopt = c._adopt
+
+        def adopted(save, mine, *args, **kwargs):  # the same contents joined: noted as it happens, like a take
+            joined = adopt(save, mine, *args, **kwargs)
+            if save.digest == backups.digest(c.db):  # with a change of its own on top, that change comes after both
+                self.took.setdefault(name, []).append((save.id, dict(save.counts), dict(joined.counts)))
+            return joined
+
+        c._adopt = adopted
         self.computers[name] = c
         return c
 
@@ -175,13 +185,21 @@ class World:
     def _follow(self, name):
         """What the app did to a computer's budget (a take, Keep the other one): the version it is now."""
         for sid, counts, recorded in self.took.pop(name, []):
-            # A take that joined counts (by choice, or one this computer's same contents came after): after both
+            # A take or an adopt that joined counts (one this computer's same contents came after, the same contents
+            # made apart): a version after both. The same contents kept as the save's own (a restore taken as itself):
+            # what this computer had is joined in.
             got = self.saved.get(sid)
             prev = self.cur[name]
-            if got is not None and recorded != counts and prev != got and prev not in self._ancestry([got]) and                     got not in self._ancestry([prev]):
-                self.joins[(sid, tuple(sorted(recorded.items())))] = got = self._version(self.versions[got][0], (got, prev))
-            if got is not None:
-                self.cur[name] = got
+            if got is None:
+                continue
+            if prev != got and prev not in self._ancestry([got]) and got not in self._ancestry([prev]):
+                if recorded != counts:
+                    self.joins[(sid, tuple(sorted(recorded.items())))] = got = \
+                            self._version(self.versions[got][0], (got, prev))
+                elif self.versions[prev][0] == self.versions[got][0]:
+                    self.versions[got][1].append(prev)
+                    self.children.setdefault(prev, set()).add(got)
+            self.cur[name] = got
         d = backups.digest(self.computers[name].db)
         started = self.computers[name]._mine()  # the save its budget started from, and its contents
         taken = self.saved.get(started.id) if started is not None else None
@@ -199,7 +217,8 @@ class World:
                 else:
                     made = None
                 prev = self.cur[name]
-                if made is not None and made != started.counts and prev != taken and                         prev not in self._ancestry([taken]) and taken not in self._ancestry([prev]):
+                if made is not None and made != started.counts and prev != taken and \
+                        prev not in self._ancestry([taken]) and taken not in self._ancestry([prev]):
                     self.joins[key] = taken = self._version(d, (taken, prev))
         before = self.base[name]
         if taken is not None and taken != before and self.versions[taken][0] != d and \
@@ -212,7 +231,8 @@ class World:
             self.base[name] = taken
         if taken is not None and self.versions[taken][0] == d:
             cur = self.cur[name]
-            if cur != taken and cur not in self._ancestry([taken]) and taken not in self._ancestry([cur]) and                     self.versions[cur][0] == d:
+            if cur != taken and cur not in self._ancestry([taken]) and taken not in self._ancestry([cur]) and \
+                    self.versions[cur][0] == d:
                 # Its own change came to the very contents of another's save (the app joins the two): one event after
                 # both. Anything else it had and the take replaced must be in the history (a restore comes after
                 # what the folder held) or dropped by a person: judged at the end, never dropped here.
@@ -396,7 +416,10 @@ class World:
         if keep_this:  # the side shown is dropped (its file may be gone since: put away by the computer that has it)
             mine = self._ancestry([self.cur[name]])
             asked = self._of_save(c._other)
-            dropping = {asked} if asked is not None and asked not in mine else set()
+            # The side shown, and any budget in the folder with its very contents (what the person saw)
+            shown = [asked] + [v for v in (self._of_file(p) for p in _budgets(c.folder))
+                               if v is not None and c._other.digest == self.versions[v][0]]
+            dropping = {v for v in shown if v is not None and v not in mine}
             started = c._mine().id
             try:
                 c.keep_this()
@@ -523,7 +546,10 @@ class World:
                 if c._other.name != FILE_NAME and budget_folder.unseen_restore(c._other, c._mine()):
                     continue  # a restore, or a save on one, arriving as a sync tool's copy: apart, so asked (the same)
                 mine = self.cur[name]
-                assert other not in self._ancestry([mine], self.repeats) and                     mine not in self._ancestry([other], self.repeats), \
+                # A computer that missed a restore, with nothing of its own, takes it (asked: needless); one that took
+                # a restore is asked about a save it was copied over, which the restore doesn't count (the review's rule)
+                assert other not in self._ancestry([mine], self.restored | self.repeats) and \
+                    mine not in self._ancestry([other], self.repeats), \
                     f"seed {self.seed}: {name} asked ({state}) though one side has everything: it's v{mine}, " \
                     f"{c._other.name} v{other}\n" + self._trail()
 
