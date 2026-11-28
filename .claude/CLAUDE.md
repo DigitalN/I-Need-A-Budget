@@ -149,7 +149,8 @@ All in `Application Files/`:
   save was there, asks (`older`, `missing`); a newer budget format is refused; a folder that can't
   be reached is waited for; `move_to`, `open_from`, notes of where it's open. This computer's id
   in saves is new for each budget and machine (`computer.json`, `computer.machine_id`); its files
-  in the folder are named by its name and the start of that id (`computer_tag`, `tag_in`).
+  in the folder are named by its name and the start of that id (`computer_tag`, `tag_in`; its earlier
+  tags kept in `computer.json`, so `prune` deletes backups named by them as its own).
   `INAB_COMPUTER` names this computer (two previews on one folder).
   The rule: a file in the folder is saved over or removed without a copy in `Backups/` only when
   the save written comes after it, has its very contents, or a copy with them is in `Backups/`

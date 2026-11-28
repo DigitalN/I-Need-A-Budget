@@ -46,9 +46,11 @@ Every budget in the folder is a save: Budget.inab, and a sync tool's conflict co
   without asking (`older`). Not when this computer's own newer save is beside it as a sync tool's
   copy: the sync tool kept the older side of a conflict, and this computer's goes back in.
 A save this computer didn't come after, with the very contents of its budget, is the same save
-(it's recorded as coming after both, and its counts kept in `Save.alike` until the budget
-changes: a save that came after one of those is taken by a computer that changed nothing; a join
-is never a change of its own). Contents alone never order saves. Whenever what this computer
+(it's recorded as coming after both). Made apart (neither counts the other), its counts are kept
+in `Save.alike` until the budget changes: a save that came after one of those is taken by a
+computer that changed nothing. With the contents of a change not saved yet here (not of the save
+this computer started from), the join is that change: one more of this computer's own counts,
+nothing stays alike, and nothing else is taken in that look. Contents alone never order saves. Whenever what this computer
 records differs from the folder's save (a restore taken, Keep the other one, the same contents
 adopted), it saves, so the other computers see it counted, adding no count of its own when
 nothing changed; a restore taken, or a budget unchanged, is saved as itself, not as one more save.
@@ -343,11 +345,13 @@ def unseen_restore(save, mine):
     return mine is not None and any(k.startswith(RESTORE) and k not in known(mine) for k in save.counts)
 
 
-def put_back(save, mine):
+def put_back(save, mine, history=None):
     """A save apart from this computer's that its history counted already (one from before a restore
     it took since, a sync tool's "previous version" of it): for Budget.inab, an older one put back,
-    asked about as such (`older`); never a reason to save over or remove it unasked."""
-    return mine is not None and relation(save, mine) == APART and _covers(known(mine), save.counts)
+    asked about as such (`older`); never a reason to save over or remove it unasked. `history`: what
+    this computer counted before a join just now (never what that join merged in)."""
+    return mine is not None and relation(save, mine) == APART and \
+        _covers(known(mine) if history is None else known(history), save.counts)
 
 
 def arriving(save, mine):
@@ -556,7 +560,7 @@ class BudgetFolder:
         before, changed_here = mine, False  # a join that is a change of this computer's: nothing else taken in this look
         for save in saves:  # Budget.inab first
             kind = arriving(save, mine)
-            if kind == APART and save.name != FILE_NAME and put_back(save, before):  # never by what a join just merged
+            if kind == APART and save.name != FILE_NAME and put_back(save, mine, before):  # never by what a join merged
                 kind = OLDER  # a sync tool's copy of a save this computer's history counted: put away (Backups/ first)
             if kind in (NEWER, APART) and save.schema_version == SCHEMA_VERSION and \
                     save.digest in (current, mine and mine.digest):

@@ -66,12 +66,17 @@ SEEDS += [found for found in FOUND if found not in SEEDS]
 # Budget.inab beside this computer's own newer copy, and a restore hidden by a save of the same contents;
 # 60106 (80 steps) a change back to a restore's contents overridden (the sixth review's); 50057 a save of
 # its own left as a copy in the old folder wasn't brought; 51413 and 60214 (80) a copy its own change came
-# after was asked about; 50017 a save joined with this computer's kept the other's id; 39, 49, 60, 94, 101,
-# 158, 216, 279, 763, 1053, 1120, 1868, 3425, 50947, 51482, 60169 (80) and 60189 (80) this test's own mistakes.
+# after was asked about; 50017 a save joined with this computer's kept the other's id; 72024 (80, the seventh
+# review's), 1532 (80) and 1567 (80) a change not saved yet folded into a join (the seventh review's cause, found
+# here once this test made the same change on two computers and kept some unsaved a while), 589 a copy of its own
+# from before such a join asked about, 74006 (80) a restore saved back as itself taken for a save in flight;
+# 39, 49, 60, 94, 101, 158, 216, 279, 763, 1023 (80), 1053, 1120, 1868, 3425, 50947, 51482, 60169 (80) and 60189
+# (80) this test's own mistakes. (Since the seventh review a seed's changes are drawn apart from its steps, so the
+# earlier seeds' histories differ from when they found their bugs: they stay as cases all the same.)
 FOUND_WITH_RESTORES = [(seed, 40) for seed in (3, 39, 45, 48, 49, 54, 60, 94, 101, 145, 158, 202, 216, 279, 384,
-                                               401, 763, 959, 1053, 1120, 1868, 2216, 3425, 50017, 50057, 50173,
-                                               50947, 51413, 51482, 51662)] + \
-    [(seed, 80) for seed in (60106, 60169, 60189, 60214)]
+                                               401, 589, 763, 959, 1053, 1120, 1868, 2216, 3425, 50017, 50057,
+                                               50173, 50947, 51413, 51482, 51662)] + \
+    [(seed, 80) for seed in (1023, 1532, 1567, 60106, 60169, 60189, 60214, 72024, 74006)]
 RESTORE_SEEDS = [(seed, STEPS) for seed in range(int(os.environ.get("INAB_SEEDS", "100")))]
 RESTORE_SEEDS += [found for found in FOUND_WITH_RESTORES if found not in RESTORE_SEEDS]
 START = datetime(2026, 11, 27, 9, 0, tzinfo=timezone(timedelta(hours=-7)))
@@ -98,6 +103,9 @@ class World:
     def __init__(self, tmp, seed, restores=True):
         self.restores = restores  # backups restored by hand (copied in as Budget.inab)
         self.r, self.tmp, self.seed = random.Random(seed), tmp, seed
+        self.r2 = random.Random(seed * 7919 + 1)  # what a change is, apart from the steps: the same steps either way
+        self.added = {}                    # computer → the categories it added, in order
+        self.last = {}                     # computer → (its budget's contents before its last change, the change)
         self.t, self.n, self.log = START, 0, []
         self.skew = {name: timedelta(minutes=self.r.randint(-30, 30)) for name in NAMES}
         if self.r.random() < 0.2:  # one computer's clock months out
@@ -310,10 +318,13 @@ class World:
             self._follow(each)
         self.check_the_rule(asked=self.looked)
 
-    def _change(self, c, name, change):
+    def _change(self, c, name, change, what=None):
         """A change: a new version made on this computer's, unless it goes straight back to the very
-        budget this computer started from (then there's no change to lose)."""
+        budget this computer started from (then there's no change to lose). `what`: (add or delete, the
+        category), for another computer to make the very same change (`_mirror`)."""
         self._follow(name)
+        if what is not None:
+            self.last[name] = (backups.digest(c.db), what)
         change(c.db)
         d, back, before = backups.digest(c.db), self.base[name], self.cur[name]
         if d != self.versions[back][0]:
@@ -323,24 +334,51 @@ class World:
             self.children.setdefault(before, set()).add(back)
             self.cur[name] = back
 
+    def _mirror(self, c, name):
+        """The very change another computer made from the very budget this one has: made here too, not
+        saved yet, so it comes to the other's contents (a join of a change not saved yet). True if made."""
+        d = backups.digest(c.db)
+        made = [(other, change) for other, (before, change) in self.last.items() if other != name and before == d]
+        if not made or self.r2.random() >= 0.5:
+            return False
+        other, (kind, category) = self.r2.choice(made)
+        if (kind == "add") == (category in categories(c.db)):
+            return False
+        self._change(c, name, lambda db: (add_category if kind == "add" else delete_category)(db, category), (kind, category))
+        return True
+
     def add(self, c, name):
-        self._change(c, name, lambda db: add_category(db, f"N{self.n}"))
+        if self._mirror(c, name):
+            return
+        new = f"N{self.n}"
+        made_elsewhere = [n for other in NAMES if other != name for n in self.added.get(other, [])[-2:]
+                          if n not in categories(c.db)]
+        if made_elsewhere and self.r2.random() < 0.5:  # the same change another computer made: a join to come
+            new = self.r2.choice(made_elsewhere)
+        self.added.setdefault(name, []).append(new)
+        self._change(c, name, lambda db: add_category(db, new), ("add", new))
 
     def delete(self, c, name):
         there = sorted(categories(c.db) - {"Start"})
         if there:
             gone = self.r.choice(there)
-            self._change(c, name, lambda db: delete_category(db, gone))
+            mine = [n for n in self.added.get(name, []) if n in there]
+            if mine and self.r2.random() < 0.6:  # its own latest change taken back: its budget as it was before
+                gone = mine[-1]
+            if self._mirror(c, name):
+                return
+            self._change(c, name, lambda db: delete_category(db, gone), ("delete", gone))
 
     def add_back(self, c, name):
         gone = sorted({f"N{i}" for i in range(self.n)} - categories(c.db))
         if gone:
             back = self.r.choice(gone)
-            self._change(c, name, lambda db: add_category(db, back))
+            self.added.setdefault(name, []).append(back)
+            self._change(c, name, lambda db: add_category(db, back), ("add", back))
 
     def look(self, c, name):
         self.looked = name
-        c.check(wait=False)
+        c.check(wait=self.r2.random() < 0.5)  # the watcher's look waits for changes to stop: some stay unsaved a while
 
     def _in_sync(self, name):
         return name not in self.lagging and name not in self.unplugged
@@ -443,19 +481,23 @@ class World:
             except UserError:
                 return
             self.looked = name
-            self._follow(name)
-            if self.cur[name] != before:
+            after = self.took.pop(name, [])  # what its look after the answer joined: after the choice, below
+            d = backups.digest(c.db)
+            # What it took: what it was asked about (another version may have the same contents), else by contents
+            taken = asked if asked is not None and self.versions[asked][0] == d else \
+                (self.by_digest[d][-1] if d in self.by_digest else None)
+            if taken is not None and taken != before:
                 self.dropped.add(before)
-                if self.versions[before][0] != backups.digest(c.db):  # the very contents kept: nothing of it is gone
+                if self.versions[before][0] != d:  # the very contents kept: nothing of it is gone
                     self.answered.add(before)
-                taken = self.cur[name]
-                if asked is not None and self.versions[asked][0] == self.versions[taken][0]:
-                    taken = asked  # what it was asked about (another version may have the same contents)
                 self.cur[name] = choice = self._version(self.versions[taken][0], (taken, before))
                 self.choices.add(choice)
                 made = c._mine()
-                if made is not None and made.id not in known:  # the save the answer made is the choice, not what it took
+                if made is not None and made.id not in known and not after:  # the answer's save is the choice
                     self.saved[made.id], self.made[made.id], self.base[name] = choice, (choice, made), choice
+            if after:
+                self.took[name] = after
+                self._follow(name)
 
     def crash(self, c, name):
         real = budget_folder._replace
@@ -540,15 +582,17 @@ class World:
                 continue
             state = c.state()["state"]
             if state in ("two_computers", "older") and c._other is not None:
-                other = self._of_save(c._other)
+                other, mine = self._of_save(c._other), self.cur[name]
                 if other is None or (state == "older" and c._other.raw):
                     continue  # the same backup restored again, older by now: asked (decided on #196's review)
-                if c._other.name != FILE_NAME and budget_folder.unseen_restore(c._other, c._mine()):
+                if c._other.name != FILE_NAME and (self._ancestry([other]) & self.restored) - self._ancestry([mine]):
                     continue  # a restore, or a save on one, arriving as a sync tool's copy: apart, so asked (the same)
-                mine = self.cur[name]
-                # A computer that missed a restore, with nothing of its own, takes it (asked: needless); one that took
-                # a restore is asked about a save it was copied over, which the restore doesn't count (the review's rule)
-                assert other not in self._ancestry([mine], self.restored | self.repeats) and \
+                if c._other.name != FILE_NAME and other in self._ancestry([mine], self.repeats) and \
+                        other not in self._ancestry([mine], self.repeats | self.restored):
+                    continue  # a sync tool's copy of a save a restore it took was copied over: not counted by it, asked
+                    #           (the fifth review: "a save that arrives after a restore was taken and isn't dominated
+                    #           by it asks"); a question about Budget.inab, or a restore missed, still follows them
+                assert other not in self._ancestry([mine], self.repeats) and \
                     mine not in self._ancestry([other], self.repeats), \
                     f"seed {self.seed}: {name} asked ({state}) though one side has everything: it's v{mine}, " \
                     f"{c._other.name} v{other}\n" + self._trail()

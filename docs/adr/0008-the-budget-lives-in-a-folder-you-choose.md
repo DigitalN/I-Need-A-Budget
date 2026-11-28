@@ -49,5 +49,9 @@ under a hidden name, then renamed) a few seconds after changes stop, and when it
 - An older save put back in the folder (a sync tool's "restore previous version", of a restore
   saved back as itself too) is never saved over, nor gone back to, without asking: Use it, or Keep
   the newer one; the other goes into Backups/. Only this computer's own last save, when its newer
-  one didn't land or sits beside it as the sync tool's copy, is saved over.
+  one didn't land or sits beside it as the sync tool's copy, is saved over. The second without a
+  question even if a person's "restore previous version" raced this computer's save: a sync tool
+  makes a copy of one side of a conflict, never of a version a person goes back to, so the copy says
+  the sync tool chose; nothing is lost (this computer's save came after the older one), and that
+  version can be chosen again.
 - Decided 2026-11-27, for 1.5.0.

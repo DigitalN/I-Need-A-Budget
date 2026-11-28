@@ -2065,3 +2065,25 @@ def test_a_change_not_saved_yet_that_joins_a_copy_still_asks_about_a_restore(tmp
     print("A:", state["state"], state.get("took"), categories(a.db), "backups:", backups_in(folder), names(folder))
     assert state["state"] == "two_computers", "PC-A had a change not saved yet and the restore replaced it unasked"
     assert categories(a.db) == ["Groceries", "Bills", "Rent"] and a.check(wait=False)["state"] == "two_computers"
+
+
+def test_a_restore_saved_back_as_itself_is_never_in_flight(tmp_path):
+    """PC-A took a restore and saved it back as itself, with no change of its own; the sync tool keeps
+    a copy of that file when a second backup is restored (random seed 74006). Nothing of PC-A's is in
+    flight: it takes the second restore without a question."""
+    folder = tmp_path / "Budget"
+    a = computer(tmp_path, "PC-A")
+    add_category(a.db, "Groceries")
+    a.move_to(folder)
+    first = shutil.move(backups.make(a.db), tmp_path / "first.db")
+    add_category(a.db, "Rent")
+    a.check(wait=False)
+    second = shutil.move(backups.make(a.db), tmp_path / "second.db")
+    add_category(a.db, "Bills")
+    a.check(wait=False)
+    shutil.copyfile(first, folder / FILE_NAME)
+    assert a.check(wait=False)["took"] and categories(a.db) == ["Groceries"]  # saved back as itself
+    shutil.copyfile(folder / FILE_NAME, folder / "Budget-PC-A.inab")    # the sync tool keeps a copy of it
+    shutil.copyfile(second, folder / FILE_NAME)                         # as the second backup goes in
+    state = a.check(wait=False)
+    assert state["state"] == "saved" and state["took"] and categories(a.db) == ["Groceries", "Rent"]
