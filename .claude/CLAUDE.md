@@ -1012,6 +1012,9 @@ Don't undo these without asking:
 
 `python3 -m pytest` (scripts/tests/, all synthetic data). `scripts/tests/test_privacy.py` fails if the
 working tree has anything from `.git-denylist` or a card-number shape.
+The budget folder's random test (`scripts/tests/test_budget_folder_random.py`) runs the seeds it
+keeps (`FOUND`) plus 100 fresh ones per test; on GitHub's machines (`CI` set) 20 fresh ones, to stay
+inside the 30-minute limit. `INAB_SEEDS` (and `INAB_STEPS`) override both.
 
 GitHub runs the whole suite on macOS and Windows for every pull request into `main` or
 `claude/cross-platform` and every push to them (`.github/workflows/tests.yml`, issue #186):
