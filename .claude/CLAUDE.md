@@ -1008,7 +1008,9 @@ Don't undo these without asking:
 ## Tests
 
 `python3 -m pytest` (scripts/tests/, all synthetic data). `scripts/tests/test_privacy.py` fails if the
-working tree has anything from `.git-denylist` or a card-number shape.
+working tree has anything from `.git-denylist` or a card-number shape. No test takes a real copy's
+lock or mutex (`conftest.py`'s `real_copy` fails it): the real data folder's lock would keep the app
+from opening, and while `RUNNING_MUTEX` is held Windows' installer and uninstaller won't run.
 
 GitHub runs the whole suite on macOS and Windows for every pull request into `main` or
 `claude/cross-platform` and every push to them (`.github/workflows/tests.yml`, issue #186):

@@ -209,20 +209,39 @@ def test_windows_keeps_the_window_in_this_computers_settings(windows_for_tests):
 
 
 @WINDOWS
-def test_the_copy_holding_the_lock_tells_the_installer_its_running(tmp_path):
-    """The installer's AppMutex: it waits for the app to be closed rather than replace it while it runs."""
+def test_the_copy_holding_the_lock_tells_the_installer_its_running(tmp_path, real_copy):
+    """The installer's AppMutex: it waits for the app to be closed rather than replace it while it
+    runs. A real copy's mutex is the installer's; a test's copy holds one of its own (conftest.py)."""
     import ctypes
 
     from computer_windows import RUNNING_MUTEX
 
+    assert real_copy.mutex == RUNNING_MUTEX
     windows = Windows()
     held = windows.lock(tmp_path / ".lock")
     kernel32 = ctypes.windll.kernel32
     kernel32.OpenMutexW.restype = ctypes.c_void_p
-    found = kernel32.OpenMutexW(0x00100000, False, RUNNING_MUTEX)  # SYNCHRONIZE: what Inno Setup asks for
+    found = kernel32.OpenMutexW(0x00100000, False, windows._running_mutex)  # SYNCHRONIZE: what Inno Setup asks for
     assert found
     kernel32.CloseHandle(ctypes.c_void_p(found))
     held.close()
+
+
+def test_no_test_takes_a_real_copys_lock_or_mutex(real_copy):
+    """conftest.py's guard. A test holding the real data folder's lock would keep the app from
+    opening; one holding RUNNING_MUTEX keeps Windows' installer and uninstaller from running."""
+    import computer_windows
+
+    this = computer.this()
+    assert real_copy.lock == (this.data_dir() / ".lock").resolve()
+    for system in (Mac, Windows):
+        assert hasattr(system.lock, "__wrapped__")  # guarded, so the real lock is never reached below
+    with pytest.raises(AssertionError, match="real copy's lock"):
+        this.lock(this.data_dir() / ".lock")
+    assert Windows._running_mutex != real_copy.mutex == computer_windows.RUNNING_MUTEX
+    assert hasattr(computer_windows._create_mutex, "__wrapped__")
+    with pytest.raises(AssertionError, match="real copy's mutex"):
+        computer_windows._create_mutex(computer_windows.RUNNING_MUTEX)
 
 
 

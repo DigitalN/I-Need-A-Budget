@@ -144,6 +144,17 @@ def first_size(minimum, share, area, dpi):
 
 # ── Windows' own calls ──
 
+def _create_mutex(name):
+    """A named mutex, held until this process ends. The tests' guard (conftest.py) refuses
+    RUNNING_MUTEX here: a test holding it would keep the installer from running."""
+    import ctypes
+
+    kernel32 = ctypes.windll.kernel32
+    kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_wchar_p]
+    kernel32.CreateMutexW.restype = ctypes.c_void_p
+    return kernel32.CreateMutexW(None, False, name)
+
+
 def _user32():
     import ctypes
     from ctypes import wintypes
@@ -293,6 +304,7 @@ class Windows(Computer):
     gh = (str(Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "GitHub CLI" / "gh.exe"),)
 
     _settings_key = SETTINGS_KEY  # the tests use their own
+    _running_mutex = RUNNING_MUTEX  # and their own mutex (conftest.py)
 
     def __init__(self):
         self._running = None  # the mutex the installer looks for, once this copy has the lock
@@ -317,7 +329,6 @@ class Windows(Computer):
     # ── one copy at a time ──
 
     def lock(self, path):
-        import ctypes
         import msvcrt
 
         fd = os.open(path, os.O_RDWR | os.O_CREAT)  # not truncated: another copy may hold it
@@ -327,10 +338,7 @@ class Windows(Computer):
             os.close(fd)
             return None
         if self._running is None:  # held until the process ends
-            kernel32 = ctypes.windll.kernel32
-            kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_wchar_p]
-            kernel32.CreateMutexW.restype = ctypes.c_void_p
-            self._running = kernel32.CreateMutexW(None, False, RUNNING_MUTEX)
+            self._running = _create_mutex(self._running_mutex)
         return os.fdopen(fd, "r+b")
 
     def already_running(self):
